@@ -1085,6 +1085,23 @@
             <enabled>true</enabled>
           </layers>
         </configuration>
+        <executions>
+          <!-- The execution id below is deliberately the SAME id the parent
+               already declares in its pluginManagement. Maven merges
+               executions that share an id, so stating the goal here makes the
+               repackaging step visible to a reader of this file without
+               causing it to run a second time. Choosing any other id would
+               ADD a second execution and the artifact would be repackaged
+               twice. This mirrors the id reuse in the integration test
+               plugin above, and the merge is verified against the effective
+               model rather than assumed. -->
+          <execution>
+            <id>repackage</id>
+            <goals>
+              <goal>repackage</goal>
+            </goals>
+          </execution>
+        </executions>
       </plugin>
 
     </plugins>
