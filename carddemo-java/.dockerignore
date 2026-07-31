@@ -1,0 +1,40 @@
+# Keep the Docker build context small and reproducible.
+target/
+build/
+out/
+logs/
+*.log
+
+# Local state that must never enter an image layer
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.jks
+*.keystore
+secrets/
+volume/
+.localstack/
+dependency-check-data/
+dependency-check-report.*
+
+# Coverage / test output
+jacoco*.exec
+surefire-reports/
+failsafe-reports/
+
+# Compose + observability assets are runtime concerns, not image content
+docker-compose.yml
+config/
+localstack/
+
+# VCS and IDE metadata
+.git/
+.gitignore
+.idea/
+.vscode/
+*.iml
+.settings/
+.project
+.classpath

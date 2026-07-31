@@ -1,0 +1,82 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# TEST profile - bound to Testcontainers-provided endpoints.
+#
+# Container URLs are intentionally NOT hardcoded here: integration tests supply them through
+# @ServiceConnection (spring-boot-testcontainers) or @DynamicPropertySource from the shared
+# support base classes (AbstractPostgresIT / AbstractLocalStackIT). Unit tests that never touch
+# a container simply do not start a datasource.
+
+spring:
+  datasource:
+    # Overridden per test class by Testcontainers; the driver is fixed so slicing tests
+    # (@DataJpaTest etc.) do not attempt embedded-database auto-detection.
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+  flyway:
+    enabled: true
+    # Reference-data and user-security seeds are required by the gate fixtures.
+    locations: classpath:db/migration,classpath:db/seed
+    clean-disabled: false
+
+  batch:
+    job:
+      enabled: false
+    jdbc:
+      initialize-schema: always
+
+  cloud:
+    aws:
+      region:
+        static: us-east-1
+      credentials:
+        access-key: test
+        secret-key: test
+      s3:
+        path-style-access-enabled: true
+
+management:
+  tracing:
+    enabled: false
+  otlp:
+    tracing:
+      # No trace export during tests.
+      endpoint: http://localhost:4318/v1/traces
+
+logging:
+  level:
+    root: WARN
+    com.carddemo: INFO
+    org.springframework.batch: WARN
+    org.testcontainers: WARN
+    com.github.dockerjava: WARN
+    org.flywaydb: INFO
+
+carddemo:
+  aws:
+    s3:
+      bucket: carddemo-batch-staging
+    sqs:
+      job-submission-queue: JOBS.fifo
+      message-group-id: JOBS
+      record-length: 80
+      fail-on-error: false
+    sns:
+      job-notification-topic: carddemo-job-notifications
+  security:
+    jwt:
+      issuer: carddemo-java
+      secret: test-only-signing-secret-not-used-outside-tests-0123456789
+      expiration: PT15M
+    require-https: false

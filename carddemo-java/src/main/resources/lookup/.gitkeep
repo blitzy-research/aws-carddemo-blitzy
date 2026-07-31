@@ -1,0 +1,4 @@
+# Externalised COBOL validation tables from app/cpy/CSLKPCDY.cpy:
+#   nanpa-area-codes.json (490 = 410 general + 80 easy-recognition)
+#   us-state-codes.json (56)
+#   state-zip-prefixes.json (240)

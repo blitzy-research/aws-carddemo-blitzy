@@ -1,0 +1,38 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Prometheus scrape configuration for the CardDemo Java module.
+# The figures recorded here are the Gate 3 performance baseline: no COBOL baseline exists,
+# so this establishes the first Java baseline rather than testing against a threshold.
+
+global:
+  scrape_interval: 10s
+  scrape_timeout: 5s
+  evaluation_interval: 15s
+  external_labels:
+    application: carddemo-java
+    environment: local
+
+scrape_configs:
+  # Spring Boot Actuator / Micrometer registry.
+  # host.docker.internal resolves to the host gateway (mapped in docker-compose.yml) so the
+  # application can run either on the host (./mvnw spring-boot:run) or as a container.
+  - job_name: carddemo-java
+    metrics_path: /actuator/prometheus
+    scheme: http
+    static_configs:
+      - targets:
+          - host.docker.internal:8080
+        labels:
+          service: carddemo-java
+          tier: application
+
+  # Prometheus self-monitoring, so scrape health is visible on the same dashboard.
+  - job_name: prometheus
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - localhost:9090
+        labels:
+          service: prometheus
+          tier: platform

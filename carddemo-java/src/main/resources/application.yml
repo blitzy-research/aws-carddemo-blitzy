@@ -1,0 +1,171 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# CardDemo Java module - shared configuration defaults.
+# Profile overlays: application-local.yml (Docker Compose), application-test.yml
+# (Testcontainers), application-prod.yml (every secret from the environment, no fallback).
+#
+# Legacy provenance: the logical resource names below replace the JCL DD statements and the
+# CICS resource definitions of the COBOL estate (checkout 7756d895ffeb65f7ea72aaa609e356d9899afcec).
+
+spring:
+  application:
+    name: carddemo-java
+  # A bare `java -jar` / `mvn spring-boot:run` targets the local Compose stack.
+  # Production deployments MUST set SPRING_PROFILES_ACTIVE=prod explicitly.
+  profiles:
+    default: local
+
+  main:
+    banner-mode: console
+
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+      indent-output: false
+
+  datasource:
+    hikari:
+      pool-name: carddemo-pool
+      # Defaults retained deliberately: no legacy tuning baseline exists to tune against.
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000
+      validation-timeout: 5000
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Flyway owns the schema. Hibernate only validates that entities match it.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          # Fixed-width batch reads/writes benefit from modest batching; ordering preserved.
+          batch_size: 50
+          time_zone: UTC
+        order_inserts: true
+        order_updates: true
+        format_sql: false
+    show-sql: false
+
+  flyway:
+    enabled: true
+    # V1__create_schema.sql and V2__create_indexes.sql live here.
+    # The seed migrations (V3 reference data, V4 user security) are profile scoped and live in
+    # classpath:db/seed so a production migration never inherits sample data or seeded logins.
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+    validate-on-migrate: true
+    clean-disabled: true
+
+  batch:
+    job:
+      # Jobs are launched explicitly (REST BatchJobController / JobLauncher / tests),
+      # never implicitly at application startup.
+      enabled: false
+    jdbc:
+      initialize-schema: never
+      table-prefix: BATCH_
+
+  cloud:
+    aws:
+      region:
+        static: ${AWS_REGION:us-east-1}
+
+server:
+  port: ${APP_PORT:8080}
+  shutdown: graceful
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: never
+  tomcat:
+    threads:
+      max: 100
+    accept-count: 100
+
+management:
+  endpoints:
+    web:
+      base-path: /actuator
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+        spring.batch.step: true
+        spring.batch.item.process: true
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+  tracing:
+    enabled: true
+    sampling:
+      probability: ${TRACING_SAMPLE_RATE:0.1}
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: alpha
+    tags-sorter: alpha
+
+logging:
+  level:
+    root: INFO
+    com.carddemo: INFO
+    org.springframework.batch: INFO
+    org.flywaydb: INFO
+
+# ---------------------------------------------------------------------------------------------
+# Application namespace. Values here replace legacy dataset / CICS resource names and are bound
+# by @ConfigurationProperties beans (AwsProperties, JwtProperties, ...).
+# ---------------------------------------------------------------------------------------------
+carddemo:
+  aws:
+    # Batch file staging - replaces the sequential output datasets and the six GDG bases.
+    s3:
+      bucket: ${CARDDEMO_S3_BUCKET:carddemo-batch-staging}
+      prefix:
+        statements: statements/
+        statements-html: statements-html/
+        reports: reports/
+        rejects: rejects/
+        backups: backups/
+        inbound: inbound/
+    # Replaces EXEC CICS WRITEQ TD QUEUE('JOBS'): 80-char fixed records, ordered, ignore-on-error.
+    sqs:
+      job-submission-queue: ${CARDDEMO_SQS_QUEUE:JOBS.fifo}
+      message-group-id: JOBS
+      record-length: 80
+      fail-on-error: false
+    sns:
+      job-notification-topic: ${CARDDEMO_SNS_TOPIC:carddemo-job-notifications}
+  security:
+    jwt:
+      issuer: carddemo-java
+      # No default: a missing signing secret must fail fast rather than bind a placeholder.
+      # local/test profiles supply a throwaway development value.
+      secret: ${CARDDEMO_JWT_SECRET:}
+      expiration: PT30M
+    require-https: false

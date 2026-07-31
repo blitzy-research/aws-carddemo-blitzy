@@ -1,0 +1,63 @@
+# ---------------------------------------------------------------------------
+# CardDemo Java module - ignored build output and local developer artefacts
+# ---------------------------------------------------------------------------
+
+# Maven build output
+target/
+!.mvn/wrapper/maven-wrapper.properties
+.mvn/wrapper/maven-wrapper.jar
+build/
+out/
+dependency-reduced-pom.xml
+
+# Spring Boot / JVM runtime artefacts
+*.log
+*.log.*
+logs/
+hs_err_pid*
+replay_pid*
+*.hprof
+heapdump*
+
+# OWASP dependency-check local data + reports
+dependency-check-data/
+dependency-check-report.*
+
+# Test and coverage output
+surefire-reports/
+failsafe-reports/
+jacoco.exec
+jacoco-it.exec
+*.exec
+
+# Local environment overrides and secrets - never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.jks
+*.keystore
+secrets/
+
+# Docker / LocalStack local state
+volume/
+.localstack/
+
+# IDE and editor metadata
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+nbproject/
+*.swp
+*~
+
+# OS noise
+.DS_Store
+Thumbs.db

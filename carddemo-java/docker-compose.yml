@@ -1,0 +1,172 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# CardDemo local validation stack. Every one of the eight AAP validation gates is designed to
+# run against this stack - no mainframe, no staging environment, no real AWS account.
+#
+#   default services      : postgres (PostgreSQL 16), localstack (Community: S3 + SQS + SNS), jaeger
+#   `observability` profile: prometheus, grafana
+#
+# Bring-up:
+#   docker compose up -d                                # postgres + localstack + jaeger
+#   docker compose --profile observability up -d        # everything, incl. Prometheus/Grafana
+#   docker compose down -v                              # stop and drop volumes
+#
+# ---------------------------------------------------------------------------------------------
+# PARALLEL AGENTS / MULTIPLE CLONES
+# Every host port and the compose project name are parameterised so N independent clones can run
+# their own isolated stack side by side. Export CLONE_INDEX (0,1,2,...) and the derived ports:
+#
+#   export CLONE_INDEX=1
+#   export COMPOSE_PROJECT_NAME=carddemo-$CLONE_INDEX
+#   export POSTGRES_PORT=$((5432  + CLONE_INDEX))
+#   export LOCALSTACK_PORT=$((4566 + CLONE_INDEX))
+#   export JAEGER_UI_PORT=$((16686 + CLONE_INDEX))
+#   export JAEGER_OTLP_GRPC_PORT=$((4317 + CLONE_INDEX * 10))
+#   export PROMETHEUS_PORT=$((9090 + CLONE_INDEX))
+#   export GRAFANA_PORT=$((3000 + CLONE_INDEX))
+#   export APP_PORT=$((8080 + CLONE_INDEX))
+#   docker compose up -d
+#
+# Only start a stack when the work actually needs one - the containers are reusable across agents
+# and it is NOT necessary to run one stack per agent.
+# ---------------------------------------------------------------------------------------------
+
+name: ${COMPOSE_PROJECT_NAME:-carddemo}
+
+services:
+
+  # PostgreSQL 16 - replaces the ten VSAM KSDS base clusters plus the transient work cluster.
+  postgres:
+    image: postgres:16.14-bookworm
+    container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-carddemo}
+      POSTGRES_USER: ${POSTGRES_USER:-carddemo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
+      # Deterministic collation: ORDER BY must not drift between hosts, because sorted output
+      # is compared byte for byte against the COBOL/DFSORT baselines.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    command:
+      - postgres
+      - -c
+      - max_connections=100
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - log_min_duration_statement=2000
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-carddemo} -d ${POSTGRES_DB:-carddemo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+
+  # LocalStack Community - S3 (batch file staging, replaces sequential datasets and GDGs),
+  # SQS FIFO (replaces EXEC CICS WRITEQ TD QUEUE('JOBS')), SNS (job completion fan-out).
+  #
+  # IMAGE PIN IS DELIBERATE. From the 2026.x release line onwards the localstack/localstack
+  # image performs license activation on start-up and exits with code 55
+  # ("License activation failed ... set the LOCALSTACK_AUTH_TOKEN variable") when no token is
+  # present - and ACTIVATE_PRO=0 does not suppress it. 4.14.0 is the newest tag that runs the
+  # Community edition token-free, which is all this module needs (S3 + SQS + SNS only).
+  # Testcontainers-based integration tests must pin the SAME tag.
+  localstack:
+    image: localstack/localstack:4.14.0
+    container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-localstack
+    environment:
+      SERVICES: s3,sqs,sns
+      DEBUG: ${LOCALSTACK_DEBUG:-0}
+      PERSISTENCE: 0
+      AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
+      # LocalStack accepts any non-empty credentials; these are throwaway local values.
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      CARDDEMO_S3_BUCKET: ${CARDDEMO_S3_BUCKET:-carddemo-batch-staging}
+      CARDDEMO_SQS_QUEUE: ${CARDDEMO_SQS_QUEUE:-JOBS.fifo}
+      CARDDEMO_SNS_TOPIC: ${CARDDEMO_SNS_TOPIC:-carddemo-job-notifications}
+    ports:
+      - "${LOCALSTACK_PORT:-4566}:4566"
+    volumes:
+      # Scripts in ready.d run once the edge port is serving.
+      - ./localstack/init:/etc/localstack/init/ready.d:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal s3 ls >/dev/null 2>&1 && awslocal sqs list-queues >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 40s
+    restart: unless-stopped
+
+  # Jaeger all-in-one - OTLP trace sink for micrometer-tracing-bridge-otel.
+  jaeger:
+    image: jaegertracing/all-in-one:1.71.0
+    container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      SPAN_STORAGE_TYPE: memory
+      MEMORY_MAX_TRACES: "20000"
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"          # Jaeger UI
+      - "${JAEGER_OTLP_GRPC_PORT:-4317}:4317"     # OTLP/gRPC
+      - "${JAEGER_OTLP_HTTP_PORT:-4318}:4318"     # OTLP/HTTP
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:14269/ >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  # Prometheus - scrapes /actuator/prometheus; source of the Gate 3 throughput baseline.
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-prometheus
+    profiles: ["observability"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=6h
+      - --web.enable-lifecycle
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # Grafana - per-endpoint and per-batch-step dashboards over the Prometheus data source.
+  grafana:
+    image: grafana/grafana:11.6.6
+    container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-grafana
+    profiles: ["observability"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_INSTALL_PLUGINS: ""
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  prometheus-data:
+  grafana-data:

@@ -1,0 +1,159 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# CI for the carddemo-java module.
+#
+# This file must live at the repository root because GitHub Actions resolves workflow
+# definitions only from .github/workflows/; every step is scoped back into the module with
+# defaults.run.working-directory.
+#
+# Conceptual antecedent: the legacy compile-and-link pipeline in samples/jcl/{BATCMP,BMSCMP,
+# CICCMP}.jcl driven by samples/proc/{BUILDBAT,BUILDBMS,BUILDONL}.prc.
+#
+# Gates enforced here:
+#   Gate 2  zero-warning build   -> -Xlint:all -Werror in the POM makes `verify` fail on warnings
+#   Gate 7  coverage floor       -> JaCoCo check rule, 80% line, failing
+#   Gate 8  supply chain         -> OWASP dependency-check is EXECUTED (not merely declared)
+
+name: carddemo-java CI
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "carddemo-java/**"
+      - ".github/workflows/carddemo-java-ci.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "carddemo-java/**"
+      - ".github/workflows/carddemo-java-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: carddemo-java-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JAVA_VERSION: "25"
+  JAVA_DISTRIBUTION: temurin
+  MAVEN_ARGS: "-B -ntp"
+
+defaults:
+  run:
+    working-directory: carddemo-java
+
+jobs:
+  build:
+    name: build / test / coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }} (${{ env.JAVA_DISTRIBUTION }})
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: maven
+          cache-dependency-path: carddemo-java/pom.xml
+
+      - name: Report toolchain
+        run: |
+          java -version
+          ./mvnw ${MAVEN_ARGS} --version
+
+      # Testcontainers (PostgreSQL 16 + LocalStack Community) uses the runner's Docker daemon,
+      # which is preinstalled on ubuntu-latest. No mainframe and no real AWS account is required.
+      - name: Verify Docker availability for Testcontainers
+        run: docker info --format '{{.ServerVersion}} {{.Driver}}'
+
+      # -Werror is configured in the POM, so any compiler warning fails this step (Gate 2),
+      # and the JaCoCo check rule fails it when line coverage drops below 80% (Gate 7).
+      - name: Build, test and verify
+        run: ./mvnw ${MAVEN_ARGS} clean verify
+
+      - name: Upload JaCoCo coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-coverage
+          path: |
+            carddemo-java/target/site/jacoco/**
+            carddemo-java/target/site/jacoco-it/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            carddemo-java/target/surefire-reports/**
+            carddemo-java/target/failsafe-reports/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload application artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: carddemo-java-jar
+          path: carddemo-java/target/carddemo-java-*.jar
+          if-no-files-found: error
+          retention-days: 14
+
+  dependency-check:
+    name: OWASP dependency-check (Gate 8)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }} (${{ env.JAVA_DISTRIBUTION }})
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: maven
+          cache-dependency-path: carddemo-java/pom.xml
+
+      # Cache the NVD data directory: without it every run re-downloads the full CVE feed.
+      - name: Cache NVD data
+        uses: actions/cache@v4
+        with:
+          path: carddemo-java/target/dependency-check-data
+          key: nvd-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            nvd-${{ runner.os }}-
+
+      # Executed, not merely declared. An NVD_API_KEY repository secret removes the anonymous
+      # rate limit; without it the plugin still runs, just more slowly.
+      - name: Run dependency-check
+        run: |
+          ./mvnw ${MAVEN_ARGS} \
+            -Ddependency-check.skip=false \
+            -DnvdApiKey="${NVD_API_KEY:-}" \
+            -DdataDirectory=target/dependency-check-data \
+            org.owasp:dependency-check-maven:check
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+
+      - name: Upload dependency-check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: |
+            carddemo-java/target/dependency-check-report.html
+            carddemo-java/target/dependency-check-report.json
+          if-no-files-found: warn
+          retention-days: 30

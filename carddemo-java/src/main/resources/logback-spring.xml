@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  SPDX-License-Identifier: Apache-2.0
+
+  Structured logging for the CardDemo Java module.
+
+  This replaces the 217 DISPLAY statements of the COBOL estate: every diagnostic that the legacy
+  programs wrote to SYSOUT becomes an SLF4J event at an appropriate level, correlated by the
+  Micrometer tracing traceId/spanId that flow through the REST -> service -> batch boundary.
+
+  Appender selection by profile:
+    local, test  -> human readable console (developer ergonomics)
+    default/prod -> single-line JSON via logstash-logback-encoder (log aggregation)
+-->
+<configuration scan="false">
+
+  <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+  <springProperty scope="context" name="applicationName" source="spring.application.name" defaultValue="carddemo-java"/>
+
+  <property name="CONSOLE_PATTERN"
+            value="%clr(%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}){faint} %clr(${LOG_LEVEL_PATTERN:-%5p}) %clr([${applicationName},%X{traceId:-},%X{spanId:-}]){faint} %clr(%-40.40logger{39}){cyan} %clr(:){faint} %m%n${LOG_EXCEPTION_CONVERSION_WORD:-%wEx}"/>
+
+  <!-- Human readable output for local development and test runs. -->
+  <springProfile name="local,test">
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+      <encoder>
+        <pattern>${CONSOLE_PATTERN}</pattern>
+        <charset>UTF-8</charset>
+      </encoder>
+    </appender>
+
+    <root level="INFO">
+      <appender-ref ref="CONSOLE"/>
+    </root>
+  </springProfile>
+
+  <!-- Structured JSON everywhere else (prod and any unnamed profile). -->
+  <springProfile name="!local &amp; !test">
+    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+      <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+        <timeZone>UTC</timeZone>
+        <timestampPattern>yyyy-MM-dd'T'HH:mm:ss.SSS'Z'</timestampPattern>
+        <includeMdcKeyName>traceId</includeMdcKeyName>
+        <includeMdcKeyName>spanId</includeMdcKeyName>
+        <includeMdcKeyName>correlationId</includeMdcKeyName>
+        <includeMdcKeyName>userId</includeMdcKeyName>
+        <includeMdcKeyName>jobName</includeMdcKeyName>
+        <includeMdcKeyName>stepName</includeMdcKeyName>
+        <customFields>{"application":"${applicationName}"}</customFields>
+        <fieldNames>
+          <timestamp>@timestamp</timestamp>
+          <version>[ignore]</version>
+          <levelValue>[ignore]</levelValue>
+          <thread>thread</thread>
+          <logger>logger</logger>
+          <message>message</message>
+          <stackTrace>stackTrace</stackTrace>
+        </fieldNames>
+        <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+          <maxDepthPerThrowable>40</maxDepthPerThrowable>
+          <maxLength>8192</maxLength>
+          <rootCauseFirst>true</rootCauseFirst>
+        </throwableConverter>
+      </encoder>
+    </appender>
+
+    <root level="INFO">
+      <appender-ref ref="JSON"/>
+    </root>
+  </springProfile>
+
+  <!-- Framework noise control; com.carddemo levels are set per profile in application*.yml. -->
+  <logger name="org.springframework.web.servlet.DispatcherServlet" level="INFO"/>
+  <logger name="org.hibernate.orm.deprecation" level="ERROR"/>
+  <logger name="com.zaxxer.hikari.HikariConfig" level="INFO"/>
+
+</configuration>

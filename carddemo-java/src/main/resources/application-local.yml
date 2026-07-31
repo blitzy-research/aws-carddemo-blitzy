@@ -1,0 +1,84 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# LOCAL profile - binds to the Docker Compose stack in carddemo-java/docker-compose.yml.
+#
+#   docker compose up -d                              # postgres + localstack + jaeger
+#   docker compose --profile observability up -d      # adds prometheus + grafana
+#   ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+#
+# Every credential in this file is a throwaway development value that only ever addresses a
+# container on the developer's own machine. Nothing here is used by the prod profile.
+
+spring:
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:carddemo}
+    username: ${POSTGRES_USER:carddemo}
+    password: ${POSTGRES_PASSWORD:carddemo}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    show-sql: false
+    properties:
+      hibernate:
+        highlight_sql: false
+
+  flyway:
+    # Seed migrations are included locally: V3 reference data from app/data/ASCII and
+    # V4 the ten DUSRSECJ users (BCrypt hashed).
+    locations: classpath:db/migration,classpath:db/seed
+
+  batch:
+    jdbc:
+      # Spring Batch metadata tables (BATCH_*) are created on first start against the
+      # Compose PostgreSQL instance. Business tables are owned by Flyway.
+      initialize-schema: always
+
+  cloud:
+    aws:
+      region:
+        static: ${AWS_REGION:us-east-1}
+      credentials:
+        # LocalStack accepts any non-empty credentials.
+        access-key: ${AWS_ACCESS_KEY_ID:test}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:test}
+      # Global endpoint override so S3/SQS/SNS all address LocalStack.
+      endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
+      s3:
+        endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
+        path-style-access-enabled: true
+      sqs:
+        endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
+      sns:
+        endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,env,configprops,beans,flyway,mappings
+  endpoint:
+    health:
+      show-details: always
+      show-components: always
+  tracing:
+    sampling:
+      # Trace everything locally so the Jaeger UI is useful during gate validation.
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: http://${JAEGER_HOST:localhost}:${JAEGER_OTLP_HTTP_PORT:4318}/v1/traces
+
+logging:
+  level:
+    com.carddemo: DEBUG
+    org.springframework.batch: INFO
+    org.hibernate.SQL: INFO
+
+carddemo:
+  security:
+    jwt:
+      # Development-only signing secret. The prod profile has NO fallback for this value.
+      secret: ${CARDDEMO_JWT_SECRET:local-development-only-signing-secret-change-me-0123456789}
+      expiration: PT8H
+    require-https: false
