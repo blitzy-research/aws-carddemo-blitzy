@@ -13,6 +13,19 @@ FROM eclipse-temurin:25.0.3_9-jdk-noble AS build
 
 WORKDIR /workspace
 
+# unzip is REQUIRED by the Maven Wrapper, not optional convenience. When unzip is
+# absent, mvnw rewrites the configured distributionUrl from -bin.zip to -bin.tar.gz
+# and then still compares the download against distributionSha256Sum, which is the
+# digest of the zip - so the build aborts with "distribution might be compromised"
+# on a perfectly genuine archive. Installing unzip keeps the wrapper on the pinned
+# .zip so checksum verification succeeds. Do not drop this layer: removing it
+# re-breaks the container build, and neither the digest nor the URL in
+# .mvn/wrapper/maven-wrapper.properties may be changed to compensate (both
+# launchers reject any distributionUrl that does not end in -bin.zip).
+RUN apt-get update \
+ && apt-get install --no-install-recommends -y unzip \
+ && rm -rf /var/lib/apt/lists/*
+
 # Dependency layer first so source-only changes do not re-resolve the world.
 COPY .mvn/ .mvn/
 COPY mvnw pom.xml ./
