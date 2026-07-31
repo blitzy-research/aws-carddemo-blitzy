@@ -1,95 +1,225 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
 #
-# CI for the carddemo-java module.
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# This file must live at the repository root because GitHub Actions resolves workflow
-# definitions only from .github/workflows/; every step is scoped back into the module with
-# defaults.run.working-directory.
+#    http://www.apache.org/licenses/LICENSE-2.0
 #
-# Conceptual antecedent: the legacy compile-and-link pipeline in samples/jcl/{BATCMP,BMSCMP,
-# CICCMP}.jcl driven by samples/proc/{BUILDBAT,BUILDBMS,BUILDONL}.prc.
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+# ---------------------------------------------------------------------------------------------
+# Continuous integration for the carddemo-java module.
 #
-# Gates enforced here:
-#   Gate 2  zero-warning build   -> -Xlint:all -Werror in the POM makes `verify` fail on warnings
-#   Gate 7  coverage floor       -> JaCoCo check rule, 80% line, failing
-#   Gate 8  supply chain         -> OWASP dependency-check is EXECUTED (not merely declared)
+# WHY THIS FILE SITS AT THE REPOSITORY ROOT
+# GitHub Actions resolves workflow definitions only from .github/workflows/ at the root of the
+# repository, so this is the one migration target that cannot live inside carddemo-java/. It
+# scopes itself straight back into the module with defaults.run.working-directory, so every
+# command below is module-relative even though the file is not.
+#
+# WHAT THIS RUN PROVES
+# A single job invokes the committed Maven Wrapper once. That one invocation is the whole gate
+# mechanism, because the module build binds all three enforcement points to the verify phase:
+#
+#   zero-warning build : the compiler plugin runs javac with -Xlint:all -Werror under release
+#                        25, so any warning ends the run instead of accumulating in a report.
+#   coverage floor     : the coverage plugin applies a check rule over the merged unit plus
+#                        integration execution data - LINE counter, covered ratio, minimum
+#                        0.80, halting on failure. LINE is the enforced counter; the other
+#                        counters are produced for information only.
+#   supply chain       : the vulnerability plugin runs its check goal and ends the build on any
+#                        finding at or above the configured score. It is EXECUTED here rather
+#                        than merely declared: the module build leaves the scan switched on by
+#                        default, so no command-line override is needed or wanted.
+#
+# Stopping at package instead of verify would run none of the three and a green run would prove
+# nothing, so this workflow always goes all the way to verify.
+#
+# WHY THE REPORTS ARE UPLOADED
+# Every report those gates produce is deliberately untracked by the module's ignore file, so the
+# uploaded artifacts of this run are their only durable record and the raw input a reviewer
+# cites when signing the gates off. The uploads therefore run even when the build fails, because
+# a failed run's coverage and vulnerability reports are exactly what a reviewer needs. That
+# masks nothing: the job's conclusion is decided by the build step, and no step here softens it.
+#
+# CONCEPTUAL ANTECEDENT
+# The legacy estate's compile-and-link pipeline - three job members under samples/jcl (job names
+# CNJBATMP, CBLDBMS, CICCMP) driving three cataloged procedures under samples/proc (BLDBAT,
+# BUILDBMS, BLDONL). Five structural traits carry over. They are cited as metadata only; no
+# line of legacy source text is reproduced anywhere in this file.
+#
+#   1. Pinned toolchain. The procedures named exact compiler and transaction-monitor library
+#      data sets rather than accepting whatever happened to be installed, so every action
+#      reference below is pinned and the JDK vendor and feature release are stated explicitly.
+#   2. Explicit compiler options. Every compile and link step carried an explicit option list -
+#      the direct ancestor of the strict lint settings the module build applies.
+#   3. Condition-code gating. The whole pipeline contained exactly two condition-code clauses,
+#      one on a program-reload step and one on a link-edit step naming its compile predecessor,
+#      and both ran downstream work only where the upstream step had succeeded. Nothing in this
+#      file lets a warning or a failing test pass quietly, because that would invert those
+#      semantics rather than preserve them.
+#   4. Listing replication. Three steps existed purely to copy a compile listing to the
+#      operator's output stream. Publishing the reports as artifacts is the same intent with
+#      durable storage.
+#   5. Symbol substitution. The job members set qualifier and member symbols once and resolved
+#      them through a procedure library. Here the equivalent values are stated once at their
+#      point of use and pinned. In particular the build tool version is NOT restated in this
+#      file at all: the module's wrapper properties file is its single source of truth, and a
+#      second copy here would quietly break the reproducibility guarantee the module rests on.
+#
+# Four legacy traits have no counterpart and are deliberately not translated - the interactive
+# program-reload steps, the map copybook generation step, the temporary data set cleanup step,
+# and the submitter notification option. Reload and copybook generation are meaningless once the
+# transaction monitor is gone, hosted runners are ephemeral, and notification is native here.
+#
+# PROVENANCE
+# Migrated from the AWS CardDemo mainframe estate at commit
+# 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release stamp
+# CardDemo_v1.0-15-g27d6c6f-68 dated 2022-07-19.
+# ---------------------------------------------------------------------------------------------
 
-name: carddemo-java CI
+---
+name: CardDemo Java CI
 
-on:
+# The contribution guide directs contributors to work against main and to watch for automated CI
+# failures reported on their pull request, so both events are wired. Neither is narrowed by a
+# path filter: a filtered pull request event can leave a required check pending indefinitely,
+# and a run that never happens produces no evidence.
+#
+# The key below is quoted because bare `on` is a YAML 1.1 boolean. GitHub reads either form, but
+# the quoted one keeps the key a string, so linters and parsers see the workflow the same way
+# GitHub does instead of a boolean-keyed mapping.
+"on":
   push:
-    branches: ["main"]
-    paths:
-      - "carddemo-java/**"
-      - ".github/workflows/carddemo-java-ci.yml"
+    branches:
+      - main
   pull_request:
-    branches: ["main"]
-    paths:
-      - "carddemo-java/**"
-      - ".github/workflows/carddemo-java-ci.yml"
+    branches:
+      - main
   workflow_dispatch:
 
+# Least privilege. Reading the checkout is all any step below needs - nothing writes to the
+# repository, publishes an image, or comments on a pull request.
 permissions:
   contents: read
 
+# Supersede an in-flight run of the same ref only while a pull request is still being iterated.
+# Runs on main are never cancelled, because a main-branch evidence bundle is the record a
+# reviewer cites and discarding it would break the chain.
 concurrency:
-  group: carddemo-java-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  JAVA_VERSION: "25"
-  JAVA_DISTRIBUTION: temurin
-  MAVEN_ARGS: "-B -ntp"
-
+# Scopes every run: step into the module. It does NOT affect action steps - their inputs, such as
+# artifact paths and file-hash inputs, stay relative to the repository root, which is why every
+# one of them below carries the carddemo-java/ prefix.
 defaults:
   run:
     working-directory: carddemo-java
 
 jobs:
   build:
-    name: build / test / coverage
+    name: Build, test and verify gates
+    # Ubuntu is required rather than merely preferred: the integration and end-to-end tiers
+    # start real PostgreSQL and LocalStack Community containers through Testcontainers, which
+    # needs the Docker daemon the hosted Ubuntu image provides. No service container is declared
+    # and no compose stack is brought up, because Testcontainers owns that lifecycle itself. No
+    # repository-level configuration value is required by any step: the vulnerability scan runs
+    # anonymously and the container-backed tiers use public community images only.
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Generous but bounded - the modern reading of the legacy job cards' effectively unlimited
+    # time limit. A cold run fetches the build tool distribution, the whole dependency graph, the
+    # vulnerability data set and several container images before a single test executes.
+    timeout-minutes: 120
+
     steps:
-      - name: Checkout
+      - name: Check out the repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK ${{ env.JAVA_VERSION }} (${{ env.JAVA_DISTRIBUTION }})
+      - name: Set up Eclipse Temurin JDK 25
         uses: actions/setup-java@v4
         with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
-          cache: maven
-          cache-dependency-path: carddemo-java/pom.xml
+          java-version: '25'
+          distribution: 'temurin'
 
-      - name: Report toolchain
+      # One cache covers two things, which is why it is declared explicitly rather than left to
+      # the JDK action's built-in option: that option restores the artifact repository alone,
+      # while the script-only wrapper also installs the build tool distribution beneath the same
+      # home directory. The key is bound to both files that can change what lands there, and the
+      # prefix fallback keeps a partial hit useful.
+      - name: Cache the Maven home directory
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2
+          key: m2-${{ runner.os }}-${{ hashFiles('carddemo-java/pom.xml', 'carddemo-java/.mvn/wrapper/maven-wrapper.properties') }}
+          restore-keys: |
+            m2-${{ runner.os }}-
+
+      # The vulnerability data set lives outside the build directory on purpose so that it
+      # survives the clean at the start of every run and can be restored from here instead of
+      # refetched. The key rotates per run so each run saves its updated copy, and the prefix
+      # fallback restores the most recent one. This is an optimisation only - it never changes
+      # whether the scan executes or what it ends the build on.
+      - name: Cache the vulnerability data set
+        uses: actions/cache@v4
+        with:
+          path: ~/.dependency-check-data
+          key: nvd-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            nvd-${{ runner.os }}-
+
+      # Fail fast and legibly on an unusable runner rather than forty minutes into the container
+      # tiers. This is also the wrapper's first invocation, which proves it can fetch and
+      # digest-verify its configured distribution before the real build depends on it. The
+      # wrapper needs unzip on PATH to honour that digest; the hosted image provides it.
+      - name: Report the toolchain and container runtime
         run: |
           java -version
-          ./mvnw ${MAVEN_ARGS} --version
+          ./mvnw -B --version
+          docker version --format 'Docker server {{.Server.Version}}'
 
-      # Testcontainers (PostgreSQL 16 + LocalStack Community) uses the runner's Docker daemon,
-      # which is preinstalled on ubuntu-latest. No mainframe and no real AWS account is required.
-      - name: Verify Docker availability for Testcontainers
-        run: docker info --format '{{.ServerVersion}} {{.Driver}}'
-
-      # -Werror is configured in the POM, so any compiler warning fails this step (Gate 2),
-      # and the JaCoCo check rule fails it when line coverage drops below 80% (Gate 7).
+      # THE BUILD. One invocation, three gates, nothing suppressed. A compiler warning, a
+      # failing test in either tier, coverage under the floor, or a vulnerability at or above the
+      # configured score each end the run right here, and no later step can rescue it.
       - name: Build, test and verify
-        run: ./mvnw ${MAVEN_ARGS} clean verify
+        run: ./mvnw -B clean verify
 
-      - name: Upload JaCoCo coverage report
+      # ---- evidence bundle ------------------------------------------------------------------
+      # The three uploads below carry if: always() so the gate reports survive a failed build.
+      # A report that is absent is reported as a warning rather than swallowed, because an
+      # unexpectedly missing gate report is itself a finding a reviewer needs to see.
+      - name: Upload coverage reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: jacoco-coverage
+          name: jacoco-coverage-reports
           path: |
             carddemo-java/target/site/jacoco/**
             carddemo-java/target/site/jacoco-it/**
+            carddemo-java/target/site/jacoco-merged/**
+            carddemo-java/target/jacoco.exec
+            carddemo-java/target/jacoco-it.exec
+            carddemo-java/target/jacoco-merged.exec
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 30
 
-      - name: Upload test reports
+      - name: Upload vulnerability scan reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owasp-dependency-check-report
+          path: |
+            carddemo-java/target/dependency-check-report.html
+            carddemo-java/target/dependency-check-report.json
+            carddemo-java/target/dependency-check-report.xml
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload unit and integration test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -98,62 +228,16 @@ jobs:
             carddemo-java/target/surefire-reports/**
             carddemo-java/target/failsafe-reports/**
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 30
 
-      - name: Upload application artifact
+      # The executable jar is build output rather than gate evidence, so it is uploaded only on a
+      # successful run - and then an absent file is a hard error, because a green run that
+      # produced no artifact is a finding in its own right.
+      - name: Upload the executable jar
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: carddemo-java-jar
           path: carddemo-java/target/carddemo-java-*.jar
           if-no-files-found: error
-          retention-days: 14
-
-  dependency-check:
-    name: OWASP dependency-check (Gate 8)
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    needs: build
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up JDK ${{ env.JAVA_VERSION }} (${{ env.JAVA_DISTRIBUTION }})
-        uses: actions/setup-java@v4
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
-          cache: maven
-          cache-dependency-path: carddemo-java/pom.xml
-
-      # Cache the NVD data directory: without it every run re-downloads the full CVE feed.
-      - name: Cache NVD data
-        uses: actions/cache@v4
-        with:
-          path: carddemo-java/target/dependency-check-data
-          key: nvd-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: |
-            nvd-${{ runner.os }}-
-
-      # Executed, not merely declared. An NVD_API_KEY repository secret removes the anonymous
-      # rate limit; without it the plugin still runs, just more slowly.
-      - name: Run dependency-check
-        run: |
-          ./mvnw ${MAVEN_ARGS} \
-            -Ddependency-check.skip=false \
-            -DnvdApiKey="${NVD_API_KEY:-}" \
-            -DdataDirectory=target/dependency-check-data \
-            org.owasp:dependency-check-maven:check
-        env:
-          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
-
-      - name: Upload dependency-check report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dependency-check-report
-          path: |
-            carddemo-java/target/dependency-check-report.html
-            carddemo-java/target/dependency-check-report.json
-          if-no-files-found: warn
           retention-days: 30

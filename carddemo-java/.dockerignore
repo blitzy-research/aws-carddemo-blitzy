@@ -1,40 +1,531 @@
-# Keep the Docker build context small and reproducible.
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+#
+# ===========================================================================
+# CardDemo :: Java migration module :: Docker build-context exclusions
+# ===========================================================================
+#
+# SCOPE AND CONTEXT ROOT
+# ~~~~~~~~~~~~~~~~~~~~~~
+# The companion Dockerfile sits beside this file, so the image is built as
+#
+#     cd carddemo-java && docker build -t carddemo-java:1.0.0 .
+#
+# which makes THIS DIRECTORY the build context root - not the repository root.
+# Everything above this directory is consequently already outside the context
+# and needs no pattern whatsoever: the legacy mainframe estate under app/, the
+# documentation set under docs/, the image and drawio assets under diagrams/,
+# the vendor runtime archives under samples/, and the repository .git tree.
+#
+# Docker cannot escape the context root, so a parent-directory pattern is
+# meaningless and no such pattern appears anywhere in this file. Wanting one is
+# a symptom of invoking the build from the wrong directory.
+#
+#
+# PATTERN SEMANTICS - READ THIS BEFORE EDITING
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# .dockerignore is NOT .gitignore. The behavioural difference that matters
+# here was verified against this Docker engine rather than assumed:
+#
+#     *.pem       matches secret.pem AT THE CONTEXT ROOT ONLY.
+#                 It does NOT match src/test/resources/secret.pem.
+#     **/*.pem    matches secret.pem at ANY depth, root included.
+#     name/       prunes that directory and its entire subtree.
+#     !pattern    re-includes a previously excluded path; LAST match wins.
+#
+# Every extension rule below is therefore written twice - once bare for the
+# context root and once with a "**/" prefix for every deeper level. Dropping
+# the "**/" form silently reopens the hole it was written to close, which for
+# the credential rules in section 3 is a security regression, not merely a
+# build-context size regression.
+#
+#
+# THE OPPOSITE FAILURE MODE - EXCLUDING TOO MUCH
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# A .dockerignore fails in two directions. Excluding too little bloats the
+# context, destroys layer caching, and risks a stale host-compiled class file
+# reaching the image instead of one the builder stage compiled under
+# -Xlint:all -Werror. Excluding too much silently removes a load-bearing input
+# and either breaks the build or, worse, produces an image that fails at
+# startup. Two concrete traps in THIS module, both verified by experiment:
+#
+#   1. "config/" below is ROOT-ANCHORED ON PURPOSE. It excludes the host-side
+#      Prometheus and Grafana tree at ./config/. It must NEVER be promoted to
+#      "**/config/", because that also matches src/main/java/com/carddemo/config
+#      and would strip SecurityConfig, BatchConfig, AwsConfig, JwtTokenProvider,
+#      ObservabilityConfig and MenuOptionCatalog out of the build context.
+#      Root-anchored keeps the host tree out AND the Java package in.
+#
+#   2. No blanket extension rule may be added for the extensions that carry
+#      real application resources: .yml, .yaml, .xml, .properties, .sql, .json
+#      and .txt. A single careless "*.properties" removes the Maven Wrapper
+#      descriptor; a careless "*.yml" removes the Spring profile files; a
+#      careless "*.txt" removes banner.txt and the fixed-width test fixtures.
+#      The credential rules in section 3 are written narrowly for exactly this
+#      reason and are proven in section 6.
+#
+#
+# CASING
+# ~~~~~~
+# Patterns are matched case-sensitively and the wider CardDemo estate mixes
+# extension casing, so every extension rule is written in both cases. This
+# mirrors the discipline of the .gitignore beside this file.
+#
+#
+# WHAT MUST REACH THE BUILDER STAGE - NEVER EXCLUDE THESE
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# The multi-stage Dockerfile copies exactly three things, in this order:
+#
+#     COPY .mvn/ .mvn/        ->  .mvn/wrapper/maven-wrapper.properties
+#     COPY mvnw pom.xml ./    ->  mvnw, pom.xml
+#     COPY src/ src/          ->  the whole source tree
+#
+# pom.xml, mvnw, .mvn/wrapper/maven-wrapper.properties and src/ are therefore
+# load-bearing: excluding any one of them does not degrade the build, it breaks
+# it. Section 6 restates that as explicit re-inclusions so the guarantee
+# survives a careless future edit to the sections above.
+#
+# src/test/ IS DELIBERATELY KEPT IN THE CONTEXT. The builder stage runs
+# "./mvnw -B -ntp clean package -DskipTests", which skips test EXECUTION but
+# still runs the test-compile phase, and it copies the whole src/ tree in a
+# single COPY. Excluding src/test/ would leave this file and the Dockerfile
+# contradicting each other. Test EXECUTION belongs to CI, which runs
+# "./mvnw -B clean verify" against the same sources. The fixed-width golden
+# fixtures under src/test/resources/fixtures/ stay in the repository and in the
+# context for that reason.
+#
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# 1. MAVEN BUILD OUTPUT
+# ---------------------------------------------------------------------------
+# The single highest-value group in this file. Without it a developer's local
+# target/ - compiled classes, the packaged jar, JaCoCo .exec data, surefire
+# and failsafe reports - is uploaded on every docker build. That defeats layer
+# caching and risks a stale host-compiled class reaching the image instead of
+# one the builder stage compiled itself. The image must contain exactly what
+# the builder compiled, nothing the host happened to leave lying around.
 target/
+**/target/
+
+# Alternative output directory names, root-anchored: no directory of these
+# names exists anywhere under src/, and anchoring keeps it that way.
 build/
 out/
-logs/
-*.log
+bin/
+dist/
 
-# Local state that must never enter an image layer
+# Stray archives, class files, coverage data and heap dumps at any depth.
+*.jar
+*.JAR
+**/*.jar
+**/*.JAR
+*.war
+*.WAR
+**/*.war
+**/*.WAR
+*.ear
+*.EAR
+**/*.ear
+**/*.EAR
+*.class
+*.CLASS
+**/*.class
+**/*.CLASS
+*.exec
+*.EXEC
+**/*.exec
+**/*.EXEC
+*.hprof
+*.HPROF
+**/*.hprof
+**/*.HPROF
+
+# Maven Wrapper: the descriptor is REQUIRED inside the builder stage and is
+# re-included in section 6. Only a locally regenerated launcher jar is
+# excluded - this project pins distributionType=only-script, so no jar is
+# committed and none may be smuggled into an image layer.
+.mvn/wrapper/maven-wrapper.jar
+.mvn/.develocity/
+.mvn/.gradle-enterprise/
+
+# Residue left behind by Maven release, shade, flatten and buildnumber
+# plugins. Each is a distinct filename, so none of them can match pom.xml.
+dependency-reduced-pom.xml
+.flattened-pom.xml
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+pom.xml.tag
+release.properties
+buildNumber.properties
+
+
+# ---------------------------------------------------------------------------
+# 2. VALIDATION GATE EVIDENCE AND REPORT OUTPUT
+# ---------------------------------------------------------------------------
+# Generated evidence artifacts. They are consumed by the repository's gate
+# evidence document; none of them belongs inside a runtime image.
+
+# OWASP dependency-check. The scanner's vulnerability database is configured
+# outside this module, but a plugin default or a local override can drop it
+# here, and it is hundreds of megabytes of unscanned third-party data. Keeping
+# it out of the context is both a size and a supply-chain hygiene measure.
+dependency-check-report.*
+**/dependency-check-report.*
+.dependency-check/
+**/.dependency-check/
+dependency-check-data/
+**/dependency-check-data/
+
+# Surefire, failsafe, JaCoCo and the Maven site report tree. The exec files
+# and reports normally live under target/ and are already pruned above; these
+# rules cover a relocated reportsDirectory or destFile configuration.
+surefire-reports/
+**/surefire-reports/
+failsafe-reports/
+**/failsafe-reports/
+jacoco*.exec
+**/jacoco*.exec
+site/
+**/site/
+test-output/
+**/test-output/
+
+
+# ---------------------------------------------------------------------------
+# 3. CREDENTIALS AND HOST-ONLY SECRET MATERIAL
+# ---------------------------------------------------------------------------
+# Defence in depth for the binding requirement that no credential is hardcoded
+# and every secret is resolved from an environment variable or a vault
+# reference with no fallback default.
+#
+# The reason this section exists even though nothing here is committed: any
+# file copied into an image layer is PERMANENTLY RECOVERABLE FROM THAT LAYER,
+# even when a later layer deletes it. A leaked credential cannot be un-shipped
+# by an rm in a subsequent RUN. Excluding it from the context is the only
+# reliable control, and it must hold at every depth - hence the "**/" twins.
+
+# Environment files. Never baked into an image; supplied at run time instead.
+# No re-inclusion is granted for a ".env.example" template. Such a file is a
+# developer aid that belongs in version control, not in an image: the Dockerfile
+# copies no environment file, docker-compose declares no env_file, and the
+# production profile resolves every secret from a real environment variable with
+# no fallback. Excluding the whole family unconditionally is therefore both safe
+# and stricter, and it removes any chance of a future edit turning a template
+# into a file that carries real values.
 .env
 .env.*
-!.env.example
+**/.env
+**/.env.*
+
+# Keys, certificates and keystores.
 *.pem
+*.PEM
+**/*.pem
+**/*.PEM
+*.key
+*.KEY
+**/*.key
+**/*.KEY
+*.crt
+*.CRT
+**/*.crt
+**/*.CRT
+*.cer
+*.CER
+**/*.cer
+**/*.CER
 *.p12
+*.P12
+**/*.p12
+**/*.P12
+*.pfx
+*.PFX
+**/*.pfx
+**/*.PFX
 *.jks
+*.JKS
+**/*.jks
+**/*.JKS
 *.keystore
+*.KEYSTORE
+**/*.keystore
+**/*.KEYSTORE
+*.truststore
+*.TRUSTSTORE
+**/*.truststore
+**/*.TRUSTSTORE
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+**/id_rsa
+**/id_rsa.*
+**/id_ed25519
+**/id_ed25519.*
 secrets/
-volume/
-.localstack/
-dependency-check-data/
-dependency-check-report.*
+**/secrets/
 
-# Coverage / test output
-jacoco*.exec
-surefire-reports/
-failsafe-reports/
+# Cloud credential material. The AWS surface in scope is S3, SQS and SNS, all
+# emulated locally by LocalStack Community; no long-lived credential belongs
+# anywhere near the build context.
+credentials
+credentials.*
+**/credentials
+**/credentials.*
+aws.properties
+**/aws.properties
+.aws/
+**/.aws/
 
-# Compose + observability assets are runtime concerns, not image content
+# Local, uncommitted configuration overlays. These rules are deliberately
+# NARROW so that the committed Spring profile descriptors are never matched:
+#   application.yml, application-local.yml and application-prod.yml under
+#   src/main/resources, and application-test.yml under src/test/resources,
+#   are required deliverables and are re-included explicitly in section 6.
+# application-prod.yml is safe to ship precisely because it contains no secret
+# value - only unresolved environment-variable references with no fallback, so
+# a missing secret fails startup instead of silently binding a default value.
+application-secret*.yml
+application-secret*.yaml
+**/application-secret*.yml
+**/application-secret*.yaml
+application-*.local.yml
+application-*.local.yaml
+**/application-*.local.yml
+**/application-*.local.yaml
+application-local.properties
+**/application-local.properties
+
+
+# ---------------------------------------------------------------------------
+# 4. HOST-SIDE ORCHESTRATION, OBSERVABILITY AND DOCUMENTATION
+# ---------------------------------------------------------------------------
+# Everything in this section is used BY the host or bind-mounted INTO a
+# sibling container by Compose. None of it is content of the application image.
+
+# Compose orchestrates the container; it is not part of it. Excluding the
+# Dockerfile and this file is supported and intentional - the builder still
+# receives both out of band, and excluding them removes any possibility of
+# COPYing build metadata into the shipped image.
 docker-compose.yml
+docker-compose.yaml
+docker-compose.*.yml
+docker-compose.*.yaml
+compose.yml
+compose.yaml
+Dockerfile*
+.dockerignore
+
+# Observability configuration: the Prometheus scrape definition and the
+# Grafana datasource, dashboard-provider and dashboard files. Compose
+# bind-mounts these into the Prometheus and Grafana services; the application
+# image never reads them.
+#
+# ROOT-ANCHORED ON PURPOSE - see "THE OPPOSITE FAILURE MODE" in the header.
+# Promoting this to "**/config/" would also match
+# src/main/java/com/carddemo/config and break the build.
 config/
+
+# LocalStack bootstrap. The init hook that creates the S3 staging bucket, the
+# SQS FIFO job queue and the SNS notification topic is mounted into the
+# LocalStack container, not into this image. Root-anchored for the same reason
+# as config/ above.
 localstack/
 
-# VCS and IDE metadata
+# Compose bind-mount data directories. These are the largest single risk to
+# context size in normal local use: a PostgreSQL data directory alone can
+# reach gigabytes, and none of it is remotely image content.
+postgres-data/
+**/postgres-data/
+localstack-data/
+**/localstack-data/
+prometheus-data/
+**/prometheus-data/
+grafana-data/
+**/grafana-data/
+volume/
+volumes/
+**/volume/
+**/volumes/
+.localstack/
+**/.localstack/
+
+# The Windows Maven Wrapper launcher. The builder stage copies "mvnw pom.xml"
+# only, and a Windows batch launcher has no role inside a Linux image. NOTE:
+# if the Dockerfile's COPY is ever widened to name mvnw.cmd explicitly, this
+# line must be deleted or the build will fail. The POSIX launcher mvnw is NOT
+# excluded and is re-included explicitly in section 6.
+mvnw.cmd
+
+# Documentation. Excluding it keeps the context minimal and stops a prose edit
+# from invalidating every downstream image layer. No Markdown file is a build
+# input, and none exists anywhere under src/.
+*.md
+*.MD
+**/*.md
+**/*.MD
+*.adoc
+**/*.adoc
+
+# LICENSE and NOTICE are deliberately NOT excluded. They live one level above
+# this context root today, but if a module-scoped copy is ever added it should
+# ship with the image: license continuity is a requirement of this migration,
+# and container compliance scanners look for exactly those two filenames.
+
+
+# ---------------------------------------------------------------------------
+# 5. VERSION CONTROL, IDE, OS AND JVM CRASH ARTIFACTS
+# ---------------------------------------------------------------------------
+# Defensive: the repository .git tree lives one level above this context root
+# and is already outside it. The rules are kept anyway because a git worktree,
+# a submodule checkout or a nested clone can put a .git directory inside the
+# module, and a .git tree in an image layer ships the FULL repository history
+# - including any credential that was ever committed and later removed.
+.git
 .git/
+**/.git
+**/.git/
 .gitignore
+.gitattributes
+.gitmodules
+.github/
+
+# .gitkeep is deliberately NOT excluded. The empty marker files under
+# src/main/resources/db/seed and src/main/resources/lookup are what make those
+# directories exist on disk, and a classpath Flyway or resource location that
+# resolves to an absent directory fails at startup. A zero-byte marker file
+# costs nothing; a missing directory costs a boot failure. Verified: all three
+# marker files are present in the shipped jar, and db/seed exists only because
+# of its own.
+
+# JetBrains, Eclipse, VS Code and NetBeans metadata.
 .idea/
-.vscode/
 *.iml
-.settings/
-.project
+*.IML
+**/*.iml
+**/*.IML
+*.ipr
+*.IPR
+*.iws
+*.IWS
 .classpath
+.project
+.settings/
+.factorypath
+.apt_generated/
+.apt_generated_tests/
+.vscode/
+nbproject/
+nbbuild/
+nbdist/
+.nb-gradle/
+
+# Editor scratch files, patch residue and OS metadata.
+*~
+**/*~
+*.swp
+*.SWP
+**/*.swp
+**/*.SWP
+*.swo
+*.SWO
+**/*.swo
+**/*.SWO
+*.bak
+*.BAK
+**/*.bak
+**/*.BAK
+*.orig
+*.ORIG
+**/*.orig
+**/*.ORIG
+*.rej
+*.REJ
+**/*.rej
+**/*.REJ
+*.tmp
+**/*.tmp
+.DS_Store
+**/.DS_Store
+Thumbs.db
+Desktop.ini
+desktop.ini
+
+# Application logs and JVM failure artifacts. Structured logging goes to the
+# container's stdout, so no log file is ever an image input.
+*.log
+*.LOG
+*.log.*
+**/*.log
+**/*.LOG
+**/*.log.*
+logs/
+**/logs/
+hs_err_pid*
+**/hs_err_pid*
+replay_pid*
+**/replay_pid*
+heapdump*
+**/heapdump*
+core
+core.[0-9]*
+**/core.[0-9]*
+
+# Temporary artifacts produced by automated validation runs. Never committed,
+# never shipped.
+blitzy_adhoc_test_*
+**/blitzy_adhoc_test_*
+
+
+# ---------------------------------------------------------------------------
+# 6. EXPLICIT RE-INCLUSIONS - THE BUILD-INPUT GUARANTEE
+# ---------------------------------------------------------------------------
+# Nothing above matches any of the paths below; these lines are a deliberate,
+# self-documenting safety net. Because the LAST matching rule wins, they
+# guarantee that a future blanket rule added to sections 1 to 5 - "*.xml",
+# "*.properties", "*.yml", "*.txt", "*.json" or "*.sql" - cannot silently
+# remove a load-bearing build input.
+#
+# These are intentionally FILE-PRECISE. A broad "!src/**" is NOT used, because
+# it would undo the "**/*.class" and "**/*.jar" rules in section 1 for any
+# stale artifact sitting inside the source tree.
+
+# The three inputs the builder stage copies before the source tree.
+!pom.xml
+!mvnw
+!.mvn/wrapper/maven-wrapper.properties
+
+# Spring configuration that must be packaged into the jar.
+!src/main/resources/application.yml
+!src/main/resources/application-local.yml
+!src/main/resources/application-test.yml
+!src/main/resources/application-prod.yml
+!src/main/resources/logback-spring.xml
+!src/main/resources/banner.txt
+
+# Flyway migrations and the externalized validation lookup tables.
+!src/main/resources/db/migration/**
+!src/main/resources/db/seed/**
+!src/main/resources/lookup/**
+
+# The test profile and the fixed-width golden fixtures that the byte-equality
+# assertions compare against. Kept in the context because the builder copies
+# the whole src/ tree; see the src/test/ note in the header.
+!src/test/resources/application-test.yml
+!src/test/resources/fixtures/input/**
+!src/test/resources/fixtures/expected/**

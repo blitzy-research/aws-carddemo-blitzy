@@ -1,5 +1,31 @@
 <# : batch portion
 @REM ----------------------------------------------------------------------------
+@REM Copyright Amazon.com, Inc. or its affiliates.
+@REM All Rights Reserved.
+@REM
+@REM Licensed under the Apache License, Version 2.0 (the "License").
+@REM You may not use this file except in compliance with the License.
+@REM You may obtain a copy of the License at
+@REM
+@REM    http://www.apache.org/licenses/LICENSE-2.0
+@REM
+@REM Unless required by applicable law or agreed to in writing,
+@REM software distributed under the License is distributed on an
+@REM "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+@REM either express or implied. See the License for the specific
+@REM language governing permissions and limitations under the License
+@REM ----------------------------------------------------------------------------
+@REM
+@REM The grant above is the CardDemo project header. Every member of the legacy
+@REM estate this module migrates carries it verbatim, and reproducing it here is
+@REM what keeps provenance intact across the migration. The grant immediately
+@REM below is the Apache Software Foundation's own, retained because the
+@REM executable body of this script is ASF-derived. Both grants are the Apache
+@REM License, Version 2.0, so carrying the two side by side is complete
+@REM attribution, not a conflict: the CardDemo copyright covers this file as a
+@REM project artefact, the ASF notice covers the upstream work it embeds.
+@REM
+@REM ----------------------------------------------------------------------------
 @REM Licensed to the Apache Software Foundation (ASF) under one
 @REM or more contributor license agreements.  See the NOTICE file
 @REM distributed with this work for additional information
@@ -25,7 +51,92 @@
 @REM   MVNW_REPOURL - repo url base for downloading maven distribution
 @REM   MVNW_USERNAME/MVNW_PASSWORD - user and password for downloading maven
 @REM   MVNW_VERBOSE - true: enable verbose log; others: silence the output
+@REM   MAVEN_USER_HOME - Maven user home; the resolved distribution is cached
+@REM                     under %MAVEN_USER_HOME%\wrapper\dists (default ~/.m2)
+@REM   MAVEN_OPTS - JVM options for the Maven process; forwarded untouched
+@REM   MAVEN_ARGS - default command line arguments; forwarded untouched
+@REM   JAVA_HOME - the JDK the Maven process runs on; forwarded untouched
+@REM
+@REM Only the MVNW_* variables are consumed by this launcher, and the batch
+@REM portion clears exactly MVNW_USERNAME and MVNW_PASSWORD before handing
+@REM control over, so JAVA_HOME, MAVEN_OPTS and MAVEN_ARGS reach the real mvn
+@REM launcher unmodified and behave there exactly as they do for a locally
+@REM installed Maven. That pass-through is what lets the CI workflow export
+@REM MAVEN_ARGS once and have every mvnw.cmd invocation honour it.
 @REM ----------------------------------------------------------------------------
+
+@REM ----------------------------------------------------------------------------
+@REM CardDemo :: carddemo-java :: Windows Maven Wrapper launcher
+@REM ----------------------------------------------------------------------------
+@REM Purpose. This script is the mechanism by which a clean checkout of this
+@REM repository builds with no preinstalled Maven: a JDK is the only
+@REM prerequisite. It resolves, downloads, verifies, caches and then executes
+@REM the exact Apache Maven distribution this module is pinned to, and forwards
+@REM every argument to it unmodified. Running "mvnw.cmd clean verify" from the
+@REM carddemo-java directory therefore behaves exactly as "./mvnw clean verify"
+@REM does on Linux or macOS, which is what makes the zero-warning
+@REM deployable-artifact requirement reproducible rather than machine-dependent.
+@REM This file and mvnw are deliberately behaviourally equivalent: they read the
+@REM same properties file, honour the same ENV vars and resolve the same pinned
+@REM Maven, so one README section describes both without qualification.
+@REM
+@REM Provenance. The executable body below is the canonical Apache Maven
+@REM Wrapper Windows launcher, version 3.3.4, taken unmodified from the
+@REM only-script distribution published on Maven Central as
+@REM   org.apache.maven.wrapper:maven-wrapper-distribution:3.3.4:zip:only-script
+@REM whose mvnw.cmd member has SHA-256
+@REM   46eedb8419bd14fe70d5bb2916d7b6f51806e51b39d5b76a42610384ca929c1c
+@REM so the resolution, download, checksum and dispatch logic can be
+@REM re-verified against upstream at any time. The CardDemo additions are
+@REM confined to the licence header, these comment blocks, the ENV vars
+@REM documented above, and the wrapperVersion lookup with its verbose logging;
+@REM none of them alters control flow. Using the canonical script rather than a
+@REM bespoke downloader is deliberate: a developer's existing expectations of
+@REM mvnw.cmd are part of the contract.
+@REM
+@REM No committed jar. This module uses the wrapper's only-script distribution
+@REM type, declared in .mvn\wrapper\maven-wrapper.properties. In that mode the
+@REM launcher itself performs the download, so no maven-wrapper.jar exists in
+@REM the repository and no unscanned binary enters the supply chain. The three
+@REM wrapper artefacts are exactly this file, mvnw, and the properties file.
+@REM
+@REM Verified, not trusted. The properties file supplies distributionSha256Sum,
+@REM and the download below is rejected unless the archive matches it, so a
+@REM tampered or truncated download fails the build closed rather than quietly
+@REM producing a build on an unknown toolchain. The comparison lowercases the
+@REM computed hash but not the configured one, so distributionSha256Sum has to
+@REM be lowercase hex; that constraint is recorded in the properties file.
+@REM
+@REM Single source of truth. The Maven version and the distribution URL live in
+@REM .mvn\wrapper\maven-wrapper.properties and nowhere else - deliberately not
+@REM in this script, not in mvnw, not in the Dockerfile and not in the CI
+@REM workflow - so upgrading Maven is a one-line change that cannot leave a
+@REM stale second copy behind. Set MVNW_VERBOSE=true to have the launcher report
+@REM the wrapper version, the resolved URL and the cache directory it uses.
+@REM
+@REM Echo suppression and variable hygiene. This script deliberately uses
+@REM neither ECHO OFF nor SETLOCAL, because it is a polyglot: cmd.exe runs the
+@REM batch lines, then re-reads this very file and hands it to PowerShell, so
+@REM everything from the first line down to the end-batch marker has to stay
+@REM inside a PowerShell block comment. Anything placed above that first line
+@REM would be parsed by PowerShell as code and the script would fail outright.
+@REM Upstream therefore suppresses echo by prefixing every executable line with
+@REM an at-sign, which also covers the first line that ECHO OFF could not, and
+@REM obtains the isolation SETLOCAL would give by explicitly clearing its own
+@REM temporaries together with MVNW_USERNAME and MVNW_PASSWORD and restoring
+@REM PSModulePath before dispatching. Nothing leaks into the caller's shell.
+@REM
+@REM Locating the JDK, and the exit code. Both are delegated to the mvn.cmd of
+@REM the resolved distribution, which honours JAVA_HOME, falls back to java on
+@REM PATH, prints a clear diagnostic on the error stream when neither yields a
+@REM usable JDK, and terminates through "exit /b" carrying its own error code.
+@REM Because that mvn.cmd is invoked below without CALL, cmd.exe lets the callee
+@REM replace this script instead of returning to it, so the error code becomes
+@REM the exit code of mvnw.cmd and CI detects a failing goal correctly. The
+@REM diagnostic line after the dispatch is reachable only when no Maven command
+@REM could be resolved at all, and it exits non-zero in its own right.
+@REM ----------------------------------------------------------------------------
+@REM
 
 @IF "%__MVNW_ARG0_NAME__%"=="" (SET __MVNW_ARG0_NAME__=%~nx0)
 @SET __MVNW_CMD__=
@@ -55,6 +166,23 @@ $distributionUrl = (Get-Content -Raw "$scriptDir/.mvn/wrapper/maven-wrapper.prop
 if (!$distributionUrl) {
   Write-Error "cannot read distributionUrl property in $scriptDir/.mvn/wrapper/maven-wrapper.properties"
 }
+
+# wrapperVersion is read from the same properties file that supplies
+# distributionUrl. It records which Apache Maven Wrapper release these
+# launcher scripts were generated from, so a build log can evidence the
+# launcher generation that produced it. It is informational only - the Maven
+# version itself comes solely from distributionUrl - so an absent key
+# degrades to "unknown" rather than failing the build.
+#
+# Every diagnostic below goes to the verbose stream and never to standard
+# output. The batch portion parses this script's standard output to pick up
+# MVN_CMD, so writing diagnostics there would corrupt the dispatch.
+$wrapperVersion = (Get-Content -Raw "$scriptDir/.mvn/wrapper/maven-wrapper.properties" | ConvertFrom-StringData).wrapperVersion
+if (!$wrapperVersion) {
+  $wrapperVersion = "unknown"
+}
+Write-Verbose "Apache Maven Wrapper $wrapperVersion, configured by $scriptDir/.mvn/wrapper/maven-wrapper.properties"
+Write-Verbose "configured distributionUrl: $distributionUrl"
 
 switch -wildcard -casesensitive ( $($distributionUrl -replace '^.*/','') ) {
   "maven-mvnd-*" {
@@ -98,6 +226,8 @@ if ((Get-Item $MAVEN_M2_PATH).Target[0] -eq $null) {
 $MAVEN_HOME_PARENT = "$MAVEN_WRAPPER_DISTS/$distributionUrlNameMain"
 $MAVEN_HOME_NAME = ([System.Security.Cryptography.SHA256]::Create().ComputeHash([byte[]][char[]]$distributionUrl) | ForEach-Object {$_.ToString("x2")}) -join ''
 $MAVEN_HOME = "$MAVEN_HOME_PARENT/$MAVEN_HOME_NAME"
+Write-Verbose "resolved distributionUrl: $distributionUrl"
+Write-Verbose "wrapper cache directory: $MAVEN_HOME"
 
 if (Test-Path -Path "$MAVEN_HOME" -PathType Container) {
   Write-Verbose "found existing MAVEN_HOME at $MAVEN_HOME"
@@ -136,6 +266,11 @@ $webclient.DownloadFile($distributionUrl, "$TMP_DOWNLOAD_DIR/$distributionUrlNam
 
 # If specified, validate the SHA-256 sum of the Maven distribution zip file
 $distributionSha256Sum = (Get-Content -Raw "$scriptDir/.mvn/wrapper/maven-wrapper.properties" | ConvertFrom-StringData).distributionSha256Sum
+if ($distributionSha256Sum) {
+  Write-Verbose "verifying the download against distributionSha256Sum from the properties file"
+} else {
+  Write-Verbose "distributionSha256Sum is absent, the downloaded distribution will NOT be verified"
+}
 if ($distributionSha256Sum) {
   if ($USE_MVND) {
     Write-Error "Checksum validation is not supported for maven-mvnd. `nPlease disable validation by removing 'distributionSha256Sum' from your maven-wrapper.properties."

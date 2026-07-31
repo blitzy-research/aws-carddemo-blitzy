@@ -1,48 +1,223 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
 #
-# LOCAL profile - binds to the Docker Compose stack in carddemo-java/docker-compose.yml.
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-#   docker compose up -d                              # postgres + localstack + jaeger
-#   docker compose --profile observability up -d      # adds prometheus + grafana
-#   ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+#    http://www.apache.org/licenses/LICENSE-2.0
 #
-# Every credential in this file is a throwaway development value that only ever addresses a
-# container on the developer's own machine. Nothing here is used by the prod profile.
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+
+# =================================================================================================
+# application-local.yml - the LOCAL profile overlay: the Docker Compose validation stack.
+#
+# ROLE
+#   This overlay binds the shared baseline in application.yml to the containers defined in
+#   carddemo-java/docker-compose.yml. It overrides endpoints, credentials and verbosity ONLY; it
+#   introduces no key prefix that application.yml does not already own, and it never narrows a
+#   surface that a sibling file resolves literally.
+#
+#     docker compose up -d                            # postgres + localstack + jaeger
+#     docker compose --profile observability up -d     # adds prometheus + grafana
+#     ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+#
+#   The compose stack deliberately runs NO application container: the application is launched on
+#   the host against published container ports. Every default below is therefore the value that
+#   actually takes effect for a developer on their own machine, not a fallback that something else
+#   is expected to replace. Each one is still written as ${VARIABLE:default} so that the
+#   CLONE_INDEX port-offset scheme documented in docker-compose.yml, or a container-network
+#   deployment supplying service DNS, can redirect any single endpoint without editing this file.
+#   The module image sets SPRING_PROFILES_ACTIVE=local, so an image run picks this overlay up too.
+#
+# PROVENANCE
+#   Legacy checkout SHA : 7756d895ffeb65f7ea72aaa609e356d9899afcec
+#   Upstream stamp      : CardDemo_v1.0-15-g27d6c6f-68, dated 2022-07-19
+#   No COBOL, JCL, screen-map, copybook or CICS resource-definition source text appears in this
+#   file. The legacy estate is cited by member name, resource name, resource attribute value,
+#   record width and measured record count only, and is never transcribed here.
+#
+# -------------------------------------------------------------------------------------------------
+# PROPERTY CONTRACT - the key paths this module's own configuration types bind against
+#
+#   These paths are the published contract between this file, application.yml, the test overlay,
+#   the production overlay and the Java code that reads them. They are listed here because a
+#   configuration-properties type cannot state its own expectations to a reader of this file.
+#
+#     carddemo.aws.s3.bucket                    object-store bucket used for batch file staging
+#     carddemo.aws.s3.prefix.*                  one key prefix per output family - declared ONCE in
+#                                               application.yml and inherited unchanged; this
+#                                               overlay must not restate it, because a partial
+#                                               re-declaration would drop the families it omits
+#     carddemo.aws.sqs.job-submission-queue     FIFO queue name; the .fifo suffix is REQUIRED
+#     carddemo.aws.sqs.message-group-id         one stable group id, which is what preserves
+#                                               append order across a multi-message submission
+#     carddemo.aws.sqs.record-length            fixed width of a single submitted card image
+#     carddemo.aws.sqs.fail-on-error            false => a publish failure is logged, not raised
+#     carddemo.aws.sns.job-notification-topic   topic for job-completion / operational fan-out
+#     carddemo.security.jwt.issuer              token issuer claim
+#     carddemo.security.jwt.secret              signing material - see the security block below
+#     carddemo.security.jwt.expiration          token lifetime, as an ISO-8601 duration
+#     carddemo.security.require-https           transport expectation for this profile
+#
+#   Region and endpoints are NOT in the carddemo namespace. They belong to the AWS integration's
+#   own properties, and are set under spring.cloud.aws further down, so that the object-store,
+#   queue and notification clients are all configured through one mechanism rather than two.
+#
+# -------------------------------------------------------------------------------------------------
+# RESOURCE NAMES - one set, agreed across six places
+#
+#   The bucket, queue, group id and topic below must be byte-identical in every one of:
+#     src/main/resources/application.yml            (baseline defaults)
+#     src/main/resources/application-local.yml       (this file)
+#     src/test/resources/application-test.yml        (Testcontainers overlay)
+#     docker-compose.yml                             (passes them into the emulator container)
+#     localstack/init/01-create-aws-resources.sh     (creates them)
+#     the running emulator itself
+#   A disagreement yields a stack that starts cleanly and then fails on the first publish, with no
+#   start-up error pointing at the cause. All four names were read back out of the running stack
+#   and confirmed to match the values bound here.
+#
+#   RECONCILED NAMING - recorded rather than left implicit. Two alternative names were considered
+#   for the queue and the group id, `carddemo-jobs.fifo` and `carddemo-job-submission`, and both
+#   were rejected. The queue reproduces a CICS transient-data queue whose resource name is JOBS,
+#   and the specification names it as such, so JOBS.fifo and a group id of JOBS keep the target
+#   name traceable to the resource it replaces - faithful over invented, consistent with the way
+#   every other legacy resource name is carried across. Renaming it would also have to be done in
+#   all six places above and in the already-provisioned emulator simultaneously. The reasoning is
+#   recorded in docs/decision-log.md.
+#
+# WHAT IS DELIBERATELY ABSENT - each absence is a decision, not an oversight
+#   * No pool sizing, no pool time-out. See the datasource block.
+#   * No heap figure, no worker-thread count, no latency, volume or availability figure anywhere,
+#     in a property or in a comment. No numeric service level is documented in the legacy estate,
+#     so performance here is MEASURED through the meters wired below and never asserted.
+#   * No application-level cache. The legacy system had none, and adding one would move the very
+#     latency and consistency behaviour the baseline is meant to record.
+#   * No framework-managed initialisation script and no bootstrap SQL file. The versioned
+#     migrations are the only path by which a table or a row is created.
+#   * No paid-tier emulator setting and no activation token. The Community edition covers the
+#     object store, the queue and the topic, which is the whole AWS surface this module uses.
+# =================================================================================================
 
 spring:
+
+  # -----------------------------------------------------------------------------------------------
+  # PostgreSQL 16, published by the compose stack on the host.
+  #
+  # The relational store stands in for the legacy data layer in its entirety: ten indexed base
+  # clusters, plus a transient work cluster that one job stream created and deleted within its own
+  # execution. That transient cluster gets no table and no migration here - it becomes an ordered
+  # in-job result set held for the life of the job that needs it, which is the faithful equivalent
+  # of a dataset whose existence never outlived a single run.
+  #
+  # CREDENTIALS. The two values below are throwaway development values that only ever address a
+  # container on the developer's own machine, and the compose stack provisions the very same pair.
+  # They are acceptable HERE for that reason and nowhere else. Do not copy them into any other
+  # profile, any deployment, or any pipeline: the production overlay resolves its url, user and
+  # password from the environment with NO fallback of any kind - not a default, not an empty
+  # string, not a placeholder - precisely so that a missing secret aborts start-up instead of
+  # quietly binding something harmless-looking. That rule is production's obligation and it is
+  # cross-referenced here so a reader does not generalise from this file in either direction.
+  #
+  # The pool is left entirely at its shipped defaults, and no sizing or time-out property appears
+  # below, because no legacy baseline exists to tune against.
   datasource:
     url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:carddemo}
     username: ${POSTGRES_USER:carddemo}
     password: ${POSTGRES_PASSWORD:carddemo}
     driver-class-name: org.postgresql.Driver
 
+  # -----------------------------------------------------------------------------------------------
+  # Statement echo, enabled for this profile alone. This is exactly what a local overlay is for:
+  # the generated SQL is what makes a fixed-width mapping or a truncating decimal store visible
+  # while parity evidence is being gathered. The baseline leaves it off and the test overlay leaves
+  # it off, so nothing but a developer session pays for it.
+  #
+  # ddl-auto is restated as `validate` rather than merely inherited, to make it unambiguous at the
+  # point of use that even the local profile authors no schema: the entities are cross-checked
+  # against the migrated tables at start-up and nothing else.
   jpa:
-    show-sql: false
+    show-sql: true
+    hibernate:
+      ddl-auto: validate
     properties:
       hibernate:
-        highlight_sql: false
+        format_sql: true
+        highlight_sql: true
 
+  # -----------------------------------------------------------------------------------------------
+  # Schema evolution - versioned, forward-only, and the ONLY path by which a table or a row is
+  # created. Two locations are listed, and the second is what makes this profile a LOCAL profile:
+  #
+  #   classpath:db/migration   V1__create_schema.sql        the eleven application tables
+  #                            V2__create_indexes.sql       keys and alternate-index equivalents
+  #                                                         -> every profile, production included
+  #
+  #   classpath:db/seed        V3__seed_reference_data.sql  sample rows measured from the sample
+  #                                                         datasets of the legacy estate
+  #                            V4__seed_user_security.sql   the ten sign-on identities, hashed
+  #                                                         -> local and test ONLY
+  #
+  # The production overlay lists classpath:db/migration alone, so a production deployment migrates
+  # schema and indexes without ever inheriting sample rows or seeded sign-on identities. Keeping
+  # the seeds in a separate location, rather than behind a flag, is what makes that guarantee
+  # structural instead of conditional.
+  #
+  # SEEDED VOLUMES, each measured from the corresponding sample dataset rather than recalled:
+  #   50 accounts . 50 cards . 50 card cross-references . 50 customers . 300 daily transactions
+  #   51 disclosure-group rows . 50 transaction-category balances . 18 transaction categories
+  #   7 transaction types . 10 sign-on identities, five administrative and five standard, each
+  #   stored as a BCrypt hash and never as the value the legacy record carried.
+  #
+  # Two of those volumes are load-bearing for coverage rather than incidental. The 300 daily
+  # transactions divide into 250 purchases and 50 returns, so both signed directions of the balance
+  # computation are exercised from seed data alone. The 51 disclosure-group rows form three
+  # complete seventeen-row groups, one of them the default group, so both the direct rate lookup
+  # and the default-group fallback are reachable without a synthetic fixture.
+  #
+  # clean-disabled is relaxed here and only here: a developer iterating on a migration needs to be
+  # able to drop and re-apply. The baseline and the production overlay both forbid it.
   flyway:
-    # Seed migrations are included locally: V3 reference data from app/data/ASCII and
-    # V4 the ten DUSRSECJ users (BCrypt hashed).
+    enabled: true
     locations: classpath:db/migration,classpath:db/seed
+    baseline-on-migrate: false
+    validate-on-migrate: true
+    clean-disabled: false
 
+  # -----------------------------------------------------------------------------------------------
+  # Batch orchestration. Jobs stay launch-on-demand - the baseline disables start-up execution and
+  # this overlay does not re-enable it, because an implicit run would write rows before a fixture
+  # comparison could read them. Only the metadata tables are provisioned here, beside the eleven
+  # application tables the migrations own; the production overlay narrows this so that production
+  # DDL only ever arrives through a reviewed migration.
   batch:
     jdbc:
-      # Spring Batch metadata tables (BATCH_*) are created on first start against the
-      # Compose PostgreSQL instance. Business tables are owned by Flyway.
       initialize-schema: always
 
+  # -----------------------------------------------------------------------------------------------
+  # AWS integration, aimed at the LocalStack Community container.
+  #
+  # CREDENTIALS. The emulator accepts any non-empty pair and verifies nothing; the two values below
+  # are deliberately obvious placeholders and are NOT keys of any kind. Never substitute a real
+  # access key here. Production supplies its credentials from the environment with no fallback, or
+  # omits them entirely so that the default provider chain resolves an assumed role instead.
+  #
+  # The endpoint override is applied globally AND restated for each of the three clients, so that
+  # no client can silently fall through to a real AWS endpoint if the global setting is ever
+  # dropped. Path-style addressing is required because the emulator does not serve virtual-hosted
+  # bucket subdomains; production turns it off.
   cloud:
     aws:
       region:
         static: ${AWS_REGION:us-east-1}
       credentials:
-        # LocalStack accepts any non-empty credentials.
-        access-key: ${AWS_ACCESS_KEY_ID:test}
-        secret-key: ${AWS_SECRET_ACCESS_KEY:test}
-      # Global endpoint override so S3/SQS/SNS all address LocalStack.
+        access-key: ${AWS_ACCESS_KEY_ID:localstack-placeholder-not-a-real-key}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:localstack-placeholder-not-a-real-secret}
       endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
       s3:
         endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
@@ -52,33 +227,126 @@ spring:
       sns:
         endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
 
+# =================================================================================================
+# Observability, bound to the compose stack.
+#
+# CROSS-FILE CONTRACTS - two paths here are resolved literally by sibling files and neither the
+# paths nor their reachability may be narrowed by this overlay:
+#
+#   /actuator/health      the HEALTHCHECK target of carddemo-java/Dockerfile and the readiness gate
+#                         anything waiting on this application depends upon. If it stops answering,
+#                         the container never reports healthy.
+#   /actuator/prometheus  the scrape target of config/prometheus/prometheus.yml, whose scrape job
+#                         reaches the host-run application through host.docker.internal, and the
+#                         surface every panel of config/grafana/dashboards/carddemo-overview.json
+#                         reads. It is also where the performance baseline is measured.
+#
+# The exposure list below WIDENS the baseline for local diagnosis - the extra endpoints let a
+# developer inspect resolved configuration, the bean graph, the request mappings and the applied
+# migrations - and it retains health, info, metrics and prometheus in full. Production narrows this
+# list instead. Nothing here removes an endpoint the baseline exposed.
+#
+# Traces are sampled in full so that a migrated flow can be followed end to end in the trace UI
+# while acceptance evidence is gathered. Full fidelity is a local diagnostic choice, not a target.
+# =================================================================================================
 management:
   endpoints:
     web:
+      base-path: /actuator
       exposure:
-        include: health,info,metrics,prometheus,env,configprops,beans,flyway,mappings
+        include: health,info,metrics,prometheus,env,configprops,beans,flyway,mappings,loggers
   endpoint:
     health:
       show-details: always
       show-components: always
   tracing:
+    enabled: true
     sampling:
-      # Trace everything locally so the Jaeger UI is useful during gate validation.
       probability: 1.0
   otlp:
     tracing:
-      endpoint: http://${JAEGER_HOST:localhost}:${JAEGER_OTLP_HTTP_PORT:4318}/v1/traces
+      # Two levels of override, narrowest first. OTEL_EXPORTER_OTLP_TRACES_ENDPOINT replaces the
+      # whole address, which is the variable the baseline and the production overlay already use and
+      # the way to point at a sink on another host. Failing that, only the published OTLP/HTTP port
+      # is substituted, so the CLONE_INDEX port-offset scheme in docker-compose.yml can move the
+      # sink between side-by-side stacks without anyone composing a full URL.
+      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:${JAEGER_OTLP_HTTP_PORT:4318}/v1/traces}
 
+# Levels only; appender selection and the structured encoder live in logback-spring.xml. Raising the
+# application package to DEBUG is the point of a local overlay: the migrated services log their
+# decision points, and the migration tool logs each script it applies, so a start-up that fails to
+# reach V4 says so plainly. The framework packages stay at INFO so that signal is not buried.
 logging:
   level:
     com.carddemo: DEBUG
+    org.flywaydb: INFO
     org.springframework.batch: INFO
-    org.hibernate.SQL: INFO
+    org.springframework.jdbc.core: INFO
 
+# =================================================================================================
+# Application namespace - the logical resource names, bound to what the compose stack provisions.
+#
+# THE QUEUE IS AN EXTERNAL INTERFACE CONTRACT, NOT A CONVENIENCE. The legacy estate contained
+# exactly one write to a CICS transient-data queue across all 19,254 lines of its 28 programs - a
+# single site in the reporting program - and that one write was the system's entire online-to-batch
+# bridge. The queue it wrote to was defined with attributes that are behavioural, and each one is
+# reproduced rather than approximated:
+#
+#   RECORDSIZE(80)         one 80-character fixed-width card per message. record-length below
+#                          carries that width so the publisher can assert it instead of assuming.
+#   RECORDFORMAT(FIXED)    one message per card. No batching, no concatenation: a consumer reading
+#   BLOCKFORMAT(UNBLOCKED) message-at-a-time sees exactly the cards that were written.
+#   DISPOSITION(MOD)       appended, so ORDER IS PART OF THE CONTRACT. That is why the queue is
+#                          FIFO and why message-group-id is a single stable value: a standard queue
+#                          would be simpler and would silently reorder the submission.
+#   ERROROPTION(IGNORE)    a write failure was tolerated - the original surfaced a message and
+#                          carried on rather than abandoning the caller. fail-on-error: false keeps
+#                          that behaviour: the publish failure is logged and execution continues.
+#   TYPEFILE(OUTPUT)       publish only. Nothing in this module consumes from this queue.
+#   OPENTIME(INITIAL)      the queue existed before first use, which is why the emulator's resource
+#                          bootstrap runs to completion before the application is started against
+#                          it rather than creating the queue lazily on first publish.
+#
+# Acceptance verifies this by draining the real queue and asserting the full ordered card sequence,
+# including the four substituted date slots and the terminating end-of-file sentinel card, so the
+# contract is exercised against a running queue rather than self-certified.
+#
+# THE OBJECT STORE replaces both the sequential output datasets the batch jobs wrote and the
+# generation-data-group bases that retained their history. Retention becomes object versioning on
+# the staging bucket, which the resource bootstrap enables, rather than a generation limit. That
+# also resolves a genuine conflict in the legacy definitions: six bases were declared with a
+# five-generation limit in one job member, and one of them - the transaction-report base - was
+# re-declared with a ten-generation limit in another. The larger value, ten, is taken as the later
+# and more specific declaration, and the conflict is recorded in docs/decision-log.md rather than
+# silently resolved. The per-family key prefixes are declared once in application.yml and inherited
+# here unchanged, so one output family can never overwrite another.
+# =================================================================================================
 carddemo:
+  aws:
+    s3:
+      bucket: ${CARDDEMO_S3_BUCKET:carddemo-batch-staging}
+    sqs:
+      job-submission-queue: ${CARDDEMO_SQS_QUEUE:JOBS.fifo}
+      message-group-id: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:JOBS}
+      record-length: 80
+      fail-on-error: false
+    sns:
+      job-notification-topic: ${CARDDEMO_SNS_TOPIC:carddemo-job-notifications}
   security:
+    # SIGNING MATERIAL. The value below is a development-only signing secret for a process talking
+    # to containers on one machine. It is long enough to sign with and worth nothing: it grants
+    # access to seeded sample identities in an ephemeral database. It must not be reused anywhere,
+    # and it exists here only so that `spring-boot:run` works without a prepared environment.
+    # Production declares this same key as an environment reference with NO fallback, so a missing
+    # secret aborts start-up rather than binding a value that looks deliberate.
+    #
+    # The issuer is restated rather than inherited so that a token minted locally is identifiable
+    # as such, and it is deliberately not the same string as the metric service label - they are
+    # separate contracts and neither should be edited to match the other.
     jwt:
-      # Development-only signing secret. The prod profile has NO fallback for this value.
-      secret: ${CARDDEMO_JWT_SECRET:local-development-only-signing-secret-change-me-0123456789}
-      expiration: PT8H
+      issuer: carddemo-java
+      secret: ${CARDDEMO_JWT_SECRET:local-development-only-signing-secret-do-not-reuse-0123456789}
+      expiration: ${CARDDEMO_JWT_EXPIRATION:PT8H}
+    # Relaxed for a developer addressing containers over plain HTTP on their own machine. Production
+    # requires HTTPS.
     require-https: false
