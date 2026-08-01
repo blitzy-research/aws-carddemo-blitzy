@@ -1622,9 +1622,17 @@ end pairs the entries that record the same decision under both.
 
 | Citing file | Entry |
 |---|---|
-| `api/dto/AccountUpdateRequest.java` | DL-011, DL-028, DL-029, DL-031 |
-| `api/dto/ScreenWorkArea.java` | DL-011, DL-030 |
+| `api/GlobalExceptionHandler.java` | DL-080, DL-083, DL-084, DL-085 |
+| `api/dto/AccountUpdateRequest.java` | DL-011, DL-028, DL-029, DL-031, DL-074, DL-078 |
+| `api/dto/FieldErrorDecorator.java` | DL-080 |
+| `api/dto/NavigationContext.java` | DL-087 |
+| `api/dto/PageMetadata.java` | DL-081 |
+| `api/dto/ScreenWorkArea.java` | DL-011, DL-030, DL-082 |
 | `api/dto/SignOnRequest.java` | DL-001, DL-004 |
+| `batch/step/AbstractCobolStep.java` | DL-084 |
+| `config/JpaAuditConfig.java` | DL-089 |
+| `config/OpenApiConfig.java` | DL-088 |
+| `config/WebMvcConfig.java` | DL-089 |
 | `domain/Account.java` | DL-012, anomaly register (1) |
 | `domain/Customer.java` | DL-005, DL-006 |
 | `domain/TransactionType.java` | DL-032 |
@@ -1633,20 +1641,34 @@ end pairs the entries that record the same decision under both.
 | `domain/enums/KeyAction.java` | DL-024, DL-025 |
 | `domain/enums/RejectReason.java` | DL-027 |
 | `exception/JobSubmissionException.java` | DL-044, anomaly register (6) |
-| `exception/OptimisticLockConflictException.java` | DL-012 |
+| `exception/OptimisticLockConflictException.java` | DL-012, DL-083 |
+| `exception/ValidationException.java` | DL-080, DL-086 |
 | `service/JobSubmissionService.java` | DL-043 |
+| `service/AccountConcurrencyTokenService.java` | DL-074, DL-075, DL-076, DL-077 |
+| `service/FieldErrorTranslationService.java` | DL-080 |
 | `service/SensitiveFieldEncryptionService.java` | DL-005, DL-008 |
 | `util/ReportLineFormatter.java` | anomaly register |
+| `util/CobolStringUtils.java` | DL-078 |
 | `util/SensitiveFieldCodec.java` | DL-009 |
+| `util/ZonedDecimalCodec.java` | DL-079 |
 | `util/StatementHtmlTemplates.java` | DL-037, DL-038, DL-039 |
-| `resources/application.yml` | DL-001, DL-005, DL-008, DL-047, DL-048 |
-| `resources/application-local.yml` | DL-045, DL-047, anomaly register (7) |
+| `resources/application.yml` | DL-001, DL-005, DL-008, DL-047, DL-048, DL-088 |
+| `resources/application-local.yml` | DL-045, DL-047, DL-088, anomaly register (7) |
+| `resources/application-prod.yml` | DL-088 |
+| `pom.xml` | DL-088 |
 | `resources/db/migration/V1__create_schema.sql` | DL-005, DL-007, DL-010, DL-012, DL-036, anomaly register (1) |
 | `api/dto/SignOnRequestTest.java` | DL-001, DL-003, DL-004 |
 | `domain/enums/AccountStatusTest.java` | DL-024, DL-026 |
 | `exception/OptimisticLockConflictExceptionTest.java` | DL-012 |
 | `util/StatementHtmlTemplatesTest.java` | DL-037 |
-| `util/ZonedDecimalCodecTest.java` | DL-013, DL-014, DL-015, DL-016 |
+| `service/AccountConcurrencyTokenServiceTest.java` | DL-074, DL-076, DL-077 |
+| `service/FieldErrorTranslationServiceTest.java` | DL-080 |
+| `util/CobolStringUtilsTest.java` | DL-078 |
+| `util/ZonedDecimalCodecTest.java` | DL-013, DL-014, DL-015, DL-016, DL-079 |
+| `config/ConfigurationProfileBaselineTest.java` | DL-088 |
+| `api/dto/PageMetadataTest.java` | DL-081 |
+| `api/dto/ScreenWorkAreaSecurityTest.java` | DL-082 |
+| `api/dto/NavigationContextSecurityTest.java` | DL-087 |
 
 ### 14.2 `D-nn` and anomaly-register citations
 
@@ -1734,6 +1756,288 @@ end pairs the entries that record the same decision under both.
 | D-38 | DL-032 |
 | D-40 | DL-030 |
 | D-49 | DL-037, DL-038, DL-039 |
+
+---
+
+## 15. Decisions taken while resolving code review findings
+
+Every entry below was authored while closing a finding raised against the delivered module. Each one
+records a point where the finding's substance could be satisfied only by diverging from the legacy
+program, from the finding's own suggested resolution, or from the idiomatic Java answer, and says
+which way the divergence errs.
+
+### DL-074 - The account-update turn carries a sealed old-image token, because REST has no commarea
+
+The legacy transaction does not re-read and trust the screen. It keeps the account and customer
+records as they were read for display in an extension of its own commarea
+(`app/cbl/COACTUPC.cbl` L652 declares it, L669 onward populates it, L1010-L1018 return it with
+the screen and L888-L892 slice it back off on re-entry), and paragraph
+`9700-CHECK-CHANGE-IN-REC` compares that old image field by field against a fresh read taken under
+lock at L3894 onward. The terminal never sees the extension and cannot alter it.
+
+Split across REST turns, the client is the only thing that persists between the view and the
+confirmation, so any state echoed in the clear is state the client controls - and a client that can
+assert "nothing changed" has authorised its own overwrite. The equivalent is therefore an opaque,
+authenticated token: `service/AccountConcurrencyTokenService` seals a payload of two SHA-256 digests,
+one per canonical record image, under the module's authenticated-encryption service bound to
+`account_update.concurrency_token`. A token that is absent, blank, unauthenticated, sealed for
+another binding, carrying an unrecognised scheme, or no longer describing the records all refuse the
+write with the one verbatim legacy text, `Record changed by some one else. Please review`.
+
+Digests rather than the images themselves, because the token crosses the wire: a digest pair answers
+"did either record move" without carrying a single field value, so the token discloses nothing about
+the account or the customer even to the operator holding it.
+
+### DL-075 - The row version is deliberately not sealed into the token
+
+`Account` carries a provider-managed `@Version` and `Customer` carries no version attribute at all,
+by design, because the legacy customer record has no such field. The two mechanisms guard different
+windows and neither replaces the other: the provider's check covers the interval between the
+read-for-update and the flush, while the token covers the interval between presenting the screen and
+confirming it. Sealing the version into the token would add nothing the record digest does not
+already detect, and - since the attribute has no setter, being provider-owned - a unit test could
+only move it reflectively, against an audited reflection budget of zero.
+
+### DL-076 - The account digest covers the postal code that the legacy comparison omits
+
+`9700-CHECK-CHANGE-IN-REC` compares ten account data fields and does not compare `ACCT-ADDR-ZIP`, so
+the legacy program silently accepts an overwrite of a concurrent change to a field its own update
+screen can edit. The digest covers it. The divergence errs towards refusing a write the legacy would
+have allowed, which is the safe direction for a check whose entire purpose is to refuse stale writes.
+
+### DL-077 - Both regulated identifiers are digested as stored rather than as cleartext
+
+`CUST-SSN` and `CUST-GOVT-ISSUED-ID` are held as `ENC1:` envelopes, and each seal draws a fresh
+vector, so identical cleartext is stored as different bytes. Digesting the stored form therefore
+reports a change when a value has merely been re-sealed, and also reports a case-only change to the
+government-issued identifier that the legacy program folds away. Both readings refuse the write, so
+both err in the safe direction. Revealing the two values inside the check would place regulated
+cleartext in memory for a comparison that does not need it, which is the worse trade.
+
+### DL-078 - The five monetary screen components are raw lexemes, not pre-parsed decimals
+
+`1250-EDIT-SIGNED-9V2` edits each amount as a 15-character screen image -
+`WS-EDIT-SIGNED-NUMBER-9V2-X PIC X(15)` at `app/cbl/COACTUPC.cbl` L55, with the three flag
+states at L56-L59 - and is invoked at L1485, L1498, L1510, L1517 and L1524. It distinguishes three
+outcomes: not supplied, present but not a number, and valid. Typing the request components as
+`BigDecimal` made the middle state unrepresentable: a malformed present value was refused by
+deserialisation, so the service never saw it, the offending field's identity was lost, and the
+operator received a generic unreadable-body response instead of that field marked invalid.
+
+The components are `@Size(max = 15) String`, matching the map field width
+(`ACRDLIMI PIC X(15)`, `app/cpy-bms/COACTUP.CPY` L90), and three primitives in
+`util/CobolStringUtils` - `isUnsuppliedNumericLexeme`, `isNumericLexeme` and
+`plainDecimalOfNumericLexeme` - reproduce the `TEST-NUMVAL-C` and `NUMVAL-C` grammar the paragraph
+relies on. The estate declares no `SPECIAL-NAMES` paragraph anywhere, so the language defaults hold
+and the accepted currency sign is `$` with `.` as the decimal point. `isUnsuppliedNumericLexeme` is
+the single documented exception to the utility class's reject-null rule, because an absent component
+*is* the not-supplied state that `LOW-VALUES` represents, and answering it with an exception would
+force every caller to write the null test the primitive exists to perform.
+
+### DL-079 - One seam converts a screen lexeme to a stored amount, and magnitude is judged later
+
+`ZonedDecimalCodec.fromNumericLexeme` is the only route from an edited screen lexeme to a
+`BigDecimal`, so the estate's truncating policy cannot be bypassed by a caller doing its own parsing:
+`1.239` is stored as `1.23`. One divergence is deliberate. A legacy `MOVE` into a `S9(10)V99` field
+silently discards high-order digits, so an over-long amount becomes a different, plausible number.
+The seam instead returns the operator's value intact and leaves `encodeMonetary` to refuse it at the
+persistence width, so an amount too large to store is reported rather than quietly altered.
+
+### DL-080 - The field decoration accumulates a neutral model, and the two conversions sit at the two boundaries
+
+`app/cpy/CSSETATY.cpy` is one macro, expanded 39 times in `app/cbl/COACTUPC.cbl` between L3208 and
+L3432, and in the legacy program the flag it tests, the screen it decorates and the decision not to
+write all sit in the same place. A REST module has three places instead: the accumulation a service
+builds, the failure it throws, and the body a client receives. Three representations therefore exist,
+and the risk is not that one is missing but that two of them drift and an operator is told to supply
+a value already supplied.
+
+`api/dto/FieldErrorDecorator` now accumulates `MarkedField(field, bmsFieldId, flagState)` - the
+field, the screen label and the legacy flag state, and nothing else. That triple names neither the
+response contract nor the failure carrier, which is what makes it usable from either tier. Each
+boundary then has exactly one converter, placed where its dependency is legal:
+`service/FieldErrorTranslationService` inbound, turning an accumulation into `ValidationException`,
+and `api/GlobalExceptionHandler` outbound, turning that failure into `ErrorResponse`. Neither
+conversion is written at a call site, so a service decorates and throws without assembling entries by
+hand. `FieldErrorDecorator.fieldErrors()` survives as a projection of the accumulation rather than as
+a second store, so it cannot disagree with what was marked;
+`FieldErrorTranslationServiceTest.TheSeamEndToEnd` asserts that the response a client receives equals
+that projection entry for entry, which is what fails if either converter is changed alone.
+
+Two divergences are recorded rather than hidden. The finding that prompted this asked for the
+decorator to be moved into a service or shared package; it stays at `api/dto/FieldErrorDecorator`
+because the Agent Action Plan places it there in §0.3.1, mandates in §0.3.3 that
+`AccountUpdateService` invoke it, and fixes the package at exactly its listed files - moving the file
+would leave that list short and break the plan's own mapping from the copybook to its target. The
+substance of the request is met instead by putting the *conversion* in the service layer, which is
+where the finding wanted it. Second, the decorator does not itself produce a `ValidationException`,
+because `api/dto` must not reference `com.carddemo.exception`: collapsing that deliberate duplication
+would make the response contract depend on the failure carrier, which is the layer inversion the
+plan's §0.5.2 direction forbids. Both divergences err towards keeping the dependency direction
+one-way, and neither changes what a client observes.
+
+### DL-081 - A browse cursor crosses the wire in full and is withheld from every diagnostic rendering
+
+`PageMetadata` carries the two boundary keys the legacy screens retain across a
+pseudo-conversational turn, and on the card list those keys are not opaque tokens the module minted.
+`app/cbl/COCRDLIC.cbl` L230 to L235 declares `WS-CA-LAST-CARDKEY` and `WS-CA-FIRST-CARDKEY` as a
+16-character card number followed by an 11-character account identifier, so each cursor is a primary
+account number concatenated with an account identifier: 27 characters of regulated data. The client
+nevertheless has to receive both, because a cursor-based browse cannot be resumed without them and
+the legacy computes no offset to substitute.
+
+The two obligations are separated by scope rather than traded off. `previousCursorKey()`,
+`nextCursorKey()`, the JSON wire form, `equals` and `hashCode` carry and compare both cursors byte for
+byte. `toString()` replaces both with the module's fixed redaction placeholder. Without an explicit
+rendering a record emits every component, so the leak was not something the type did but something it
+omitted to prevent - and page metadata accompanies every page of every browse, which is the widest
+exposure surface in the paging contract.
+
+The redaction is unconditional, including when a cursor is absent, so the rendering discloses nothing
+about either value - not even whether one is present, which `hasMorePages()` and `hasPreviousPages()`
+already publish as data. A partial mask was rejected for the reason recorded on the placeholder: the
+leading 16 characters of a card cursor are a card number in full, the trailing 11 are an account
+identifier, and a digest of a 27-character numeric key is reversible by enumeration. The five
+remaining components - the row count, the direction, the two availability flags and the displayed page
+indicator - are retained, because none of them names a record and together they are what a paging
+diagnosis actually asks for.
+
+### DL-082 - The two screen message slots are withheld from diagnostics, because the legacy assembles them dynamically
+
+`ScreenWorkArea` already withheld its three business keys from `toString()`. Its two message slots
+were retained on the reasoning that they carry catalogue text written for a terminal operator. That
+reasoning does not survive the source. `CCARD-ERROR-MSG` is loaded from `WS-RETURN-MSG PIC X(75)`,
+declared at `app/cbl/COACTUPC.cbl` L479 and moved into the slot at L1008 and L1030, and that one
+program assembles the field with 32 `STRING` statements. Three of them concatenate a business key into
+the text - an 11-character account identifier at L3674 to L3683 and again at L3723 to L3732, and a
+9-character customer identifier at L3773 to L3782 - each followed by the raw CICS response and reason
+codes. Three more, at L3693, L3743 and L3792, move in `WS-FILE-ERROR-MESSAGE` from L389, which names
+the failing operation and the internal VSAM resource, `CUSTDAT` and `CXACAIX` among them, alongside
+those same codes.
+
+A slot that can hold a cardholder identifier or an internal resource name cannot be rendered on the
+strength of the cases where it holds a sentence, and nothing distinguishes the two at run time. Being
+a boundary type, this record additionally accepts whatever a client echoes back into either slot, so
+the content is not even guaranteed to have originated in the module. Both slots are therefore replaced
+by the fixed placeholder, unconditionally and for the same reasons as the three keys.
+
+The alternative the finding offered - modelling catalogue-safe and dynamic messages as separate
+components - was declined and is recorded here rather than left implicit. `ScreenWorkArea` reproduces
+`app/cpy/CVCRD01Y.cpy` field for field, and the copybook declares one error slot and one return slot;
+splitting either would put state in the work area that no legacy turn carried, and the module would
+then have to decide per message which slot to use, a classification the source never makes. What is
+withheld from the rendering is withheld from the rendering only: `errorMessage()`, `returnMessage()`,
+the wire form and equality still carry every byte, because the operator-facing message is part of the
+screen contract and must reach the terminal unaltered.
+
+Four routing components remain in the rendering - the resolved attention key and the declared next
+program, mapset and map. Each draws on a fixed vocabulary of enumerated keys and eight- or
+seven-character program, mapset and map names, so none can carry an identifier, and together they
+answer what a screen-turn diagnosis asks: which key was pressed and where the flow was headed.
+
+### DL-083 - A conflict carrier accepts only the text its own arm resolves to, and the boundary renders the conflict from the arm
+
+**Context.** `OptimisticLockConflictException` publishes four verbatim legacy operator texts and classifies every conflict into one of three arms. Its schema-mandated five-argument constructor accepted any detail message alongside any arm, so an account-record conflict could be constructed carrying the customer lock text, or carrying text belonging to no arm at all. `GlobalExceptionHandler.handleOptimisticLockConflict` then published `getMessage()` as the only discriminator a client receives, which made the unvalidated message the effective contract and the validated arm a bystander.
+
+**Legacy authority.** The legacy write path never composes operator text at all. At `app/cbl/COACTUPC.cbl` lines 3912, 3939, 4079, 4098, 4143 and 4189 it sets a condition name - `COULD-NOT-LOCK-ACCT-FOR-UPDATE`, `COULD-NOT-LOCK-CUST-FOR-UPDATE`, `LOCKED-BUT-UPDATE-FAILED` or `DATA-WAS-CHANGED-BEFORE-UPDATE` - and the wording is a level-88 `VALUE` bound to that condition name at lines 517 to 524. The classification owns the text there; nothing in the program can pair one flag with another flag's wording.
+
+**Decision.** The canonical constructor now requires `message` to equal `conflictKind.defaultMessage(entityName)` and rejects anything else with `IllegalArgumentException`. The constructor is retained rather than removed, because the five-argument form is mandated by the target file schema; what is removed is its freedom, not its existence. The null-arm check runs first, so a caller who omits the arm is told the arm is missing rather than being told its text does not match an arm that was never supplied. The rejection diagnostic does not echo the refused text, so a value arriving from outside the module cannot ride an exception message into a log. `handleOptimisticLockConflict` now renders the 409 body from `conflictKind().defaultMessage(entityName())`, which is provably the same bytes as `getMessage()` and removes the possibility of the two disagreeing.
+
+**Why equality and not membership.** Membership of the four published literals was the weaker option and was declined. It would still admit an account-entity conflict carrying the customer lock text, which reads as a fifth legacy state that no legacy path can reach: the customer read at `app/cbl/COACTUPC.cbl` line 3921 is entered only once the account read at line 3894 has already succeeded, so the customer lock flag can never be set while the account record is the one being reported.
+
+**Consequence for the tests.** Three tests asserted the defect as their premise - two in `OptimisticLockConflictExceptionTest` and one in `GlobalExceptionHandlerBaselineTest` - and were inverted into rejection tests rather than accommodated, because a test that pins a contradiction in place is itself the finding.
+
+*Cited by:* `exception/OptimisticLockConflictException.java`, `api/GlobalExceptionHandler.java`.
+
+### DL-084 - Only the online abend code carries its text outward; every other abend answers with the legacy default
+
+**Context.** `GlobalExceptionHandler.handleAbend` returned `AbendException.getMessage()` for every abend. `AbstractCobolStep` composes that message for the batch tier as `ERROR <gerund> <resource> - FILE STATUS IS: <rawStatus>`, so any endpoint that let a batch abend propagate would publish an internal data set name and a raw two-character COBOL status to an end user.
+
+**Legacy authority - two channels, one of them not facing a person.** The online routine at `app/cbl/COACTUPC.cbl` lines 4203 to 4224 sends the whole abend area to the terminal with `EXEC CICS SEND` and then abends under code `9999`, substituting `UNEXPECTED ABEND OCCURRED.` when no message was set. Text carried under that code was therefore written to be read by an operator. The batch routine is different in kind: the nine `CALL 'CEE3ABD'` sites - `app/cbl/CBACT01C.cbl` line 173 among them - pass the abort routine a code and no message whatever, and the diagnostic that preceded them went to `DISPLAY`. `app/cbl/CBACT01C.cbl` lines 110 to 113 are the pattern: display which file failed, move the raw status into the I/O status field, display that, then abend. None of it reached a terminal; all of it reached the job log.
+
+**Decision.** The handler classifies by abend code. An abend under `AbendException.ONLINE_ABEND_CODE` publishes its message unchanged, because that is the channel the legacy pointed at a person. Every other code answers with `AbendException.DEFAULT_MESSAGE` - the legacy's own substitute literal - and the withheld message is written to the error log in full alongside the code, culprit and reason. Nothing is lost; it moves to the channel the legacy used for it.
+
+**Why an allow-list and not a deny-list.** Excluding only `BATCH_ABEND_CODE` would let an abend raised under any unrecognised code publish whatever text it happened to carry. Admitting only the one operator-facing code fails closed, which is why an abend under a code the estate does not use is treated as internal rather than assumed safe.
+
+*Cited by:* `api/GlobalExceptionHandler.java`.
+
+### DL-085 - A framework fault is summarised by what it was, not reported as an unreadable body
+
+**Context.** The terminal handler answered every self-classifying framework fault with the unreadable-body summary. The status was preserved and the diagnostic was false: a caller who used an unsupported method, sent an unsupported media type or asked for an unavailable representation was told its request body could not be read, and sent looking for a payload defect that did not exist. The summary was also redundant, because the exception that genuinely means an unreadable body has its own handler.
+
+**Decision.** The neutral summary is chosen from the declared status. Method-not-allowed, not-acceptable, unsupported-media-type and route-not-found each get their own accurate neutral text; any other caller-caused status gets a summary that is unspecific rather than wrong; a server-side status gets the same terminal literal every other terminal failure uses, so a framework fault that is genuinely ours does not imply the caller did something. Each text names no method, no media type, no header and no path: the allowed-method set already travels in the `Allow` header the framework populates, and repeating it in the body would turn an error summary into an inventory of the routing table.
+
+**Why route-not-found does not reuse the record-not-found literal.** `Record not found` is a verbatim legacy text meaning a keyed read resolved to nothing. A request that matched no route never reached a read, so borrowing that text would report a data outcome for a routing outcome.
+
+**Why a numeric comparison rather than a switch over the status enum.** `HttpStatusCode` is an interface, and a framework fault may declare a status that resolves to no enum constant, so comparing values avoids a nullable intermediate.
+
+*Cited by:* `api/GlobalExceptionHandler.java`.
+
+### DL-086 - A missing field error is a defect to raise, not a hole to close quietly
+
+**Context.** `ValidationException` filtered `null` elements out of a supplied field-error list. The two sibling carriers on the same path - `FieldErrorDecorator` and `ErrorResponse` - both reject them through `List.copyOf`, so the three disagreed about the same input.
+
+**Decision.** A `null` list still means no per-field detail, because that is a caller legitimately saying it has none and is exactly what the summary-only constructors produce. A `null` element is now rejected. The two cases are not the same case: an element that is `null` is a producer that believed it had detail for a field and did not, and dropping it silently would let one of the account-update screen's 39 decorated fields disappear between the service that failed it and the boundary that reports it, leaving the caller a shorter list with no indication that anything was lost. Failing at construction is the only outcome that preserves the count the producer intended, and it brings all three carriers into agreement.
+
+*Cited by:* `exception/ValidationException.java`.
+
+
+### DL-087 - The echoed identity is untrusted input, so the predicate over it is named for the byte and reconciliation is part of the type's surface
+
+**Context.** `NavigationContext` models the sixteen fields of `app/cpy/COCOM01Y.cpy` field for field, as the target design requires, and two of them are identity: `CDEMO-USER-ID` and `CDEMO-USER-TYPE`. The type exposed a predicate `administrator()` over the echoed type byte. Nothing about the name said the byte came from the client, and in a REST module the whole record round-trips through the caller, so a consumer reading `context.administrator()` had an authorization-shaped answer derived from input.
+
+**What changed between the legacy and the migration, and it is a change of trust rather than of logic.** The legacy area lived in CICS-managed storage. A program authored it, CICS carried it to the next turn, and the 3270 terminal had no way to reach it. The identity bytes were server-authored from an authenticated read: `app/cbl/COSGN00C.cbl` line 226 writes the identifier and line 227 moves `SEC-USR-TYPE` out of the `USRSEC` record the program had just read, and only then does line 230 test `CDEMO-USRTYP-ADMIN` to choose between the administrative menu and the main menu. The byte the legacy branched on had already been proved against the user-security table. Echoing the same area through a REST client removes that proof entirely.
+
+**Decision.** Three changes, none of which touches the sixteen modelled components.
+
+The predicate is renamed `echoesAdministratorCode()`. It is named for what it reads rather than for the person it might be mistaken to describe, and its documentation states outright that it is not an authorization check. It is retained rather than removed, because the legacy tested exactly this condition on exactly this byte and a faithful translation has to be able to read it.
+
+`agreesWith(String, UserType)` is the reject remedy: it reports whether the echoed identifier and role both match the authenticated principal's, so a caller that would rather refuse a tampered turn can detect one. Both comparisons are exact - the identifier byte for byte with no trim and no case fold, because the component is documented as travelling exactly as received and the user-security key is fixed-width, and folding here would let two distinct echoed identifiers reconcile against one principal. An undeclared or absent echoed code never matches a declared principal role; it disagrees, which is the safe direction.
+
+`reconciledWith(String, UserType)` is the overwrite remedy, and it is the one that reproduces the legacy arrangement most closely: it returns a copy whose identifier and type byte come from the principal, restoring the property that those two bytes are server-authored. The role is written back as its declared one-character code so the reconciled instance still carries a raw byte and still round-trips like any other, and an absent principal role clears the byte rather than inventing one. The other fourteen components cross byte for byte, because correcting identity is not licence to rewrite echoed navigation state.
+
+**Declined alternatives.** Removing or privatising the predicate was rejected: the legacy condition would then be unreadable from the type that carries the byte, and a consumer would re-derive it inline where no documentation could reach it. Constraining the component to the two declared characters was also rejected, and for the reason already recorded on the component itself - `app/cbl/COSGN00C.cbl` closes at line 240 with an unconditional alternative and no third branch, so the legacy routes an undeclared value rather than rejecting it.
+
+**Consequence for the tests.** Three display names asserted the defect in prose - one describing the predicate's input as "an authorization decision's input" and two describing the echoed byte as granting or reporting administrative authority - and were rewritten as factual statements rather than deleted, because a name that misdescribes what a test proves is itself a finding.
+
+*Cited by:* `api/dto/NavigationContext.java`.
+
+
+### DL-088 - The published contract stays; the interactive viewer is not advertised, because the build cannot carry one
+
+**Context.** The shipped configuration described an interactive viewer for the generated interface document: `application.yml` declared its address, its display options and a bundle version written as the Maven filtering token `@swagger-ui.version@`, and `application-local.yml` reopened it with a comment explaining that the viewer was how a request is tried against a running compose stack. `OpenApiConfig` repeated the claim in its class documentation, naming "the pinned viewer bundle version the build file substitutes into it".
+
+**None of that was true, for two independent reasons.** The build declares no `swagger-ui.version` property and no resource-filtering block at all, so the token was never substituted and shipped into the artefact verbatim as the value. And the browser asset bundle that renders the page - `org.webjars:swagger-ui` - is deliberately excluded from the starter as a vulnerability remediation, so the address had no assets to serve under any profile and could only ever answer not-found. Four files told a story that a fifth contradicted.
+
+**Decision.** Stop advertising the viewer; keep publishing the contract. The unresolvable token, the viewer address and both display options are removed. `springdoc.api-docs.path` and the local overlay's `springdoc.api-docs.enabled` are untouched, because the machine-readable document is what the interface-contract acceptance criterion reads and it is served correctly. The local overlay now inherits the disabled viewer switch instead of restating it, which is deliberately the opposite of the pattern it uses for every genuine concession: a switch a profile restates reads as a choice that profile could reverse, and this one cannot be reversed by configuration at all.
+
+**One thing is kept that looks redundant and is not.** `springdoc.swagger-ui.enabled: false` stays declared in the shared baseline. The library's own default for that switch is true, so leaving it unstated would have the library advertise and route an address whose assets were excluded from the build. The switch is therefore load-bearing rather than a posture statement, and the production overlay restates it for the same inheritance reason it restates the management block.
+
+**Declined alternatives.** Adding a pinned viewer bundle back was rejected on two grounds: the exclusion is a remediation of a reported vulnerability found by an executed scan, and the dependency manifest is required to carry no front end coordinate. Switching to the API-only starter was also rejected, although it is the cleaner-looking option: the target design names `org.springdoc:springdoc-openapi-starter-webmvc-ui` by exact coordinate, and this starter's version locator is deliberately retained so that its configuration classes load exactly as they do with the bundle present. Changing the artefact would deviate from the design to achieve an outcome that removing four keys achieves without deviating at all.
+
+**Consequence for the tests.** Two assertions encoded the false claim - one requiring the local overlay to reopen the viewer, one requiring the baseline to state the viewer address - and were inverted rather than deleted. A general assertion was added in their place: no shipped value may be a `@name@` build token, in any document. That is the assertion the original defect would have failed, and an environment reference of the `${NAME}` form is untouched by it, because those are legitimate and deliberate throughout these files.
+
+*Cited by:* `config/OpenApiConfig.java`, `application.yml`, `application-local.yml`, `application-prod.yml`, `pom.xml`.
+
+
+### DL-089 - Comment volume was reduced where the content was redundant, and retained where it is the parity contract
+
+**Context.** A review measured the module's production Java at roughly 72% comment lines against roughly 13% in the neighbouring COBOL, and asked that essays, repeated provenance, option catalogues and line-by-line narration be condensed while durable rationale, parity traps, external constraints and security trade-offs be retained. Every category named was measured rather than estimated, and the measurements decided what happened to each.
+
+**What was redundant, and was removed.** `JpaAuditConfig` stated the decision not to enable framework auditing twice in full, once as a paragraph and once as a headed section with the same three facts, and gave the reason the clock is UTC three times over; it also enumerated all five views of the legacy date work area field by field with widths and line numbers, for a class that implements none of them. `WebMvcConfig` carried a bean-semantics essay restating what its own annotation and its absence of fields already say, and said "nothing is injected" in three places - a class paragraph, a constructor paragraph and a constructor body comment. A statement-template test opened with a paragraph that restated three of the five list items immediately below it. Across the test tier, 481 standalone comment lines consisted only of dashes, equals signs or hashes: banner rulers carrying no information, whose label lines were kept. Those removals total roughly 600 comment lines and lose nothing, because every fact removed was still stated once elsewhere or was never a fact.
+
+**What was measured and deliberately retained.** A repeated-sentence analysis over the fourteen highest-volume files found only 36 redundant sentence occurrences, and most were `@param` tags that Javadoc requires once per overload rather than prose a reader meets twice. The accessor documentation - 1,045 lines, five per cent of the total - carries the declared field width of each component and, on the middle-name and second-address-line setters, the recorded prohibition against validating them; deleting it would remove the only place in the type where a maintainer meets the constraint that adding validation there rejects input the legacy system accepts. The per-member documentation in the date-validation service documents 116 private methods that are the paragraph-for-paragraph translation the traceability matrix maps, each carrying the legacy paragraph and line it descends from. All of that is the retained category, not the condensed one.
+
+**Repeated provenance was assessed and left alone, on evidence.** The checkout identifier appears in 15 production and 77 test files. Removing it looked like the largest available reduction and is not: it is 189 lines, under one per cent of the volume, spread across fourteen distinct phrasings in which the identifier is interleaved with file-specific legacy authorities. A mechanical transform would orphan headings and break sentences mid-flow across 92 files for a change too small to measure, and a careful one would consume exactly the effort that produced the 600 lines above.
+
+**The applied migration cannot be edited at all, and that outranks comment density.** `V2__create_indexes.sql` is 263 comment lines over nine statements and was named as an example to condense. It cannot be: it declares in its own header that it is immutable once applied, `application.yml` sets `validate-on-migrate: true`, and the local database records V1 and V2 as applied and successful with their checksums stored. Editing a single comment character changes the checksum and fails the next migration of any database that already has it - and because the same configuration sets `clean-disabled: true`, a developer could not recover through the migration tool. A comment-density preference does not justify breaking a versioned migration's checksum. Any future condensation of that text must arrive as a new version, exactly as the file says.
+
+**One structural fact belongs on the record, because it explains the ratio better than verbosity does.** The production tier is presently data-transfer objects, entities, enumerations, utilities, exceptions and configuration: file kinds whose executable content is small by nature, where a record of sixteen components is sixteen documented parameters over almost no statements. The comment share is a ratio whose denominator is small for that reason, and it falls as the service and controller tiers land without a further line being deleted.
+
+*Cited by:* `config/JpaAuditConfig.java`, `config/WebMvcConfig.java`.
+
+
+---
 
 *This log is authored alongside the target module and is never edited by the code that cites it. A
 citation is a pointer into this document; the reasoning lives here in one place so that it cannot

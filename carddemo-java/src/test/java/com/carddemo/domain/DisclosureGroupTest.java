@@ -204,9 +204,7 @@ class DisclosureGroupTest {
                 seededRate(ordinal));
     }
 
-    // =================================================================================================
     // RECORD LAYOUT
-    // =================================================================================================
 
     /**
      * Verifies the copybook geometry the entity has to honour.
@@ -270,9 +268,7 @@ class DisclosureGroupTest {
         }
     }
 
-    // =================================================================================================
     // SCHEMA AGREEMENT
-    // =================================================================================================
 
     /**
      * Verifies that the deployed migration describes the layout the copybook does.
@@ -343,9 +339,7 @@ class DisclosureGroupTest {
         }
     }
 
-    // =================================================================================================
     // CONSTRUCTION AND ACCESS
-    // =================================================================================================
 
     /**
      * Verifies that every field the constructor takes is the field the accessor returns.
@@ -405,9 +399,7 @@ class DisclosureGroupTest {
         }
     }
 
-    // =================================================================================================
     // RATE FIDELITY
-    // =================================================================================================
 
     /**
      * Verifies that the rate is carried at the copybook's scale and is understood as a percentage.
@@ -478,9 +470,7 @@ class DisclosureGroupTest {
         }
     }
 
-    // =================================================================================================
     // SEEDED COMPOSITION
-    // =================================================================================================
 
     /**
      * Verifies the fifty-one seeded records, whose composition is what makes both branches of the rate
@@ -657,9 +647,7 @@ class DisclosureGroupTest {
         }
     }
 
-    // =================================================================================================
     // COMPOSITE-KEY IDENTITY
-    // =================================================================================================
 
     /**
      * Verifies that identity is the three-part key and nothing else.
@@ -737,9 +725,7 @@ class DisclosureGroupTest {
         }
     }
 
-    // =================================================================================================
     // THE EXTRACTED KEY
-    // =================================================================================================
 
     /**
      * Verifies that the entity hands out the same three-part key it is identified by.
@@ -796,9 +782,7 @@ class DisclosureGroupTest {
         }
     }
 
-    // =================================================================================================
     // DIAGNOSTIC REPRESENTATION
-    // =================================================================================================
 
     /**
      * Verifies the diagnostic string.

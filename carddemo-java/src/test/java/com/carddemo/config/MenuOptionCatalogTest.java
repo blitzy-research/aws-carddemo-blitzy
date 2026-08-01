@@ -51,8 +51,9 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * administrator entry carries a user-type code at all. A second test class for the gate would duplicate
  * ownership of the same production class. What the gate is <em>not</em> is a routing decision: because the
  * administrator rows publish no code, who may reach them cannot be derived from a row and must come from
- * the authenticated principal &mdash; which is the concern of an HTTP security configuration that is
- * <strong>not delivered yet</strong>, so nothing asserted here constitutes route protection.
+ * the authenticated principal &mdash; which is the concern of the module's HTTP security
+ * configuration and of nothing in this class, so <strong>nothing asserted here constitutes route
+ * protection</strong>.
  *
  * <p><strong>The surplus table slots must stay unrepresented.</strong> Both copybooks declare a redefining
  * table larger than the group it redefines: ten user entries of {@value #EXPECTED_USER_ENTRY_LENGTH} bytes

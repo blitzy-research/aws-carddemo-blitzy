@@ -34,6 +34,8 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.assertj.core.api.Assertions.tuple;
 
 /**
  * Unit tests for {@link FieldErrorDecorator}, the migrated form of the parameterised procedural
@@ -734,13 +736,13 @@ class FieldErrorDecoratorTest {
         @DisplayName("the supplied collection is copied at construction, so a caller mutating its own "
                 + "list afterwards cannot alter the accumulation")
         void theSuppliedCollectionIsCopied() {
-            final List<ErrorResponse.FieldError> callerOwned = new ArrayList<>();
-            callerOwned.add(new ErrorResponse.FieldError(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS,
-                    ErrorResponse.FieldState.MISSING));
+            final List<FieldErrorDecorator.MarkedField> callerOwned = new ArrayList<>();
+            callerOwned.add(new FieldErrorDecorator.MarkedField(PROP_ACCT_STATUS,
+                    SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK));
 
             final FieldErrorDecorator errors = new FieldErrorDecorator(callerOwned);
-            callerOwned.add(new ErrorResponse.FieldError(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT,
-                    ErrorResponse.FieldState.INVALID));
+            callerOwned.add(new FieldErrorDecorator.MarkedField(PROP_CREDIT_LIMIT,
+                    SCREEN_CREDIT_LIMIT, FieldErrorDecorator.FlagState.NOT_OK));
             callerOwned.clear();
 
             assertThat(errors.fieldErrors()).hasSize(1);
@@ -751,9 +753,9 @@ class FieldErrorDecoratorTest {
         @DisplayName("a null entry inside the collection is rejected rather than stored, because an entry "
                 + "with no state is one a client cannot act on")
         void aNullEntryInsideTheCollectionIsRejected() {
-            final List<ErrorResponse.FieldError> withNull = new ArrayList<>();
-            withNull.add(new ErrorResponse.FieldError(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS,
-                    ErrorResponse.FieldState.MISSING));
+            final List<FieldErrorDecorator.MarkedField> withNull = new ArrayList<>();
+            withNull.add(new FieldErrorDecorator.MarkedField(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS,
+                    FieldErrorDecorator.FlagState.BLANK));
             withNull.add(null);
 
             assertThatExceptionOfType(NullPointerException.class)
@@ -865,14 +867,15 @@ class FieldErrorDecoratorTest {
                     .toString();
 
             assertThat(rendered)
-                    .contains("fieldErrors")
+                    .contains("markedFields")
                     .contains(PROP_ACCT_STATUS)
                     .contains(SCREEN_ACCT_STATUS)
-                    .contains(ErrorResponse.FieldState.MISSING.name());
+                    .contains(FieldErrorDecorator.FlagState.BLANK.name());
             assertThat(rendered)
-                    .as("no package path, no hash and no legacy flag literal is rendered")
+                    .as("no package path, no hash and no published state name is rendered")
                     .doesNotContain("com.carddemo")
-                    .doesNotContain("@");
+                    .doesNotContain("@")
+                    .doesNotContain(ErrorResponse.FieldState.MISSING.name());
         }
     }
 
@@ -1008,6 +1011,134 @@ class FieldErrorDecoratorTest {
             assertThat(errors.fieldErrors())
                     .extracting(ErrorResponse.FieldError::fieldName)
                     .containsExactlyElementsOf(expectedNames);
+        }
+    }
+
+    @Nested
+    @DisplayName("The neutral accumulation that both tiers read")
+    class NeutralAccumulation {
+
+        @Test
+        @DisplayName("what is accumulated is the legacy flag state itself, untranslated, so neither the "
+                + "response contract nor the failure carrier dictates the shape of the accumulation")
+        void whatIsAccumulatedIsTheLegacyFlagState() {
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK)
+                    .mark(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT,
+                            FieldErrorDecorator.FlagState.NOT_OK);
+
+            assertThat(errors.markedFields())
+                    .extracting(FieldErrorDecorator.MarkedField::flagState)
+                    .containsExactly(FieldErrorDecorator.FlagState.BLANK,
+                            FieldErrorDecorator.FlagState.NOT_OK);
+            assertThat(errors.markedFields())
+                    .extracting(FieldErrorDecorator.MarkedField::field,
+                            FieldErrorDecorator.MarkedField::bmsFieldId)
+                    .containsExactly(tuple(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS),
+                            tuple(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT));
+        }
+
+        @Test
+        @DisplayName("a marked field holds the three identifiers and nothing else, so neither a message "
+                + "nor a submitted value can ride along inside the accumulation")
+        void aMarkedFieldHoldsTheThreeIdentifiersAndNothingElse() {
+            final FieldErrorDecorator.MarkedField marked = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK)
+                    .markedFields()
+                    .getFirst();
+
+            assertThat(marked).hasToString("MarkedField[field=" + PROP_ACCT_STATUS
+                    + ", bmsFieldId=" + SCREEN_ACCT_STATUS + ", flagState=BLANK]");
+        }
+
+        @Test
+        @DisplayName("the published entries are a projection of the accumulation rather than a second "
+                + "store, so the two can never hold different fields or a different sequence")
+        void thePublishedEntriesAreAProjectionOfTheAccumulation() {
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(PROP_ADDRESS_LINE_2, SCREEN_ADDRESS_LINE_2,
+                            FieldErrorDecorator.FlagState.BLANK)
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS,
+                            FieldErrorDecorator.FlagState.NOT_OK);
+
+            assertThat(errors.fieldErrors())
+                    .extracting(ErrorResponse.FieldError::fieldName)
+                    .containsExactlyElementsOf(errors.markedFields().stream()
+                            .map(FieldErrorDecorator.MarkedField::field).toList());
+            assertThat(errors.fieldErrors())
+                    .extracting(ErrorResponse.FieldError::screenFieldId)
+                    .containsExactlyElementsOf(errors.markedFields().stream()
+                            .map(FieldErrorDecorator.MarkedField::bmsFieldId).toList());
+        }
+
+        @Test
+        @DisplayName("a fresh projection is built on each call, so a consumer that keeps one cannot "
+                + "change what a later consumer reads")
+        void aFreshProjectionIsBuiltOnEachCall() {
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK);
+
+            assertThat(errors.fieldErrors())
+                    .isNotSameAs(errors.fieldErrors())
+                    .isEqualTo(errors.fieldErrors())
+                    .isUnmodifiable();
+        }
+
+        @Test
+        @DisplayName("the accumulation itself is unmodifiable, so nothing can be appended to it behind "
+                + "the one operation that grows it")
+        void theAccumulationItselfIsUnmodifiable() {
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK);
+
+            assertThat(errors.markedFields()).isUnmodifiable();
+        }
+
+        @Test
+        @DisplayName("a marked field built directly rejects the same absent components that marking "
+                + "does, so there is one enforcement point rather than two")
+        void aDirectlyBuiltMarkedFieldRejectsTheSameAbsentComponents() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new FieldErrorDecorator.MarkedField(
+                            null, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK))
+                    .withMessage("field must not be null");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new FieldErrorDecorator.MarkedField(
+                            PROP_ACCT_STATUS, null, FieldErrorDecorator.FlagState.BLANK))
+                    .withMessage("bmsFieldId must not be null");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new FieldErrorDecorator.MarkedField(
+                            PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, null))
+                    .withMessage("flagState must not be null");
+        }
+
+        @Test
+        @DisplayName("marked fields are values, so two accumulations built the same way are equal and "
+                + "a decoration can be compared rather than walked")
+        void markedFieldsAreValues() {
+            final FieldErrorDecorator.MarkedField first = new FieldErrorDecorator.MarkedField(
+                    PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK);
+            final FieldErrorDecorator.MarkedField second = new FieldErrorDecorator.MarkedField(
+                    PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK);
+
+            assertThat(first).isEqualTo(second).hasSameHashCodeAs(second);
+            assertThat(first).isNotEqualTo(new FieldErrorDecorator.MarkedField(
+                    PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.NOT_OK));
+        }
+
+        @Test
+        @DisplayName("all 39 decorated screen fields accumulate as neutral entries in golden order, so "
+                + "the largest decoration the legacy program could build survives untranslated")
+        void allThirtyNineAccumulateAsNeutralEntries() throws IOException {
+            final List<String> decorated = decoratedScreenFields();
+
+            final FieldErrorDecorator errors =
+                    markAll(decorated, FieldErrorDecorator.FlagState.BLANK);
+
+            assertThat(errors.markedFields())
+                    .hasSize(EXPANSION_SITE_COUNT)
+                    .extracting(FieldErrorDecorator.MarkedField::bmsFieldId)
+                    .containsExactlyElementsOf(decorated);
         }
     }
 

@@ -87,9 +87,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 @DisplayName("AbstractCobolStep: the batch lifecycle template and its two-level status model")
 final class AbstractCobolStepTest {
 
-    // =================================================================================================
     // Oracles read from the legacy source, never from the Java under test.
-    // =================================================================================================
 
     /** {@code 88 APPL-AOK VALUE 0}, {@code [app/cbl/CBACT01C.cbl:L90]}. */
     private static final int ORACLE_APPL_RESULT_AOK = 0;
@@ -189,9 +187,7 @@ final class AbstractCobolStepTest {
         return step;
     }
 
-    // =================================================================================================
     // The concrete subclass the tests drive the template through.
-    // =================================================================================================
 
     /**
      * A concrete step that records what the template asked of it and replays a scripted read sequence.

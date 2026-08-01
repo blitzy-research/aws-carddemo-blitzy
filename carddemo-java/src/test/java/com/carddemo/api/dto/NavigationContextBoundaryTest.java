@@ -148,7 +148,7 @@ class NavigationContextBoundaryTest {
         @Test
         @DisplayName("the empty context grants no administrative route")
         void theEmptyContextGrantsNoAdministrativeRoute() {
-            assertThat(NavigationContext.empty().administrator()).isFalse();
+            assertThat(NavigationContext.empty().echoesAdministratorCode()).isFalse();
             assertThat(NavigationContext.empty().resolvedUserType()).isEmpty();
         }
     }
@@ -170,13 +170,13 @@ class NavigationContextBoundaryTest {
         @Test
         @DisplayName("the administrative type earns the administrative route")
         void theAdministrativeTypeEarnsTheRoute() {
-            assertThat(referenceContext("A").administrator()).isTrue();
+            assertThat(referenceContext("A").echoesAdministratorCode()).isTrue();
         }
 
         @Test
         @DisplayName("the standard type does not earn the administrative route")
         void theStandardTypeDoesNotEarnTheRoute() {
-            assertThat(referenceContext("U").administrator()).isFalse();
+            assertThat(referenceContext("U").echoesAdministratorCode()).isFalse();
         }
 
         @ParameterizedTest
@@ -184,14 +184,14 @@ class NavigationContextBoundaryTest {
         @DisplayName("an undeclared user type resolves to nothing and grants no route")
         void anUndeclaredUserTypeGrantsNoRoute(String code) {
             assertThat(referenceContext(code).resolvedUserType()).isEmpty();
-            assertThat(referenceContext(code).administrator()).isFalse();
+            assertThat(referenceContext(code).echoesAdministratorCode()).isFalse();
         }
 
         @Test
         @DisplayName("an absent user type resolves to nothing and grants no route")
         void anAbsentUserTypeGrantsNoRoute() {
             assertThat(referenceContext(null).resolvedUserType()).isEmpty();
-            assertThat(referenceContext(null).administrator()).isFalse();
+            assertThat(referenceContext(null).echoesAdministratorCode()).isFalse();
         }
     }
 

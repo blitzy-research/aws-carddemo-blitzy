@@ -110,8 +110,35 @@ final class ConfigurationProfileBaselineTest {
     /** The published path of the generated interface description. */
     private static final String EXPECTED_API_DOCS_PATH = "/v3/api-docs";
 
-    /** The published path of the interface-description viewer. */
-    private static final String EXPECTED_SWAGGER_UI_PATH = "/swagger-ui.html";
+    /**
+     * The viewer address key. No shipped document may declare it: the browser asset bundle that would
+     * render an interactive page is excluded from the starter in {@code pom.xml}, so an address for it
+     * would describe a page that answers not-found. See {@code docs/decision-log.md} DL-088.
+     */
+    private static final String KEY_SWAGGER_UI_PATH = "springdoc.swagger-ui.path";
+
+    /**
+     * The viewer bundle-version key. No shipped document may declare it, and not only because the page
+     * is absent: this build defines no such property and filters no resource, so a document naming one
+     * would ship the unresolved build token verbatim as its value.
+     */
+    private static final String KEY_SWAGGER_UI_VERSION = "springdoc.swagger-ui.version";
+
+    /** A viewer display option; one of the keys that would describe a page that cannot render. */
+    private static final String KEY_SWAGGER_UI_OPERATIONS_SORTER =
+            "springdoc.swagger-ui.operations-sorter";
+
+    /** The second viewer display option, asserted for the same reason. */
+    private static final String KEY_SWAGGER_UI_TAGS_SORTER = "springdoc.swagger-ui.tags-sorter";
+
+    /**
+     * Matches a Maven resource-filtering token used as a property value, anywhere in the value.
+     *
+     * <p>An environment reference of the {@code ${NAME}} form is legitimate and deliberate throughout
+     * these documents; a {@code @name@} token is not, because this build declares no resource-filtering
+     * block at all and would therefore ship the token itself as the value.
+     */
+    private static final String UNRESOLVED_BUILD_TOKEN = ".*@[A-Za-z0-9._-]+@.*";
 
     /** The exposure key, spelled once so no test can mistype it into a vacuous pass. */
     private static final String KEY_EXPOSURE = "management.endpoints.web.exposure.include";
@@ -169,8 +196,6 @@ final class ConfigurationProfileBaselineTest {
     /** Tokens that must not appear as a value anywhere in the shared baseline. */
     private static final List<String> CREDENTIAL_TOKENS = List.of(
             "PASSWORD", "SECRET", "APIKEY", "API-KEY", "PRIVATE-KEY", "BEGIN RSA", "$2A$");
-
-    // ---------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("the shared baseline ships closed")
@@ -328,10 +353,16 @@ final class ConfigurationProfileBaselineTest {
         }
 
         @Test
-        @DisplayName("reopens the interface description and its viewer")
-        void reopensTheDescriptionAndItsViewer() {
+        @DisplayName("reopens the interface description, and reopens no viewer because none can render")
+        void reopensTheDescriptionAndNoViewer() {
             assertThat(text(LOCAL, KEY_API_DOCS_ENABLED)).isEqualTo("true");
-            assertThat(text(LOCAL, KEY_SWAGGER_UI_ENABLED)).isEqualTo("true");
+            assertThat(properties(LOCAL))
+                    .as("the browser asset bundle is excluded from the starter, so a viewer switch "
+                            + "reopened here would advertise an address with no assets to serve")
+                    .doesNotContainKey(KEY_SWAGGER_UI_ENABLED);
+            assertThat(text(SHARED, KEY_SWAGGER_UI_ENABLED))
+                    .as("and the value this overlay therefore inherits is the closed one")
+                    .isEqualTo("false");
         }
 
         @Test
@@ -427,29 +458,63 @@ final class ConfigurationProfileBaselineTest {
     final class ThePathsAreDeclaredOnceAndNeverMoved {
 
         @Test
-        @DisplayName("the baseline states the actuator base path and both description paths")
+        @DisplayName("the baseline states the actuator base path and the description path")
         void theBaselineStatesEveryResolvedPath() {
             assertThat(text(SHARED, "management.endpoints.web.base-path"))
                     .isEqualTo(EXPECTED_ACTUATOR_BASE_PATH);
             assertThat(text(SHARED, "springdoc.api-docs.path")).isEqualTo(EXPECTED_API_DOCS_PATH);
-            assertThat(text(SHARED, "springdoc.swagger-ui.path"))
-                    .isEqualTo(EXPECTED_SWAGGER_UI_PATH);
         }
 
-        @ParameterizedTest(name = "{0} does not move the description paths")
+        @ParameterizedTest(name = "{0} does not move the description path")
         @ValueSource(strings = {LOCAL, PRODUCTION, TEST})
         @DisplayName("no overlay moves a path a sibling file or a switch depends on")
         void noOverlayMovesAResolvedPath(final String profileDocument) {
             assertThat(properties(profileDocument))
-                    .as("a moved path would leave the reopened viewer answering not-found")
-                    .doesNotContainKey("springdoc.api-docs.path")
-                    .doesNotContainKey("springdoc.swagger-ui.path");
+                    .as("a moved path would leave the reopened description answering not-found "
+                            + "while the baseline still named the old address")
+                    .doesNotContainKey("springdoc.api-docs.path");
         }
     }
 
-    // ---------------------------------------------------------------------------------------------
+    @Nested
+    @DisplayName("no document advertises a surface the artefact does not carry")
+    final class NoDocumentAdvertisesAnAbsentSurface {
+
+        @ParameterizedTest(name = "{0} addresses no interactive viewer")
+        @ValueSource(strings = {SHARED, LOCAL, PRODUCTION, TEST})
+        @DisplayName("no shipped document addresses, versions or configures the interactive viewer")
+        void noDocumentAddressesTheViewer(final String document) {
+            assertThat(properties(document))
+                    .as("org.webjars:swagger-ui is excluded from the starter in pom.xml, so each of "
+                            + "these keys would describe a page that cannot render")
+                    .doesNotContainKey(KEY_SWAGGER_UI_PATH)
+                    .doesNotContainKey(KEY_SWAGGER_UI_VERSION)
+                    .doesNotContainKey(KEY_SWAGGER_UI_OPERATIONS_SORTER)
+                    .doesNotContainKey(KEY_SWAGGER_UI_TAGS_SORTER);
+        }
+
+        @ParameterizedTest(name = "{0} carries no unresolved build token as a value")
+        @ValueSource(strings = {SHARED, LOCAL, PRODUCTION, TEST})
+        @DisplayName("no shipped value is a build token, which nothing in this build would substitute")
+        void noDocumentCarriesAnUnresolvedBuildToken(final String document) {
+            properties(document).forEach((key, value) -> assertThat(String.valueOf(value))
+                    .as("%s declares %s, and this build filters no resource, so a @name@ token "
+                            + "would reach the artefact verbatim as the value", document, key)
+                    .doesNotMatch(UNRESOLVED_BUILD_TOKEN));
+        }
+
+        @Test
+        @DisplayName("the viewer switch is held closed in every main profile, never left to a default")
+        void theViewerSwitchIsNeverLeftToTheLibraryDefault() {
+            assertThat(text(SHARED, KEY_SWAGGER_UI_ENABLED))
+                    .as("the library's own default is true, so an unstated switch would route an "
+                            + "address whose assets were excluded from the build")
+                    .isEqualTo("false");
+            assertThat(text(PRODUCTION, KEY_SWAGGER_UI_ENABLED)).isEqualTo("false");
+        }
+    }
+
     // Providers.
-    // ---------------------------------------------------------------------------------------------
 
     /**
      * The management endpoints that must not appear in the shared baseline's exposure list.
@@ -479,9 +544,7 @@ final class ConfigurationProfileBaselineTest {
         return CREDENTIAL_TOKENS.stream().map(Arguments::of);
     }
 
-    // ---------------------------------------------------------------------------------------------
     // Helpers.
-    // ---------------------------------------------------------------------------------------------
 
     /**
      * Reads one property out of a shipped configuration document as text.

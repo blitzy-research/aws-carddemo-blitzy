@@ -91,9 +91,7 @@ class ScreenWorkAreaTest {
         return new ScreenWorkArea(keyAction, null, null, null, null, null, null, null, null);
     }
 
-    // =================================================================================================
     // COPYBOOK GEOMETRY
-    // =================================================================================================
 
     /**
      * Verifies the declared widths against the work area they reproduce.
@@ -154,9 +152,7 @@ class ScreenWorkAreaTest {
         }
     }
 
-    // =================================================================================================
     // THE ATTENTION KEY
-    // =================================================================================================
 
     /**
      * Verifies the attention identifier the terminal last raised.
@@ -220,9 +216,7 @@ class ScreenWorkAreaTest {
         }
     }
 
-    // =================================================================================================
     // THE NUMERIC REDEFINITIONS
-    // =================================================================================================
 
     /**
      * Verifies the three numeric views over the three character identifier fields.
@@ -352,9 +346,7 @@ class ScreenWorkAreaTest {
         }
     }
 
-    // =================================================================================================
     // VALUE SEMANTICS
-    // =================================================================================================
 
     /**
      * Verifies that the work area behaves as a value.
@@ -390,13 +382,17 @@ class ScreenWorkAreaTest {
         }
 
         @Test
-        @DisplayName("the rendered form names the record and its populated components")
+        @DisplayName("the rendered form names the record and carries the routing components, withholding the "
+                + "three identifiers and the two message slots")
         void theRenderedFormNamesTheRecordAndItsComponents() {
             assertThat(withIdentifiers("123456789").toString())
                     .startsWith("ScreenWorkArea[")
                     .endsWith("]")
                     .contains("COACTUPC")
-                    .contains("Account not found");
+                    .contains("CACTUPA")
+                    .doesNotContain("Account not found")
+                    .doesNotContain("Update successful")
+                    .doesNotContain("123456789");
         }
     }
 }

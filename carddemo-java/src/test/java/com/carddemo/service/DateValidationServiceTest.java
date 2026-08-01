@@ -78,11 +78,9 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
 @DisplayName("DateValidationService: the copybook cascade and the callable subprogram")
 final class DateValidationServiceTest {
 
-    // =================================================================================================
     // The thirteen cascade message suffixes, reproduced from app/cpy/CSUTLDPY.cpy byte for byte.
     // These are duplicated here deliberately: a test that imported the production constants would
     // assert only that the code equals itself.
-    // =================================================================================================
 
     /** {@code [app/cpy/CSUTLDPY.cpy:L37]}. Opens with a spaced colon. */
     private static final String ORACLE_YEAR_NOT_SUPPLIED = " : Year must be supplied.";
@@ -128,10 +126,8 @@ final class DateValidationServiceTest {
     /** The all-spaces state of {@code WS-RETURN-MSG}, {@code [app/cbl/COACTUPC.cbl:L479]}. */
     private static final String ORACLE_NO_MESSAGE = "";
 
-    // =================================================================================================
     // The ten outcome texts of the evaluation at [app/cbl/CSUTLDTC.cbl:L128] to [L149], each padded to
     // the fifteen-character receiving field WS-RESULT at [app/cbl/CSUTLDTC.cbl:L49].
-    // =================================================================================================
 
     /** {@code [app/cbl/CSUTLDTC.cbl:L130]}, padded from thirteen characters to fifteen. */
     private static final String ORACLE_TEXT_DATE_IS_VALID = "Date is valid  ";
@@ -163,9 +159,7 @@ final class DateValidationServiceTest {
     /** The {@code WHEN OTHER} text at {@code [app/cbl/CSUTLDTC.cbl:L148]}, already fifteen. */
     private static final String ORACLE_TEXT_DATE_IS_INVALID = "Date is invalid";
 
-    // =================================================================================================
     // Widths and codes, every one read from a record layout rather than assumed.
-    // =================================================================================================
 
     /** {@code LS-RESULT PIC X(80)}, {@code [app/cbl/CSUTLDTC.cbl:L86]}. */
     private static final int ORACLE_RESULT_BLOCK_WIDTH = 80;
@@ -204,9 +198,7 @@ final class DateValidationServiceTest {
     /** The message number of the success token: zero, zero filled to four characters. */
     private static final String ORACLE_ZERO_MESSAGE_NUMBER = "0000";
 
-    // =================================================================================================
     // Calendar constants, each a condition-name value from app/cpy/CSUTLDWY.cpy.
-    // =================================================================================================
 
     /** {@code 88 THIS-CENTURY VALUE 20}, {@code [app/cpy/CSUTLDWY.cpy:L9]}. */
     private static final int ORACLE_THIS_CENTURY = 20;
@@ -230,9 +222,7 @@ final class DateValidationServiceTest {
      */
     private static final LocalDate ORACLE_LILIAN_RANGE_START = LocalDate.of(1582, 10, 15);
 
-    // =================================================================================================
     // Representative inputs. Each is named for the branch it selects, so a failure names the branch.
-    // =================================================================================================
 
     /** A wholly unremarkable date: every stage passes and no message is claimed. */
     private static final String VALID_DATE = "20220101";
@@ -325,9 +315,7 @@ final class DateValidationServiceTest {
         return image.replace('\u0000', '.');
     }
 
-    // =================================================================================================
     // ENTRY POINT TWO: the callable subprogram, CALL 'CSUTLDTC'.
-    // =================================================================================================
 
     @Nested
     @DisplayName("the callable subprogram: ten feedback outcomes selected in source order")
@@ -806,9 +794,7 @@ final class DateValidationServiceTest {
         }
     }
 
-    // =================================================================================================
     // ENTRY POINT ONE: the eleven-paragraph copybook cascade, stage by stage in source order.
-    // =================================================================================================
 
     @Nested
     @DisplayName("cascade stage one, EDIT-YEAR-CCYY: supplied, then four digits, then a known century")

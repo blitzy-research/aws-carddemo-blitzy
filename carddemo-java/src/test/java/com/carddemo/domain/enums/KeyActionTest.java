@@ -110,9 +110,7 @@ class KeyActionTest {
         return Collections.unmodifiableMap(values);
     }
 
-    // =================================================================================================
     // VOCABULARY
-    // =================================================================================================
 
     /**
      * Verifies the sixteen actions against the copybook's condition names.
@@ -212,9 +210,7 @@ class KeyActionTest {
         }
     }
 
-    // =================================================================================================
     // FIELD WIDTH
-    // =================================================================================================
 
     /**
      * Verifies the fixed five-byte field every action image must fill.
@@ -265,9 +261,7 @@ class KeyActionTest {
         }
     }
 
-    // =================================================================================================
     // FUNCTION-KEY PREDICATE
-    // =================================================================================================
 
     /**
      * Verifies the partition between the four non-function actions and the twelve function keys.
@@ -330,9 +324,7 @@ class KeyActionTest {
         }
     }
 
-    // =================================================================================================
     // LOOKUP
-    // =================================================================================================
 
     /**
      * Verifies the lookup from a recorded five-byte image back to an action.
@@ -427,9 +419,7 @@ class KeyActionTest {
         }
     }
 
-    // =================================================================================================
     // THE DELIBERATE FOLD
-    // =================================================================================================
 
     /**
      * Records why the vocabulary is smaller than the terminal's key set.

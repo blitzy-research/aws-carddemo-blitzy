@@ -98,9 +98,7 @@ class NavigationContextTest {
                 "COACTUP");
     }
 
-    // =================================================================================================
     // COPYBOOK GEOMETRY
-    // =================================================================================================
 
     /**
      * Verifies the declared widths against the communication area they reproduce.
@@ -163,9 +161,7 @@ class NavigationContextTest {
         }
     }
 
-    // =================================================================================================
     // THE ABSENT CONTEXT
-    // =================================================================================================
 
     /**
      * Verifies the shared empty context.
@@ -209,7 +205,7 @@ class NavigationContextTest {
                 + "context cannot be mistaken for an authorised one")
         void theEmptyContextIsNotAdministrative() {
             assertThat(NavigationContext.empty().resolvedUserType()).isEmpty();
-            assertThat(NavigationContext.empty().administrator()).isFalse();
+            assertThat(NavigationContext.empty().echoesAdministratorCode()).isFalse();
         }
 
         @Test
@@ -220,9 +216,7 @@ class NavigationContextTest {
         }
     }
 
-    // =================================================================================================
     // THE USER-TYPE DECISION
-    // =================================================================================================
 
     /**
      * Verifies the one byte that decides which menu a signed-on user reaches.
@@ -238,7 +232,7 @@ class NavigationContextTest {
                     populated("A", NavigationContext.ProgramContext.ENTER);
 
             assertThat(context.resolvedUserType()).contains(UserType.ADMIN);
-            assertThat(context.administrator()).isTrue();
+            assertThat(context.echoesAdministratorCode()).isTrue();
         }
 
         @Test
@@ -248,7 +242,7 @@ class NavigationContextTest {
                     populated("U", NavigationContext.ProgramContext.ENTER);
 
             assertThat(context.resolvedUserType()).contains(UserType.USER);
-            assertThat(context.administrator()).isFalse();
+            assertThat(context.echoesAdministratorCode()).isFalse();
         }
 
         @Test
@@ -260,7 +254,7 @@ class NavigationContextTest {
                         populated(code, NavigationContext.ProgramContext.ENTER);
 
                 assertThat(context.resolvedUserType()).as("code %s", code).isEmpty();
-                assertThat(context.administrator()).as("code %s", code).isFalse();
+                assertThat(context.echoesAdministratorCode()).as("code %s", code).isFalse();
             }
         }
 
@@ -271,7 +265,7 @@ class NavigationContextTest {
                     populated(null, NavigationContext.ProgramContext.ENTER);
 
             assertThat(context.resolvedUserType()).isEmpty();
-            assertThat(context.administrator()).isFalse();
+            assertThat(context.echoesAdministratorCode()).isFalse();
         }
 
         @Test
@@ -280,7 +274,7 @@ class NavigationContextTest {
         void exactlyOneDeclaredRoleIsPrivileged() {
             int privileged = 0;
             for (final UserType role : UserType.values()) {
-                if (populated(role.getCode(), NavigationContext.ProgramContext.ENTER).administrator()) {
+                if (populated(role.getCode(), NavigationContext.ProgramContext.ENTER).echoesAdministratorCode()) {
                     privileged++;
                 }
             }
@@ -289,9 +283,7 @@ class NavigationContextTest {
         }
     }
 
-    // =================================================================================================
     // THE ENTRY DECISION
-    // =================================================================================================
 
     /**
      * Verifies the digit that gates field-level error decoration.
@@ -344,9 +336,7 @@ class NavigationContextTest {
         }
     }
 
-    // =================================================================================================
     // ENTRY-STATE TRANSITIONS
-    // =================================================================================================
 
     /**
      * Verifies that changing the entry state changes nothing else.
@@ -445,9 +435,7 @@ class NavigationContextTest {
         }
     }
 
-    // =================================================================================================
     // VALUE SEMANTICS
-    // =================================================================================================
 
     /**
      * Verifies that the context behaves as a value.

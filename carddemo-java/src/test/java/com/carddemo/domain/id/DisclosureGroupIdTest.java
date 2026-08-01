@@ -160,9 +160,7 @@ class DisclosureGroupIdTest {
         }
     }
 
-    // =================================================================================================
     // COMPONENT CONTRACT
-    // =================================================================================================
 
     /**
      * Verifies that the three components bind in copybook order and are stored verbatim.
@@ -254,9 +252,7 @@ class DisclosureGroupIdTest {
         }
     }
 
-    // =================================================================================================
     // BYTE GEOMETRY
-    // =================================================================================================
 
     /**
      * Verifies the byte geometry the cluster definition declares.
@@ -344,9 +340,7 @@ class DisclosureGroupIdTest {
         }
     }
 
-    // =================================================================================================
     // EQUALITY AND HASHING
-    // =================================================================================================
 
     /**
      * Verifies the equality contract across all three components.
@@ -462,9 +456,7 @@ class DisclosureGroupIdTest {
         }
     }
 
-    // =================================================================================================
     // SERIALISATION
-    // =================================================================================================
 
     /**
      * Verifies the serialisation contract an identifier class is required to honour.
@@ -525,9 +517,7 @@ class DisclosureGroupIdTest {
         }
     }
 
-    // =================================================================================================
     // DIAGNOSTIC REPRESENTATION
-    // =================================================================================================
 
     /**
      * Verifies the diagnostic representation, which is what identifies a row in a log line.

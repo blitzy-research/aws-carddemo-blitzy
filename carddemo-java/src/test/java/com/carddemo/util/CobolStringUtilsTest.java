@@ -35,7 +35,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * migration requirement &mdash; <em>STRING / UNSTRING / INSPECT to String utility methods, with
  * delimiter behaviour, pointer semantics and tallying logic identical</em>.
  *
- * <p><strong>Why this test is written the way it is.</strong> Every one of the four primitives under
+ * <p><strong>Why this test is written the way it is.</strong> Every one of the seven primitives under
  * test is a documented parity trap: each has a natural-looking Java equivalent that compiles, reads
  * well, and accepts or transforms a different set of values than the legacy program does. A test
  * written against the idiomatic assumption passes while the defect ships. Every expectation below is
@@ -60,11 +60,14 @@ import org.junit.jupiter.params.provider.ValueSource;
  * because reaching a private member from a test would require reflection and the unsafe-code audit
  * budget for reflection is zero.
  *
- * <p><strong>Deliberately absent, and asserted nowhere.</strong> No numeric-only predicate, because
- * the numeric-only table pair declared at {@code [app/cbl/COACTUPC.cbl:L609]} and
- * {@code [app/cbl/COACTUPC.cbl:L612]} appears in no {@code INSPECT} statement anywhere in the
- * estate. No tokeniser, because the estate contains <b>zero</b> {@code UNSTRING} statements. No
- * selection-bitmap helper and no tally helper: the {@code REPLACING} site at
+ * <p><strong>Deliberately absent, each absence attributed to its owner.</strong> No numeric-only
+ * {@code INSPECT} predicate, because the numeric-only table pair declared at
+ * {@code [app/cbl/COACTUPC.cbl:L609]} and {@code [app/cbl/COACTUPC.cbl:L612]} appears in no
+ * {@code INSPECT} statement anywhere in the estate - a separate matter from the signed-amount lexeme
+ * primitives asserted at the end of this file, whose authority is the {@code NUMVAL-C} intrinsic
+ * rather than a character table. No tokeniser, because the estate contains <strong>zero</strong>
+ * {@code UNSTRING} statements. No selection-bitmap helper and no tally helper: the
+ * {@code REPLACING} site at
  * {@code [app/cbl/COCRDLIC.cbl:L1090]} and the {@code TALLYING} site at
  * {@code [app/cbl/COCRDLIC.cbl:L1079]}, both inside paragraph {@code 2250-EDIT-ARRAY} at
  * {@code [app/cbl/COCRDLIC.cbl:L1073]}, carry seven-row card-list page knowledge and belong to the
@@ -85,7 +88,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <p>This is a pure unit test: no container, no Spring context, no database, no queue, no network
  * and no file system, and no elapsed-time or throughput assertion.
  */
-@DisplayName("CobolStringUtils - faithful COBOL INSPECT primitives")
+@DisplayName("CobolStringUtils - faithful COBOL string primitives")
 class CobolStringUtilsTest {
 
     /**
@@ -1036,5 +1039,179 @@ class CobolStringUtilsTest {
                             MENU_OPTION_WIDTH))
                     .withMessageStartingWith("value must not be null");
         }
+    }
+
+    /**
+     * The three signed-amount lexeme primitives, whose authority is paragraph
+     * {@code 1250-EDIT-SIGNED-9V2} at {@code [app/cbl/COACTUPC.cbl:L2180-L2220]} and the map-move tests
+     * that precede it at {@code [app/cbl/COACTUPC.cbl:L1073]} and its four peers.
+     *
+     * <p>The paragraph reaches <b>three</b> states and not two, and each of the three is asserted here
+     * separately, because collapsing them is the parity trap: an implementation that answered only
+     * "valid or not" would lose the distinction between a field the operator left alone and a field the
+     * operator filled in wrongly, which the legacy reports with two different messages.
+     *
+     * <p>Ordering matters as much as the verdicts. The legacy tests not-supplied <em>first</em>, so an
+     * all-space value never reaches the well-formedness test at all. These tests therefore assert that
+     * an all-space value is unsupplied <em>and</em> that it is not a well-formed number, which is what
+     * lets a caller run the two predicates in the legacy's order and get the legacy's answers.
+     *
+     * <p>Decision log entry DL-078 records why the request contract carries the raw 15-character lexeme
+     * and what grammar these three primitives accept.
+     */
+    @Nested
+    @DisplayName("Signed-amount screen lexemes - the three states of 1250-EDIT-SIGNED-9V2")
+    class SignedAmountScreenLexemes {
+
+        @Test
+        @DisplayName("an absent component is unsupplied, because LOW-VALUES is how the legacy "
+                + "represents a field the terminal never transmitted")
+        void anAbsentComponentIsUnsupplied() {
+            assertThat(CobolStringUtils.isUnsuppliedNumericLexeme(null))
+                    .as("this one predicate accepts null as a value; every other primitive rejects it")
+                    .isTrue();
+        }
+
+        @ParameterizedTest(name = "[{0}] is unsupplied")
+        @ValueSource(strings = {"", " ", "   ", "               ", "*", "* ", "*             "})
+        @DisplayName("empty, all-space and marker values are unsupplied, which is the composition of "
+                + "the map-move test and the edit paragraph's own test")
+        void emptyAllSpaceAndMarkerValuesAreUnsupplied(String lexeme) {
+            assertThat(CobolStringUtils.isUnsuppliedNumericLexeme(lexeme)).isTrue();
+        }
+
+        @ParameterizedTest(name = "[{0}] is supplied")
+        @ValueSource(strings = {"0", "0.00", "-", ".", "1500.00", "not a number", " *", "*1", "**",
+                "* 1", "1*"})
+        @DisplayName("anything else is supplied, including a value that is merely malformed and a "
+                + "marker that is not in the first position")
+        void anythingElseIsSupplied(String lexeme) {
+            assertThat(CobolStringUtils.isUnsuppliedNumericLexeme(lexeme))
+                    .as("the legacy compares the whole 15-character field against the literal '*' "
+                            + "padded with spaces, so position matters and a trim would not do")
+                    .isFalse();
+        }
+
+        @ParameterizedTest(name = "[{0}] is a well-formed NUMVAL-C argument")
+        @ValueSource(strings = {"0", "1500", "1500.00", "-250.75", "+1500.00", "- 1500.00", ".5", "5.",
+                "1,500.00", "1,234,567.89", "$1500.00", "-$1500.00", "$ 1500.00", "  1500.00  ",
+                "1500.00-", "1500.00+", "100CR", "100DB", "1500.00 CR ", "0001500.00",
+                "9999999999.99", "999999999999.99"})
+        @DisplayName("the accepted grammar is the NUMVAL-C argument format, signs either side, "
+                + "separators, currency sign and surrounding spaces included")
+        void theAcceptedGrammarIsTheNumvalCArgumentFormat(String lexeme) {
+            assertThat(CobolStringUtils.isNumericLexeme(lexeme))
+                    .as("[%s] must be accepted; the legacy edit tests form only", lexeme)
+                    .isTrue();
+        }
+
+        @ParameterizedTest(name = "[{0}] is not a well-formed NUMVAL-C argument")
+        @ValueSource(strings = {"", " ", "   ", "*", "abc", "1.2.3", "1,,2", ",1", "1,", "1.5,0", "-",
+                "+", ".", "-.", "1 500", "$$100", "100$", "-1500.00-", "1500.00+-", "1500.00CR-",
+                "CR", "DB", "1500.00cr", "1500.00db", "1500.00X", "(1500.00)", "1500.00 X",
+                "-100CR", "+100DB", "100CX", "100DX"})
+        @DisplayName("everything outside that grammar is malformed, including a lower-case credit "
+                + "mark, a bracketed negative, two signs, a leading sign paired with a trailing "
+                + "credit or debit mark, and a half-spelled mark")
+        void everythingOutsideThatGrammarIsMalformed(String lexeme) {
+            assertThat(CobolStringUtils.isNumericLexeme(lexeme))
+                    .as("[%s] must be rejected so the cascade emits the not-valid message", lexeme)
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("a null lexeme is not a number, answered rather than raised, so the two "
+                + "predicates can be run in the legacy's order without a null check between them")
+        void aNullLexemeIsNotANumber() {
+            assertThat(CobolStringUtils.isNumericLexeme(null)).isFalse();
+        }
+
+        @Test
+        @DisplayName("an all-space value is unsupplied and is also not a number, which is why the "
+                + "legacy's ordering of the two tests is reproducible")
+        void anAllSpaceValueIsUnsuppliedAndIsAlsoNotANumber() {
+            assertThat(CobolStringUtils.isUnsuppliedNumericLexeme("   ")).isTrue();
+            assertThat(CobolStringUtils.isNumericLexeme("   ")).isFalse();
+        }
+
+        @ParameterizedTest(name = "[{0}] converts to [{1}]")
+        @MethodSource("com.carddemo.util.CobolStringUtilsTest#numvalCConversions")
+        @DisplayName("conversion strips the separators and the currency sign, moves a trailing sign "
+                + "or credit mark to the front, and keeps every digit that was typed")
+        void conversionStripsSeparatorsAndKeepsEveryDigit(String lexeme, String expected) {
+            assertThat(CobolStringUtils.plainDecimalOfNumericLexeme(lexeme))
+                    .as("[%s] must convert to [%s]", lexeme, expected)
+                    .isEqualTo(expected);
+        }
+
+        @Test
+        @DisplayName("conversion applies no scale, so a caller cannot obtain a rounded value from "
+                + "this class")
+        void conversionAppliesNoScale() {
+            assertThat(CobolStringUtils.plainDecimalOfNumericLexeme("1.239"))
+                    .as("three decimal places are handed on as three; truncating to two is the "
+                            + "codec's single responsibility")
+                    .isEqualTo("1.239");
+            assertThat(CobolStringUtils.plainDecimalOfNumericLexeme("1"))
+                    .as("no decimal places are added either")
+                    .isEqualTo("1");
+        }
+
+        @Test
+        @DisplayName("conversion refuses a malformed lexeme without repeating it, so a rejection "
+                + "cannot put a monetary value in a log")
+        void conversionRefusesAMalformedLexemeWithoutRepeatingIt() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> CobolStringUtils.plainDecimalOfNumericLexeme("1234.56X"))
+                    .withMessageContaining("isNumericLexeme")
+                    .withMessageNotContaining("1234")
+                    .withMessageNotContaining("1234.56X");
+        }
+
+        @Test
+        @DisplayName("conversion rejects a null lexeme, because an absent field is not a blank field")
+        void conversionRejectsANullLexeme() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> CobolStringUtils.plainDecimalOfNumericLexeme(null))
+                    .withMessageStartingWith("lexeme must not be null");
+        }
+
+        @ParameterizedTest(name = "[{0}] converts to a value the codec can scale")
+        @ValueSource(strings = {"0", "1500", "1500.00", "-250.75", "1,234,567.89", "$1500.00",
+                "100CR", ".5", "5."})
+        @DisplayName("every accepted lexeme converts to text an exact decimal can be built from, "
+                + "which is the contract the codec relies on")
+        void everyAcceptedLexemeConvertsToTextAnExactDecimalCanBeBuiltFrom(String lexeme) {
+            String plain = CobolStringUtils.plainDecimalOfNumericLexeme(lexeme);
+
+            assertThat(plain).matches("-?[0-9]+(\\.[0-9]+)?");
+            assertThat(new java.math.BigDecimal(plain)).isNotNull();
+        }
+    }
+
+    /**
+     * Conversion pairs, each one a lexeme an operator could type at the 15-character field and the
+     * plain decimal text it must become.
+     *
+     * @return lexeme and expected plain decimal text
+     */
+    static Stream<Arguments> numvalCConversions() {
+        return Stream.of(
+                Arguments.of("0", "0"),
+                Arguments.of("1500.00", "1500.00"),
+                Arguments.of("-250.75", "-250.75"),
+                Arguments.of("+1500.00", "1500.00"),
+                Arguments.of("250.75-", "-250.75"),
+                Arguments.of("250.75+", "250.75"),
+                Arguments.of("100CR", "-100"),
+                Arguments.of("100DB", "-100"),
+                Arguments.of("1,234.5", "1234.5"),
+                Arguments.of("$1,234.5", "1234.5"),
+                Arguments.of("-$1,234.5", "-1234.5"),
+                Arguments.of("  1,500.00  ", "1500.00"),
+                Arguments.of(".5", "0.5"),
+                Arguments.of("5.", "5"),
+                Arguments.of("0001500.00", "0001500.00"),
+                Arguments.of("999999999999.99", "999999999999.99"));
     }
 }

@@ -115,14 +115,14 @@ final class FieldErrorDecoratorBaselineTest {
         @DisplayName("the supplied list is copied defensively, so a caller that mutates its own list "
                 + "afterwards cannot change what the decorator reports")
         void theSuppliedListIsCopiedDefensively() {
-            final List<ErrorResponse.FieldError> supplied = new ArrayList<>();
-            supplied.add(new ErrorResponse.FieldError(
-                    FIELD_NAME, SCREEN_FIELD_ID, ErrorResponse.FieldState.MISSING));
+            final List<FieldErrorDecorator.MarkedField> supplied = new ArrayList<>();
+            supplied.add(new FieldErrorDecorator.MarkedField(
+                    FIELD_NAME, SCREEN_FIELD_ID, FieldErrorDecorator.FlagState.BLANK));
 
             final FieldErrorDecorator decorator = new FieldErrorDecorator(supplied);
             supplied.clear();
-            supplied.add(new ErrorResponse.FieldError(
-                    "somethingElse", "OTHER", ErrorResponse.FieldState.INVALID));
+            supplied.add(new FieldErrorDecorator.MarkedField(
+                    "somethingElse", "OTHER", FieldErrorDecorator.FlagState.NOT_OK));
 
             assertThat(decorator.fieldErrors()).hasSize(1);
             assertThat(decorator.fieldErrors().get(0).fieldName()).isEqualTo(FIELD_NAME);
@@ -142,9 +142,9 @@ final class FieldErrorDecoratorBaselineTest {
         @DisplayName("a list carrying a null entry is rejected outright, because a null entry would render as "
                 + "a field error naming no field")
         void aListCarryingANullEntryIsRejected() {
-            final List<ErrorResponse.FieldError> withNull = Arrays.asList(
-                    new ErrorResponse.FieldError(
-                            FIELD_NAME, SCREEN_FIELD_ID, ErrorResponse.FieldState.MISSING),
+            final List<FieldErrorDecorator.MarkedField> withNull = Arrays.asList(
+                    new FieldErrorDecorator.MarkedField(
+                            FIELD_NAME, SCREEN_FIELD_ID, FieldErrorDecorator.FlagState.BLANK),
                     null);
 
             assertThatExceptionOfType(NullPointerException.class)
@@ -466,7 +466,10 @@ final class FieldErrorDecoratorBaselineTest {
                     .endsWith("]")
                     .contains(FIELD_NAME)
                     .contains(SCREEN_FIELD_ID)
-                    .contains(ErrorResponse.FieldState.INVALID.name());
+                    .contains(FieldErrorDecorator.FlagState.NOT_OK.name());
+            assertThat(rendered)
+                    .as("what is accumulated is the legacy flag state, not the published state")
+                    .doesNotContain(ErrorResponse.FieldState.INVALID.name());
         }
 
         @Test
@@ -474,7 +477,7 @@ final class FieldErrorDecoratorBaselineTest {
                 + "visibly clean in a log")
         void anEmptyDecoratorRendersWithoutAnyEntry() {
             assertThat(FieldErrorDecorator.none().toString())
-                    .isEqualTo("FieldErrorDecorator[fieldErrors=[]]");
+                    .isEqualTo("FieldErrorDecorator[markedFields=[]]");
         }
     }
 }

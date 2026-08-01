@@ -29,9 +29,9 @@ import java.util.Objects;
  * <b>zero</b> {@code UNSTRING} statements, with no {@code INSPECT} anywhere in {@code app/cpy/}. The 11
  * decompose as <b>7 {@code CONVERTING}</b> plus <b>3 {@code REPLACING}</b> plus <b>1
  * {@code TALLYING}</b>. Reading the {@code FROM} table at each {@code CONVERTING} site gives the
- * breakdown <b>3 alphabetic + 2 alphanumeric + 2 upper-fold</b>, which is why <b>four</b> primitives
- * exist here rather than three: covering the two alphanumeric sites with an alphabetic-only predicate
- * would reject digits the legacy system accepts. Two further textual matches at
+ * breakdown <b>3 alphabetic + 2 alphanumeric + 2 upper-fold</b>, which is why <b>four</b>
+ * {@code INSPECT} primitives exist here rather than three: covering the two alphanumeric sites with an
+ * alphabetic-only predicate would reject digits the legacy system accepts. Two further textual matches at
  * {@code [app/cbl/COACTUPC.cbl:L584]} and {@code [app/cbl/COACTUPC.cbl:L605]} are comment banners, not
  * statements.
  *
@@ -43,6 +43,27 @@ import java.util.Objects;
  * {@link #asciiUpperFold(String)} covers {@code [app/cbl/COCRDUPC.cbl:L1357]} and
  * {@code [app/cbl/COCRDUPC.cbl:L1500]}; {@link #rightJustifyZeroFill(String, int)} covers
  * {@code [app/cbl/COADM01C.cbl:L123]} and {@code [app/cbl/COMEN01C.cbl:L123]}.
+ *
+ * <p><strong>A second family: the signed-amount screen lexeme.</strong> Three further primitives -
+ * {@link #isUnsuppliedNumericLexeme(String)}, {@link #isNumericLexeme(String)} and
+ * {@link #plainDecimalOfNumericLexeme(String)} - translate paragraph {@code 1250-EDIT-SIGNED-9V2} at
+ * {@code [app/cbl/COACTUPC.cbl:L2180-L2220]}, the estate's only edit for a signed amount typed at a
+ * terminal. It is invoked five times, once per monetary field of the account-update screen
+ * ({@code [app/cbl/COACTUPC.cbl:L1485]}, 1498, 1510, 1517 and 1524), and it produces <b>three</b>
+ * mutually exclusive states rather than the pass-or-fail a Java validator would produce: BLANK when the
+ * field was not supplied, NOT-OK when what was supplied is not a number, and VALID otherwise, with two
+ * different operator messages for the two failures. Those three states are why the request contract
+ * carries the 15-character lexeme rather than a decoded number - a number cannot represent the middle
+ * state, and a body that failed to bind could not report it. Decision log entry DL-078 records the
+ * contract change and the grammar these three primitives accept.
+ *
+ * <p>They belong here rather than with the record codec because both questions they answer are
+ * questions about characters - is this field blank, and is this text a well-formed number - and neither
+ * chooses a scale or performs arithmetic. The conversion stops at a plain decimal <em>string</em> for
+ * the same reason: turning that string into a value at the estate's mandatory scale and truncation is
+ * the codec's job, and {@code ZonedDecimalCodec.fromNumericLexeme(String)} is the single caller that
+ * does it. The COBOL functions being translated, {@code TEST-NUMVAL-C} and {@code NUMVAL-C}, are
+ * intrinsic functions over an alphanumeric argument, so a string-handling home is the faithful one.
  *
  * <p>Two sites are <em>deliberately absent</em>: the {@code TALLYING} site at
  * {@code [app/cbl/COCRDLIC.cbl:L1079]} and the selection-bitmap {@code REPLACING} site at
@@ -114,7 +135,10 @@ import java.util.Objects;
  * and each primitive is separately testable. A {@code null} argument raises
  * {@link NullPointerException} by way of {@link Objects#requireNonNull(Object, String)} rather than
  * being silently coerced to the empty string: a silent default would let a missing screen field
- * masquerade as a valid blank one, and the legacy programs distinguish those two states. Empty and
+ * masquerade as a valid blank one, and the legacy programs distinguish those two states. The single
+ * documented exception is {@link #isUnsuppliedNumericLexeme(String)}, whose whole subject is the
+ * not-supplied state that {@code LOW-VALUES} represents, so for that one predicate an absent field and
+ * a blank field genuinely are the same thing and {@code null} is an accepted value. Empty and
  * all-space input, by contrast, is a legitimate value that the predicates accept - deciding whether a
  * field <em>must</em> be supplied is the caller's job, never this class's. Every width, byte offset,
  * field length, statement count and fixture row count quoted in this file is factual layout evidence
@@ -165,6 +189,36 @@ public final class CobolStringUtils {
      * ({@code [app/cbl/COADM01C.cbl:L123]}, {@code [app/cbl/COMEN01C.cbl:L123]}).
      */
     private static final char ZERO_FILL = '0';
+
+    /**
+     * The character the error-decoration macro {@code app/cpy/CSSETATY.cpy} writes into a screen field
+     * whose validation flag was BLANK, seen at {@code [app/cpy/CSSETATY.cpy:L18-L27]}. It arrives back
+     * on the next turn in the field it decorated, and the map-to-working-storage move at
+     * {@code [app/cbl/COACTUPC.cbl:L1073]} tests for it explicitly, so it is a marker rather than data.
+     */
+    private static final char DECORATION_MARKER = '*';
+
+    /**
+     * The COBOL currency sign. No {@code SPECIAL-NAMES} paragraph and therefore no {@code CURRENCY
+     * SIGN} clause exists anywhere under {@code app/cbl/} or {@code app/cpy/}, so the language default
+     * is in force estate-wide.
+     */
+    private static final char CURRENCY_SIGN = '$';
+
+    /**
+     * The COBOL decimal point. {@code DECIMAL-POINT IS COMMA} appears nowhere in the estate, so the
+     * language default is in force and the comma keeps its digit-separator role.
+     */
+    private static final char DECIMAL_POINT = '.';
+
+    /** The digit separator permitted inside the integer part of a {@code NUMVAL-C} argument. */
+    private static final char DIGIT_SEPARATOR = ',';
+
+    /** Leading or trailing plus sign of a {@code NUMVAL-C} argument. */
+    private static final char PLUS_SIGN = '+';
+
+    /** Leading or trailing minus sign of a {@code NUMVAL-C} argument. */
+    private static final char MINUS_SIGN = '-';
 
     /** Not instantiable: this is a stateless collection of pure primitives. */
     private CobolStringUtils() {
@@ -370,6 +424,125 @@ public final class CobolStringUtils {
     }
 
     /**
+     * Reports whether a signed-amount screen lexeme carries the legacy <em>not supplied</em> state, the
+     * first of the three outcomes paragraph {@code 1250-EDIT-SIGNED-9V2} can reach
+     * ({@code [app/cbl/COACTUPC.cbl:L2180-L2220]}).
+     *
+     * <p><strong>Two legacy tests compose into one.</strong> The map-to-working-storage move tests the
+     * transmitted field first - {@code IF ACRDLIMI OF CACTUPAI = '*' OR = SPACES} moves
+     * {@code LOW-VALUES} into the work field rather than the lexeme
+     * ({@code [app/cbl/COACTUPC.cbl:L1073]}, and identically at lines 1087, 1101, 1115 and 1130) - and
+     * the edit paragraph then tests {@code IF WS-EDIT-SIGNED-NUMBER-9V2-X EQUAL LOW-VALUES OR EQUAL
+     * SPACES}. Composed, exactly three transmitted shapes reach the BLANK state: an absent field, an
+     * all-space field, and a field holding the decoration marker. This predicate is that composition,
+     * which is why it is one method rather than two.
+     *
+     * <p><strong>{@code null} is a value here, not a programming error.</strong> Every other primitive
+     * in this class rejects {@code null}, because for those an absent field and a blank field are
+     * different things. For this one they are the same thing: {@code LOW-VALUES} <em>is</em> how the
+     * legacy represents "the terminal transmitted nothing for this field", and the paragraph tests for
+     * it in the same breath as spaces. A JSON body that omits the component therefore reaches the same
+     * state by the same rule, and raising {@link NullPointerException} instead would turn a legitimate
+     * operator action into a fault.
+     *
+     * <p><strong>Marker matching is positional, not a trim.</strong> COBOL extends the literal
+     * {@code '*'} with spaces to the 15-character width of the field it is compared against, so the
+     * marker must occupy the <em>first</em> position with only spaces after it. {@code "*"} and
+     * {@code "*    "} are the marker; {@code " *"} and {@code "*1"} are not, and neither is blank.
+     *
+     * @param lexeme the raw screen lexeme, or {@code null} when the component was not transmitted
+     * @return {@code true} when the lexeme is absent, all spaces, or the decoration marker followed
+     *         only by spaces
+     */
+    public static boolean isUnsuppliedNumericLexeme(final String lexeme) {
+        if (lexeme == null) {
+            return true;
+        }
+        int index = 0;
+        if (!lexeme.isEmpty() && lexeme.charAt(index) == DECORATION_MARKER) {
+            index++;
+        }
+        for (; index < lexeme.length(); index++) {
+            if (lexeme.charAt(index) != SPACE) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * The {@code FUNCTION TEST-NUMVAL-C(lexeme) = 0} predicate, which separates the second and third
+     * outcomes of paragraph {@code 1250-EDIT-SIGNED-9V2} ({@code [app/cbl/COACTUPC.cbl:L2201]}): a
+     * lexeme that satisfies it is VALID and is decoded, and one that does not is NOT-OK and is
+     * decorated. The paragraph reaches this test only for a lexeme that
+     * {@link #isUnsuppliedNumericLexeme(String)} has already rejected, so a caller runs the two in that
+     * order.
+     *
+     * <p><strong>The accepted grammar.</strong> This is the {@code NUMVAL-C} argument format: optional
+     * spaces, an optional leading sign, an optional currency sign, a mantissa, optional spaces, an
+     * optional trailing sign, optional spaces, and nothing else. The mantissa is one or more digits
+     * that may carry single digit separators between them, optionally followed by a decimal point and
+     * further digits, or a decimal point followed by digits with no integer part. A sign may be
+     * leading <em>or</em> trailing but never both, and the trailing position additionally accepts the
+     * two-character credit and debit marks, which denote a negative value.
+     *
+     * <p><strong>Deliberate strictness.</strong> The credit and debit marks are matched in upper case
+     * only, exactly as the language writes them; accepting a lower-case spelling would be a behaviour
+     * the estate does not have. A separator is rejected where no digit precedes it, where another
+     * separator precedes it, and where no digit follows it, so {@code ",1"}, {@code "1,,2"} and
+     * {@code "1,"} are all invalid. A separator inside the fractional part is invalid because the
+     * language permits it only in the integer part. A lexeme with no digit at all is invalid, which
+     * covers the all-space argument the paragraph has already diverted to the BLANK state.
+     *
+     * <p><strong>No magnitude judgement is made here.</strong> The screen field is 15 characters wide
+     * while the persisted field is {@code PIC S9(10)V99}, so a well-formed lexeme can be wider than
+     * the record can hold. The legacy paragraph does not test magnitude either - it tests form only -
+     * so neither does this predicate, and the consequence is documented on
+     * {@code ZonedDecimalCodec.fromNumericLexeme(String)}.
+     *
+     * @param lexeme the raw screen lexeme, or {@code null} when the component was not transmitted
+     * @return {@code true} when the lexeme is a well-formed {@code NUMVAL-C} argument
+     */
+    public static boolean isNumericLexeme(final String lexeme) {
+        return lexeme != null && scanNumericLexeme(lexeme, null);
+    }
+
+    /**
+     * The {@code FUNCTION NUMVAL-C(lexeme)} conversion, expressed as a plain unscaled decimal string:
+     * an optional minus sign, at least one integer digit, and an optional fractional part. Separators
+     * and the currency sign are removed, a trailing sign or credit or debit mark becomes a leading
+     * minus, and a mantissa with no integer part gains a single leading zero.
+     *
+     * <p>The result is returned as a string rather than as a number so that this class keeps its
+     * character-handling remit and no decimal scale is ever chosen here. The one caller that turns it
+     * into a value is {@code ZonedDecimalCodec.fromNumericLexeme(String)}, which is the module's single
+     * point of decimal truth and the only place a scale may be applied.
+     *
+     * <p>No digit is added, removed or reordered, so the returned string carries every digit the
+     * operator typed, including leading zeros. Deciding what the persisted field can hold belongs to
+     * the codec and to the record layer, not here.
+     *
+     * @param lexeme the raw screen lexeme; must not be {@code null}
+     * @return the equivalent plain decimal string, suitable for {@link String}-based construction of an
+     *         exact decimal value
+     * @throws NullPointerException if {@code lexeme} is {@code null}
+     * @throws IllegalArgumentException if {@code lexeme} is not a well-formed {@code NUMVAL-C}
+     *         argument, which a caller avoids by testing {@link #isNumericLexeme(String)} first
+     */
+    public static String plainDecimalOfNumericLexeme(final String lexeme) {
+        Objects.requireNonNull(lexeme, "lexeme must not be null: an absent field is not a blank field");
+        final StringBuilder plain = new StringBuilder(lexeme.length() + 2);
+        if (!scanNumericLexeme(lexeme, plain)) {
+            // The message names neither the lexeme nor any digit of it: a rejection must not leak a
+            // monetary value into a log, which is the same rule decision D-16 applies to the codec.
+            throw new IllegalArgumentException(
+                    "screen lexeme is not a well-formed FUNCTION NUMVAL-C argument; "
+                            + "test isNumericLexeme before converting");
+        }
+        return plain.toString();
+    }
+
+    /**
      * Shared membership test behind {@link #isAlphaOrSpace(String)} and
      * {@link #isAlphaNumericOrSpace(String)}, so the two predicates cannot drift apart.
      *
@@ -391,5 +564,135 @@ public final class CobolStringUtils {
             }
         }
         return true;
+    }
+
+    /**
+     * The one implementation of the {@code NUMVAL-C} argument grammar, shared by
+     * {@link #isNumericLexeme(String)} and {@link #plainDecimalOfNumericLexeme(String)} so that the
+     * test and the conversion cannot disagree about what a valid lexeme is.
+     *
+     * @param lexeme the raw screen lexeme, already checked to be non-{@code null}
+     * @param plain  receives the equivalent plain decimal string when the scan succeeds, or
+     *               {@code null} when the caller wants the verdict only; left untouched on failure
+     * @return {@code true} when the whole lexeme is consumed by the grammar
+     */
+    private static boolean scanNumericLexeme(final String lexeme, final StringBuilder plain) {
+        final int length = lexeme.length();
+        int index = skipSpaces(lexeme, 0);
+
+        // Leading sign, then currency sign - that order and no other, as the language declares it.
+        boolean negative = false;
+        boolean signed = false;
+        if (index < length && (lexeme.charAt(index) == PLUS_SIGN || lexeme.charAt(index) == MINUS_SIGN)) {
+            negative = lexeme.charAt(index) == MINUS_SIGN;
+            signed = true;
+            index = skipSpaces(lexeme, index + 1);
+        }
+        if (index < length && lexeme.charAt(index) == CURRENCY_SIGN) {
+            index = skipSpaces(lexeme, index + 1);
+        }
+
+        // Integer part: digits carrying single separators between them and nowhere else.
+        final StringBuilder integerDigits = new StringBuilder(length);
+        boolean separatorPending = false;
+        while (index < length) {
+            final char candidate = lexeme.charAt(index);
+            if (ASCII_DIGITS.indexOf(candidate) >= 0) {
+                integerDigits.append(candidate);
+                separatorPending = false;
+                index++;
+            } else if (candidate == DIGIT_SEPARATOR && integerDigits.length() > 0 && !separatorPending) {
+                separatorPending = true;
+                index++;
+            } else {
+                break;
+            }
+        }
+        if (separatorPending) {
+            return false;
+        }
+
+        // Fractional part: a decimal point and the digits that follow it, separators not permitted.
+        final StringBuilder fractionDigits = new StringBuilder(length);
+        if (index < length && lexeme.charAt(index) == DECIMAL_POINT) {
+            index++;
+            while (index < length && ASCII_DIGITS.indexOf(lexeme.charAt(index)) >= 0) {
+                fractionDigits.append(lexeme.charAt(index));
+                index++;
+            }
+        }
+        if (integerDigits.length() == 0 && fractionDigits.length() == 0) {
+            return false;
+        }
+
+        index = skipSpaces(lexeme, index);
+
+        // Trailing sign or credit or debit mark, permitted only when no leading sign was given.
+        if (index < length) {
+            final char trailing = lexeme.charAt(index);
+            if (trailing == PLUS_SIGN || trailing == MINUS_SIGN) {
+                if (signed) {
+                    return false;
+                }
+                negative = trailing == MINUS_SIGN;
+                index++;
+            } else if (index + 1 < length && isCreditOrDebitMark(lexeme, index)) {
+                if (signed) {
+                    return false;
+                }
+                negative = true;
+                index += 2;
+            } else {
+                return false;
+            }
+            index = skipSpaces(lexeme, index);
+        }
+
+        if (index != length) {
+            return false;
+        }
+
+        if (plain != null) {
+            if (negative) {
+                plain.append(MINUS_SIGN);
+            }
+            plain.append(integerDigits.length() == 0 ? String.valueOf(ZERO_FILL) : integerDigits);
+            if (fractionDigits.length() > 0) {
+                plain.append(DECIMAL_POINT).append(fractionDigits);
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Advances past a run of spaces, which the {@code NUMVAL-C} grammar permits at every boundary.
+     *
+     * @param lexeme the lexeme being scanned
+     * @param from   the position to start at
+     * @return the position of the first character at or after {@code from} that is not a space, or the
+     *         length of the lexeme when none remains
+     */
+    private static int skipSpaces(final String lexeme, final int from) {
+        int index = from;
+        while (index < lexeme.length() && lexeme.charAt(index) == SPACE) {
+            index++;
+        }
+        return index;
+    }
+
+    /**
+     * Reports whether the two characters at the given position are the credit or the debit mark, both
+     * of which denote a negative value in the trailing position of a {@code NUMVAL-C} argument. Only
+     * the upper-case spellings the language declares are matched.
+     *
+     * @param lexeme the lexeme being scanned
+     * @param at     the position of the first of the two characters; the caller guarantees a second
+     *               character exists
+     * @return {@code true} when the pair is the credit mark or the debit mark
+     */
+    private static boolean isCreditOrDebitMark(final String lexeme, final int at) {
+        final char first = lexeme.charAt(at);
+        final char second = lexeme.charAt(at + 1);
+        return (first == 'C' && second == 'R') || (first == 'D' && second == 'B');
     }
 }

@@ -340,8 +340,11 @@ class ApplicationJsonContractTest {
                         .hasSize(3);
                 assertThat(payload.get("accountId").asText()).isEqualTo("00000000011");
                 assertThat(payload.get("accountStatus").asText()).isEqualTo("Y");
-                assertThat(payload.get("creditLimit").decimalValue())
-                        .isEqualByComparingTo(new BigDecimal("5000.00"));
+                assertThat(payload.get("creditLimit").asText())
+                        .as("the monetary components carry the raw screen lexeme, so the wire form is "
+                                + "the quoted text the operator typed")
+                        .isEqualTo("5000.00");
+                assertThat(payload.get("creditLimit").isTextual()).isTrue();
                 assertThat(payload.has("middleName")).isFalse();
                 assertThat(payload.has("addressLine2")).isFalse();
             });
@@ -508,18 +511,26 @@ class ApplicationJsonContractTest {
         }
 
         @Test
-        @DisplayName("an account update's monetary component behaves identically, so the policy is a "
-                + "property of the mapper rather than of one type")
-        void anAccountUpdateAmountBehavesIdentically() {
+        @DisplayName("an account update's monetary component is text, so the decimal policy never "
+                + "reaches it and the operator's characters survive exactly")
+        void anAccountUpdateAmountIsTextAndIsNeverNormalised() {
             DEPLOYED_CONTEXT.run(context -> {
                 ObjectMapper mapper = context.getBean(ObjectMapper.class);
                 AccountUpdateRequest request = mapper.readValue(
-                        "{\"creditLimit\":\"1E+2\"}", AccountUpdateRequest.class);
+                        "{\"creditLimit\":\"" + SCIENTIFIC_AMOUNT + "\"}",
+                        AccountUpdateRequest.class);
 
                 String payload = mapper.writeValueAsString(request);
 
-                assertThat(request.creditLimit()).isEqualByComparingTo(new BigDecimal(PLAIN_AMOUNT));
-                assertThat(payload).doesNotContain("E+").doesNotContain("e+");
+                assertThat(request.creditLimit())
+                        .as("the five monetary components carry the 15-character screen lexeme, so a "
+                                + "shape the decimal policy would have rewritten to %s is carried "
+                                + "through instead", PLAIN_AMOUNT)
+                        .isEqualTo(SCIENTIFIC_AMOUNT);
+                assertThat(payload)
+                        .as("the lexeme is republished as the quoted text it arrived as, because "
+                                + "classifying it is the account-update cascade's decision")
+                        .isEqualTo("{\"creditLimit\":\"" + SCIENTIFIC_AMOUNT + "\"}");
             });
         }
     }
@@ -706,7 +717,7 @@ class ApplicationJsonContractTest {
                 assertThat(back).isEqualTo(navigation).hasSameHashCodeAs(navigation);
                 assertThat(back.customerMiddleName()).isEqualTo("  ");
                 assertThat(back.reEntry()).isTrue();
-                assertThat(back.administrator()).isTrue();
+                assertThat(back.echoesAdministratorCode()).isTrue();
             });
         }
 
@@ -747,7 +758,7 @@ class ApplicationJsonContractTest {
                         .as("a blank supplied value is carried; it is not the same as an absent one")
                         .isEqualTo("  ");
                 assertThat(back.addressLine2()).isNull();
-                assertThat(back.creditLimit()).isEqualByComparingTo(new BigDecimal("5000.00"));
+                assertThat(back.creditLimit()).isEqualTo("5000.00");
             });
         }
 

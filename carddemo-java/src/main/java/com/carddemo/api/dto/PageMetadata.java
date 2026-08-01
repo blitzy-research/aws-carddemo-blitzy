@@ -101,6 +101,14 @@ import java.util.Objects;
  * and it is deeply immutable, with every component a primitive, a {@code String} or an enum
  * constant, and every factory pure.</p>
  *
+ * <p><strong>A boundary cursor is a record key, so it crosses the wire and stays out of
+ * diagnostics.</strong> The card-list cursor is a primary account number followed by an account
+ * identifier, as the widths above establish, which makes both cursor components cardholder data even
+ * though the client must receive them to resume the browse. The two obligations are separated by
+ * scope rather than traded off: the accessors and the JSON wire form carry both cursors byte for
+ * byte, and {@link #toString()} withholds both. Decision log entry DL-081 records the
+ * arrangement.</p>
+ *
  * @param pageSize the number of screen rows this page carries, supplied by the caller. The
  *     legacy antecedent is the per-screen row count proven above — the card-list table of seven
  *     occurrences, the transaction-list loop bound of ten, and the user-list table of ten
@@ -225,6 +233,20 @@ public record PageMetadata(
     public static final int DISPLAYED_PAGE_NUMBER_MAX_LENGTH = 8;
 
     /**
+     * Fixed stand-in emitted by {@link #toString()} in place of each boundary cursor.
+     *
+     * <p>A constant rather than any transformation of the value, so nothing about a redacted cursor -
+     * not its length, not a prefix or suffix, not a digest - survives into a stringified instance. A
+     * partial mask was rejected deliberately: the leading sixteen characters of a card cursor are a
+     * primary account number in full and the trailing eleven are an account identifier, so every
+     * fragment of that key is still regulated data, and a digest of a 27-character numeric key is
+     * reversible by enumeration.</p>
+     *
+     * <p>Private because it is a rendering detail and not part of the paging contract.</p>
+     */
+    private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
+
+    /**
      * Canonical constructor. Requires an explicit browse direction and leaves every other
      * component exactly as supplied.
      *
@@ -321,6 +343,51 @@ public record PageMetadata(
                 hasMorePages,
                 hasPreviousPages,
                 displayedPageNumber);
+    }
+
+    /**
+     * Returns a diagnostic representation carrying the paging state and withholding both boundary
+     * cursors.
+     *
+     * <p><strong>Why the implicit record rendering could not stand.</strong> A record's generated
+     * {@code toString()} prints every component, and two of the seven here are record keys taken
+     * straight from the cluster being browsed. The card-list cursor is the widest of the three and is
+     * a composite of a 16-character card number - a primary account number - followed by an
+     * 11-character account identifier, declared as the sibling groups {@code WS-CA-FIRST-CARDKEY} and
+     * {@code WS-CA-LAST-CARDKEY} at {@code app/cbl/COCRDLIC.cbl} lines 230 to 235. Metadata of this
+     * type accompanies every page of every browse, so a generated rendering would have written
+     * cardholder data into any log line, assertion failure or diagnostic dump that touched an
+     * instance.</p>
+     *
+     * <p><strong>What is retained.</strong> The five components that describe the paging state and
+     * name no record: the row count, the browse direction, the two independent availability flags and
+     * the displayed page indicator. None of them identifies a cardholder - the indicator is the
+     * screen's own three- or eight-character display value, never a key.</p>
+     *
+     * <p><strong>What is withheld.</strong> Both boundary cursors, each replaced by a fixed
+     * placeholder rather than a partial mask, for the reason given on the placeholder constant. Both
+     * are withheld unconditionally, including when a cursor is absent, so the rendering discloses
+     * nothing about either value - not even whether one is present, which
+     * {@link #hasPreviousPages()} and {@link #hasMorePages()} already report as data.</p>
+     *
+     * <p><strong>Only the rendering changes.</strong> {@link #previousCursorKey()},
+     * {@link #nextCursorKey()}, the JSON wire form, {@code equals} and {@code hashCode} continue to
+     * carry and compare both cursors byte for byte, because the client cannot resume the browse
+     * without them. Decision log entry DL-081 records the arrangement.</p>
+     *
+     * @return the paging state, with both boundary cursors replaced by a fixed placeholder
+     */
+    @Override
+    public String toString() {
+        return "PageMetadata["
+                + "pageSize=" + pageSize
+                + ", previousCursorKey=" + REDACTION_PLACEHOLDER
+                + ", nextCursorKey=" + REDACTION_PLACEHOLDER
+                + ", direction=" + direction
+                + ", hasMorePages=" + hasMorePages
+                + ", hasPreviousPages=" + hasPreviousPages
+                + ", displayedPageNumber=" + displayedPageNumber
+                + "]";
     }
 
     /**

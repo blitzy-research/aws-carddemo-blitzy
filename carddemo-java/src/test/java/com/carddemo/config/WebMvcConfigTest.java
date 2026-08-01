@@ -86,9 +86,7 @@ class WebMvcConfigTest {
     /** The configuration under test, used through the interface the framework calls it through. */
     private final WebMvcConfigurer configurer = new WebMvcConfig();
 
-    // =================================================================================================
     // PARTICIPATION
-    // =================================================================================================
 
     /**
      * Verifies that the class is wired into the configuration callbacks at all.
@@ -117,9 +115,7 @@ class WebMvcConfigTest {
         }
     }
 
-    // =================================================================================================
     // THE MESSAGE CONVERTERS
-    // =================================================================================================
 
     /**
      * Verifies that the module leaves body conversion to the framework.
@@ -152,9 +148,7 @@ class WebMvcConfigTest {
         }
     }
 
-    // =================================================================================================
     // FAILURE HANDLING
-    // =================================================================================================
 
     /**
      * Verifies that the module leaves failure responses to its controller advice.
@@ -197,9 +191,7 @@ class WebMvcConfigTest {
         }
     }
 
-    // =================================================================================================
     // REQUEST ADMISSION
-    // =================================================================================================
 
     /**
      * Verifies that nothing here gates or re-routes a request.
@@ -243,9 +235,7 @@ class WebMvcConfigTest {
         }
     }
 
-    // =================================================================================================
     // HANDLER METHOD BINDING
-    // =================================================================================================
 
     /**
      * Verifies that argument binding and return-value handling stay with the framework.
@@ -288,9 +278,7 @@ class WebMvcConfigTest {
         }
     }
 
-    // =================================================================================================
     // DELEGATED DECISIONS
-    // =================================================================================================
 
     /**
      * Verifies the callbacks whose answer is a single object rather than a registry.
@@ -318,9 +306,7 @@ class WebMvcConfigTest {
         }
     }
 
-    // =================================================================================================
     // TEST DOUBLES
-    // =================================================================================================
 
     /**
      * Exposes the interceptors a registry accumulated.

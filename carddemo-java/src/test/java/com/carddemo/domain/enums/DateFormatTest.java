@@ -62,9 +62,7 @@ class DateFormatTest {
     /** The compact mask exactly as the linkage slot carries it, right-padded to the slot width. */
     private static final String COMPACT = "YYYYMMDD  ";
 
-    // =================================================================================================
     // VOCABULARY
-    // =================================================================================================
 
     /**
      * Verifies the two-selector vocabulary the estate actually passes.
@@ -109,9 +107,7 @@ class DateFormatTest {
         }
     }
 
-    // =================================================================================================
     // SLOT WIDTH
-    // =================================================================================================
 
     /**
      * Verifies that every selector fills the fixed linkage slot exactly.
@@ -163,9 +159,7 @@ class DateFormatTest {
         }
     }
 
-    // =================================================================================================
     // LOOKUP
-    // =================================================================================================
 
     /**
      * Verifies the lookup from a raw slot value back to a selector.

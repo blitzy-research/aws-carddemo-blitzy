@@ -55,9 +55,7 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
 @DisplayName("AbendService: the legacy abort paths, diagnostic first and abort second")
 final class AbendServiceTest {
 
-    // =================================================================================================
     // Oracles taken from the legacy source and the copybook, never read back from the class under test.
-    // =================================================================================================
 
     /** The value the batch paragraphs move into the abend code item. */
     private static final String ORACLE_BATCH_ABEND_CODE = "999";

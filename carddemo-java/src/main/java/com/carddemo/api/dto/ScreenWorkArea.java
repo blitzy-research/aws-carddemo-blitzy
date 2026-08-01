@@ -137,12 +137,15 @@ import java.util.Optional;
  * @param errorMessage the message rendered when the interaction fails validation, from
  *     {@code CCARD-ERROR-MSG} {@code PIC X(75)} on line 28. Seventy-five characters of
  *     space-padded text, carried byte for byte so the rendered message is identical to the legacy
- *     one. May be {@code null} or blank when there is nothing to report.
+ *     one. May be {@code null} or blank when there is nothing to report. The legacy assembles this
+ *     text dynamically and some of it carries a business key or an internal resource name, so the
+ *     slot crosses the wire intact and is withheld from {@link #toString()}; see that method.
  * @param returnMessage the message carried back to the program being returned to, from
  *     {@code CCARD-RETURN-MSG} {@code PIC X(75)} on line 29, whose condition name on line 30 reads
  *     an unset field as off. Seventy-five characters of space-padded text, carried byte for byte.
  *     Absence expresses the off state; no sentinel byte is encoded. Not to be confused with the
- *     commented-out return flag on line 25, which this record does not model.
+ *     commented-out return flag on line 25, which this record does not model. Withheld from
+ *     {@link #toString()} for the same reason as {@code errorMessage}.
  * @param accountId the account identifier as text, from {@code CC-ACCT-ID} {@code PIC X(11)} on
  *     line 34, which the copybook initialises to spaces. Eleven characters, carried exactly as
  *     supplied: never trimmed, padded, re-justified or stripped of a leading zero. The unsigned
@@ -189,13 +192,15 @@ public record ScreenWorkArea(
         @Size(max = ScreenWorkArea.CUSTOMER_ID_LENGTH) String customerId) {
 
     /**
-     * Fixed stand-in emitted by {@link #toString()} in place of each business key.
+     * Fixed stand-in emitted by {@link #toString()} in place of each withheld component: the three
+     * business keys and the two message slots.
      *
-     * <p>A constant rather than any transformation of the value, so nothing about a redacted key - not
-     * its length, not a prefix or suffix, not a digest - survives into a stringified instance. A
+     * <p>A constant rather than any transformation of the value, so nothing about a withheld component
+     * - not its length, not a prefix or suffix, not a digest - survives into a stringified instance. A
      * partial mask was rejected deliberately: a truncated primary account number is still cardholder
-     * data, and a digest of a nine- or eleven-character numeric key is trivially reversible by
-     * enumeration.
+     * data, a digest of a nine- or eleven-character numeric key is trivially reversible by
+     * enumeration, and a truncated message slot would still expose whichever identifier the legacy
+     * concatenated into its leading characters.
      *
      * <p>Private because it is a rendering detail and not part of the screen work-area
      * contract.</p>
@@ -418,8 +423,8 @@ public record ScreenWorkArea(
     }
 
     /**
-     * Returns a diagnostic representation carrying the screen-control state and redacting the three
-     * business keys.
+     * Returns a diagnostic representation carrying the screen-routing state and withholding the three
+     * business keys and the two message slots.
      *
      * <p><strong>Why the implicit record rendering could not stand.</strong> A record's generated
      * {@code toString()} prints every component, and three of the nine here are the keys the five
@@ -428,20 +433,40 @@ public record ScreenWorkArea(
      * screens, so a default rendering would have written cardholder data into any log line, assertion
      * failure or diagnostic dump that touched an instance.
      *
-     * <p><strong>What is retained.</strong> The six control components, which are exactly what makes
-     * this type worth rendering: the resolved attention key, the declared next program, mapset and map,
-     * and the two message slots. None of them is regulated. The two message slots carry catalogue text
-     * destined for a terminal operator - they are written to be read by a human and are the first thing
-     * anyone diagnosing a screen turn wants - so withholding them would remove the type's diagnostic
-     * value without protecting anything.
+     * <p><strong>What is retained.</strong> The four routing components: the resolved attention key and
+     * the declared next program, mapset and map. Each is a fixed vocabulary of program, mapset and map
+     * names plus an enumerated key, so none can carry an identifier, and together they answer the
+     * question a screen-turn diagnosis actually asks - which key was pressed and where the flow was
+     * headed.</p>
      *
-     * <p><strong>What is withheld.</strong> The three business keys, each replaced by a fixed
-     * placeholder rather than a partial mask, for the reason given on the placeholder constant.
+     * <p><strong>What is withheld, and why the two message slots are among it.</strong> The three
+     * business keys are withheld for the obvious reason. The two message slots are withheld because
+     * neither is guaranteed to hold catalogue text. {@code CCARD-ERROR-MSG} is loaded from
+     * {@code WS-RETURN-MSG PIC X(75)}, declared at {@code app/cbl/COACTUPC.cbl} line 479 and moved into
+     * the slot at lines 1008 and 1030, and that field is assembled by 32 {@code STRING} statements in
+     * that one program alone. Three of them concatenate a business key into the text: an 11-character
+     * account identifier at lines 3674 to 3683 and again at lines 3723 to 3732, and a 9-character
+     * customer identifier at lines 3773 to 3782, each followed by the raw CICS response and reason
+     * codes. Three more, at lines 3693, 3743 and 3792, move in {@code WS-FILE-ERROR-MESSAGE}, declared
+     * at line 389, which names the failing operation and the internal VSAM resource - {@code CUSTDAT}
+     * and {@code CXACAIX} among them - alongside those same response codes. A slot that
+     * can hold a cardholder identifier or an internal resource name cannot be rendered on the strength
+     * of the cases where it holds a sentence, and nothing distinguishes the two at run time. This
+     * boundary type additionally accepts whatever a client echoes back into either slot, so the content
+     * is not even guaranteed to have originated in the module.</p>
      *
-     * <p>{@code equals} and {@code hashCode} remain as the record contract generates them: they compare
-     * every component and emit nothing.
+     * <p>Every withheld component is replaced by a fixed placeholder rather than a partial mask, for
+     * the reason given on the placeholder constant, and unconditionally, so the rendering discloses
+     * nothing about a value - not even whether one is present.</p>
      *
-     * @return the screen-control state, with the three business keys replaced by a fixed placeholder
+     * <p><strong>Only the rendering changes.</strong> {@link #errorMessage()},
+     * {@link #returnMessage()}, the three key accessors, the JSON wire form, {@code equals} and
+     * {@code hashCode} continue to carry and compare every component byte for byte, because the
+     * operator-facing message is part of the screen contract and must reach the terminal unaltered.
+     * Decision log entry DL-082 records the arrangement.</p>
+     *
+     * @return the screen-routing state, with the three business keys and the two message slots each
+     *     replaced by a fixed placeholder
      */
     @Override
     public String toString() {
@@ -450,8 +475,8 @@ public record ScreenWorkArea(
                 + ", nextProgram=" + nextProgram
                 + ", nextMapset=" + nextMapset
                 + ", nextMap=" + nextMap
-                + ", errorMessage=" + errorMessage
-                + ", returnMessage=" + returnMessage
+                + ", errorMessage=" + REDACTION_PLACEHOLDER
+                + ", returnMessage=" + REDACTION_PLACEHOLDER
                 + ", accountId=" + REDACTION_PLACEHOLDER
                 + ", cardNumber=" + REDACTION_PLACEHOLDER
                 + ", customerId=" + REDACTION_PLACEHOLDER

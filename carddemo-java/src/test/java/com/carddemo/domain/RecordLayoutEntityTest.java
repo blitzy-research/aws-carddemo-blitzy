@@ -70,9 +70,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 @DisplayName("Record-layout entities: fixed widths, decimal identity and business-key equality")
 final class RecordLayoutEntityTest {
 
-    // =================================================================================================
     // Layout oracles transcribed from the copybooks. Widths are byte counts of the zoned images.
-    // =================================================================================================
 
     /** {@code RECLN 300}, {@code [app/cpy/CVACT01Y.cpy]}. */
     private static final int ORACLE_ACCOUNT_RECORD_LENGTH = 300;
@@ -110,9 +108,7 @@ final class RecordLayoutEntityTest {
     /** {@code SEC-USR-PWD PIC X(08)} - the legacy plaintext width, deliberately not reproduced. */
     private static final int ORACLE_LEGACY_PASSWORD_WIDTH = 8;
 
-    // =================================================================================================
     // Fixture values, each spelled at the exact legacy width.
-    // =================================================================================================
 
     /** {@code ACCT-ID PIC 9(11)}. */
     private static final String ACCOUNT_ID = "00000000011";

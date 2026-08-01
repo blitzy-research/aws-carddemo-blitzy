@@ -255,8 +255,8 @@ final class ScreenWorkAreaBaselineTest {
         }
 
         @Test
-        @DisplayName("the rendering names exactly the nine active copybook fields, so a reader of a log line "
-                + "sees the whole work area")
+        @DisplayName("the rendering labels exactly the nine active copybook fields, so a reader of a log line "
+                + "knows which slots the work area carries even where the value is withheld")
         void theRenderingNamesExactlyTheNineActiveFields() {
             final String rendered = withKeyAction(KeyAction.ENTER).toString();
 

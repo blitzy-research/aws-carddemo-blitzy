@@ -163,9 +163,7 @@ class AbendServiceParityTest {
         return emitted.get(0);
     }
 
-    // =================================================================================================
     // THE BATCH ABEND
-    // =================================================================================================
 
     /**
      * Verifies the batch abend, which stands in for {@code CALL 'CEE3ABD'}.
@@ -284,9 +282,7 @@ class AbendServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // THE ONLINE ABEND
-    // =================================================================================================
 
     /**
      * Verifies the online abend, which stands in for {@code EXEC CICS ABEND}.
@@ -366,9 +362,7 @@ class AbendServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // THE DISPLAY-ONLY PATH
-    // =================================================================================================
 
     /**
      * Verifies the display that precedes an abend but can also be issued on its own.
@@ -434,9 +428,7 @@ class AbendServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // THE FILE-STATUS ABEND
-    // =================================================================================================
 
     /**
      * Verifies the abend driven by a file status, in both of its forms.
@@ -610,9 +602,7 @@ class AbendServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // DIAGNOSTIC SUPPRESSION
-    // =================================================================================================
 
     /**
      * Verifies that suppressing the diagnostic channel never suppresses the abend itself.

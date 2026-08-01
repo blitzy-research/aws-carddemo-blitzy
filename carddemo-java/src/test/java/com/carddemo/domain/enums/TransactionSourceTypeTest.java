@@ -87,9 +87,7 @@ class TransactionSourceTypeTest {
     /** Total records in {@code app/data/ASCII/dailytran.txt}. */
     private static final int SEEDED_DAILY_RECORDS = 300;
 
-    // =================================================================================================
     // VOCABULARY
-    // =================================================================================================
 
     /**
      * Verifies the three markers and the exact characters of each.
@@ -174,9 +172,7 @@ class TransactionSourceTypeTest {
         }
     }
 
-    // =================================================================================================
     // SLOT WIDTH
-    // =================================================================================================
 
     /**
      * Verifies the fixed ten-byte slot the marker must fill on both records.
@@ -230,9 +226,7 @@ class TransactionSourceTypeTest {
         }
     }
 
-    // =================================================================================================
     // SYSTEM-GENERATED PREDICATE
-    // =================================================================================================
 
     /**
      * Verifies the partition between an origin that arrives from outside and one the batch tier
@@ -270,9 +264,7 @@ class TransactionSourceTypeTest {
         }
     }
 
-    // =================================================================================================
     // LOOKUP
-    // =================================================================================================
 
     /**
      * Verifies the lookup from a stored ten-byte image back to a marker.
@@ -356,9 +348,7 @@ class TransactionSourceTypeTest {
         }
     }
 
-    // =================================================================================================
     // SEED COMPOSITION
-    // =================================================================================================
 
     /**
      * Verifies that the vocabulary spans the seeded daily-transaction file exactly.

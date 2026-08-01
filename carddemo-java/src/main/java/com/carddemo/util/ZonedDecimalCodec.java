@@ -31,6 +31,14 @@ import java.nio.charset.StandardCharsets;
  * on-disk representation to and from {@code BigDecimal}, and the only place in the module where a
  * scale is ever applied.</p>
  *
+ * <p><strong>A second, non-record input.</strong> One monetary value in the estate does not arrive as a
+ * field image at all: the five amounts typed at the account-update screen arrive as 15-character
+ * lexemes and are stored by {@code COMPUTE ... = FUNCTION NUMVAL-C(...)}
+ * ({@code [app/cbl/COACTUPC.cbl:L1075]} and four peers). {@link #fromNumericLexeme(String)} is that
+ * store. It lives here for the same reason everything else does - the receiving field is {@code V99}, so
+ * a scale is chosen, and a scale may only be chosen here - while the lexeme grammar itself stays with
+ * the character primitives in {@link CobolStringUtils}.</p>
+ *
  * <p><strong>No other class may call {@code setScale}.</strong> Services, batch processors,
  * controllers and record mappers route every scaling operation through
  * {@link #toMonetaryScale(BigDecimal)} or {@link #toScale(BigDecimal, int)}. Centralising the policy
@@ -667,6 +675,57 @@ public final class ZonedDecimalCodec {
                     + scale);
         }
         return value.setScale(scale, COBOL_TRUNCATION_MODE);
+    }
+
+    /**
+     * Converts a signed-amount screen lexeme into a monetary value, reproducing the store
+     * {@code COMPUTE ACUP-NEW-CREDIT-LIMIT-N = FUNCTION NUMVAL-C(ACUP-NEW-CREDIT-LIMIT-X)} that
+     * {@code app/cbl/COACTUPC.cbl} performs at line 1075 for the credit limit and again at lines 1089,
+     * 1103, 1117 and 1132 for the remaining four monetary fields of the account-update screen.
+     *
+     * <p><strong>Why the conversion ends here.</strong> The lexeme grammar is a character question and
+     * is answered by {@link CobolStringUtils#isNumericLexeme(String)} and
+     * {@link CobolStringUtils#plainDecimalOfNumericLexeme(String)}. Choosing the scale is a decimal
+     * question and may only be answered here, so this method is the seam between the two: it takes the
+     * plain decimal string those primitives produce and brings it to
+     * {@value #MONETARY_SCALE} digits by {@link #COBOL_TRUNCATION_MODE}, exactly as the
+     * {@code V99} receiving field does. A caller that assembled the value itself would be choosing a
+     * scale outside this class, which is precisely what the codec exists to prevent.</p>
+     *
+     * <p><strong>Surplus fractional digits are truncated, not rounded.</strong> The receiving field is
+     * {@code PIC S9(10)V99}, so a lexeme of {@code "1.239"} stores 1.23 and {@code "-1.239"} stores
+     * -1.23. No arithmetic statement in the estate specifies {@code ROUNDED}, so this is the faithful
+     * outcome and not a defect; decision D-02 records the policy.</p>
+     *
+     * <p><strong>Magnitude is not judged here.</strong> The screen field is 15 characters wide while the
+     * receiving field holds ten integer digits, so a well-formed lexeme can carry more integer digits
+     * than the record can. The legacy edit paragraph tests form only and the legacy store then loses the
+     * high-order excess silently. Silently discarding leading digits of a credit limit is not a
+     * behaviour worth reproducing outside the record layer, so this method returns the operator's value
+     * intact and leaves the field-width judgement to {@link #encodeMonetary(BigDecimal, int, String)},
+     * which rejects a value that will not fit rather than quietly changing it. Anomaly noted, and the
+     * divergence is the deliberate one recorded as decision log entry DL-079.</p>
+     *
+     * <p>Callers run the three-state edit in the order the legacy paragraph runs it: not-supplied first
+     * by {@link CobolStringUtils#isUnsuppliedNumericLexeme(String)}, then well-formedness by
+     * {@link CobolStringUtils#isNumericLexeme(String)}, and only then this conversion.</p>
+     *
+     * @param  lexeme the raw screen lexeme, exactly as transmitted; must not be {@code null}
+     * @return the value at a scale of exactly {@value #MONETARY_SCALE}
+     * @throws IllegalArgumentException if {@code lexeme} is {@code null} or is not a well-formed
+     *                                 {@code NUMVAL-C} argument
+     */
+    public static BigDecimal fromNumericLexeme(String lexeme) {
+        if (lexeme == null) {
+            throw new IllegalArgumentException("the screen lexeme to convert must not be null");
+        }
+        if (!CobolStringUtils.isNumericLexeme(lexeme)) {
+            // Neither the lexeme nor any digit of it appears in the message: a rejection must not leak
+            // a monetary value into a log, which is the rule decision D-16 applies throughout.
+            throw new IllegalArgumentException(
+                    "the screen lexeme is not a well-formed FUNCTION NUMVAL-C argument");
+        }
+        return toMonetaryScale(new BigDecimal(CobolStringUtils.plainDecimalOfNumericLexeme(lexeme)));
     }
 
     /**

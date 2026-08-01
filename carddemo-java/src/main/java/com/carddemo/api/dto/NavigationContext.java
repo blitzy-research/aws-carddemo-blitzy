@@ -54,8 +54,8 @@ import java.util.Optional;
  * {@code app/cbl/COSGN00C.cbl} lines 224 and 225 before handing control on. This record accordingly
  * declares <strong>no route table, no route constant and no dispatch method</strong>; route constants
  * belong to the service layer, and placing them here would put navigation decisions in a
- * data-transfer type and invert the layering. {@link #administrator()} is a predicate over an echoed
- * value: it reports a condition and selects nothing.
+ * data-transfer type and invert the layering. {@link #echoesAdministratorCode()} is a predicate over
+ * an echoed value: it reports what one character of client input is and selects nothing.
  *
  * <p><strong>Identifiers are text, never numbers.</strong> The customer identifier (line 33, nine
  * digits), the account identifier (line 38, eleven digits) and the card number (line 41, sixteen
@@ -112,6 +112,24 @@ import java.util.Optional;
  * name and no screen name. There is no credential component and none may be added; sign-on carries
  * the operator's secret in its own request type, and the user-security table stores only a password
  * digest.
+ *
+ * <p><strong>Every component here is untrusted input, including the identity ones, and that is a
+ * change of trust the migration introduced rather than one the legacy had.</strong> The legacy area
+ * lived in CICS-managed storage: a program authored it and CICS carried it to the next turn, and the
+ * 3270 terminal had no way to reach it. The identity bytes in particular were server-authored from an
+ * authenticated read - {@code app/cbl/COSGN00C.cbl} line 227 moves {@code SEC-USR-TYPE} out of the
+ * {@code USRSEC} record it had just read into {@code CDEMO-USER-TYPE}, and only then does line 230
+ * test {@code CDEMO-USRTYP-ADMIN} to choose between the administrative and the main menu. The byte
+ * the legacy branched on had therefore already been proved against the user-security table. Echoing
+ * the same area through a REST client removes that proof: a caller can put any byte in it.
+ *
+ * <p>Two consequences are load-bearing and are enforced by this type's surface rather than left to a
+ * convention. First, no method here decides authorization or routing; the one predicate over the
+ * user-type code is named for what it reads - see {@link #echoesAdministratorCode()} - so that it
+ * cannot be mistaken for a statement about who the caller is. Second, before any turn acts on the
+ * echoed identity it must be reconciled against the authenticated principal, by
+ * {@link #reconciledWith(String, UserType)} for the overwrite remedy or
+ * {@link #agreesWith(String, UserType)} for the reject remedy. Recorded as DL-087.
  *
  * @param fromTransactionId the transaction the turn arrived from, from {@code CDEMO-FROM-TRANID}
  *     ({@code PIC X(04)}, four characters, line 21). Stamped by the sending program with its own
@@ -339,21 +357,107 @@ public record NavigationContext(
     }
 
     /**
-     * Reports whether the carried user-type code is the administrator code.
+     * Reports whether the <em>echoed</em> user-type code is the administrator code.
      *
-     * <p>Mirrors the single condition tested at {@code app/cbl/COSGN00C.cbl} line 230 and nothing
-     * else. {@code true} for the administrator code only; every other outcome, including an absent
-     * code and an undeclared one, is {@code false}, which is exactly what the unconditional
-     * alternative at line 235 encodes.</p>
+     * <p><strong>This is not an authorization check and must never be used as one.</strong> It reads
+     * one character of client-supplied input and says what that character is. A caller who sends the
+     * administrator character makes this answer {@code true} without holding any administrative right,
+     * which is why the method is named for the byte it inspects rather than for the person it might be
+     * mistaken to describe. Authorization decisions belong to the authenticated principal's signed
+     * role; this type carries no proof of anything.</p>
      *
-     * <p>This is a predicate over echoed data, <strong>not a routing decision</strong>: it returns a
-     * boolean, selects no destination and performs no dispatch. Which route an administrator or a
-     * non-administrator is sent to belongs to the service layer.</p>
+     * <p>What it is for is parity. The legacy tested exactly this condition on exactly this byte at
+     * {@code app/cbl/COSGN00C.cbl} line 230, and the byte round-trips through the area, so a faithful
+     * translation has to be able to read it. The difference is where the byte came from: there it had
+     * been moved out of an authenticated {@code USRSEC} read at line 227, whereas here it arrived from
+     * the client. Reconcile first with {@link #reconciledWith(String, UserType)} or
+     * {@link #agreesWith(String, UserType)}, then read this; on a reconciled instance the two coincide,
+     * and on an unreconciled one this reports the claim and nothing more.</p>
      *
-     * @return {@code true} if and only if the carried code is the administrator code
+     * <p>{@code true} for the administrator code only; every other outcome, including an absent code
+     * and an undeclared one, is {@code false}, which is what the unconditional alternative at line 235
+     * encodes. It returns a boolean, selects no destination and performs no dispatch.</p>
+     *
+     * @return {@code true} if and only if the echoed code is the administrator code, with no
+     *     implication that the caller holds that role
      */
-    public boolean administrator() {
+    public boolean echoesAdministratorCode() {
         return resolvedUserType().map(UserType::isAdmin).orElse(false);
+    }
+
+    /**
+     * Reports whether the echoed identity matches the authenticated principal's.
+     *
+     * <p>The reject half of the reconciliation contract: a caller that would rather refuse a tampered
+     * turn than silently correct it tests this and answers with a failure of its own choosing. The
+     * overwrite half is {@link #reconciledWith(String, UserType)}.</p>
+     *
+     * <p>Both components are compared, and both are compared exactly. The identifier is compared byte
+     * for byte with no trim and no case fold, because {@link #userId()} is documented as travelling
+     * exactly as received and the user-security key is fixed-width; folding here would let two
+     * distinct echoed identifiers reconcile against one principal. The type is compared through
+     * {@link #resolvedUserType()}, so an undeclared or absent echoed code never matches a declared
+     * principal role - it disagrees, which is the safe outcome.</p>
+     *
+     * @param authenticatedUserId   the identifier the authenticated principal actually holds; a
+     *                              {@code null} principal identifier agrees only with an absent echo
+     * @param authenticatedUserType the role the authenticated principal actually holds, resolved from
+     *                              the user-security record rather than from this type; a
+     *                              {@code null} principal role agrees only with an unresolvable echo
+     * @return {@code true} when the echoed identifier and role both match the authenticated ones
+     */
+    public boolean agreesWith(String authenticatedUserId, UserType authenticatedUserType) {
+        boolean idAgrees = (authenticatedUserId == null)
+                ? userId == null
+                : authenticatedUserId.equals(userId);
+        return idAgrees && resolvedUserType().orElse(null) == authenticatedUserType;
+    }
+
+    /**
+     * Returns a copy whose identity components are taken from the authenticated principal rather than
+     * from the client, leaving the other fourteen components untouched.
+     *
+     * <p>The overwrite half of the reconciliation contract, and the one that reproduces the legacy
+     * arrangement most closely: {@code app/cbl/COSGN00C.cbl} line 226 and line 227 write the identifier
+     * and the type into the area from the authenticated {@code USRSEC} read, so in the legacy those two
+     * bytes were always server-authored. This method restores that property for a turn that arrives
+     * with them echoed. A disagreeing echo is replaced rather than reported, so the returned instance
+     * can be used without a further check; a caller who needs to know that a substitution happened asks
+     * {@link #agreesWith(String, UserType)} first.</p>
+     *
+     * <p>Pure: it returns a new instance and mutates nothing. The role is written back as its declared
+     * one-character code, so the reconciled instance still carries a raw byte in
+     * {@link #userType()} and still round-trips like any other, and a {@code null} principal role
+     * clears the byte rather than inventing one. The remaining fourteen components are carried across
+     * byte for byte - nothing is trimmed, padded, re-cased or re-formatted - because they are echoed
+     * navigation state that the legacy also carried unchanged, and correcting identity is not licence to
+     * rewrite the rest.</p>
+     *
+     * @param authenticatedUserId   the identifier the authenticated principal holds; written verbatim,
+     *                              and {@code null} clears the component
+     * @param authenticatedUserType the role the authenticated principal holds; written as its declared
+     *                              code, and {@code null} clears the component
+     * @return a new instance whose identifier and user-type code come from the principal
+     */
+    public NavigationContext reconciledWith(String authenticatedUserId,
+            UserType authenticatedUserType) {
+        return new NavigationContext(
+                fromTransactionId,
+                fromProgram,
+                toTransactionId,
+                toProgram,
+                authenticatedUserId,
+                (authenticatedUserType == null) ? null : authenticatedUserType.getCode(),
+                programContext,
+                customerId,
+                customerFirstName,
+                customerMiddleName,
+                customerLastName,
+                accountId,
+                accountStatus,
+                cardNumber,
+                lastMap,
+                lastMapset);
     }
 
     /**

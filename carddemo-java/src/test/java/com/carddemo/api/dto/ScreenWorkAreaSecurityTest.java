@@ -59,6 +59,16 @@ import org.junit.jupiter.params.provider.ValueSource;
  * nine-character numeric key is trivially reversible by enumeration. The assertions prove the
  * placeholder is constant across differing values, so nothing about a redacted key - not even its length
  * - survives.</p>
+ *
+ * <p>The two message slots are withheld on the same terms, and the reason is in the source rather than in
+ * a preference. {@code CCARD-ERROR-MSG} is loaded from {@code WS-RETURN-MSG}, which
+ * {@code app/cbl/COACTUPC.cbl} assembles with 32 {@code STRING} statements: three concatenate an account
+ * or customer identifier into the text with the raw CICS response codes, and three more move in a
+ * file-error message naming the internal VSAM resource. Nothing distinguishes those from the cases where
+ * the slot holds a plain sentence, and this boundary type additionally accepts whatever a client echoes
+ * back into either slot. The assertions below plant exactly the text the legacy builds and prove none of
+ * it reaches a rendering, while the accessors still answer byte for byte because the operator-facing
+ * message is part of the screen contract. Decision log entry DL-082 records the arrangement.</p>
  */
 @DisplayName("ScreenWorkArea - the CVCRD01Y screen work area")
 class ScreenWorkAreaSecurityTest {
@@ -328,13 +338,13 @@ class ScreenWorkAreaSecurityTest {
     }
 
     @Nested
-    @DisplayName("Diagnostic rendering: control state retained, business keys withheld")
+    @DisplayName("Diagnostic rendering: routing state retained, business keys and message slots withheld")
     class DiagnosticRendering {
 
         @Test
-        @DisplayName("the six control components are retained, because they are exactly what makes this type worth "
-                + "rendering")
-        void theSixControlComponentsAreRetained() {
+        @DisplayName("the four routing components are retained, because a fixed vocabulary of key, program, "
+                + "mapset and map names cannot carry an identifier")
+        void theFourRoutingComponentsAreRetained() {
             final String rendering = workArea().toString();
             assertThat(rendering)
                     .startsWith("ScreenWorkArea[")
@@ -342,18 +352,44 @@ class ScreenWorkAreaSecurityTest {
                     .contains("nextProgram=" + NEXT_PROGRAM)
                     .contains("nextMapset=" + NEXT_MAPSET)
                     .contains("nextMap=" + NEXT_MAP)
-                    .contains("errorMessage=" + ERROR_MESSAGE)
-                    .contains("returnMessage=" + RETURN_MESSAGE)
                     .endsWith("]");
         }
 
         @Test
-        @DisplayName("the two message slots are retained deliberately: they carry catalogue text written to be read "
-                + "by an operator, so withholding them would remove diagnostic value without protecting anything")
-        void theTwoMessageSlotsAreRetainedDeliberately() {
+        @DisplayName("the two message slots are withheld, because the legacy assembles their text dynamically "
+                + "and 3 of the 32 assembly sites concatenate a business key into it")
+        void theTwoMessageSlotsAreWithheld() {
             assertThat(workArea().toString())
-                    .contains(ERROR_MESSAGE)
-                    .contains(RETURN_MESSAGE);
+                    .doesNotContain(ERROR_MESSAGE)
+                    .doesNotContain(RETURN_MESSAGE)
+                    .contains("errorMessage=***REDACTED***")
+                    .contains("returnMessage=***REDACTED***");
+        }
+
+        @Test
+        @DisplayName("a message slot carrying the text the legacy actually builds - an account identifier, a "
+                + "customer identifier or an internal resource name - cannot reach the rendering")
+        void aDynamicallyAssembledMessageCannotReachTheRendering() {
+            final String accountNotFound =
+                    "Account:" + ACCOUNT_ID + " not found in Cross ref file.  Resp:0000000013";
+            final String customerNotFound =
+                    "CustId:" + CUSTOMER_ID + " not found in customer master.Resp: 0000000013";
+            final String fileError = "File Error: READ     on CXACAIX  returned RESP 0000000013";
+
+            final String rendering = new ScreenWorkArea(KeyAction.ENTER, NEXT_PROGRAM, NEXT_MAPSET,
+                    NEXT_MAP, accountNotFound, customerNotFound, null, null, null).toString();
+            final String returnSlot = new ScreenWorkArea(KeyAction.ENTER, NEXT_PROGRAM, NEXT_MAPSET,
+                    NEXT_MAP, null, fileError, null, null, null).toString();
+
+            assertThat(rendering)
+                    .doesNotContain(ACCOUNT_ID)
+                    .doesNotContain(CUSTOMER_ID)
+                    .doesNotContain("Account:")
+                    .doesNotContain("CustId:")
+                    .doesNotContain("Resp:");
+            assertThat(returnSlot)
+                    .doesNotContain("CXACAIX")
+                    .doesNotContain("File Error");
         }
 
         @Test
@@ -368,33 +404,49 @@ class ScreenWorkAreaSecurityTest {
         }
 
         @Test
-        @DisplayName("each withheld key is replaced by a fixed placeholder, so nothing about the value - not even "
-                + "its length - survives")
-        void eachWithheldKeyIsReplacedByAFixedPlaceholder() {
+        @DisplayName("each withheld component is replaced by a fixed placeholder, so nothing about the value - "
+                + "not even its length - survives")
+        void eachWithheldComponentIsReplacedByAFixedPlaceholder() {
             final String rendering = workArea().toString();
             assertThat(rendering)
+                    .contains("errorMessage=***REDACTED***")
+                    .contains("returnMessage=***REDACTED***")
                     .contains("accountId=***REDACTED***")
                     .contains("cardNumber=***REDACTED***")
                     .contains("customerId=***REDACTED***");
         }
 
         @Test
-        @DisplayName("the placeholder is constant across differing key values, which is the assertion that rules out "
-                + "a partial mask or a digest")
-        void thePlaceholderIsConstantAcrossDifferingKeyValues() {
-            final String shortKeys = new ScreenWorkArea(KeyAction.ENTER, null, null, null, null,
-                    null, "1", "2", "3").toString();
-            final String longKeys = new ScreenWorkArea(KeyAction.ENTER, null, null, null, null,
-                    null, "99999999999", "9999999999999999", "999999999").toString();
-            assertThat(shortKeys).isEqualTo(longKeys);
+        @DisplayName("the placeholder is constant across differing key and message values, which is the "
+                + "assertion that rules out a partial mask or a digest")
+        void thePlaceholderIsConstantAcrossDifferingValues() {
+            final String shortValues = new ScreenWorkArea(KeyAction.ENTER, null, null, null, "a",
+                    "b", "1", "2", "3").toString();
+            final String longValues = new ScreenWorkArea(KeyAction.ENTER, null, null, null,
+                    ERROR_MESSAGE, RETURN_MESSAGE, "99999999999", "9999999999999999", "999999999")
+                    .toString();
+            assertThat(shortValues).isEqualTo(longValues);
         }
 
         @Test
-        @DisplayName("a hostile value planted in a withheld key cannot reach the rendering")
-        void aHostileValuePlantedInAWithheldKeyCannotReachTheRendering() {
-            final String rendering = new ScreenWorkArea(KeyAction.ENTER, null, null, null, null,
-                    null, "CANARY-ACCT", "CANARY-CARD-NUM-", "CANARY-CU").toString();
+        @DisplayName("a hostile value planted in any withheld component cannot reach the rendering")
+        void aHostileValuePlantedInAWithheldComponentCannotReachTheRendering() {
+            final String rendering = new ScreenWorkArea(KeyAction.ENTER, null, null, null,
+                    "CANARY-ERR", "CANARY-RET", "CANARY-ACCT", "CANARY-CARD-NUM-", "CANARY-CU")
+                    .toString();
             assertThat(rendering).doesNotContain("CANARY");
+        }
+
+        @Test
+        @DisplayName("the redaction touches the rendering only: both message accessors still answer byte for "
+                + "byte, because the operator-facing message is part of the screen contract")
+        void theRedactionTouchesTheRenderingOnly() {
+            final ScreenWorkArea subject = workArea();
+            assertThat(subject.errorMessage()).isEqualTo(ERROR_MESSAGE);
+            assertThat(subject.returnMessage()).isEqualTo(RETURN_MESSAGE);
+            assertThat(subject.accountId()).isEqualTo(ACCOUNT_ID);
+            assertThat(subject.cardNumber()).isEqualTo(CARD_NUMBER);
+            assertThat(subject.customerId()).isEqualTo(CUSTOMER_ID);
         }
 
         @Test
@@ -403,6 +455,7 @@ class ScreenWorkAreaSecurityTest {
             assertThat(blank().toString())
                     .startsWith("ScreenWorkArea[")
                     .contains("keyAction=null")
+                    .contains("errorMessage=***REDACTED***")
                     .contains("accountId=***REDACTED***")
                     .endsWith("]");
         }

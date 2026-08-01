@@ -64,9 +64,7 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
 @DisplayName("PfKeyTranslator: the attention-key copybook, including its twelve-clause fold")
 final class PfKeyTranslatorTest {
 
-    // =================================================================================================
     // Oracles transcribed from the legacy copybooks, never read back from the class under test.
-    // =================================================================================================
 
     /** {@code CCARD-AID PIC X(5)}, {@code [app/cpy/CVCRD01Y.cpy]}. */
     private static final int ORACLE_ACTION_VALUE_WIDTH = 5;

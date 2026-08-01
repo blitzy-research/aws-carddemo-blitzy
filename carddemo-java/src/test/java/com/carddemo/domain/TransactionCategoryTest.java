@@ -209,9 +209,7 @@ class TransactionCategoryTest {
                 + INTEREST_CATEGORY_LITERAL;
     }
 
-    // =================================================================================================
     // RECORD LAYOUT
-    // =================================================================================================
 
     /**
      * Verifies the copybook geometry the entity has to honour.
@@ -272,9 +270,7 @@ class TransactionCategoryTest {
         }
     }
 
-    // =================================================================================================
     // SCHEMA AGREEMENT
-    // =================================================================================================
 
     /**
      * Verifies that the deployed migration describes the layout the copybook does.
@@ -335,9 +331,7 @@ class TransactionCategoryTest {
         }
     }
 
-    // =================================================================================================
     // CONSTRUCTION AND ACCESS
-    // =================================================================================================
 
     /**
      * Verifies that every field the constructor takes is the field the accessor returns.
@@ -403,9 +397,7 @@ class TransactionCategoryTest {
         }
     }
 
-    // =================================================================================================
     // SEEDED REFERENCE DATA
-    // =================================================================================================
 
     /**
      * Verifies the eighteen seeded reference rows against a transcription of the estate's own data.
@@ -552,9 +544,7 @@ class TransactionCategoryTest {
         }
     }
 
-    // =================================================================================================
     // THE INTEREST RUN'S SYNTHESISED PAIR
-    // =================================================================================================
 
     /**
      * Verifies the one type-and-category pair the interest run stamps rather than reads.
@@ -602,9 +592,7 @@ class TransactionCategoryTest {
         }
     }
 
-    // =================================================================================================
     // COMPOSITE-KEY IDENTITY
-    // =================================================================================================
 
     /**
      * Verifies that identity is the two-part key and nothing else.
@@ -680,9 +668,7 @@ class TransactionCategoryTest {
         }
     }
 
-    // =================================================================================================
     // THE EXTRACTED KEY
-    // =================================================================================================
 
     /**
      * Verifies that the entity hands out the same two-part key it is identified by.
@@ -732,9 +718,7 @@ class TransactionCategoryTest {
         }
     }
 
-    // =================================================================================================
     // DIAGNOSTIC REPRESENTATION
-    // =================================================================================================
 
     /**
      * Verifies the diagnostic string.

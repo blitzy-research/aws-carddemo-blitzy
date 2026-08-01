@@ -183,9 +183,7 @@ class UserSecurityTest {
         return "$2a$10$" + "N".repeat(DIGEST_COLUMN_WIDTH - 7);
     }
 
-    // =================================================================================================
     // RECORD LAYOUT
-    // =================================================================================================
 
     /**
      * Verifies the copybook geometry the entity has to honour.
@@ -240,9 +238,7 @@ class UserSecurityTest {
         }
     }
 
-    // =================================================================================================
     // SCHEMA AGREEMENT
-    // =================================================================================================
 
     /**
      * Verifies that the deployed migration describes the same layout the copybook does, and departs from
@@ -329,9 +325,7 @@ class UserSecurityTest {
         }
     }
 
-    // =================================================================================================
     // CONSTRUCTION AND ACCESS
-    // =================================================================================================
 
     /**
      * Verifies that every field the constructor takes is the field the accessor returns.
@@ -412,9 +406,7 @@ class UserSecurityTest {
         }
     }
 
-    // =================================================================================================
     // THE CREDENTIAL WIDTH DEPARTURE
-    // =================================================================================================
 
     /**
      * Verifies that the password field can hold a digest and that the legacy field could not have.
@@ -463,9 +455,7 @@ class UserSecurityTest {
         }
     }
 
-    // =================================================================================================
     // THE ROLE BYTE
-    // =================================================================================================
 
     /**
      * Verifies the single byte the authorisation decision rests on.
@@ -539,9 +529,7 @@ class UserSecurityTest {
         }
     }
 
-    // =================================================================================================
     // THE TEN SEEDED USERS
-    // =================================================================================================
 
     /**
      * Verifies the ten records the provisioning job carries in its own job stream.
@@ -639,9 +627,7 @@ class UserSecurityTest {
         }
     }
 
-    // =================================================================================================
     // BUSINESS-KEY IDENTITY
-    // =================================================================================================
 
     /**
      * Verifies that identity is the sign-on identifier and nothing else.
@@ -712,9 +698,7 @@ class UserSecurityTest {
         }
     }
 
-    // =================================================================================================
     // CREDENTIAL CONTAINMENT
-    // =================================================================================================
 
     /**
      * Verifies that no credential can escape through a diagnostic string.

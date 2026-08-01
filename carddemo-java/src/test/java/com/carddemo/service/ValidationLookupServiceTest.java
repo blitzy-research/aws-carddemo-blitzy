@@ -197,14 +197,12 @@ class ValidationLookupServiceTest {
      */
     private static final String STATE_ZIP_RESOURCE_PATH = "/lookup/state-zip-prefixes.json";
 
-    // ------------------------------------------------------------------------------------------------
     // The legacy-anchored oracle. Every expected membership in this class traces back to the level-88
     // condition lists in app/cpy/CSLKPCDY.cpy, which is read-only reference material and is never modified
     // or transcribed. The values those conditions declare were extracted mechanically into the four golden
     // fixtures named below - one canonical, ascending, one-token-per-line US-ASCII file per stored list -
     // and each fixture is pinned by a SHA-256 digest literal so that an edit to a fixture is a test failure
     // rather than a silent change of expectation. No fixture holds any COBOL text: they carry values only.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Class-loader path of the golden general-purpose area codes, extracted from the 410 values the
@@ -548,9 +546,7 @@ class ValidationLookupServiceTest {
         return token.getBytes(StandardCharsets.US_ASCII).length;
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Golden-fixture access and digest pinning.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Reads a golden fixture as raw bytes, so that the digest covers the file exactly as it sits on disk

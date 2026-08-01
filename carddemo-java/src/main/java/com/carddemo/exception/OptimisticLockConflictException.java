@@ -49,7 +49,7 @@ package com.carddemo.exception;
  * current-cycle credit, current-cycle debit and account group id - the group id compared
  * case-insensitively (L4139-L4140) - plus the customer primary-card-holder indicator
  * (L4183-L4185) and the FICO credit score (L4186). The comparison itself belongs to the
- * account-update service, which is not delivered yet; this type only reports its outcome.
+ * account-update service; this type only reports its outcome and never performs the comparison.
  *
  * <p><strong>Three arms, deliberately not flattened.</strong> The legacy write path renders three
  * different outcomes, dispatched by the {@code EVALUATE} at {@code app/cbl/COACTUPC.cbl}
@@ -133,6 +133,11 @@ package com.carddemo.exception;
  * reproduced character for character, legacy spelling included, and the detail message of an
  * instance is exactly one of them - never decorated with the entity name or the key, which travel
  * separately through {@link #entityName()} and {@link #key()}.</p>
+ *
+ * <p>That last sentence is enforced rather than expected. Every constructor stores the text the
+ * supplied arm resolves to for the supplied entity, and the one constructor that takes a message
+ * accepts no other value, so no instance can pair one arm with another arm's wording or introduce a
+ * fifth text the legacy never had. See DL-083.</p>
  *
  * <p>One related condition name in the same block, at L525-L526, carries the text
  * {@code Error reading Card Data File}. That text belongs to the card cross-reference read path
@@ -381,23 +386,37 @@ public class OptimisticLockConflictException extends RuntimeException {
      * Canonical constructor. Both other constructors funnel through this one after resolving the
      * arm's legacy default message.
      *
-     * <p>The detail message is an external contract: callers must supply one of the four legacy
-     * literals published by this class rather than composing new operator-facing text. The message
-     * is stored undecorated - the entity name and key are exposed separately by
-     * {@link #entityName()} and {@link #key()} so that message-text comparison stays exact.</p>
+     * <p>The detail message is an external contract, and it is not a free parameter: the only
+     * message this constructor accepts is the one the supplied arm already resolves to for the
+     * supplied entity, so {@code message} selects nothing and confirms everything. Supplying any
+     * other text - including one of this class's own literals borrowed from a different arm - is a
+     * programming error and is rejected. The legacy grounds are direct: at
+     * {@code app/cbl/COACTUPC.cbl} lines 3912, 3939, 4079, 4098, 4143 and 4189 the program never
+     * assembles operator text on the write path at all. It sets a condition name, and the text is a
+     * level-88 {@code VALUE} bound to that condition name at lines 517 to 524. The classification
+     * owns the wording there, so it owns the wording here too.</p>
+     *
+     * <p>The message is stored undecorated - the entity name and key are exposed separately by
+     * {@link #entityName()} and {@link #key()} so that message-text comparison stays exact. Because
+     * the stored message is now provably {@code conflictKind().defaultMessage(entityName())}, a
+     * boundary may render the conflict response from the classification and reach the same bytes as
+     * {@link #getMessage()}, which is what stops the message from becoming a second, unvalidated
+     * discriminator alongside the arm. Recorded as DL-083.</p>
      *
      * @param conflictKind which legacy write-path arm produced the conflict; required
      * @param entityName   descriptive name of the record involved; {@code null} becomes the empty
      *                     string
      * @param key          the business key of the record involved; {@code null} becomes the empty
      *                     string
-     * @param message      the detail message, expected to be one of this class's legacy literals
+     * @param message      the detail message; must equal {@code conflictKind.defaultMessage(
+     *                     entityName)}
      * @param cause        the underlying failure; may be {@code null}
-     * @throws IllegalArgumentException if {@code conflictKind} is {@code null}
+     * @throws IllegalArgumentException if {@code conflictKind} is {@code null}, or if
+     *                                  {@code message} is not the text that arm resolves to
      */
     public OptimisticLockConflictException(ConflictKind conflictKind, String entityName, String key,
             String message, Throwable cause) {
-        super(message, cause);
+        super(requireLegacyMessage(requireConflictKind(conflictKind), entityName, message), cause);
         this.conflictKind = requireConflictKind(conflictKind);
         this.entityName = entityName == null ? "" : entityName;
         this.key = key == null ? "" : key;
@@ -407,6 +426,10 @@ public class OptimisticLockConflictException extends RuntimeException {
      * Validates that an arm was supplied. The arm is not optional: the legacy program always knows
      * which of the three states it is reporting, and a caller that cannot say which one has a
      * programming error rather than a runtime conflict.
+     *
+     * <p>This check runs before {@link #requireLegacyMessage} on the canonical constructor, so a
+     * caller who omits the arm is told the arm is missing rather than being told its text does not
+     * match an arm that was never supplied.</p>
      *
      * <p>The thrown message is a developer diagnostic, not operator-facing screen text.</p>
      *
@@ -420,6 +443,41 @@ public class OptimisticLockConflictException extends RuntimeException {
                     "conflictKind is required; supply one of the three legacy write-path arms");
         }
         return conflictKind;
+    }
+
+    /**
+     * Validates that the detail message is the text the supplied arm resolves to for the supplied
+     * entity, and returns that resolved text.
+     *
+     * <p>Equality against {@link ConflictKind#defaultMessage(String)} rather than membership of the
+     * four literals is deliberate, and it is the stricter of the two available checks. Membership
+     * would still admit an account-entity conflict carrying the customer lock text, which reads as
+     * a fifth, unreachable legacy state: no path in
+     * {@code app/cbl/COACTUPC.cbl} can set {@code COULD-NOT-LOCK-CUST-FOR-UPDATE} while reporting
+     * the account record, because the customer read at line 3921 is only reached once the account
+     * read at line 3894 has already succeeded.</p>
+     *
+     * <p>The comparison is exact and case-sensitive because the resolved text is an external
+     * contract reproduced byte for byte from the level-88 values. The thrown message is a developer
+     * diagnostic and deliberately does not echo the rejected text, so a value that reached this
+     * point from outside the module cannot ride an exception message into a log.</p>
+     *
+     * @param conflictKind the arm, already known to be non-{@code null}
+     * @param entityName   the entity name as supplied, which selects between the two lock texts
+     * @param message      the candidate detail message
+     * @return the arm's resolved legacy text
+     * @throws IllegalArgumentException if {@code message} is not that resolved text
+     */
+    private static String requireLegacyMessage(ConflictKind conflictKind, String entityName,
+            String message) {
+        String resolved = conflictKind.defaultMessage(entityName);
+        if (!resolved.equals(message)) {
+            throw new IllegalArgumentException(
+                    "message must be the legacy text this arm resolves to for this entity; pass "
+                            + "conflictKind.defaultMessage(entityName), or use a constructor that "
+                            + "resolves it, rather than composing operator-facing text");
+        }
+        return resolved;
     }
 
     /**

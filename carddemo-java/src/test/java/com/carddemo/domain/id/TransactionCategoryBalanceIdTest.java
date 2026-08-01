@@ -146,9 +146,7 @@ class TransactionCategoryBalanceIdTest {
         }
     }
 
-    // =================================================================================================
     // COMPONENT CONTRACT
-    // =================================================================================================
 
     /**
      * Verifies that the three components bind in copybook order and are stored verbatim.
@@ -241,9 +239,7 @@ class TransactionCategoryBalanceIdTest {
         }
     }
 
-    // =================================================================================================
     // BYTE GEOMETRY
-    // =================================================================================================
 
     /**
      * Verifies the byte geometry the cluster definition declares, including the one-byte difference
@@ -323,9 +319,7 @@ class TransactionCategoryBalanceIdTest {
         }
     }
 
-    // =================================================================================================
     // EQUALITY AND HASHING
-    // =================================================================================================
 
     /**
      * Verifies the equality contract across all three components.
@@ -430,9 +424,7 @@ class TransactionCategoryBalanceIdTest {
         }
     }
 
-    // =================================================================================================
     // SERIALISATION
-    // =================================================================================================
 
     /**
      * Verifies the serialisation contract an identifier class is required to honour.
@@ -494,9 +486,7 @@ class TransactionCategoryBalanceIdTest {
         }
     }
 
-    // =================================================================================================
     // DIAGNOSTIC REPRESENTATION
-    // =================================================================================================
 
     /**
      * Verifies the diagnostic representation, which is what identifies a row in a log line.

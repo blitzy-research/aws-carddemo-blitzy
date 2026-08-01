@@ -97,17 +97,7 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  *       publishes, and builds no document.</li>
  * </ol>
  *
- * <p><strong>Facts recorded here but deliberately not asserted.</strong> How the legacy literals
- * were typed is not the contract: some were written across two physical source lines using
- * literal continuation and some of those splits fall inside a token, so no continuation count,
- * split position or source-line count is asserted anywhere below. The assembly delimiter regimes
- * — a two-space delimiter for the customer name and the three address lines, and an asterisk
- * delimiter for the basic-detail and transaction lines so that the whole padded field width
- * transfers with its trailing spaces intact — belong to the statement-generation service and are
- * neither implemented nor asserted here. The colour and percentage-width bytes are legacy output
- * content reproduced for parity, never themed, tokenised, re-cased or aligned to a palette; no
- * design system, component library or design-token set exists anywhere in this migration and no
- * graphical interface is built.</p>
+ * <p><strong>Outside this class's contract, and where each belongs instead.</strong></p>
  *
  * <ul>
  *   <li><strong>The legacy source layout.</strong> Some of the thirty-four literals were

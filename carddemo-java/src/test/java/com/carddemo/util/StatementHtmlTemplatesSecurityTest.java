@@ -110,7 +110,7 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  *       publishes, and builds no document.</li>
  * </ol>
  *
- * <h2>Facts recorded here but deliberately not asserted</h2>
+ * <h2>Outside this class's contract, and where each belongs instead</h2>
  *
  * <ul>
  *   <li><strong>The legacy source layout.</strong> Some of the thirty-four literals were
@@ -767,13 +767,9 @@ class StatementHtmlTemplatesSecurityTest {
 
     /*
      * ========================================================================================
-     * The ordered accessor.
-     *
-     * MALFORMATION FIVE, recorded and not asserted: in the emitted artefact the whole document
-     * scaffold, from the document type declaration through the closing html element, repeats
-     * once per account. That repetition is decided by the statement-generation service, which
-     * reproduces the legacy dispatcher. This class publishes declaration order only, so no
-     * document is built here and no emission sequence is asserted.
+     * The ordered accessor. This class publishes declaration order only: it builds no document
+     * and asserts no emission sequence, both of which belong to the statement-generation
+     * service that reproduces the legacy dispatcher.
      * ========================================================================================
      */
 

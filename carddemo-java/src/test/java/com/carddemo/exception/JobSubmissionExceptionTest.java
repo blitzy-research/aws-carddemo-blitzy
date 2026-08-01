@@ -267,7 +267,6 @@ class JobSubmissionExceptionTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
     // The non-fatal contract - the reason this test class exists.
     //
     // What is asserted here is that the carrier makes catch-and-continue possible: every overload
@@ -275,7 +274,6 @@ class JobSubmissionExceptionTest {
     // absorb it, and a caught instance carries the diagnostic context a handler must log. Whether
     // the service actually catches and continues is a property of the service, and it is asserted
     // against the real service in com.carddemo.service.JobSubmissionServiceTest.
-    // ------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("non-fatal contract (ERROROPTION(IGNORE))")
@@ -815,9 +813,7 @@ class JobSubmissionExceptionTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
     // Test support: the serialization plumbing
-    // ------------------------------------------------------------------------------------------
 
     /**
      * Writes the failure to a byte array using the platform serialization mechanism.

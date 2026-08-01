@@ -19,7 +19,9 @@ package com.carddemo.api;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
+import java.time.Clock;
 import java.util.List;
+import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -30,12 +32,15 @@ import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 
 import com.carddemo.api.dto.ErrorResponse;
+import com.carddemo.batch.step.AbstractCobolStep;
 import com.carddemo.exception.AbendException;
 import com.carddemo.exception.FileStatusException;
 import com.carddemo.exception.JobSubmissionException;
 import com.carddemo.exception.OptimisticLockConflictException;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 /**
  * Exercises the single REST failure adapter of the migrated API layer.
@@ -140,6 +145,84 @@ class GlobalExceptionHandlerBoundaryTest {
 
             assertThat(response.getBody()).isNotNull();
             assertThat(response.getBody().message()).isEqualTo(AbendException.DEFAULT_MESSAGE);
+        }
+
+        @Test
+        @DisplayName("an abend produced by a real batch step keeps its internal file diagnostic off "
+                + "the wire: neither the resource name nor the raw two-byte status reaches the body")
+        void aBatchStepAbendKeepsItsFileDiagnosticOffTheWire() {
+            AbendException abend = assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> new FailingReadStep(new SimpleMeterRegistry())
+                            .execute(null, null))
+                    .actual();
+
+            // What the step composed, faithfully reproducing the legacy DISPLAY text.
+            assertThat(abend.getMessage())
+                    .contains(BATCH_RESOURCE)
+                    .contains(BATCH_RAW_STATUS);
+            assertThat(abend.code()).isEqualTo(AbendException.BATCH_ABEND_CODE);
+
+            ResponseEntity<ErrorResponse> response = handler.handleAbend(abend);
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+            assertThat(response.getBody()).isNotNull();
+            assertThat(response.getBody().message())
+                    .isEqualTo(AbendException.DEFAULT_MESSAGE)
+                    .doesNotContain(BATCH_RESOURCE)
+                    .doesNotContain(BATCH_RAW_STATUS)
+                    .doesNotContain(BATCH_PROGRAM)
+                    .doesNotContain("FILE STATUS");
+            assertThat(response.getBody().hasFieldErrors()).isFalse();
+        }
+    }
+
+    /**
+     * The legacy data set name the batch diagnostic would have named, and which must not cross the
+     * boundary. It is the resource name the {@code CLOSEFIL} and {@code OPENFIL} job streams toggle,
+     * so publishing it would name an internal file to an end user.
+     */
+    private static final String BATCH_RESOURCE = "ACCTFILE";
+
+    /** The raw two-character status the batch diagnostic would have reported. */
+    private static final String BATCH_RAW_STATUS = "35";
+
+    /** The legacy program the failing step stands in for, which is also the abend culprit. */
+    private static final String BATCH_PROGRAM = "CBACT01C";
+
+    /**
+     * A minimal concrete batch step whose guarded read reports a bad status, so the abend under test
+     * is composed by {@code AbstractCobolStep} itself rather than hand-written to look like one.
+     *
+     * <p>Constructing the exception by hand would prove only that the handler withholds text a test
+     * wrote; driving the real template proves it withholds the text the batch tier actually
+     * produces.</p>
+     */
+    private static final class FailingReadStep extends AbstractCobolStep<String> {
+
+        private FailingReadStep(final MeterRegistry meterRegistry) {
+            super(BATCH_PROGRAM, meterRegistry, Clock.systemUTC());
+        }
+
+        /** Fails the read the way the legacy did: a bad status rather than a thrown failure. */
+        @Override
+        protected Optional<String> readNextRecord() {
+            abendOnIoFailure(IoOperation.READ, BATCH_RESOURCE, BATCH_RAW_STATUS);
+            return Optional.empty();
+        }
+
+        @Override
+        protected void openResources() {
+            // No handle to acquire: the read fails before any resource would be used.
+        }
+
+        @Override
+        protected void processRecord(final String record) {
+            throw new AssertionError("the read abends, so no record is ever processed");
+        }
+
+        @Override
+        protected void closeResources() {
+            throw new AssertionError("the legacy close paragraphs never run after an abend");
         }
     }
 

@@ -54,6 +54,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpInputMessage;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
@@ -61,6 +62,8 @@ import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.validation.BindException;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.server.ResponseStatusException;
@@ -170,9 +173,7 @@ final class GlobalExceptionHandlerSecurityTest {
     /** The handler under test. It is stateless, so one instance serves every case. */
     private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
 
-    // ---------------------------------------------------------------------------------------------
     // The three handlers whose body IS the carrier's operator text, by contract.
-    // ---------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("carries operator text through, where that is the contract")
@@ -269,9 +270,7 @@ final class GlobalExceptionHandlerSecurityTest {
         }
     }
 
-    // ---------------------------------------------------------------------------------------------
     // The eight handlers whose body is NEVER the carrier's text.
-    // ---------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("substitutes a neutral body where the carrier's own text is a diagnostic")
@@ -343,9 +342,7 @@ final class GlobalExceptionHandlerSecurityTest {
         }
     }
 
-    // ---------------------------------------------------------------------------------------------
     // Declarative binding failures.
-    // ---------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("normalizes a declarative binding failure")
@@ -504,9 +501,7 @@ final class GlobalExceptionHandlerSecurityTest {
         }
     }
 
-    // ---------------------------------------------------------------------------------------------
     // Method-level constraint violations, exercised through a real Bean Validation provider.
-    // ---------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("normalizes a method-level constraint violation")
@@ -612,9 +607,7 @@ final class GlobalExceptionHandlerSecurityTest {
         }
     }
 
-    // ---------------------------------------------------------------------------------------------
     // Unreadable request bodies.
-    // ---------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("normalizes an unreadable request body")
@@ -651,9 +644,7 @@ final class GlobalExceptionHandlerSecurityTest {
         }
     }
 
-    // ---------------------------------------------------------------------------------------------
     // Authentication and authorization, inside-dispatch arm.
-    // ---------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("separates authentication from authorization")
@@ -705,9 +696,7 @@ final class GlobalExceptionHandlerSecurityTest {
         }
     }
 
-    // ---------------------------------------------------------------------------------------------
     // The catch-all.
-    // ---------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("floors the boundary with a catch-all")
@@ -737,14 +726,81 @@ final class GlobalExceptionHandlerSecurityTest {
         }
 
         @Test
-        @DisplayName("a framework fault keeps its own status instead of being flattened to 500")
-        void aFrameworkFaultKeepsItsOwnStatus() {
+        @DisplayName("a framework fault keeps its own status instead of being flattened to 500, and "
+                + "its summary describes the fault it actually was rather than an unreadable body")
+        void aFrameworkFaultKeepsItsOwnStatusAndAnAccurateSummary() {
             ResponseEntity<ErrorResponse> response = handler.handleUnexpectedFailure(
                     new HttpRequestMethodNotSupportedException("PATCH"));
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
             assertThat(response.getBody()).isNotNull();
-            assertThat(response.getBody().message()).isEqualTo(EXPECTED_MALFORMED_SUMMARY);
+            assertThat(response.getBody().message())
+                    .isEqualTo("Request method is not supported")
+                    .isNotEqualTo(EXPECTED_MALFORMED_SUMMARY);
+        }
+
+        @Test
+        @DisplayName("a media type the operation cannot read is reported as a media-type fault, not "
+                + "as a body that failed to parse - the body was never parsed at all")
+        void anUnsupportedMediaTypeIsReportedAsAMediaTypeFault() {
+            ResponseEntity<ErrorResponse> response = handler.handleUnexpectedFailure(
+                    new HttpMediaTypeNotSupportedException(MediaType.TEXT_PLAIN,
+                            List.of(MediaType.APPLICATION_JSON)));
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+            assertThat(response.getBody()).isNotNull();
+            assertThat(response.getBody().message())
+                    .isEqualTo("Request media type is not supported")
+                    .isNotEqualTo(EXPECTED_MALFORMED_SUMMARY);
+        }
+
+        @Test
+        @DisplayName("an unsatisfiable Accept header is reported as an unavailable representation")
+        void anUnsatisfiableAcceptHeaderIsReportedAsAnUnavailableRepresentation() {
+            ResponseEntity<ErrorResponse> response = handler.handleUnexpectedFailure(
+                    new HttpMediaTypeNotAcceptableException(List.of(MediaType.APPLICATION_JSON)));
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_ACCEPTABLE);
+            assertThat(response.getBody()).isNotNull();
+            assertThat(response.getBody().message())
+                    .isEqualTo("Requested representation is not available")
+                    .isNotEqualTo(EXPECTED_MALFORMED_SUMMARY);
+        }
+
+        @Test
+        @DisplayName("no framework fault is reported as an unreadable body, because the one handler "
+                + "entitled to that summary translates the unreadable-body exception itself")
+        void noFrameworkFaultIsReportedAsAnUnreadableBody() {
+            List<Exception> faults = List.of(
+                    new HttpRequestMethodNotSupportedException("PATCH"),
+                    new HttpMediaTypeNotSupportedException(MediaType.TEXT_PLAIN,
+                            List.of(MediaType.APPLICATION_JSON)),
+                    new HttpMediaTypeNotAcceptableException(List.of(MediaType.APPLICATION_JSON)),
+                    new ResponseStatusException(HttpStatus.NOT_FOUND),
+                    new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE),
+                    new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE));
+
+            for (Exception fault : faults) {
+                ResponseEntity<ErrorResponse> response = handler.handleUnexpectedFailure(fault);
+
+                assertThat(response.getBody()).isNotNull();
+                assertThat(response.getBody().message())
+                        .as("%s", fault.getClass().getSimpleName())
+                        .isNotEqualTo(EXPECTED_MALFORMED_SUMMARY);
+            }
+        }
+
+        @Test
+        @DisplayName("a framework fault that declares a server-side status reads as a terminal "
+                + "failure rather than implying the caller did something")
+        void aServerSideFrameworkFaultReadsAsATerminalFailure() {
+            ResponseEntity<ErrorResponse> response = handler.handleUnexpectedFailure(
+                    new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE));
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+            assertThat(response.getBody()).isNotNull();
+            assertThat(response.getBody().message())
+                    .isEqualTo(AbendException.DEFAULT_MESSAGE);
         }
 
         @ParameterizedTest(name = "{0} is honoured rather than replaced by 500")
@@ -771,9 +827,7 @@ final class GlobalExceptionHandlerSecurityTest {
         }
     }
 
-    // ---------------------------------------------------------------------------------------------
     // The whole-boundary claims: status separation, and no leakage anywhere.
-    // ---------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("separates the six statuses and leaks nothing on any of them")
@@ -858,9 +912,7 @@ final class GlobalExceptionHandlerSecurityTest {
         }
     }
 
-    // ---------------------------------------------------------------------------------------------
     // Providers.
-    // ---------------------------------------------------------------------------------------------
 
     /**
      * The framework-declared statuses that the catch-all must honour rather than replace.
@@ -929,9 +981,7 @@ final class GlobalExceptionHandlerSecurityTest {
                                 HttpStatus.UNSUPPORTED_MEDIA_TYPE, CANARY))));
     }
 
-    // ---------------------------------------------------------------------------------------------
     // Helpers and fixtures.
-    // ---------------------------------------------------------------------------------------------
 
     /**
      * Flattens a response body into one searchable string covering every text component it holds.

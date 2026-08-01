@@ -170,9 +170,7 @@ class GlobalExceptionHandlerParityTest {
         return responses;
     }
 
-    // =================================================================================================
     // THE ABEND MAPPING
-    // =================================================================================================
 
     /**
      * Verifies the mapping for an abend that reached the boundary.
@@ -236,9 +234,7 @@ class GlobalExceptionHandlerParityTest {
         }
     }
 
-    // =================================================================================================
     // THE FILE-STATUS MAPPING
-    // =================================================================================================
 
     /**
      * Verifies the mapping for an unhandled file operation failure, whose message is deliberately
@@ -318,9 +314,7 @@ class GlobalExceptionHandlerParityTest {
         }
     }
 
-    // =================================================================================================
     // THE KEYED-READ MISS MAPPING
-    // =================================================================================================
 
     /**
      * Verifies the mapping for a keyed read that resolved to no record.
@@ -409,9 +403,7 @@ class GlobalExceptionHandlerParityTest {
         }
     }
 
-    // =================================================================================================
     // THE VALIDATION MAPPING
-    // =================================================================================================
 
     /**
      * Verifies the mapping for submitted data that failed validation, which is the only mapping that
@@ -622,9 +614,7 @@ class GlobalExceptionHandlerParityTest {
         }
     }
 
-    // =================================================================================================
     // THE CONCURRENT-UPDATE MAPPING
-    // =================================================================================================
 
     /**
      * Verifies the mapping for a concurrent update conflict.
@@ -715,9 +705,7 @@ class GlobalExceptionHandlerParityTest {
         }
     }
 
-    // =================================================================================================
     // THE JOB-SUBMISSION MAPPING
-    // =================================================================================================
 
     /**
      * Verifies the one mapping that answers with a success status, reproducing the legacy queue
@@ -789,9 +777,7 @@ class GlobalExceptionHandlerParityTest {
         }
     }
 
-    // =================================================================================================
     // INVARIANTS ACROSS EVERY MAPPING
-    // =================================================================================================
 
     /**
      * Verifies the properties every mapping shares, so a mapping added later cannot quietly break them.
@@ -889,9 +875,7 @@ class GlobalExceptionHandlerParityTest {
         }
     }
 
-    // =================================================================================================
     // DISPATCH WIRING
-    // =================================================================================================
 
     /**
      * Verifies that the mappings are actually reached through real request dispatch, rather than only

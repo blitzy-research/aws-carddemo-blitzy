@@ -55,9 +55,7 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 @DisplayName("Communication-area and screen-work-area carriers")
 final class CommareaDtoTest {
 
-    // =================================================================================================
     // Field widths transcribed from the copybooks.
-    // =================================================================================================
 
     /** {@code CDEMO-FROM-TRANID} and its peers: four characters. */
     private static final int ORACLE_TRANSACTION_ID_LENGTH = 4;
@@ -191,21 +189,22 @@ final class CommareaDtoTest {
         }
 
         @Test
-        @DisplayName("the administrator code resolves and grants the administrative role")
+        @DisplayName("the administrator code resolves and is reported as echoed - it grants nothing, "
+                + "because the byte arrived from the client rather than from the user-security record")
         void theAdministratorCodeResolves() {
             final NavigationContext context = aContextForType(ORACLE_ADMIN_CODE);
 
             assertThat(context.resolvedUserType()).contains(UserType.ADMIN);
-            assertThat(context.administrator()).isTrue();
+            assertThat(context.echoesAdministratorCode()).isTrue();
         }
 
         @Test
-        @DisplayName("the standard-user code resolves and does not grant the administrative role")
+        @DisplayName("the standard-user code resolves and is not reported as the administrator code")
         void theStandardUserCodeResolves() {
             final NavigationContext context = aContextForType(ORACLE_USER_CODE);
 
             assertThat(context.resolvedUserType()).contains(UserType.USER);
-            assertThat(context.administrator()).isFalse();
+            assertThat(context.echoesAdministratorCode()).isFalse();
         }
 
         @Test
@@ -216,7 +215,7 @@ final class CommareaDtoTest {
             final NavigationContext context = aContextForType("X");
 
             assertThat(context.resolvedUserType()).isEmpty();
-            assertThat(context.administrator()).isFalse();
+            assertThat(context.echoesAdministratorCode()).isFalse();
         }
 
         @Test
@@ -225,7 +224,7 @@ final class CommareaDtoTest {
             final NavigationContext context = aContextForType(null);
 
             assertThat(context.resolvedUserType()).isEmpty();
-            assertThat(context.administrator()).isFalse();
+            assertThat(context.echoesAdministratorCode()).isFalse();
         }
 
         @Test
@@ -244,7 +243,7 @@ final class CommareaDtoTest {
             assertThat(empty.userId()).isNull();
             assertThat(empty.userType()).isNull();
             assertThat(empty.programContext()).isNull();
-            assertThat(empty.administrator()).isFalse();
+            assertThat(empty.echoesAdministratorCode()).isFalse();
             assertThat(empty.firstEntry()).isTrue();
             assertThat(empty.reEntry()).isFalse();
         }
@@ -634,9 +633,9 @@ final class CommareaDtoTest {
         @Test
         @DisplayName("the carried list is defensively copied, so a later caller edit cannot reach in")
         void theCarriedListIsDefensivelyCopied() {
-            final List<ErrorResponse.FieldError> supplied = new ArrayList<>();
-            supplied.add(new ErrorResponse.FieldError("acctStatus", "ACSTTUS",
-                    ErrorResponse.FieldState.MISSING));
+            final List<FieldErrorDecorator.MarkedField> supplied = new ArrayList<>();
+            supplied.add(new FieldErrorDecorator.MarkedField("acctStatus", "ACSTTUS",
+                    FieldErrorDecorator.FlagState.BLANK));
 
             final FieldErrorDecorator errors = new FieldErrorDecorator(supplied);
             supplied.clear();

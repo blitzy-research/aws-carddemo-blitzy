@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  *
  * <p>{@link PageMetadata} is the REST projection of the CICS browse protocol the legacy screens use
  * to walk a key-sequenced cluster: position the browse at a record key, walk forward, walk backward,
- * release. Six properties of that protocol are contractual rather than incidental, and each is
+ * release. Seven properties of that protocol are contractual rather than incidental, and each is
  * asserted below against the legacy member that establishes it.</p>
  * <ol>
  *   <li><strong>Three screen row counts, one per paginated screen</strong>, each proven by a
@@ -78,6 +78,12 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  *   <li><strong>Exactly two browse directions</strong>, one per CICS browse verb, with no third
  *       constant and no default, because the legacy programs always branch on an explicit attention
  *       key.</li>
+ *   <li><strong>A cursor crosses the wire in full and never reaches a diagnostic.</strong> The card
+ *       cursor cited above is a primary account number concatenated with an account identifier, so it
+ *       is regulated data that the client nevertheless has to receive in order to resume the browse.
+ *       The accessors, the JSON wire form and equality therefore carry both cursors byte for byte
+ *       while {@link PageMetadata#toString()} replaces both with a fixed placeholder, asserted in
+ *       {@link DiagnosticRedactionContract}. Decision log entry DL-081 records the arrangement.</li>
  * </ol>
  *
  * <p>The three counts are asserted in {@link ScreenRowCountContract}. Nothing here derives one count
@@ -1608,7 +1614,8 @@ class PageMetadataTest {
         }
 
         @Test
-        @DisplayName("the diagnostic representation names the type and every component")
+        @DisplayName("the diagnostic representation names the type and every component, and carries the "
+                + "value of every component that is not a record key")
         void diagnosticRepresentationNamesTheTypeAndEveryComponent() {
             PageMetadata page =
                     PageMetadata.backward(
@@ -1622,13 +1629,189 @@ class PageMetadataTest {
             assertThat(page.toString())
                     .startsWith("PageMetadata[")
                     .contains("pageSize=10")
-                    .contains("previousCursorKey=0000000000000033")
-                    .contains("nextCursorKey=0000000000000042")
+                    .contains("previousCursorKey=")
+                    .contains("nextCursorKey=")
                     .contains("direction=BACKWARD")
                     .contains("hasMorePages=false")
                     .contains("hasPreviousPages=true")
                     .contains("displayedPageNumber=00000007")
                     .endsWith("]");
+            assertThat(page.toString())
+                    .as("a boundary cursor is a record key and never reaches a rendering")
+                    .doesNotContain(TRANSACTION_FIRST_CURSOR)
+                    .doesNotContain(TRANSACTION_LAST_CURSOR);
+        }
+    }
+
+    @Nested
+    @DisplayName("Diagnostic redaction: paging state retained, both boundary cursors withheld")
+    class DiagnosticRedactionContract {
+
+        @Test
+        @DisplayName("no fragment of either boundary cursor reaches the rendering of a card page, whose "
+                + "27-character key is a primary account number followed by an account identifier")
+        void noFragmentOfEitherCardCursorReachesTheRendering() {
+            String rendering =
+                    PageMetadata.forward(
+                                    PageMetadata.CARD_LIST_PAGE_SIZE,
+                                    CARD_FIRST_CURSOR,
+                                    CARD_LAST_CURSOR,
+                                    true,
+                                    false,
+                                    CARD_MAP_INDICATOR)
+                            .toString();
+
+            assertThat(rendering)
+                    .doesNotContain(CARD_FIRST_CURSOR)
+                    .doesNotContain(CARD_LAST_CURSOR)
+                    .doesNotContain(CARD_FIRST_CURSOR.substring(0, CARD_KEY_CARD_NUMBER_WIDTH))
+                    .doesNotContain(CARD_LAST_CURSOR.substring(0, CARD_KEY_CARD_NUMBER_WIDTH))
+                    .doesNotContain(CARD_LAST_CURSOR.substring(CARD_KEY_CARD_NUMBER_WIDTH))
+                    .doesNotContain("0000000000000042")
+                    .doesNotContain("00000000011");
+        }
+
+        @Test
+        @DisplayName("each withheld cursor is replaced by a fixed placeholder, so nothing about the value - "
+                + "not even its length - survives")
+        void eachWithheldCursorIsReplacedByAFixedPlaceholder() {
+            String rendering =
+                    PageMetadata.forward(
+                                    PageMetadata.CARD_LIST_PAGE_SIZE,
+                                    CARD_FIRST_CURSOR,
+                                    CARD_LAST_CURSOR,
+                                    true,
+                                    false,
+                                    CARD_MAP_INDICATOR)
+                            .toString();
+
+            assertThat(rendering)
+                    .contains("previousCursorKey=***REDACTED***")
+                    .contains("nextCursorKey=***REDACTED***");
+        }
+
+        @Test
+        @DisplayName("the placeholder is constant across differing cursor values and differing cursor "
+                + "widths, which is the assertion that rules out a partial mask or a digest")
+        void thePlaceholderIsConstantAcrossDifferingCursorValues() {
+            String cardWidths =
+                    PageMetadata.forward(
+                                    PageMetadata.TRANSACTION_LIST_PAGE_SIZE,
+                                    CARD_FIRST_CURSOR,
+                                    CARD_LAST_CURSOR,
+                                    true,
+                                    false,
+                                    LIST_MAP_INDICATOR)
+                            .toString();
+            String userWidths =
+                    PageMetadata.forward(
+                                    PageMetadata.TRANSACTION_LIST_PAGE_SIZE,
+                                    USER_FIRST_CURSOR,
+                                    USER_LAST_CURSOR,
+                                    true,
+                                    false,
+                                    LIST_MAP_INDICATOR)
+                            .toString();
+
+            assertThat(cardWidths).isEqualTo(userWidths);
+        }
+
+        @Test
+        @DisplayName("an absent cursor is withheld too, so the rendering does not disclose even whether a "
+                + "cursor is present")
+        void anAbsentCursorIsWithheldToo() {
+            String populated =
+                    PageMetadata.forward(
+                                    PageMetadata.USER_LIST_PAGE_SIZE,
+                                    USER_FIRST_CURSOR,
+                                    USER_LAST_CURSOR,
+                                    false,
+                                    false,
+                                    null)
+                            .toString();
+            String absent =
+                    PageMetadata.forward(
+                                    PageMetadata.USER_LIST_PAGE_SIZE, null, null, false, false, null)
+                            .toString();
+
+            assertThat(absent).isEqualTo(populated).doesNotContain("null,");
+        }
+
+        @Test
+        @DisplayName("a hostile value planted in a cursor cannot reach the rendering")
+        void aHostileValuePlantedInACursorCannotReachTheRendering() {
+            String rendering =
+                    PageMetadata.backward(
+                                    PageMetadata.CARD_LIST_PAGE_SIZE,
+                                    "CANARY-FIRST-CURSOR-KEY-001",
+                                    "CANARY-LAST-CURSOR-KEY-0002",
+                                    false,
+                                    true,
+                                    CARD_MAP_INDICATOR)
+                            .toString();
+
+            assertThat(rendering).doesNotContain("CANARY");
+        }
+
+        @Test
+        @DisplayName("the redaction touches the rendering only: both accessors still answer the cursor byte "
+                + "for byte, because the client cannot resume the browse without them")
+        void theRedactionTouchesTheRenderingOnly() {
+            PageMetadata page =
+                    PageMetadata.forward(
+                            PageMetadata.CARD_LIST_PAGE_SIZE,
+                            CARD_FIRST_CURSOR,
+                            CARD_LAST_CURSOR,
+                            true,
+                            false,
+                            CARD_MAP_INDICATOR);
+
+            assertThat(page.previousCursorKey()).isEqualTo(CARD_FIRST_CURSOR);
+            assertThat(page.nextCursorKey()).isEqualTo(CARD_LAST_CURSOR);
+        }
+
+        @Test
+        @DisplayName("the redaction does not reach the JSON wire form, which still transports both cursors "
+                + "unchanged")
+        void theRedactionDoesNotReachTheJsonWireForm() throws JsonProcessingException {
+            Map<String, Object> wire =
+                    wireProperties(
+                            PageMetadata.forward(
+                                    PageMetadata.CARD_LIST_PAGE_SIZE,
+                                    CARD_FIRST_CURSOR,
+                                    CARD_LAST_CURSOR,
+                                    true,
+                                    false,
+                                    CARD_MAP_INDICATOR));
+
+            assertThat(wire)
+                    .containsEntry("previousCursorKey", CARD_FIRST_CURSOR)
+                    .containsEntry("nextCursorKey", CARD_LAST_CURSOR);
+        }
+
+        @Test
+        @DisplayName("two pages that render identically can still be unequal, which is why the rendering "
+                + "must never be used as an equality proxy")
+        void twoPagesThatRenderIdenticallyCanStillBeUnequal() {
+            PageMetadata left =
+                    PageMetadata.forward(
+                            PageMetadata.USER_LIST_PAGE_SIZE,
+                            USER_FIRST_CURSOR,
+                            USER_LAST_CURSOR,
+                            true,
+                            false,
+                            LIST_MAP_INDICATOR);
+            PageMetadata right =
+                    PageMetadata.forward(
+                            PageMetadata.USER_LIST_PAGE_SIZE,
+                            CARD_FIRST_CURSOR,
+                            CARD_LAST_CURSOR,
+                            true,
+                            false,
+                            LIST_MAP_INDICATOR);
+
+            assertThat(left.toString()).isEqualTo(right.toString());
+            assertThat(left).isNotEqualTo(right);
         }
     }
 

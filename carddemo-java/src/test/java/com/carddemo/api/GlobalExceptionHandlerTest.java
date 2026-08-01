@@ -149,9 +149,7 @@ class GlobalExceptionHandlerTest {
         }
     }
 
-    // ------------------------------------------------------------------
     // Test-local helpers. None of these consults the class under test.
-    // ------------------------------------------------------------------
 
     /**
      * A request-contract stand-in carrying one mandatory text field and one bounded field, used to
@@ -345,20 +343,18 @@ class GlobalExceptionHandlerTest {
         });
     }
 
-    // ------------------------------------------------------------------
     // 1. The six failure carriers
-    // ------------------------------------------------------------------
 
     @Nested
     @DisplayName("the six module failure carriers")
     class CarrierHandlers {
 
         @Test
-        @DisplayName("an abend answers 500 with the operator message field alone, so the abend code, the "
-                + "failing component and the reason stay on the diagnostic channel")
-        void abendAnswersFiveHundredWithTheOperatorMessageOnly() {
-            AbendException abend = new AbendException("0001", "COACTUPC", "record was changed",
-                    "UPDATE ABANDONED, RECORD WAS CHANGED");
+        @DisplayName("an online abend answers 500 with the operator message field alone, so the abend "
+                + "code, the failing component and the reason stay on the diagnostic channel")
+        void onlineAbendAnswersFiveHundredWithTheOperatorMessageOnly() {
+            AbendException abend = new AbendException(AbendException.ONLINE_ABEND_CODE, "COACTUPC",
+                    "record was changed", "UPDATE ABANDONED, RECORD WAS CHANGED");
 
             ResponseEntity<ErrorResponse> response = handler.handleAbend(abend);
 
@@ -369,7 +365,31 @@ class GlobalExceptionHandlerTest {
             assertThat(body.fieldErrors()).isEmpty();
             assertThat(body.focusScreenFieldId()).isNull();
             // The three diagnostic components are not rendered anywhere in the body.
-            assertThat(body.message()).doesNotContain("COACTUPC", "0001");
+            assertThat(body.message()).doesNotContain("COACTUPC",
+                    AbendException.ONLINE_ABEND_CODE);
+        }
+
+        @Test
+        @DisplayName("an abend under any code other than the online one answers with the terminal "
+                + "literal instead of its own message, because only the online routine put its text "
+                + "in front of a person - the batch sites call CEE3ABD with a code and no message and "
+                + "DISPLAY their diagnostic to the job log")
+        void anAbendUnderAnyOtherCodeAnswersWithTheTerminalLiteral() {
+            AbendException unrecognisedCode = new AbendException("0001", "COACTUPC",
+                    "record was changed", "UPDATE ABANDONED, RECORD WAS CHANGED");
+            AbendException batchCode = new AbendException(AbendException.BATCH_ABEND_CODE,
+                    "CBACT01C", "read failed",
+                    "ERROR READING ACCOUNT MASTER - FILE STATUS IS: 35");
+
+            for (AbendException internal : List.of(unrecognisedCode, batchCode)) {
+                ErrorResponse body = handler.handleAbend(internal).getBody();
+
+                assertThat(body).isNotNull();
+                assertThat(body.message())
+                        .as("abendCode %s", internal.code())
+                        .isEqualTo(AbendException.DEFAULT_MESSAGE);
+                assertThat(body.message()).isNotEqualTo(internal.getMessage());
+            }
         }
 
         @Test
@@ -509,9 +529,7 @@ class GlobalExceptionHandlerTest {
         }
     }
 
-    // ------------------------------------------------------------------
     // 2. Request-body and binding rejections raised by the web framework
-    // ------------------------------------------------------------------
 
     @Nested
     @DisplayName("a request body rejected by declarative validation")
@@ -626,9 +644,7 @@ class GlobalExceptionHandlerTest {
         }
     }
 
-    // ------------------------------------------------------------------
     // 3. Constraints declared on handler parameters
-    // ------------------------------------------------------------------
 
     @Nested
     @DisplayName("a constraint declared on a handler parameter")
@@ -743,9 +759,7 @@ class GlobalExceptionHandlerTest {
         }
     }
 
-    // ------------------------------------------------------------------
     // 4. Violations raised by the validation provider itself
-    // ------------------------------------------------------------------
 
     @Nested
     @DisplayName("violations raised by the validation provider")
@@ -836,9 +850,7 @@ class GlobalExceptionHandlerTest {
         }
     }
 
-    // ------------------------------------------------------------------
     // 5. Request values that could not be bound at all
-    // ------------------------------------------------------------------
 
     @Nested
     @DisplayName("a request value that could not be bound")
@@ -908,9 +920,7 @@ class GlobalExceptionHandlerTest {
         }
     }
 
-    // ------------------------------------------------------------------
     // 6. Request bodies that could not be read
-    // ------------------------------------------------------------------
 
     @Nested
     @DisplayName("a request body that could not be read")
@@ -948,9 +958,7 @@ class GlobalExceptionHandlerTest {
         }
     }
 
-    // ------------------------------------------------------------------
     // 7. Invariants that hold across the whole advice
-    // ------------------------------------------------------------------
 
     @Nested
     @DisplayName("invariants across the whole advice")

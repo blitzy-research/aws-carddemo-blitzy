@@ -181,9 +181,7 @@ class DailyTransactionTest {
                 "4859452612877065", SEEDED_ORIGINATION_TIMESTAMP, " ".repeat(26));
     }
 
-    // =================================================================================================
     // RECORD LAYOUT
-    // =================================================================================================
 
     /**
      * Verifies the copybook geometry the entity has to honour.
@@ -265,9 +263,7 @@ class DailyTransactionTest {
         }
     }
 
-    // =================================================================================================
     // SCHEMA AGREEMENT
-    // =================================================================================================
 
     /**
      * Verifies that the deployed migration describes the same layout the copybook does.
@@ -340,9 +336,7 @@ class DailyTransactionTest {
         }
     }
 
-    // =================================================================================================
     // CONSTRUCTION AND ACCESS
-    // =================================================================================================
 
     /**
      * Verifies that every field the constructor takes is the field the accessor returns.
@@ -469,9 +463,7 @@ class DailyTransactionTest {
         }
     }
 
-    // =================================================================================================
     // AMOUNT FIDELITY
-    // =================================================================================================
 
     /**
      * Verifies the amount's scale, sign and the truncating rescaling point.
@@ -534,9 +526,7 @@ class DailyTransactionTest {
         }
     }
 
-    // =================================================================================================
     // SEEDED FILE COMPOSITION
-    // =================================================================================================
 
     /**
      * Verifies what the seeded posting input actually exercises, and what it cannot.
@@ -664,9 +654,7 @@ class DailyTransactionTest {
         }
     }
 
-    // =================================================================================================
     // BUSINESS-KEY IDENTITY
-    // =================================================================================================
 
     /**
      * Verifies that identity is the record's own key and nothing else.
@@ -746,9 +734,7 @@ class DailyTransactionTest {
         }
     }
 
-    // =================================================================================================
     // DIAGNOSTIC REPRESENTATION
-    // =================================================================================================
 
     /**
      * Verifies the diagnostic string, including what it deliberately withholds.

@@ -69,8 +69,8 @@ import org.springframework.context.annotation.Configuration;
  * proxy and reflection surface untouched.
  *
  * <p><strong>This is a pure data catalog.</strong> Two closely related legacy behaviours belong to the
- * menu service that injects this bean &mdash; <strong>which is not delivered yet</strong> &mdash; and are
- * intentionally absent here so that neither is implemented twice. The first is the "coming soon" rule:
+ * menu service that injects this bean rather than to the catalog, and are intentionally absent here so
+ * that neither is implemented twice. The first is the "coming soon" rule:
  * {@code app/cbl/COMEN01C.cbl} line 138 compares the first five characters of the selected option's
  * target program name against a dummy-program literal and reports the option as not yet available when
  * they match. None of the fourteen entries published here targets a dummy program, so this catalog holds

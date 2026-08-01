@@ -97,9 +97,7 @@ class RejectReasonTest {
             "TRANSACTION RECEIVED AFTER ACCT EXPIRATION",
             "ACCOUNT RECORD NOT FOUND");
 
-    // =================================================================================================
     // VOCABULARY
-    // =================================================================================================
 
     /**
      * Verifies the five reasons, their codes and their descriptions.
@@ -182,9 +180,7 @@ class RejectReasonTest {
         }
     }
 
-    // =================================================================================================
     // NUMBERING
-    // =================================================================================================
 
     /**
      * Verifies the numbering, including the hole the legacy leaves and the sentinel it reserves.
@@ -249,9 +245,7 @@ class RejectReasonTest {
         }
     }
 
-    // =================================================================================================
     // TRAILER GEOMETRY
-    // =================================================================================================
 
     /**
      * Verifies that every reason fits the eighty-byte trailer it is written into.
@@ -353,9 +347,7 @@ class RejectReasonTest {
         }
     }
 
-    // =================================================================================================
     // SHARED DESCRIPTION
-    // =================================================================================================
 
     /**
      * Verifies the deliberate description collision between the read failure and the rewrite failure.
@@ -396,9 +388,7 @@ class RejectReasonTest {
         }
     }
 
-    // =================================================================================================
     // LOOKUP
-    // =================================================================================================
 
     /**
      * Verifies the lookup from a stamped numeric code back to a reason.

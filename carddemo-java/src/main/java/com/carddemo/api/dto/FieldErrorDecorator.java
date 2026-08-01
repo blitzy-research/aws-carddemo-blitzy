@@ -54,12 +54,19 @@ import java.util.stream.Stream;
  * presentation detail; a client receives two named states and decides its own presentation.
  * Decision log entry D-33 records the two-state contract.
  *
- * <p>The output states are {@link ErrorResponse}'s own, so entries assembled here are handed
- * straight on with no further translation, which keeps the two types one contract instead of
- * two. The structurally identical state type declared by the validation-failure carrier in
- * {@code com.carddemo.exception} is a deliberate duplicate that this package must not
- * reference, because doing so would invert the module's layer direction; the global failure
- * handler in {@code com.carddemo.api} owns that translation.
+ * <p><strong>What is accumulated is neutral.</strong> An entry is a {@link MarkedField}: the
+ * field name, the screen field identifier and the legacy flag state, and nothing else. That
+ * triple names neither the REST error body nor the validation-failure carrier, so one
+ * accumulation serves both tiers without either contract reaching into the other, and a service
+ * that decorates need know only this type. Two projections read it, each owned by the tier it
+ * feeds. {@link #fieldErrors()} renders the accumulation in the response contract's own terms,
+ * which is why the published state is {@link ErrorResponse.FieldState} rather than a third
+ * enumeration. {@code service/FieldErrorTranslationService} renders the same accumulation as the
+ * validation failure a service throws, and is the only place that conversion happens. The
+ * structurally identical state type declared by that carrier in {@code com.carddemo.exception}
+ * therefore stays a deliberate duplicate this package must not reference: converting into it
+ * belongs to the service layer and converting back out of it belongs to the global failure
+ * handler in {@code com.carddemo.api}. Decision log entry DL-080 records the arrangement.
  *
  * <p><strong>The re-entry gate belongs to the caller.</strong> Macro line 20 conjoined the
  * whole decoration with the program-context re-enter condition, so field-level errors were
@@ -75,8 +82,8 @@ import java.util.stream.Stream;
  * declares no field other than its single component, holds no static state and is deeply
  * immutable, so instances are freely shareable across threads and two instances built from the
  * same calls in the same sequence are equal. An accumulation is therefore <em>threaded</em>
- * rather than collected: each call yields the value the next proceeds from, and
- * {@link #fieldErrors()} is the terminal operation. There is deliberately no accumulator,
+ * rather than collected: each call yields the value the next proceeds from, and a projection is
+ * the terminal operation. There is deliberately no accumulator,
  * collector, cache, thread-local, singleton holder or registry of marked fields, because any of
  * them would reinstate the shared mutable state an immutable value type exists to avoid and
  * would let one request's errors leak into another's.
@@ -103,8 +110,8 @@ import java.util.stream.Stream;
  * edits coded; both are decorated by the macro, so this type must be able to mark them even
  * though no caller ever will (decision log entry D-34).
  *
- * <p>Illustrative call sequence - the response types it would feed are not part of this
- * contract and the fragment is not compilable as written:
+ * <p>Illustrative call sequence, as a validating service would run it - the collaborators it names
+ * are not part of this contract and the fragment is not compilable as written:
  *
  * <pre>{@code
  * FieldErrorDecorator errors = FieldErrorDecorator.none();
@@ -114,27 +121,27 @@ import java.util.stream.Stream;
  * if (flags.creditLimitNotOk()) {
  *     errors = errors.mark("creditLimit", "ACRDLIM", FieldErrorDecorator.FlagState.NOT_OK);
  * }
- * List<ErrorResponse.FieldError> perField = errors.isEmpty() ? List.of() : errors.fieldErrors();
+ * if (!errors.isEmpty()) {
+ *     throw translator.toValidationException(errors, messages.accountUpdateRejected());
+ * }
  * }</pre>
  *
- * @param fieldErrors the entries accumulated so far, in the sequence they were marked. Never
- *                    {@code null} and never mutable: a {@code null} argument is normalised to
- *                    the empty list and any other argument is defensively copied. This is also
- *                    the terminal accessor, so the collection it returns is handed directly to
- *                    {@link ErrorResponse} with no further copying needed.
+ * @param markedFields the fields marked so far, in the sequence they were marked. Never
+ *                     {@code null} and never mutable: a {@code null} argument is normalised to
+ *                     the empty list and any other argument is defensively copied.
  * @since 1.0.0
  */
-public record FieldErrorDecorator(List<ErrorResponse.FieldError> fieldErrors) {
+public record FieldErrorDecorator(List<MarkedField> markedFields) {
 
     /**
      * Normalizes the accumulated entries so the component is never {@code null}, never aliased
      * to caller-owned state and never mutable.
      *
      * <p>A {@code null} collection becomes the empty immutable list rather than being stored,
-     * so {@link #fieldErrors()} and {@link #isEmpty()} are always usable and no caller has to
+     * so {@link #markedFields()} and {@link #isEmpty()} are always usable and no caller has to
      * test for {@code null}. Any other collection is defensively copied with
      * {@link List#copyOf(java.util.Collection)}, which detaches it from the caller and rejects
-     * a {@code null} element - an entry with no state would be meaningless, and dropping it
+     * a {@code null} element - an entry naming no field would be meaningless, and dropping it
      * silently would hide an error the client has to show.
      *
      * <p>The copy is what makes {@link #mark(String, String, FlagState)} safe to describe as
@@ -142,7 +149,7 @@ public record FieldErrorDecorator(List<ErrorResponse.FieldError> fieldErrors) {
      * previous caller still holds.
      */
     public FieldErrorDecorator {
-        fieldErrors = (fieldErrors == null) ? List.of() : List.copyOf(fieldErrors);
+        markedFields = (markedFields == null) ? List.of() : List.copyOf(markedFields);
     }
 
     /**
@@ -168,15 +175,14 @@ public record FieldErrorDecorator(List<ErrorResponse.FieldError> fieldErrors) {
      * Records that one field is in one of the two legacy error states, returning a new
      * accumulation and leaving this one untouched.
      *
-     * <p>This is the whole of the macro body's observable effect, and the only operation this
-     * type performs. It records an outcome that has <em>already</em> been determined elsewhere:
+     * <p>This is the whole of the macro body's observable effect, and the only operation that grows
+     * an accumulation. It records an outcome that has <em>already</em> been determined elsewhere:
      * it evaluates no rule, tests no range, inspects no character class, performs no lookup and
      * reads no source of its own. The caller has already run the validation cascade and has a
-     * flag; this turns that flag into a client-visible entry.
+     * flag; this turns that flag into one {@link MarkedField}.
      *
-     * <p>The state translation is fixed: {@link FlagState#BLANK} becomes
-     * {@link ErrorResponse.FieldState#MISSING} and {@link FlagState#NOT_OK} becomes
-     * {@link ErrorResponse.FieldState#INVALID}. No per-field message is produced, which is
+     * <p>The flag state is recorded as given, in the legacy terms {@link FlagState} carries; it
+     * is translated only when a projection is taken. No per-field message is produced, which is
      * faithful - the legacy macro emitted no text of its own, because the explanatory text
      * lived in the single summary line that the caller owns.
      *
@@ -196,22 +202,37 @@ public record FieldErrorDecorator(List<ErrorResponse.FieldError> fieldErrors) {
      *                    in. Mandatory.
      * @return a new accumulation holding every entry of this one, in sequence, followed by the
      *         entry just marked
-     * @throws NullPointerException if any argument is {@code null}. All three are load-bearing:
-     *                              without the field name a client cannot locate the field,
-     *                              without the identifier the entry cannot be correlated with
-     *                              the legacy map, and without the state the client cannot tell
-     *                              the operator whether to supply a value or correct one.
+     * @throws NullPointerException if any argument is {@code null}; see {@link MarkedField}
      */
     public FieldErrorDecorator mark(String field, String bmsFieldId, FlagState flagState) {
-        Objects.requireNonNull(field, "field must not be null");
-        Objects.requireNonNull(bmsFieldId, "bmsFieldId must not be null");
-        Objects.requireNonNull(flagState, "flagState must not be null");
-
-        ErrorResponse.FieldError entry =
-                new ErrorResponse.FieldError(field, bmsFieldId, fieldStateOf(flagState));
+        MarkedField entry = new MarkedField(field, bmsFieldId, flagState);
 
         return new FieldErrorDecorator(
-                Stream.concat(fieldErrors.stream(), Stream.of(entry)).toList());
+                Stream.concat(markedFields.stream(), Stream.of(entry)).toList());
+    }
+
+    /**
+     * Projects the accumulation into the response contract's per-field detail.
+     *
+     * <p>One entry per marked field, in the sequence it was marked, with the legacy flag state
+     * translated: {@link FlagState#BLANK} becomes {@link ErrorResponse.FieldState#MISSING} and
+     * {@link FlagState#NOT_OK} becomes {@link ErrorResponse.FieldState#INVALID}. No per-field
+     * message is attached, because none was ever produced. The returned list is unmodifiable and
+     * is built fresh on each call, so it can be handed to {@link ErrorResponse} without further
+     * copying.
+     *
+     * <p>This is the projection for a response assembled inside this layer. A service that
+     * validates and then fails takes the other projection instead, through
+     * {@code service/FieldErrorTranslationService}, so that its failure reaches a client along
+     * the single path the global failure handler owns.
+     *
+     * @return the response-contract entries, in marking sequence; empty when nothing was marked
+     */
+    public List<ErrorResponse.FieldError> fieldErrors() {
+        return markedFields.stream()
+                .map(marked -> new ErrorResponse.FieldError(marked.field(), marked.bmsFieldId(),
+                        fieldStateOf(marked.flagState())))
+                .toList();
     }
 
     /**
@@ -223,13 +244,13 @@ public record FieldErrorDecorator(List<ErrorResponse.FieldError> fieldErrors) {
      * {@link ErrorResponse#hasFieldErrors()} on the response this accumulation feeds.
      *
      * <p>It is a presence test only. A caller that has to tell an operator what to do must read
-     * {@link ErrorResponse.FieldError#state()} on each entry, because a field left blank and a
-     * field filled in wrongly need different remedies.
+     * {@link MarkedField#flagState()} on each entry, because a field left blank and a field
+     * filled in wrongly need different remedies.
      *
      * @return {@code true} when no entry has been marked
      */
     public boolean isEmpty() {
-        return fieldErrors.isEmpty();
+        return markedFields.isEmpty();
     }
 
     /**
@@ -242,9 +263,9 @@ public record FieldErrorDecorator(List<ErrorResponse.FieldError> fieldErrors) {
      * catch-all. Under the module's warnings-as-errors compilation that is a build failure,
      * which is the intended safeguard.
      *
-     * <p>Kept private so that {@link #mark(String, String, FlagState)} remains the only
-     * operation this type offers, and so that no caller can convert a flag without also
-     * producing the entry that makes the conversion meaningful.
+     * <p>Kept private so that no caller can convert a flag on its own: a state is translated only
+     * as part of {@link #fieldErrors()}, which is what makes the conversion meaningful and keeps
+     * it in one place.
      *
      * @param flagState the legacy flag state, already known to be non-{@code null}
      * @return the corresponding published state
@@ -254,6 +275,45 @@ public record FieldErrorDecorator(List<ErrorResponse.FieldError> fieldErrors) {
             case BLANK -> ErrorResponse.FieldState.MISSING;
             case NOT_OK -> ErrorResponse.FieldState.INVALID;
         };
+    }
+
+    /**
+     * One decorated field, expressed in the legacy macro's own terms: which field, which screen
+     * field, and which of the two flag states it was in.
+     *
+     * <p>This is the neutral model both tiers read. It references no response type and no
+     * exception type, so it can be produced by a service, carried across a layer boundary and
+     * projected either way without a contract choosing the shape of the accumulation. It holds no
+     * message, because the macro produced none, and it never holds a submitted field value, so a
+     * failure on a credential field cannot echo what was typed (decision log entry D-16).
+     *
+     * @param field      the name of the field in the request contract, as a client sent it.
+     *                   Mandatory.
+     * @param bmsFieldId the legacy screen field identifier, carried through as an opaque label so
+     *                   a response can be correlated with the map it derives from. Mandatory, and
+     *                   never trimmed or folded: the legacy labels are fixed-width.
+     * @param flagState  which of the two legacy error states the field's validation flag is in.
+     *                   Mandatory.
+     * @since 1.0.0
+     */
+    public record MarkedField(String field, String bmsFieldId, FlagState flagState) {
+
+        /**
+         * Rejects an absent component, because all three are load-bearing: without the field name
+         * a client cannot locate the field, without the identifier the entry cannot be correlated
+         * with the legacy map, and without the state the client cannot tell the operator whether
+         * to supply a value or correct one.
+         *
+         * <p>This is the single enforcement point, so {@link #mark(String, String, FlagState)}
+         * and any direct construction reject the same arguments with the same wording.
+         *
+         * @throws NullPointerException if any component is {@code null}
+         */
+        public MarkedField {
+            Objects.requireNonNull(field, "field must not be null");
+            Objects.requireNonNull(bmsFieldId, "bmsFieldId must not be null");
+            Objects.requireNonNull(flagState, "flagState must not be null");
+        }
     }
 
     /**

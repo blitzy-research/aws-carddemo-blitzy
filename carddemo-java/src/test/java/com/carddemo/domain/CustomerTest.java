@@ -195,9 +195,7 @@ class CustomerTest {
                 FIXTURE.field(ordinal, OFFSET_FICO_CREDIT_SCORE, 3));
     }
 
-    // =================================================================================================
     // RECORD LAYOUT
-    // =================================================================================================
 
     /**
      * Verifies the copybook geometry the entity has to honour.
@@ -273,9 +271,7 @@ class CustomerTest {
         }
     }
 
-    // =================================================================================================
     // SCHEMA AGREEMENT
-    // =================================================================================================
 
     /**
      * Verifies that the deployed migration describes the same layout the copybook does.
@@ -371,9 +367,7 @@ class CustomerTest {
         }
     }
 
-    // =================================================================================================
     // CONSTRUCTION AND ACCESS
-    // =================================================================================================
 
     /**
      * Verifies that every field the constructor takes is the field the accessor returns.
@@ -519,9 +513,7 @@ class CustomerTest {
         }
     }
 
-    // =================================================================================================
     // THE TWO UNVALIDATED FIELDS
-    // =================================================================================================
 
     /**
      * Verifies that the two fields the legacy decorates but never checks carry no constraint.
@@ -565,9 +557,7 @@ class CustomerTest {
         }
     }
 
-    // =================================================================================================
     // CREDIT SCORE FIDELITY
-    // =================================================================================================
 
     /**
      * Verifies that the three-digit credit score is carried without numeric reinterpretation.
@@ -636,9 +626,7 @@ class CustomerTest {
         }
     }
 
-    // =================================================================================================
     // SEEDED RECORD FIDELITY
-    // =================================================================================================
 
     /**
      * Verifies that a real seeded record travels into the entity intact.
@@ -714,9 +702,7 @@ class CustomerTest {
         }
     }
 
-    // =================================================================================================
     // BUSINESS-KEY IDENTITY
-    // =================================================================================================
 
     /**
      * Verifies that identity is the record's own key and nothing else.
@@ -802,9 +788,7 @@ class CustomerTest {
         }
     }
 
-    // =================================================================================================
     // PRIVACY POSTURE
-    // =================================================================================================
 
     /**
      * Verifies the two privacy departures the migration makes and the leak it forecloses.

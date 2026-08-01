@@ -72,9 +72,12 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
  * <ul>
  *   <li>{@link AbendException} - {@code 500 Internal Server Error}. Terminal and unrecoverable: the
  *       estate's nine batch calls to the Language Environment abort routine and its four online
- *       abend commands all end the unit of work. The body carries only the operator message field,
- *       which the legacy online abend routine defaults to a fixed literal
- *       ({@code app/cbl/COACTUPC.cbl} lines 4205 to 4207).</li>
+ *       abend commands all end the unit of work. The body carries at most the operator message
+ *       field, and only when the abend code is the online one: the legacy online routine sent that
+ *       field to a terminal ({@code app/cbl/COACTUPC.cbl} lines 4203 to 4224), whereas the batch
+ *       sites called the abort routine with a code and no message and wrote their diagnostic to the
+ *       job log, so a batch abend answers with the legacy default literal instead and its detail is
+ *       logged. See DL-084.</li>
  *   <li>{@link FileStatusException} - {@code 500 Internal Server Error}. An unhandled file operation
  *       failure. The legacy sequence at all three I/O sites of {@code app/cbl/CBACT01C.cbl} - read
  *       at lines 110 to 113, open at 144 to 147, close at 162 to 165 - is diagnostic first, raw
@@ -261,6 +264,52 @@ public final class GlobalExceptionHandler {
     private static final String REQUEST_BINDING_FAILED_MESSAGE = "Request value could not be bound";
 
     /**
+     * The neutral summary emitted when the request names an operation that exists at a path that
+     * does not, or a path that exists for a method that does not accept it.
+     *
+     * <p>It names neither the method attempted nor the methods allowed. The allowed set travels in
+     * the {@code Allow} header the framework already populates, which is where a client reads it, and
+     * repeating it in the body would turn an error summary into an inventory of the routing table.
+     */
+    private static final String METHOD_NOT_SUPPORTED_MESSAGE = "Request method is not supported";
+
+    /**
+     * The neutral summary emitted when the request reached no operation at all.
+     *
+     * <p>Kept distinct from {@link #RECORD_NOT_FOUND_MESSAGE}, which is a verbatim legacy text
+     * meaning a keyed read found no row. A request that matched no route never reached a read, and
+     * borrowing the record text for it would report a data outcome for a routing outcome.
+     */
+    private static final String ROUTE_NOT_FOUND_MESSAGE = "Requested resource was not found";
+
+    /**
+     * The neutral summary emitted when no representation the caller declared it would accept can be
+     * produced.
+     */
+    private static final String REPRESENTATION_NOT_AVAILABLE_MESSAGE =
+            "Requested representation is not available";
+
+    /**
+     * The neutral summary emitted when the request carries a media type the operation cannot read.
+     *
+     * <p>Distinct from {@link #MALFORMED_REQUEST_BODY_MESSAGE}: a body in an unsupported media type
+     * was never parsed, whereas a malformed body was parsed and rejected, and reporting the second
+     * for the first sends the caller looking for a payload defect that is not there.
+     */
+    private static final String MEDIA_TYPE_NOT_SUPPORTED_MESSAGE =
+            "Request media type is not supported";
+
+    /**
+     * The neutral summary emitted when the framework rejected the request before any handler of this
+     * class could classify it more precisely, and the status alone is what is known.
+     *
+     * <p>It is deliberately unspecific rather than falsely specific. The alternative this replaces -
+     * reporting every framework-declared fault as an unreadable body - preserved the status while
+     * making the diagnostic untrue for method, media-type and acceptability faults.
+     */
+    private static final String REQUEST_REJECTED_MESSAGE = "Request could not be processed";
+
+    /**
      * The summary returned when a credential was required inside the dispatch and none was
      * established. Deliberately free of detail: naming which credential was missing, or whether a
      * principal existed at all, tells a prober more than it tells a caller.
@@ -316,7 +365,7 @@ public final class GlobalExceptionHandler {
      * plus four online abend commands, and every one of them ends the unit of work, so the status
      * is {@code 500 Internal Server Error} and no recovery is offered.
      *
-     * <p>The body carries the operator message field alone. That field is the one piece of the
+     * <p>The body carries at most the operator message field. That field is the one piece of the
      * legacy 134-byte abend context intended for a person: it is bounded to 72 characters, it is
      * never blank because the carrier substitutes the legacy default literal when nothing was
      * supplied, and it is exactly what the online abend routine of
@@ -325,15 +374,56 @@ public final class GlobalExceptionHandler {
      * diagnostics and go to the log, so the raw context is never rendered into a response and the
      * fixed-width image of it is never requested at all.
      *
+     * <p>Whether even that field crosses the boundary depends on the abend code, because the legacy
+     * had two abend channels and only one of them faced a person. The online routine at
+     * {@code app/cbl/COACTUPC.cbl} lines 4203 to 4224 sends the abend area to the terminal with
+     * {@code EXEC CICS SEND} and then abends under code {@code 9999}, so text carried under that
+     * code was written to be read by the operator. The batch routine reached it differently: the
+     * nine {@code CALL 'CEE3ABD'} sites - among them {@code app/cbl/CBACT01C.cbl} line 173 - pass
+     * the abort routine a code and no message at all, and the diagnostic that preceded them went to
+     * {@code DISPLAY}, which is the job log. {@code app/cbl/CBACT01C.cbl} lines 110 to 113 are the
+     * pattern: the program displays which file failed, moves the raw file status into the I/O status
+     * field, displays that too, and only then abends. None of it ever reached a terminal.
+     *
+     * <p>{@code AbstractCobolStep} reproduces that batch diagnostic faithfully, composing a message
+     * that names the operation, the resource and the raw file status. Rendering it into an HTTP body
+     * would hand an end user the internal resource name and status code that the legacy gave only to
+     * the job log, so this handler withholds it and answers with the legacy's own default literal -
+     * the same text {@code ABEND-ROUTINE} substitutes when no message was set. The withheld detail
+     * is logged in full, and the classification is fail-closed: only the online abend code carries
+     * its text outward, so an abend arriving under any other code is treated as internal rather than
+     * assumed safe. Recorded as DL-084.
+     *
      * @param exception the abend, never {@code null} when invoked by the framework
-     * @return a {@code 500} response whose body holds the operator message and nothing else
+     * @return a {@code 500} response whose body holds the operator-facing text and nothing else
      */
     @ExceptionHandler(AbendException.class)
     public ResponseEntity<ErrorResponse> handleAbend(AbendException exception) {
-        LOG.error("Abend reached the REST boundary: abendCode={} culprit={} reason={}",
-                exception.code(), exception.culprit(), exception.reason(), exception);
+        LOG.error("Abend reached the REST boundary: abendCode={} culprit={} reason={} message={}",
+                exception.code(), exception.culprit(), exception.reason(), exception.getMessage(),
+                exception);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(new ErrorResponse(exception.getMessage()));
+                .body(new ErrorResponse(operatorTextOf(exception)));
+    }
+
+    /**
+     * Selects the abend text that may cross the boundary.
+     *
+     * <p>An abend raised under the online code carries text that the legacy sent to a terminal, so
+     * it is returned as supplied. Every other code - the batch code among them, and any code the
+     * estate does not use - is treated as an internal diagnostic and answers with the legacy default
+     * literal instead. The direction of the test matters: an allow-list of the one operator-facing
+     * code fails closed, whereas a deny-list of the batch code would let an unrecognised code
+     * publish whatever text it happened to carry.
+     *
+     * @param exception the abend being translated
+     * @return the text to publish, never {@code null}
+     */
+    private static String operatorTextOf(AbendException exception) {
+        if (AbendException.ONLINE_ABEND_CODE.equals(exception.code())) {
+            return exception.getMessage();
+        }
+        return AbendException.DEFAULT_MESSAGE;
     }
 
     /**
@@ -438,6 +528,14 @@ public final class GlobalExceptionHandler {
      * condition names carry - and a status code cannot encode four texts without inventing three
      * more codes the legacy never had.
      *
+     * <p>The body is rendered from the typed arm and the entity name rather than from
+     * {@link Throwable#getMessage()}. The two are provably the same bytes, because
+     * {@code OptimisticLockConflictException} accepts no detail message other than the one its arm
+     * resolves to, so rendering from the arm is not a second source of truth - it is the only one,
+     * read directly. What it removes is the possibility of a caller-composed message becoming the
+     * discriminator this boundary publishes while the arm says something else. Recorded as
+     * DL-083.</p>
+     *
      * <p>The conflict arm and the entity name go to the log so contention can be attributed; the
      * business key does not, for the same reason it is withheld from the not-found log.
      *
@@ -451,7 +549,8 @@ public final class GlobalExceptionHandler {
         LOG.warn("Concurrent update conflict: conflictKind={} entity={}",
                 exception.conflictKind(), exception.entityName());
         return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(new ErrorResponse(exception.getMessage()));
+                .body(new ErrorResponse(
+                        exception.conflictKind().defaultMessage(exception.entityName())));
     }
 
     /**
@@ -748,9 +847,15 @@ public final class GlobalExceptionHandler {
      * frozen terminal literal the online abend path uses, so the boundary has exactly one terminal
      * text rather than one per cause. The cause is logged, never returned.
      *
+     * <p>The neutral body is chosen from the declared status by {@link #neutralSummaryFor}, not
+     * fixed. Returning the unreadable-body summary for every framework fault - which is what this
+     * previously did - preserved the status and falsified the diagnostic, telling a caller who used
+     * the wrong method, the wrong media type or an unsatisfiable {@code Accept} header to go looking
+     * for a defect in a payload that was never the problem. Recorded as DL-085.
+     *
      * @param exception the unanticipated failure, never {@code null} when invoked by the framework
-     * @return the framework's own status with a neutral body, or {@code 500} with the terminal
-     *         literal
+     * @return the framework's own status with a neutral body accurate for that status, or
+     *         {@code 500} with the terminal literal
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleUnexpectedFailure(Exception exception) {
@@ -759,11 +864,49 @@ public final class GlobalExceptionHandler {
             LOG.debug("Framework request fault reached the REST boundary: status={}",
                     status.value(), exception);
             return ResponseEntity.status(status)
-                    .body(new ErrorResponse(MALFORMED_REQUEST_BODY_MESSAGE));
+                    .body(new ErrorResponse(neutralSummaryFor(status)));
         }
         LOG.error("Unhandled failure reached the REST boundary", exception);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(new ErrorResponse(AbendException.DEFAULT_MESSAGE));
+    }
+
+    /**
+     * Chooses the neutral summary for a framework fault from the status it declared.
+     *
+     * <p>Only the statuses this boundary can actually reach through the terminal handler are named.
+     * A caller-caused status the framework declares but this class does not translate explicitly
+     * falls to {@link #REQUEST_REJECTED_MESSAGE}, which is unspecific rather than wrong; a
+     * server-side status falls to {@link AbendException#DEFAULT_MESSAGE}, so a framework fault that
+     * is genuinely ours reads the same as any other terminal failure instead of implying the caller
+     * did something.
+     *
+     * <p>The comparison is by numeric value against {@link HttpStatus} constants rather than a switch
+     * over the enum, because {@link HttpStatusCode} is an interface: a framework fault may declare a
+     * status that resolves to no enum constant at all, and a numeric comparison handles that without
+     * a nullable intermediate.
+     *
+     * @param status the status the framework fault declared
+     * @return the summary to publish, never {@code null}
+     */
+    private static String neutralSummaryFor(HttpStatusCode status) {
+        if (!status.is4xxClientError()) {
+            return AbendException.DEFAULT_MESSAGE;
+        }
+        int value = status.value();
+        if (value == HttpStatus.METHOD_NOT_ALLOWED.value()) {
+            return METHOD_NOT_SUPPORTED_MESSAGE;
+        }
+        if (value == HttpStatus.NOT_ACCEPTABLE.value()) {
+            return REPRESENTATION_NOT_AVAILABLE_MESSAGE;
+        }
+        if (value == HttpStatus.UNSUPPORTED_MEDIA_TYPE.value()) {
+            return MEDIA_TYPE_NOT_SUPPORTED_MESSAGE;
+        }
+        if (value == HttpStatus.NOT_FOUND.value()) {
+            return ROUTE_NOT_FOUND_MESSAGE;
+        }
+        return REQUEST_REJECTED_MESSAGE;
     }
 
     /**
@@ -869,8 +1012,10 @@ public final class GlobalExceptionHandler {
      *
      * <p>The two field-error types are structurally identical and semantically identical, and the
      * duplication is intentional: the response contract may not depend on the failure-carrier
-     * package, so the translation has to happen at this layer. This method is that translation and
-     * the only one in the module.
+     * package, so the translation has to happen at this layer. This method is the only outbound
+     * translation in the module. The inbound one - turning a field decoration into the failure a
+     * service throws - is {@code service/FieldErrorTranslationService}, placed there for the same
+     * reason this one is placed here. Decision log entry DL-080 records the arrangement.
      *
      * <p>Two components are normalized because the carrier permits them to be absent while the
      * response contract requires them to be present. An absent field name becomes the empty string

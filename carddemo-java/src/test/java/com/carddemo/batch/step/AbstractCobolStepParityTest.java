@@ -105,9 +105,7 @@ class AbstractCobolStepParityTest {
     private static final Clock FROZEN =
             Clock.fixed(Instant.parse("2024-03-09T04:05:06.078900Z"), ZoneOffset.UTC);
 
-    // =================================================================================================
     // TEST DOUBLES
-    // =================================================================================================
 
     /**
      * A concrete step that records how the template drove it.
@@ -316,9 +314,7 @@ class AbstractCobolStepParityTest {
         }
     }
 
-    // =================================================================================================
     // HELPERS
-    // =================================================================================================
 
     /**
      * Reads the count recorded against one outcome of the lifecycle timer.
@@ -332,9 +328,7 @@ class AbstractCobolStepParityTest {
         return (timer == null) ? 0L : timer.count();
     }
 
-    // =================================================================================================
     // LIFECYCLE
-    // =================================================================================================
 
     /**
      * Verifies the order in which the template drives its four hooks, which is the order the legacy
@@ -415,9 +409,7 @@ class AbstractCobolStepParityTest {
         }
     }
 
-    // =================================================================================================
     // FAILURE HANDLING
-    // =================================================================================================
 
     /**
      * Verifies the release-and-rethrow behaviour around a failure.
@@ -510,9 +502,7 @@ class AbstractCobolStepParityTest {
         }
     }
 
-    // =================================================================================================
     // THE TWO-LEVEL STATUS MODEL
-    // =================================================================================================
 
     /**
      * Verifies the normalisation described at lines 90-114 of {@code app/cbl/CBACT01C.cbl}.
@@ -619,9 +609,7 @@ class AbstractCobolStepParityTest {
         }
     }
 
-    // =================================================================================================
     // THE APPL-RESULT VOCABULARY
-    // =================================================================================================
 
     /**
      * Verifies the two protected enumerations against the legacy values they stand for.
@@ -680,9 +668,7 @@ class AbstractCobolStepParityTest {
         }
     }
 
-    // =================================================================================================
     // THE ONE-WAY HELPERS
-    // =================================================================================================
 
     /**
      * Verifies the open, write and close helpers, each of which performs an action, classifies the
@@ -777,9 +763,7 @@ class AbstractCobolStepParityTest {
         }
     }
 
-    // =================================================================================================
     // THE READ HELPER
-    // =================================================================================================
 
     /**
      * Verifies the read helper, the only one of the four that distinguishes a graceful ending from
@@ -846,9 +830,7 @@ class AbstractCobolStepParityTest {
         }
     }
 
-    // =================================================================================================
     // THE IO RESULT CARRIER
-    // =================================================================================================
 
     /**
      * Verifies {@link AbstractCobolStep.IoResult}, the pair of a raw status and an optional record.
@@ -903,9 +885,7 @@ class AbstractCobolStepParityTest {
         }
     }
 
-    // =================================================================================================
     // THE DIRECT ABEND HELPER
-    // =================================================================================================
 
     /**
      * Verifies the helper a concrete step calls when it has diagnosed a failure itself.
@@ -955,9 +935,7 @@ class AbstractCobolStepParityTest {
         }
     }
 
-    // =================================================================================================
     // THE BATCH TIMESTAMP
-    // =================================================================================================
 
     /**
      * Verifies the twenty-six character timestamp the legacy programs assemble by hand.
@@ -1069,9 +1047,7 @@ class AbstractCobolStepParityTest {
         }
     }
 
-    // =================================================================================================
     // INSTRUMENTATION
-    // =================================================================================================
 
     /**
      * Verifies the lifecycle timer, which is the observability that replaces the legacy
@@ -1132,9 +1108,7 @@ class AbstractCobolStepParityTest {
         }
     }
 
-    // =================================================================================================
     // CONSTRUCTION
-    // =================================================================================================
 
     /**
      * Verifies the constructor guards.
@@ -1232,9 +1206,7 @@ class AbstractCobolStepParityTest {
         }
     }
 
-    // =================================================================================================
     // THE EXECUTION SUMMARY
-    // =================================================================================================
 
     /**
      * Verifies {@link AbstractCobolStep.ExecutionSummary}, the value a completed lifecycle reports.

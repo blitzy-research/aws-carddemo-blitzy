@@ -59,9 +59,7 @@ class ReportPeriodTest {
     /** The three literals exactly as the report program writes them. */
     private static final List<String> LEGACY_LITERALS = List.of("Monthly", "Yearly", "Custom");
 
-    // =================================================================================================
     // VOCABULARY
-    // =================================================================================================
 
     /**
      * Verifies the three-value vocabulary the report program offers.
@@ -144,9 +142,7 @@ class ReportPeriodTest {
         }
     }
 
-    // =================================================================================================
     // LOOKUP
-    // =================================================================================================
 
     /**
      * Verifies the lookup from a raw literal back to a period.

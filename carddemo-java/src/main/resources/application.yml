@@ -44,7 +44,7 @@
 #     management.endpoints.web.exposure.include   three endpoints, each a cross-file contract
 #     management.endpoint.health.show-details     never - aggregate status only
 #     management.endpoint.health.show-components  never
-#     springdoc.api-docs / springdoc.swagger-ui   both disabled
+#     springdoc.api-docs                          disabled - the viewer is absent, see below
 # and one is closed here and relaxed only in the local and test overlays:
 #     carddemo.security.require-https             true
 #
@@ -303,28 +303,28 @@ management:
 # The document describes every endpoint, every request and response field, and every declared
 # error of the migrated screen contract. That is precisely what a developer and a contract test
 # need, and precisely what an unauthenticated caller should not be handed: served openly it is a
-# ready-made map of the attack surface, and the viewer bundle additionally serves static assets
-# and executes requests from the browser. Neither belongs to a posture that a deployment inherits
-# by forgetting to choose one.
+# ready-made map of the attack surface. That does not belong to a posture a deployment inherits by
+# forgetting to choose one, so it is closed here and the local overlay reopens it.
 #
-# The local overlay turns both back on. Nothing in the module reads these two flags to decide
-# whether to BUILD the document: com.carddemo.config.OpenApiConfig contributes the description
-# bean unconditionally, so the contract stays assertable by a test under any profile while the
-# HTTP surface that would serve it stays closed unless a profile opens it.
+# Nothing in the module reads this flag to decide whether to BUILD the document:
+# com.carddemo.config.OpenApiConfig contributes the description bean unconditionally, so the
+# contract stays assertable by a test under any profile while the HTTP surface that would serve it
+# stays closed unless a profile opens it.
+#
+# THERE IS NO INTERACTIVE VIEWER IN THIS ARTEFACT, under any profile. The browser asset bundle that
+# would render one - org.webjars:swagger-ui - is excluded from the starter in pom.xml, so the
+# viewer address has no assets to serve and cannot render. The switch below is therefore
+# load-bearing rather than a posture statement: the library's own default for it is true, and left
+# unstated the library would advertise and route an address that answers not-found. No viewer path,
+# no viewer bundle version and no viewer display option is declared anywhere in this module,
+# because each would describe a page that does not exist - read the contract at the api-docs path
+# instead. See docs/decision-log.md DL-088.
 springdoc:
   api-docs:
     enabled: false
     path: /v3/api-docs
   swagger-ui:
     enabled: false
-    path: /swagger-ui.html
-    # The static bundle that renders the document is pinned once in the build file and substituted
-    # here during resource filtering, so the pin keeps one home. Left unset, the library reaches
-    # for a bundle build of its own naming that the pinned artefact does not carry, and the viewer
-    # then answers 404 even though the document itself is served. Verified by request.
-    version: '@swagger-ui.version@'
-    operations-sorter: alpha
-    tags-sorter: alpha
 
 # Appender selection, encoding and correlation fields live in logback-spring.xml; only levels are
 # set here, so a profile can raise or lower verbosity without restating the appender layout.
@@ -360,11 +360,12 @@ carddemo:
     # the fixed record width, an ordered message group so append order survives, and a publish
     # failure that is logged and tolerated instead of aborting the caller.
     #
-    # The two names below are the module's canonical values and are fixed by the migration plan,
-    # not chosen here. The queue is carddemo-jobs.fifo and the message group is
-    # carddemo-job-submission; the same two strings appear byte-identically in every profile
-    # overlay, in docker-compose.yml and in the emulator bootstrap script. Neither is a free
-    # choice. The .fifo suffix is not decoration: the queue service rejects a first-in-first-out
+    # The two names below are cross-file contracts rather than local choices: each appears
+    # byte-identically in every place listed below, so changing one here changes nothing until all
+    # of them change together. The queue is carddemo-jobs.fifo and the message group is
+    # carddemo-job-submission, and both occur in every profile overlay, in docker-compose.yml and
+    # in the emulator bootstrap script. The .fifo suffix is not decoration: the queue service
+    # rejects a first-in-first-out
     # queue whose name omits it, which is a start-up failure rather than a style preference. The
     # group id must be one stable value, because append order is preserved only within a single
     # message group, and append order is the part of the legacy queue contract that acceptance

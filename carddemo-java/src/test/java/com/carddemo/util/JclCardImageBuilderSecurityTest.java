@@ -111,13 +111,10 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  */
 class JclCardImageBuilderSecurityTest {
 
-    // =================================================================================
     // ORACLE DIMENSIONS
-    // ---------------------------------------------------------------------------------
     // Hand written from the legacy record layout. These are the expected values that the
     // published constants of the class under test are checked against, never the other
     // way round.
-    // =================================================================================
 
     /** Declared width of one card, from the eighty-byte write buffer of the legacy program. */
     private static final int ORACLE_CARD_WIDTH = 80;
@@ -145,13 +142,10 @@ class JclCardImageBuilderSecurityTest {
      */
     private static final int ORACLE_DATE_PARAMETER_RECORD_WIDTH = 21;
 
-    // =================================================================================
     // ORACLE BYTE VALUES
-    // ---------------------------------------------------------------------------------
     // Named numerically so that no character escape sequence for a line terminator or a
     // tab ever appears in this source file. The cards are fixed-width records, not text
     // lines, and nothing in the contract may contain a terminator.
-    // =================================================================================
 
     /** The ASCII space, the only padding byte any card may use. */
     private static final byte ORACLE_SPACE_BYTE = 0x20;
@@ -191,9 +185,7 @@ class JclCardImageBuilderSecurityTest {
     /** Sentinel returned by the byte search helper when a byte is absent. */
     private static final int BYTE_NOT_FOUND = -1;
 
-    // =================================================================================
     // SLOT VALUES USED BY THE TESTS
-    // ---------------------------------------------------------------------------------
     // Each accepted value is exactly ten characters in the legacy year, month and day
     // shape. The builder validates four things and nothing more: single-byte
     // representability, an exact ten-byte width, the positional shape NNNN-NN-NN, and
@@ -204,7 +196,6 @@ class JclCardImageBuilderSecurityTest {
     // is a hand-written literal, and every calendar claim - which years are leap years,
     // how many days each month holds - is stated here as a literal fact rather than
     // computed, so the test cannot agree with the code by sharing its arithmetic.
-    // =================================================================================
 
     /** Primary start-date slot value, ten characters. */
     private static final String START_DATE = "2022-01-01";
@@ -234,9 +225,7 @@ class JclCardImageBuilderSecurityTest {
      */
     private static final String NON_SINGLE_BYTE_DATE = "2022-01-0\u00e9";
 
-    // =================================================================================
     // HOSTILE SLOT VALUES
-    // ---------------------------------------------------------------------------------
     // Every value below is exactly ten characters and exactly ten single-byte encoded
     // bytes, so a width guard admits all of them. Each one is refused by the positional
     // allowlist or by the calendar check. They are declared here as named constants
@@ -244,7 +233,6 @@ class JclCardImageBuilderSecurityTest {
     //
     // The two control characters are built from their code points rather than written as
     // escape sequences, so no line-terminator escape appears anywhere in this source.
-    // =================================================================================
 
     /**
      * The character that closes a sort-utility character constant. Placed in the tenth position,
@@ -318,13 +306,10 @@ class JclCardImageBuilderSecurityTest {
     /** The thirty-first of April, a month that holds thirty days. */
     private static final String APRIL_THIRTY_FIRST_SLOT = "2022-04-31";
 
-    // =================================================================================
     // ORACLE CARD CONTENT
-    // ---------------------------------------------------------------------------------
     // Fourteen cards are fixed literals and three are composed. Each fixed literal is
     // paired with its hand-written content width so that the literal and the padding
     // count cannot both be wrong in a way that still totals eighty.
-    // =================================================================================
 
     /** Card 1, the job card. The message class is the digit zero and the trailing comma is content. */
     private static final String CARD_01_CONTENT = "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,";
@@ -400,11 +385,9 @@ class JclCardImageBuilderSecurityTest {
     /** Hand-written content width of card 17. */
     private static final int CARD_17_CONTENT_WIDTH = 5;
 
-    // ---------------------------------------------------------------------------------
     // Composed card 11: eighteen-byte lead, ten-byte start slot, fifty-two-byte trailer
     // whose first byte is the closing apostrophe and whose remaining fifty-one bytes are
     // spaces. 18 + 10 + 52 = 80.
-    // ---------------------------------------------------------------------------------
 
     /** The eighteen-byte leading literal of card 11. */
     private static final String CARD_11_LEAD = "PARM-START-DATE,C'";
@@ -418,11 +401,9 @@ class JclCardImageBuilderSecurityTest {
     /** Hand-written count of spaces that follow the closing apostrophe on card 11. */
     private static final int CARD_11_TRAILER_SPACE_COUNT = 51;
 
-    // ---------------------------------------------------------------------------------
     // Composed card 12: sixteen-byte lead, ten-byte end slot, fifty-four-byte trailer
     // whose first byte is the closing apostrophe and whose remaining fifty-three bytes
     // are spaces. 16 + 10 + 54 = 80.
-    // ---------------------------------------------------------------------------------
 
     /** The sixteen-byte leading literal of card 12. */
     private static final String CARD_12_LEAD = "PARM-END-DATE,C'";
@@ -436,11 +417,9 @@ class JclCardImageBuilderSecurityTest {
     /** Hand-written count of spaces that follow the closing apostrophe on card 12. */
     private static final int CARD_12_TRAILER_SPACE_COUNT = 53;
 
-    // ---------------------------------------------------------------------------------
     // Composed card 15: ten-byte start slot, a separator declared as a bare single-byte
     // field, ten-byte end slot, then fifty-nine spaces. 10 + 1 + 10 + 59 = 80. Card 15
     // is the only card with no leading literal at all.
-    // ---------------------------------------------------------------------------------
 
     /** Hand-written width of the card 15 separator, which is exactly one byte. */
     private static final int CARD_15_SEPARATOR_WIDTH = 1;
@@ -448,12 +427,9 @@ class JclCardImageBuilderSecurityTest {
     /** Hand-written count of trailing spaces on card 15. */
     private static final int CARD_15_TRAILER_SPACE_COUNT = 59;
 
-    // =================================================================================
     // ORACLE OFFSETS
-    // ---------------------------------------------------------------------------------
     // Zero-based, half-open byte ranges inside the eighty-byte frame, computed by hand
     // from the component widths above.
-    // =================================================================================
 
     /** Offset of the message-class value byte on card 1. */
     private static final int CARD_01_MESSAGE_CLASS_VALUE_OFFSET = 46;
@@ -485,15 +461,12 @@ class JclCardImageBuilderSecurityTest {
     /** Offset at which the end-date slot begins on card 15. */
     private static final int CARD_15_END_SLOT_OFFSET = 11;
 
-    // =================================================================================
     // ORACLE HELPERS
-    // ---------------------------------------------------------------------------------
     // Test local only. None of these consults the class under test. Every width is taken
     // as an encoded byte count in the single-byte encoding the card frame is defined in,
     // never as a character count, so a multi-byte character could not slip past a width
     // check. Nothing here trims, strips, normalises, reflows or reformats anything:
     // trailing spaces are contractual content.
-    // =================================================================================
 
     /**
      * Measures a value in encoded bytes. Every width assertion in this class routes through here.
@@ -712,9 +685,7 @@ class JclCardImageBuilderSecurityTest {
         return joined.toString();
     }
 
-    // =================================================================================
     // TESTS
-    // =================================================================================
 
     @Nested
     @DisplayName("the seventeen-card sequence")

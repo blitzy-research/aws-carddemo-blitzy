@@ -50,10 +50,14 @@ import org.springframework.context.annotation.Configuration;
  * interface-documentation library's auto-configuration from the controllers and the request and
  * response types it scans. Five things are deliberately left alone:
  * <ul>
- *   <li><strong>No path literal.</strong> The addresses the document and the rendered viewer are served
- *       from are declared once, in {@code application.yml} under the {@code springdoc} key, together
- *       with the pinned viewer bundle version the build file substitutes into it. Restating either here
- *       would give a value that must have exactly one home a second home, and the two would drift.</li>
+ *   <li><strong>No path literal.</strong> The address the document is served from is declared once, in
+ *       {@code application.yml} under the {@code springdoc} key. Restating it here would give a value
+ *       that must have exactly one home a second home, and the two would drift. No viewer address and
+ *       no viewer bundle version is declared there or here, because the browser asset bundle that would
+ *       render an interactive page is excluded from the starter in the build file: there is no page to
+ *       address under any profile, and this build defines no bundle-version property and filters no
+ *       resource, so a configuration file naming one would ship an unresolved literal. See
+ *       {@code docs/decision-log.md} DL-088.</li>
  *   <li><strong>No second bean of a library-managed type.</strong> A single
  *       {@link io.swagger.v3.oas.models.OpenAPI} bean is the sanctioned extension point: the library's
  *       document builder consumes it as a {@link java.util.Optional} and declares none of its own. This
@@ -74,14 +78,13 @@ import org.springframework.context.annotation.Configuration;
  * is applied as a document-wide security requirement so that a reader and a generated client both see
  * that a protected operation expects a token. That is the whole of its effect: publishing metadata
  * neither configures a filter chain nor widens one, and nothing in this class makes the document address
- * or the viewer address reachable without authentication.
+ * reachable without authentication.
  *
  * <p>Which routes are actually reachable, and by whom, is decided entirely by the module's HTTP security
- * configuration &mdash; <strong>which is not delivered yet</strong>. Until it exists no route is
- * protected by anything, and this document's security requirement must not be read as evidence that one
- * is. When that component arrives, any address it has to permit anonymously is an explicit, reviewed
- * permit rule verified by that component's own tests, not an implicit side effect of publishing
- * metadata. The low-level-code audit does not cover authorisation rules; its scope is raw SQL assembly,
+ * configuration and by nothing here. <strong>Where that configuration is absent, no route is protected
+ * by anything</strong>, and this document's security requirement must never be read as evidence that one
+ * is. Any address that configuration permits anonymously is an explicit, reviewed permit rule verified by
+ * that component's own tests, never an implicit side effect of publishing metadata. The low-level-code audit does not cover authorisation rules; its scope is raw SQL assembly,
  * process execution, reflection, unchecked casts and suppressed warnings, so it cannot catch an
  * accidental permit and is not relied on to.
  *
@@ -90,7 +93,7 @@ import org.springframework.context.annotation.Configuration;
  * not as a description, not as an example, not as a default and not as a schema attribute. The legacy
  * sign-on records carried a single shared cleartext password literal in their provisioning job stream;
  * that literal is not restated anywhere in this module and this document publishes no stand-in for it.
- * No pre-filled authorisation value and no credential-submitting viewer default is enabled.
+ * No pre-filled authorisation value and no credential-submitting default appears in the document.
  *
  * <p><strong>Bean semantics.</strong> A lite-mode configuration class declaring one factory method; no
  * factory method here calls another, so interception is not needed. Stating

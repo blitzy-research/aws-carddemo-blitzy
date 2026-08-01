@@ -76,9 +76,7 @@ class CardStatusTest {
     /** The one-based offset at which the status byte begins. */
     private static final int STATUS_ONE_BASED_OFFSET = 91;
 
-    // =================================================================================================
     // VOCABULARY
-    // =================================================================================================
 
     /**
      * Verifies the vocabulary the copybook admits.
@@ -124,9 +122,7 @@ class CardStatusTest {
         }
     }
 
-    // =================================================================================================
     // BYTE GEOMETRY
-    // =================================================================================================
 
     /**
      * Verifies that each code fills the one-byte field exactly, inside a fully accounted-for record.
@@ -186,9 +182,7 @@ class CardStatusTest {
         }
     }
 
-    // =================================================================================================
     // ACTIVE PREDICATE
-    // =================================================================================================
 
     /**
      * Verifies the availability predicate.
@@ -218,9 +212,7 @@ class CardStatusTest {
         }
     }
 
-    // =================================================================================================
     // LOOKUP
-    // =================================================================================================
 
     /**
      * Verifies the tolerant lookup from a raw record byte to a constant.

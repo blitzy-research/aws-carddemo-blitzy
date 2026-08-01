@@ -658,7 +658,18 @@
         <!-- Browser asset bundle only. The version locator this
              starter uses to resolve static resources is deliberately
              retained, so the starter's own configuration classes load
-             exactly as they do with the bundle present. -->
+             exactly as they do with the bundle present.
+
+             Because the assets are gone, the shipped configuration
+             declares no viewer path, no viewer bundle version and no
+             viewer display option, and holds the viewer switch
+             disabled in the shared baseline under every profile - the
+             library's own default for that switch is true, so leaving
+             it unstated would route an address that answers
+             not-found. This build defines no swagger-ui.version
+             property and filters no resource, so a configuration file
+             must not reference one either. See
+             docs/decision-log.md DL-088. -->
         <exclusion>
           <groupId>org.webjars</groupId>
           <artifactId>swagger-ui</artifactId>

@@ -154,9 +154,7 @@ class TransactionTypeTest {
         return new TransactionType(seededCode(ordinal), seededDescription(ordinal));
     }
 
-    // =================================================================================================
     // RECORD LAYOUT
-    // =================================================================================================
 
     /**
      * Verifies the copybook geometry the entity has to honour.
@@ -207,9 +205,7 @@ class TransactionTypeTest {
         }
     }
 
-    // =================================================================================================
     // SCHEMA AGREEMENT
-    // =================================================================================================
 
     /**
      * Verifies that the deployed migration describes the layout the copybook does.
@@ -267,9 +263,7 @@ class TransactionTypeTest {
         }
     }
 
-    // =================================================================================================
     // CONSTRUCTION AND ACCESS
-    // =================================================================================================
 
     /**
      * Verifies that every field the constructor takes is the field the accessor returns.
@@ -330,9 +324,7 @@ class TransactionTypeTest {
         }
     }
 
-    // =================================================================================================
     // SEEDED REFERENCE DATA
-    // =================================================================================================
 
     /**
      * Verifies the seven seeded reference rows against a transcription of the estate's own data.
@@ -434,9 +426,7 @@ class TransactionTypeTest {
         }
     }
 
-    // =================================================================================================
     // BUSINESS-KEY IDENTITY
-    // =================================================================================================
 
     /**
      * Verifies that identity is the type code and nothing else.
@@ -504,9 +494,7 @@ class TransactionTypeTest {
         }
     }
 
-    // =================================================================================================
     // DIAGNOSTIC REPRESENTATION
-    // =================================================================================================
 
     /**
      * Verifies the diagnostic string.

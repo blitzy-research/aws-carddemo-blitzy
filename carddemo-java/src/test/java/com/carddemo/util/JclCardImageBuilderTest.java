@@ -236,7 +236,6 @@ class JclCardImageBuilderTest {
     /** The US-ASCII delete character, swept as one of the record-corrupting bytes. */
     private static final char DELETE_CHARACTER = 0x7F;
 
-    // =================================================================================
     // ORACLE CARD CONTENT
     // Fourteen cards are fixed literals and three are composed. Each fixed literal is
     // paired with its hand-written content width so that the literal and the padding

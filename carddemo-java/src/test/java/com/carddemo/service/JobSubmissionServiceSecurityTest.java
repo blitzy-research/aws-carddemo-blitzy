@@ -108,9 +108,7 @@ import static org.mockito.Mockito.when;
 @DisplayName("JobSubmissionService :: the online-to-batch job-submission bridge")
 class JobSubmissionServiceSecurityTest {
 
-    // =================================================================================
     // CONFIGURATION THE SERVICE IS CONSTRUCTED WITH
-    // =================================================================================
 
     /** A first-in-first-out queue name, whose suffix the service requires. */
     private static final String QUEUE_NAME = "JOBS.fifo";
@@ -118,9 +116,7 @@ class JobSubmissionServiceSecurityTest {
     /** The single stable message group that carries a submission, which is what preserves order. */
     private static final String MESSAGE_GROUP_ID = "JOBS";
 
-    // =================================================================================
     // INDEPENDENTLY WRITTEN CONTRACT VALUES
-    // =================================================================================
 
     /** The number of cards one complete submission carries. */
     private static final int EXPECTED_CARD_COUNT = 17;
@@ -140,9 +136,7 @@ class JobSubmissionServiceSecurityTest {
     /** The frozen operator-facing failure text the legacy paragraph reports. */
     private static final String EXPECTED_FAILURE_TEXT = "Unable to Write TDQ (JOBS)...";
 
-    // =================================================================================
     // DATE SLOT VALUES
-    // =================================================================================
 
     /** A legitimate start-date slot value. */
     private static final String START_DATE = "2022-01-01";
@@ -150,9 +144,7 @@ class JobSubmissionServiceSecurityTest {
     /** A legitimate end-date slot value. */
     private static final String END_DATE = "2022-07-06";
 
-    // =================================================================================
     // SENTINELS
-    // =================================================================================
 
     /** Ordinal value meaning that no publish attempt should be made to fail. */
     private static final int NEVER_FAIL = -1;
@@ -160,9 +152,7 @@ class JobSubmissionServiceSecurityTest {
     /** The one-based ordinal of the first card. */
     private static final int FIRST_ORDINAL = 1;
 
-    // =================================================================================
     // TEST STATE
-    // =================================================================================
 
     /** Every publish attempt, in the order it was made, whether it then succeeded or failed. */
     private final List<PublishedMessage> attempts = new ArrayList<>();

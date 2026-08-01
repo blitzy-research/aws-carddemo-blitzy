@@ -101,11 +101,13 @@ management:
     tracing:
       endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}
 
-# Restated for the same reason as the management block above: the interface description and its
-# viewer are inherited disabled from application.yml, and this second statement means a future edit
-# that reopens either one in the shared baseline cannot reach production by inheritance. Served
-# openly the document is a complete map of every endpoint, field and declared error of the migrated
-# screen contract, and the viewer issues requests from the browser on top of that.
+# Restated for the same reason as the management block above: both switches are inherited disabled
+# from application.yml, and this second statement means a future edit that reopens either one in
+# the shared baseline cannot reach production by inheritance. Served openly the document is a
+# complete map of every endpoint, field and declared error of the migrated screen contract. The
+# viewer switch is restated for that inheritance reason alone - the browser asset bundle it would
+# need is excluded from the starter in pom.xml, so no profile has a viewer to serve. See
+# docs/decision-log.md DL-088.
 springdoc:
   api-docs:
     enabled: false

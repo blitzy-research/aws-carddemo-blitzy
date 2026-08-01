@@ -1266,6 +1266,13 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
      * unclamped, so nothing is lost. Clamping uses the dependency's own width constants rather than a
      * second copy of them.</p>
      *
+     * <p>The composed message names the resource and the raw status because the legacy diagnostic did,
+     * and because the job log is where it belongs. It is deliberately <strong>not</strong> operator
+     * text: the abend is raised under {@link AbendException#BATCH_ABEND_CODE}, and the REST boundary
+     * withholds the message of any abend not raised under the online code, answering with the legacy
+     * default literal instead. Composing it faithfully here and withholding it there are the same
+     * decision seen from the two ends. See DL-084.</p>
+     *
      * @param operation  the operation kind
      * @param resource   the file that failed
      * @param rawStatus  the raw status, or {@code null} when the operation reported none

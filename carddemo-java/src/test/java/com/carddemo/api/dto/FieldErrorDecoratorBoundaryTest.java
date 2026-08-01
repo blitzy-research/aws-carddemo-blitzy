@@ -251,9 +251,9 @@ class FieldErrorDecoratorBoundaryTest {
         @Test
         @DisplayName("a later change to the supplied list does not reach the accumulator")
         void aLaterChangeToTheSuppliedListDoesNotReach() {
-            List<ErrorResponse.FieldError> supplied = new ArrayList<>();
-            supplied.add(new ErrorResponse.FieldError(
-                    FIELD, SCREEN_FIELD, ErrorResponse.FieldState.MISSING));
+            List<FieldErrorDecorator.MarkedField> supplied = new ArrayList<>();
+            supplied.add(new FieldErrorDecorator.MarkedField(
+                    FIELD, SCREEN_FIELD, FieldErrorDecorator.FlagState.BLANK));
             FieldErrorDecorator decorator = new FieldErrorDecorator(supplied);
 
             supplied.clear();

@@ -18,7 +18,6 @@ package com.carddemo.api.dto;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -162,6 +161,17 @@ class AccountUpdateRequestTest {
     private static final String REDACTION_PLACEHOLDER_TEXT = "***REDACTED***";
 
     /**
+     * Stand-in for the sealed concurrency token. It is shaped like one - the module's envelope prefix
+     * followed by Base64 text - and is deliberately not a real one: minting a real token needs a
+     * server-held key, and this contract never opens what it carries. Nothing in this file may read a
+     * token's content, so a stand-in is exactly as informative as the genuine article.
+     */
+    private static final String SEALED_TOKEN = "ENC1:dGhpcy1pcy1ub3QtYS1yZWFsLXRva2Vu";
+
+    /** Wire property name of the concurrency token, which is the one component that is not a map field. */
+    private static final String CONCURRENCY_TOKEN_PROPERTY = "concurrencyToken";
+
+    /**
      * Right-pads with spaces to an exact screen width. A 3270 field is always transmitted at its
      * declared width, so this builds realistic <em>input</em>; it never touches a value being
      * asserted. Passing a value longer than the width fails fast, which keeps the seed data below
@@ -191,18 +201,18 @@ class AccountUpdateRequestTest {
         String openYear;
         String openMonth;
         String openDay;
-        BigDecimal creditLimit;
+        String creditLimit;
         String expiryYear;
         String expiryMonth;
         String expiryDay;
-        BigDecimal cashCreditLimit;
+        String cashCreditLimit;
         String reissueYear;
         String reissueMonth;
         String reissueDay;
-        BigDecimal currentBalance;
-        BigDecimal currentCycleCredit;
+        String currentBalance;
+        String currentCycleCredit;
         String accountGroupId;
-        BigDecimal currentCycleDebit;
+        String currentCycleDebit;
         String customerId;
         String ssnPart1;
         String ssnPart2;
@@ -229,9 +239,10 @@ class AccountUpdateRequestTest {
         String phone2LineNumber;
         String eftAccountId;
         String primaryCardHolderIndicator;
+        String concurrencyToken;
 
         /**
-         * The one and only invocation of the 43-argument canonical constructor. Argument order
+         * The one and only invocation of the 44-argument canonical constructor. Argument order
          * follows the symbolic map's declaration order, which interleaves the account group id
          * between two of the monetary components and places the three date-of-birth parts before
          * the credit score.
@@ -252,7 +263,8 @@ class AccountUpdateRequestTest {
                     phone1AreaCode, phone1Prefix, phone1LineNumber,
                     governmentIssuedId,
                     phone2AreaCode, phone2Prefix, phone2LineNumber,
-                    eftAccountId, primaryCardHolderIndicator);
+                    eftAccountId, primaryCardHolderIndicator,
+                    concurrencyToken);
         }
 
         /**
@@ -264,13 +276,15 @@ class AccountUpdateRequestTest {
          *       check accepts.</li>
          *   <li>The account group id and the padded text fields carry <strong>trailing
          *       spaces</strong>, which must survive untrimmed.</li>
-         *   <li>The monetary components span positive, negative, zero and the full ten-integer-
-         *       digit width, all at scale 2.</li>
+         *   <li>The monetary lexemes span positive, negative, zero and the full ten-integer-
+         *       digit width, each written the way an operator types it.</li>
          *   <li>The social-security parts use a number range that is never issued and the
          *       government-issued id is self-evidently invented, so no real identifier and no
          *       credential of any kind appears in this file.</li>
          *   <li>The middle name and the second address line are deliberately punctuated and are
          *       <strong>not</strong> padded to a width, because no width applies to them.</li>
+         *   <li>The concurrency token is a stand-in that is shaped like a sealed one and is not a
+         *       real one, because minting one needs a key and this contract never opens it.</li>
          * </ul>
          */
         static Draft realistic() {
@@ -280,18 +294,18 @@ class AccountUpdateRequestTest {
             draft.openYear = "2020";
             draft.openMonth = "01";
             draft.openDay = "15";
-            draft.creditLimit = new BigDecimal("5000.00");
+            draft.creditLimit = "5000.00";
             draft.expiryYear = "2027";
             draft.expiryMonth = "12";
             draft.expiryDay = "31";
-            draft.cashCreditLimit = new BigDecimal("1500.00");
+            draft.cashCreditLimit = "1500.00";
             draft.reissueYear = "2024";
             draft.reissueMonth = "06";
             draft.reissueDay = "30";
-            draft.currentBalance = new BigDecimal("-250.75");
-            draft.currentCycleCredit = new BigDecimal("0.00");
+            draft.currentBalance = "-250.75";
+            draft.currentCycleCredit = "0.00";
             draft.accountGroupId = padded("DEFAULT", 10);
-            draft.currentCycleDebit = new BigDecimal("1234567890.12");
+            draft.currentCycleDebit = "1234567890.12";
             draft.customerId = "000000011";
             draft.ssnPart1 = "999";
             draft.ssnPart2 = "88";
@@ -318,6 +332,7 @@ class AccountUpdateRequestTest {
             draft.phone2LineNumber = "0199";
             draft.eftAccountId = "EFT0000001";
             draft.primaryCardHolderIndicator = "Y";
+            draft.concurrencyToken = SEALED_TOKEN;
             return draft;
         }
     }
@@ -334,7 +349,7 @@ class AccountUpdateRequestTest {
     /**
      * Convenience for the common shape "one monetary component populated, the other 42 absent".
      */
-    private static AccountUpdateRequest withOnly(MoneyComponent component, BigDecimal value) {
+    private static AccountUpdateRequest withOnly(MoneyComponent component, String value) {
         Draft draft = new Draft();
         component.write(draft, value);
         return draft.build();
@@ -363,7 +378,7 @@ class AccountUpdateRequestTest {
                 component.write(draft, "");
             }
             for (MoneyComponent component : MoneyComponent.values()) {
-                component.write(draft, new BigDecimal("0.00"));
+                component.write(draft, "");
             }
 
             assertThat(violations(draft.build()))
@@ -456,18 +471,38 @@ class AccountUpdateRequestTest {
         }
 
         @Test
-        @DisplayName("no monetary component carries a bound, a digit rule or a scale rule")
-        void noMonetaryComponentCarriesABoundADigitRuleOrAScaleRule() {
+        @DisplayName("a monetary component carries its map width and no digit, scale or range rule")
+        void aMonetaryComponentCarriesItsMapWidthAndNoDigitScaleOrRangeRule() {
             Draft draft = new Draft();
-            BigDecimal farBeyondAnyBusinessRange = new BigDecimal("99999999999999999999.99");
             for (MoneyComponent component : MoneyComponent.values()) {
-                component.write(draft, farBeyondAnyBusinessRange);
+                // 14 characters: absurd as a credit limit, malformed as a number, and inside the
+                // physical width of the 3270 field, so only the cascade may object to it.
+                component.write(draft, "99999999999.9x");
             }
 
             assertThat(violations(draft.build()))
-                    .as("the credit-limit rule is the service's; the request only transports the "
-                            + "value so the cascade can emit its own single message")
+                    .as("the credit-limit rule and the numeric edit are both the service's; the "
+                            + "request transports the lexeme so the cascade emits its own message")
                     .isEmpty();
+        }
+
+        @ParameterizedTest(name = "{0} rejects one character past its 15-character map width")
+        @EnumSource(MoneyComponent.class)
+        @DisplayName("a monetary component rejects a lexeme wider than the 3270 field it came from")
+        void aMonetaryComponentRejectsALexemeWiderThanThe3270FieldItCameFrom(
+                MoneyComponent component) {
+            String oneTooMany = "1".repeat(MoneyComponent.SCREEN_WIDTH + 1);
+
+            Set<ConstraintViolation<AccountUpdateRequest>> raised =
+                    violations(withOnly(component, oneTooMany));
+
+            assertThat(raised)
+                    .as("%s restates the physical width of its map field, which no terminal can "
+                            + "exceed, so exceeding it is a malformed request rather than a "
+                            + "business error", component.described())
+                    .hasSize(1);
+            assertThat(raised.iterator().next().getPropertyPath())
+                    .hasToString(component.jsonProperty());
         }
 
         @Test
@@ -475,10 +510,28 @@ class AccountUpdateRequestTest {
         void negativeAmountIsTransportedRatherThanRejected() {
             Draft draft = new Draft();
             for (MoneyComponent component : MoneyComponent.values()) {
-                component.write(draft, new BigDecimal("-1234567890.12"));
+                component.write(draft, "-1234567890.12");
             }
 
             assertThat(violations(draft.build())).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the concurrency token carries no constraint, so its absence is not a violation")
+        void theConcurrencyTokenCarriesNoConstraintSoItsAbsenceIsNotAViolation() {
+            AccountUpdateRequest withoutToken = new Draft().build();
+            Draft longToken = new Draft();
+            longToken.concurrencyToken = "E".repeat(4096);
+
+            assertThat(violations(withoutToken))
+                    .as("an absent token is a conflict for the service to report, not a binding "
+                            + "failure for the framework to reject")
+                    .isEmpty();
+            assertThat(violations(longToken.build()))
+                    .as("the token is opaque and its length is the sealing scheme's business, so no "
+                            + "width bound may be asserted here")
+                    .isEmpty();
+            assertThat(withoutToken.concurrencyToken()).isNull();
         }
     }
 
@@ -1239,144 +1292,100 @@ class AccountUpdateRequestTest {
     }
 
     /**
-     * The five monetary components are 15 characters wide on the screen and signed zoned decimals
-     * with ten integer digits and two decimal places in the account record, which maps to a numeric
-     * column of precision 12 and scale 2. They are therefore exact decimals - never a binary
-     * floating-point type, never a primitive and never a preformatted string.
+     * The five monetary components are 15 characters wide on the screen, and what the screen transmits
+     * is the raw lexeme rather than a decoded number.
      *
-     * <p>Scale 2 is a contract this request <em>carries</em> rather than <em>applies</em>. The
-     * estate declares no rounding on any arithmetic statement, so every legacy store into a
-     * two-decimal field truncates toward zero, and that truncation happens in exactly one place in
-     * the module. This request must therefore hand a decimal on unaltered in either direction: it
-     * must not rescale, round, negate or format, and the tests below prove it by passing scales
-     * above, below and outside the contract scale and getting the identical object back.
+     * <p>Paragraph {@code 1250-EDIT-SIGNED-9V2} - invoked once per component at lines 1486, 1499, 1511,
+     * 1518 and 1525 - reaches one of <strong>three</strong> states, not two: the field was not supplied,
+     * what was supplied is not a number, or the value is usable. Two of those states carry different
+     * operator messages, and a decoded numeric component cannot represent the middle one at all: an
+     * unparseable lexeme would fail body binding before any component was populated, replacing one
+     * ordered summary message plus N decorated fields with a single opaque body-read rejection.
+     *
+     * <p>So the lexeme travels, exactly as the map declares it and exactly as the legacy work field
+     * {@code WS-EDIT-SIGNED-NUMBER-9V2-X} stages it, and the three-state edit runs in the service using
+     * {@code CobolStringUtils} and {@code ZonedDecimalCodec}. Nothing here parses, scales, rounds,
+     * re-signs, trims or reformats, and the tests below prove it by handing over blank, marked,
+     * malformed, oversized and well-formed input and getting the identical characters back.
      */
     @Nested
-    @DisplayName("Monetary components are exact decimals carried unaltered")
-    class MonetaryComponentsAreExactDecimalsCarriedUnaltered {
+    @DisplayName("Monetary components are raw screen lexemes carried unaltered")
+    class MonetaryComponentsAreRawScreenLexemesCarriedUnaltered {
 
-        @ParameterizedTest(name = "{0} is an exact decimal")
+        @ParameterizedTest(name = "{0} carries its lexeme character for character")
         @EnumSource(MoneyComponent.class)
-        @DisplayName("each monetary accessor yields an exact decimal, never a floating-point type")
-        void eachMonetaryAccessorYieldsAnExactDecimal(MoneyComponent component) {
-            BigDecimal value = new BigDecimal("1234567890.12");
+        @DisplayName("each monetary accessor yields the very characters it was constructed with")
+        void eachMonetaryAccessorYieldsTheVeryCharactersItWasConstructedWith(
+                MoneyComponent component) {
+            String lexeme = "1234567890.12";
 
-            AccountUpdateRequest request = withOnly(component, value);
+            AccountUpdateRequest request = withOnly(component, lexeme);
 
             assertThat(component.read(request))
-                    .as("%s must be an exact decimal; the accessor's static type is already "
-                            + "BigDecimal, which this confirms at run time too",
+                    .as("%s must hand on the transmitted characters untouched", component.described())
+                    .isSameAs(lexeme);
+        }
+
+        @ParameterizedTest(name = "{0} is a JSON string, never a JSON number")
+        @EnumSource(MoneyComponent.class)
+        @DisplayName("the wire form is a quoted string, so a malformed amount still binds")
+        void theWireFormIsAQuotedStringSoAMalformedAmountStillBinds(MoneyComponent component)
+                throws Exception {
+            String json = MAPPER.writeValueAsString(withOnly(component, "1234567890.12"));
+
+            assertThat(json)
+                    .as("%s must not be published as a JSON number: a number would make the "
+                            + "not-a-number state unrepresentable", component.described())
+                    .isEqualTo("{\"" + component.jsonProperty() + "\":\"1234567890.12\"}");
+        }
+
+        @ParameterizedTest(name = "{0} accepts all three legacy edit states")
+        @EnumSource(MoneyComponent.class)
+        @DisplayName("absent, blank, marked, malformed and valid input all bind without complaint")
+        void absentBlankMarkedMalformedAndValidInputAllBindWithoutComplaint(MoneyComponent component)
+                throws Exception {
+            for (String lexeme : new String[] {"", "   ", "*", "not a number", "1.2.3", "-", "$1,500",
+                    "1500.00"}) {
+                AccountUpdateRequest received = MAPPER.readValue(
+                        MAPPER.writeValueAsString(withOnly(component, lexeme)),
+                        AccountUpdateRequest.class);
+
+                assertThat(component.read(received))
+                        .as("%s must transport the lexeme [%s] so the cascade can classify it",
+                                component.described(), lexeme)
+                        .isEqualTo(lexeme);
+                assertThat(violations(received))
+                        .as("%s must draw no violation for the lexeme [%s]", component.described(),
+                                lexeme)
+                        .isEmpty();
+            }
+
+            AccountUpdateRequest absent = MAPPER.readValue(
+                    MAPPER.writeValueAsString(withOnly(component, null)),
+                    AccountUpdateRequest.class);
+            assertThat(component.read(absent))
+                    .as("%s must survive as absent, which is the legacy LOW-VALUES state",
                             component.described())
-                    .isExactlyInstanceOf(BigDecimal.class)
-                    .isEqualTo(value);
+                    .isNull();
+            assertThat(violations(absent)).isEmpty();
         }
 
-        @ParameterizedTest(name = "{0} preserves scale 2 on construction")
+        @ParameterizedTest(name = "{0} is neither trimmed nor padded nor re-signed")
         @EnumSource(MoneyComponent.class)
-        @DisplayName("a scale-2 amount keeps scale exactly 2 through construction")
-        void aScale2AmountKeepsScaleExactly2ThroughConstruction(MoneyComponent component) {
-            BigDecimal value = new BigDecimal("9999999999.99");
-
-            BigDecimal carried = component.read(withOnly(component, value));
-
-            assertThat(carried.scale())
-                    .as("%s must keep the record's two decimal places", component.described())
-                    .isEqualTo(MoneyComponent.CONTRACT_SCALE);
-            assertThat(carried.unscaledValue()).isEqualTo(value.unscaledValue());
-            assertThat(carried.toPlainString()).isEqualTo("9999999999.99");
-        }
-
-        @ParameterizedTest(name = "{0} preserves scale 2 across the wire")
-        @EnumSource(MoneyComponent.class)
-        @DisplayName("a scale-2 amount still has scale exactly 2 after a JSON round trip")
-        void aScale2AmountStillHasScaleExactly2AfterAJsonRoundTrip(MoneyComponent component)
+        @DisplayName("surrounding spaces, a leading plus and trailing zeros all survive intact")
+        void surroundingSpacesALeadingPlusAndTrailingZerosAllSurviveIntact(MoneyComponent component)
                 throws Exception {
-            BigDecimal value = new BigDecimal("1.20");
-            AccountUpdateRequest sent = withOnly(component, value);
+            for (String lexeme : new String[] {"  1500.00  ", "+1500.00", "1500.000", "0001500.00",
+                    "1500.00-"}) {
+                AccountUpdateRequest received = MAPPER.readValue(
+                        MAPPER.writeValueAsString(withOnly(component, lexeme)),
+                        AccountUpdateRequest.class);
 
-            AccountUpdateRequest received = MAPPER.readValue(
-                    MAPPER.writeValueAsString(sent), AccountUpdateRequest.class);
-
-            assertThat(component.read(received).scale())
-                    .as("%s must not lose its trailing zero on the wire", component.described())
-                    .isEqualTo(MoneyComponent.CONTRACT_SCALE);
-            assertThat(component.read(received).toPlainString()).isEqualTo("1.20");
-        }
-
-        @ParameterizedTest(name = "{0} serialises in plain notation")
-        @EnumSource(MoneyComponent.class)
-        @DisplayName("serialisation is plain decimal text, never scientific notation")
-        void serialisationIsPlainDecimalTextNeverScientificNotation(MoneyComponent component)
-                throws Exception {
-            BigDecimal veryLarge = new BigDecimal("1E+10");
-
-            String json = MAPPER.writeValueAsString(withOnly(component, veryLarge));
-
-            assertThat(json)
-                    .as("%s must never appear in exponent form; a downstream fixed-width writer "
-                            + "cannot interpret one", component.described())
-                    .isEqualTo("{\"" + component.jsonProperty() + "\":10000000000}")
-                    .doesNotContain("E+", "E-", "e+", "e-");
-        }
-
-        @ParameterizedTest(name = "{0} carries zero and negative amounts")
-        @EnumSource(MoneyComponent.class)
-        @DisplayName("zero and negative amounts round-trip correctly")
-        void zeroAndNegativeAmountsRoundTripCorrectly(MoneyComponent component) throws Exception {
-            BigDecimal zero = new BigDecimal("0.00");
-            BigDecimal negative = new BigDecimal("-9999999999.99");
-
-            AccountUpdateRequest zeroReceived = MAPPER.readValue(
-                    MAPPER.writeValueAsString(withOnly(component, zero)),
-                    AccountUpdateRequest.class);
-            AccountUpdateRequest negativeReceived = MAPPER.readValue(
-                    MAPPER.writeValueAsString(withOnly(component, negative)),
-                    AccountUpdateRequest.class);
-
-            assertThat(component.read(zeroReceived).toPlainString()).isEqualTo("0.00");
-            assertThat(component.read(zeroReceived).scale())
-                    .isEqualTo(MoneyComponent.CONTRACT_SCALE);
-            assertThat(component.read(negativeReceived).toPlainString())
-                    .as("the record field is signed, so a debit balance must survive intact")
-                    .isEqualTo("-9999999999.99");
-            assertThat(component.read(negativeReceived).signum()).isNegative();
-        }
-
-        @ParameterizedTest(name = "{0} never rescales in either direction")
-        @EnumSource(MoneyComponent.class)
-        @DisplayName("an amount is handed on as the very same object, at whatever scale it arrived")
-        void anAmountIsHandedOnAsTheVerySameObject(MoneyComponent component) {
-            BigDecimal scaleZero = new BigDecimal("42");
-            BigDecimal scaleFive = new BigDecimal("42.00000");
-            BigDecimal scaleNegative = new BigDecimal("1E+10");
-
-            assertThat(component.read(withOnly(component, scaleZero)))
-                    .as("%s must not scale up to the contract scale", component.described())
-                    .isSameAs(scaleZero)
-                    .returns(0, BigDecimal::scale);
-            assertThat(component.read(withOnly(component, scaleFive)))
-                    .as("%s must not scale down to the contract scale", component.described())
-                    .isSameAs(scaleFive)
-                    .returns(5, BigDecimal::scale);
-            assertThat(component.read(withOnly(component, scaleNegative)))
-                    .as("%s must not normalise a negative scale either", component.described())
-                    .isSameAs(scaleNegative)
-                    .returns(-10, BigDecimal::scale);
-        }
-
-        @ParameterizedTest(name = "{0} is not formatted for display")
-        @EnumSource(MoneyComponent.class)
-        @DisplayName("no grouping separator, leading plus sign or currency symbol is introduced")
-        void noGroupingSeparatorLeadingPlusOrCurrencySymbolIsIntroduced(MoneyComponent component)
-                throws Exception {
-            String json = MAPPER.writeValueAsString(
-                    withOnly(component, new BigDecimal("1234567890.12")));
-
-            assertThat(json)
-                    .as("the map's edited picture is a 3270 display artefact; the wire form is a "
-                            + "bare exact decimal")
-                    .isEqualTo("{\"" + component.jsonProperty() + "\":1234567890.12}")
-                    .doesNotContain(",", "+", "$", "USD");
+                assertThat(component.read(received))
+                        .as("%s must not normalise [%s]; the legacy work field is alphanumeric and "
+                                + "keeps what was typed", component.described(), lexeme)
+                        .isEqualTo(lexeme);
+            }
         }
 
         @Test
@@ -1384,11 +1393,11 @@ class AccountUpdateRequestTest {
         void theFiveMonetaryComponentsAreIndependentOfOneAnother() {
             AccountUpdateRequest request = Draft.realistic().build();
 
-            assertThat(request.creditLimit()).isEqualTo(new BigDecimal("5000.00"));
-            assertThat(request.cashCreditLimit()).isEqualTo(new BigDecimal("1500.00"));
-            assertThat(request.currentBalance()).isEqualTo(new BigDecimal("-250.75"));
-            assertThat(request.currentCycleCredit()).isEqualTo(new BigDecimal("0.00"));
-            assertThat(request.currentCycleDebit()).isEqualTo(new BigDecimal("1234567890.12"));
+            assertThat(request.creditLimit()).isEqualTo("5000.00");
+            assertThat(request.cashCreditLimit()).isEqualTo("1500.00");
+            assertThat(request.currentBalance()).isEqualTo("-250.75");
+            assertThat(request.currentCycleCredit()).isEqualTo("0.00");
+            assertThat(request.currentCycleDebit()).isEqualTo("1234567890.12");
         }
 
         @Test
@@ -1396,6 +1405,29 @@ class AccountUpdateRequestTest {
         void allFiveAre15CharactersWideOnTheScreen() {
             assertThat(MoneyComponent.SCREEN_WIDTH).isEqualTo(15);
             assertThat(MoneyComponent.values()).hasSize(5);
+        }
+
+        @Test
+        @DisplayName("every monetary accessor is statically a String, so no scale can be applied here")
+        void everyMonetaryAccessorIsStaticallyAStringSoNoScaleCanBeAppliedHere() {
+            AccountUpdateRequest request = Draft.realistic().build();
+
+            // These five assignments are the assertion: they compile only while the accessors are
+            // String-typed, and a decoded numeric component would break the build rather than a test.
+            String creditLimit = request.creditLimit();
+            String cashCreditLimit = request.cashCreditLimit();
+            String currentBalance = request.currentBalance();
+            String currentCycleCredit = request.currentCycleCredit();
+            String currentCycleDebit = request.currentCycleDebit();
+
+            assertThat(List.of(creditLimit, cashCreditLimit, currentBalance, currentCycleCredit,
+                    currentCycleDebit))
+                    .as("all five monetary components are carried as raw lexemes")
+                    .containsExactly("5000.00", "1500.00", "-250.75", "0.00", "1234567890.12");
+            assertThat(MoneyComponent.CONTRACT_SCALE)
+                    .as("the record field has two decimal places, which the codec applies once the "
+                            + "lexeme is decoded; nothing on this contract applies it")
+                    .isEqualTo(2);
         }
     }
 
@@ -1433,8 +1465,9 @@ class AccountUpdateRequestTest {
         }
 
         @Test
-        @DisplayName("a fully populated request carries exactly the 43 expected property names")
-        void aFullyPopulatedRequestCarriesExactlyThe43ExpectedPropertyNames() throws Exception {
+        @DisplayName("a fully populated request carries the 43 map properties plus the token, and "
+                + "nothing else")
+        void aFullyPopulatedRequestCarriesThe43MapPropertiesPlusTheToken() throws Exception {
             Set<String> expected = new LinkedHashSet<>();
             for (StringComponent component : StringComponent.values()) {
                 expected.add(component.jsonProperty());
@@ -1443,13 +1476,19 @@ class AccountUpdateRequestTest {
                 expected.add(component.jsonProperty());
             }
 
-            Set<String> actual = propertyNamesOf(Draft.realistic().build());
+            Set<String> mapProperties = propertyNamesOf(Draft.realistic().build());
+            mapProperties.remove(CONCURRENCY_TOKEN_PROPERTY);
 
             assertThat(expected).hasSize(43);
-            assertThat(actual)
-                    .as("the wire form is exactly the 43 editable components and nothing else")
+            assertThat(mapProperties)
+                    .as("the wire form is exactly the 43 editable map components plus the "
+                            + "concurrency token, and nothing else")
                     .hasSize(43)
                     .containsExactlyInAnyOrderElementsOf(expected);
+            assertThat(propertyNamesOf(Draft.realistic().build()))
+                    .as("the token is the only non-map property published")
+                    .hasSize(44)
+                    .contains(CONCURRENCY_TOKEN_PROPERTY);
         }
 
         /**
@@ -1542,7 +1581,7 @@ class AccountUpdateRequestTest {
             }
             for (MoneyComponent component : MoneyComponent.values()) {
                 Draft altered = Draft.realistic();
-                component.write(altered, new BigDecimal("7.77"));
+                component.write(altered, "7.77");
 
                 assertThat(altered.build())
                         .as("%s must participate in equality", component.described())
@@ -1572,7 +1611,7 @@ class AccountUpdateRequestTest {
         @DisplayName("construction neither copies nor normalises the values handed to it")
         void constructionNeitherCopiesNorNormalisesTheValuesHandedToIt() {
             String spacedValue = "  spaced  ";
-            BigDecimal amount = new BigDecimal("1.20");
+            String amount = "1.20";
             Draft draft = new Draft();
             draft.middleName = spacedValue;
             draft.firstName = spacedValue;
@@ -1612,7 +1651,7 @@ class AccountUpdateRequestTest {
             for (MoneyComponent component : MoneyComponent.values()) {
                 assertThat(text)
                         .as("%s must not appear in the rendered text", component.described())
-                        .doesNotContain(component.read(request).toPlainString());
+                        .doesNotContain(component.read(request));
             }
         }
 
@@ -1631,11 +1670,11 @@ class AccountUpdateRequestTest {
                 readBack.add(component.jsonProperty() + "=" + value);
             }
             for (MoneyComponent component : MoneyComponent.values()) {
-                BigDecimal value = component.read(request);
+                String value = component.read(request);
                 assertThat(value)
                         .as("%s must be readable exactly as supplied", component.described())
                         .isNotNull();
-                readBack.add(component.jsonProperty() + "=" + value.toPlainString());
+                readBack.add(component.jsonProperty() + "=" + value);
             }
 
             assertThat(readBack)
@@ -1864,13 +1903,15 @@ class AccountUpdateRequestTest {
     }
 
     /* =================================================================================
-     * The 5 exact-decimal components.
+     * The 5 signed-amount components.
      *
-     * All five are 15 characters wide on the screen and are signed zoned decimals with
-     * ten integer digits and two decimal places in the account record, which maps to a
-     * numeric column of precision 12 and scale 2. Scale 2 is a CONTRACT the service and
-     * the codec honour, not something this request applies: the request must carry a
-     * decimal through untouched, whatever its scale.
+     * All five are 15 characters wide on the screen and land in a signed zoned decimal
+     * with ten integer digits and two decimal places in the account record, which maps
+     * to a numeric column of precision 12 and scale 2. What the screen transmits is the
+     * lexeme, not the number: paragraph 1250-EDIT-SIGNED-9V2 classifies it as blank, as
+     * malformed, or as valid, and only the valid case is decoded. Scale 2 is therefore a
+     * property of the DECODED value, applied once by the codec, and never a property of
+     * anything this contract carries.
      * ================================================================================= */
     enum MoneyComponent {
 
@@ -1888,17 +1929,17 @@ class AccountUpdateRequestTest {
         /** Every monetary field is 15 characters wide on this screen. */
         static final int SCREEN_WIDTH = 15;
 
-        /** The record's decimal places, and therefore the contract scale. */
+        /** The record field's decimal places, applied by the codec once the lexeme is decoded. */
         static final int CONTRACT_SCALE = 2;
 
         private final String mapField;
         private final String jsonProperty;
-        private final BiConsumer<Draft, BigDecimal> writer;
-        private final Function<AccountUpdateRequest, BigDecimal> reader;
+        private final BiConsumer<Draft, String> writer;
+        private final Function<AccountUpdateRequest, String> reader;
 
         MoneyComponent(String mapField, String jsonProperty,
-                BiConsumer<Draft, BigDecimal> writer,
-                Function<AccountUpdateRequest, BigDecimal> reader) {
+                BiConsumer<Draft, String> writer,
+                Function<AccountUpdateRequest, String> reader) {
             this.mapField = mapField;
             this.jsonProperty = jsonProperty;
             this.writer = writer;
@@ -1913,11 +1954,11 @@ class AccountUpdateRequestTest {
             return jsonProperty;
         }
 
-        void write(Draft draft, BigDecimal value) {
+        void write(Draft draft, String value) {
             writer.accept(draft, value);
         }
 
-        BigDecimal read(AccountUpdateRequest request) {
+        String read(AccountUpdateRequest request) {
             return reader.apply(request);
         }
 

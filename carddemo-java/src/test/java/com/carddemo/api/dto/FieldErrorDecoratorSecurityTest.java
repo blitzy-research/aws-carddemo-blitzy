@@ -103,11 +103,11 @@ class FieldErrorDecoratorSecurityTest {
         @DisplayName("the stored list is detached from the caller's collection, so a later mutation by the caller "
                 + "cannot alter an already-built accumulation")
         void theStoredListIsDetachedFromTheCallersCollection() {
-            final List<ErrorResponse.FieldError> supplied = new ArrayList<>();
-            supplied.add(entry(FIELD, ErrorResponse.FieldState.MISSING));
+            final List<FieldErrorDecorator.MarkedField> supplied = new ArrayList<>();
+            supplied.add(marked(FIELD, FieldErrorDecorator.FlagState.BLANK));
             final FieldErrorDecorator subject = new FieldErrorDecorator(supplied);
 
-            supplied.add(entry("smuggled", ErrorResponse.FieldState.INVALID));
+            supplied.add(marked("smuggled", FieldErrorDecorator.FlagState.NOT_OK));
 
             assertThat(subject.fieldErrors()).hasSize(1);
             assertThat(subject.fieldErrors().get(0).fieldName()).isEqualTo(FIELD);
@@ -127,7 +127,7 @@ class FieldErrorDecoratorSecurityTest {
         @DisplayName("a null element is rejected outright, because an entry with no state is meaningless and "
                 + "dropping it silently would hide an error the client has to show")
         void aNullElementIsRejected() {
-            final List<ErrorResponse.FieldError> withNull = new ArrayList<>();
+            final List<FieldErrorDecorator.MarkedField> withNull = new ArrayList<>();
             withNull.add(null);
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new FieldErrorDecorator(withNull));
@@ -440,9 +440,15 @@ class FieldErrorDecoratorSecurityTest {
         }
     }
 
-    /** Builds an entry with no message, which is the shape this type produces. */
+    /** Builds a projected entry with no message, which is the shape this type publishes. */
     private static ErrorResponse.FieldError entry(final String fieldName,
             final ErrorResponse.FieldState state) {
         return new ErrorResponse.FieldError(fieldName, "SCRN", state, null);
+    }
+
+    /** Builds a neutral accumulated entry, which is the shape this type carries. */
+    private static FieldErrorDecorator.MarkedField marked(final String fieldName,
+            final FieldErrorDecorator.FlagState flagState) {
+        return new FieldErrorDecorator.MarkedField(fieldName, "SCRN", flagState);
     }
 }

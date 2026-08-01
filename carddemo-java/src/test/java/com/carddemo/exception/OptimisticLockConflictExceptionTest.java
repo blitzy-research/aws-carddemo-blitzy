@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.ObjectStreamClass;
+import java.util.Locale;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -409,14 +410,30 @@ class OptimisticLockConflictExceptionTest {
         }
 
         @Test
-        @DisplayName("the customer lock text is also reachable as an explicit detail message, which "
-                + "is the second mechanism by which all four literals stay published")
-        void theCustomerLockTextIsAlsoReachableAsAnExplicitMessage() {
-            OptimisticLockConflictException conflict = new OptimisticLockConflictException(
-                    LOCK_NOT_ACQUIRED, ACCOUNT_ENTITY, ACCOUNT_KEY,
+        @DisplayName("the customer lock text is reachable only by naming the customer record, on "
+                + "every constructor, so the entity name is the single selector for it")
+        void theCustomerLockTextIsReachableOnlyByNamingTheCustomerRecord() {
+            OptimisticLockConflictException fromThreeArguments = new OptimisticLockConflictException(
+                    LOCK_NOT_ACQUIRED, CUSTOMER_ENTITY, CUSTOMER_KEY);
+            OptimisticLockConflictException fromFiveArguments = new OptimisticLockConflictException(
+                    LOCK_NOT_ACQUIRED, CUSTOMER_ENTITY, CUSTOMER_KEY,
                     EXPECTED_COULD_NOT_LOCK_CUSTOMER, null);
 
-            assertThat(conflict.getMessage()).isEqualTo(EXPECTED_COULD_NOT_LOCK_CUSTOMER);
+            assertThat(fromThreeArguments.getMessage()).isEqualTo(EXPECTED_COULD_NOT_LOCK_CUSTOMER);
+            assertThat(fromFiveArguments.getMessage()).isEqualTo(EXPECTED_COULD_NOT_LOCK_CUSTOMER);
+        }
+
+        @Test
+        @DisplayName("the customer lock text cannot be borrowed onto an account conflict, because no "
+                + "legacy path can set the customer flag while reporting the account record: the "
+                + "customer read at COACTUPC line 3921 is only reached once the account read at line "
+                + "3894 has already succeeded")
+        void theCustomerLockTextCannotBeBorrowedOntoAnAccountConflict() {
+            assertThatThrownBy(() -> new OptimisticLockConflictException(
+                    LOCK_NOT_ACQUIRED, ACCOUNT_ENTITY, ACCOUNT_KEY,
+                    EXPECTED_COULD_NOT_LOCK_CUSTOMER, null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("legacy text this arm resolves to");
         }
 
         @Test
@@ -519,15 +536,96 @@ class OptimisticLockConflictExceptionTest {
         }
 
         @Test
-        @DisplayName("an explicit detail message overrides the arm's legacy default without losing "
-                + "the classification, so the caller can still route the legacy response")
-        void anExplicitMessageOverridesTheDefaultWithoutLosingTheClassification() {
-            OptimisticLockConflictException conflict = new OptimisticLockConflictException(
-                    RECORD_CHANGED, ACCOUNT_ENTITY, ACCOUNT_KEY, EXPECTED_UPDATE_FAILED, null);
+        @DisplayName("an explicit detail message cannot contradict the arm: text belonging to a "
+                + "different arm is rejected, because the legacy binds each text to a condition name "
+                + "as a level-88 VALUE and never composes one independently of it")
+        void anExplicitMessageCannotContradictTheArm() {
+            assertThatThrownBy(() -> new OptimisticLockConflictException(
+                    RECORD_CHANGED, ACCOUNT_ENTITY, ACCOUNT_KEY, EXPECTED_UPDATE_FAILED, null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("legacy text this arm resolves to");
+        }
 
-            assertThat(conflict.getMessage()).isEqualTo(EXPECTED_UPDATE_FAILED);
-            assertThat(conflict.getMessage()).isNotEqualTo(EXPECTED_RECORD_CHANGED);
+        @Test
+        @DisplayName("text that belongs to no arm at all is rejected too, so the five-argument "
+                + "constructor cannot introduce a fifth operator literal the legacy never had")
+        void textThatBelongsToNoArmIsRejected() {
+            assertThatThrownBy(() -> new OptimisticLockConflictException(
+                    RECORD_CHANGED, ACCOUNT_ENTITY, ACCOUNT_KEY, "Please try again later", null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("legacy text this arm resolves to");
+        }
+
+        @Test
+        @DisplayName("a near miss is rejected as firmly as unrelated text - a changed word, a "
+                + "different case, a trailing stop or a stray blank - because the resolved text is "
+                + "reproduced from the legacy byte for byte")
+        void aNearMissIsRejectedAsFirmlyAsUnrelatedText() {
+            assertThatThrownBy(() -> new OptimisticLockConflictException(LOCK_NOT_ACQUIRED,
+                    ACCOUNT_ENTITY, ACCOUNT_KEY, "Could not lock account for update", null))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> new OptimisticLockConflictException(RECORD_CHANGED,
+                    ACCOUNT_ENTITY, ACCOUNT_KEY, EXPECTED_RECORD_CHANGED.toUpperCase(Locale.ROOT),
+                    null))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> new OptimisticLockConflictException(UPDATE_FAILED,
+                    ACCOUNT_ENTITY, ACCOUNT_KEY, EXPECTED_UPDATE_FAILED + ".", null))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> new OptimisticLockConflictException(UPDATE_FAILED,
+                    ACCOUNT_ENTITY, ACCOUNT_KEY, " " + EXPECTED_UPDATE_FAILED, null))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("an absent detail message is rejected rather than defaulted, so a caller who "
+                + "wants the arm's own text uses a constructor that resolves it and says so")
+        void anAbsentDetailMessageIsRejected() {
+            assertThatThrownBy(() -> new OptimisticLockConflictException(
+                    RECORD_CHANGED, ACCOUNT_ENTITY, ACCOUNT_KEY, null, null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("legacy text this arm resolves to");
+        }
+
+        @Test
+        @DisplayName("the rejection diagnostic does not echo the text it refused, so a value that "
+                + "arrived from outside the module cannot ride an exception message into a log")
+        void theRejectionDiagnosticDoesNotEchoTheRefusedText() {
+            String hostile = "ZZ-CANARY-REFUSED-CONFLICT-TEXT-ZZ";
+
+            assertThatThrownBy(() -> new OptimisticLockConflictException(
+                    RECORD_CHANGED, ACCOUNT_ENTITY, ACCOUNT_KEY, hostile, null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageNotContaining(hostile);
+        }
+
+        @Test
+        @DisplayName("the classification is still round-tripped when the arm's own text is supplied "
+                + "explicitly, so constraining the message cost the constructor none of its purpose")
+        void theClassificationIsRoundTrippedWhenTheArmsOwnTextIsSupplied() {
+            OptimisticLockConflictException conflict = new OptimisticLockConflictException(
+                    RECORD_CHANGED, ACCOUNT_ENTITY, ACCOUNT_KEY, EXPECTED_RECORD_CHANGED, null);
+
             assertThat(conflict.conflictKind()).isEqualTo(RECORD_CHANGED);
+            assertThat(conflict.getMessage()).isEqualTo(EXPECTED_RECORD_CHANGED);
+            assertThat(conflict.getMessage())
+                    .isEqualTo(conflict.conflictKind().defaultMessage(conflict.entityName()));
+        }
+
+        @Test
+        @DisplayName("every arm and entity pairing satisfies message equals arm default, so a "
+                + "boundary may render the conflict from the classification and reach the same bytes")
+        void everyArmAndEntityPairingSatisfiesMessageEqualsArmDefault() {
+            for (OptimisticLockConflictException.ConflictKind arm
+                    : OptimisticLockConflictException.ConflictKind.values()) {
+                for (String entity : new String[] {ACCOUNT_ENTITY, CUSTOMER_ENTITY, CARD_ENTITY, ""}) {
+                    OptimisticLockConflictException conflict =
+                            new OptimisticLockConflictException(arm, entity, ACCOUNT_KEY);
+
+                    assertThat(conflict.getMessage())
+                            .as("arm %s entity '%s'", arm, entity)
+                            .isEqualTo(arm.defaultMessage(entity));
+                }
+            }
         }
 
         @Test

@@ -1325,4 +1325,137 @@ class ZonedDecimalCodecTest {
             assertThat(truncatedOnce).isNotEqualByComparingTo(truncatedEachTime);
         }
     }
+
+    /**
+     * The screen-lexeme path: {@code COMPUTE ACUP-NEW-CREDIT-LIMIT-N = FUNCTION NUMVAL-C(...)} at
+     * {@code [app/cbl/COACTUPC.cbl:L1075]} and its four peers at lines 1089, 1103, 1117 and 1132.
+     *
+     * <p>One monetary value in the estate never arrives as a field image: the five amounts typed at the
+     * account-update screen arrive as 15-character lexemes. The grammar of a lexeme is a character
+     * question and belongs to the string primitives; choosing the scale is a decimal question and may
+     * only be answered here, which is why the conversion terminates in this class.
+     *
+     * <p>The receiving field is {@code PIC S9(10)V99}, so the store truncates to two decimal places
+     * exactly as every other store in the estate does. That is asserted below on both signs, because
+     * truncation toward zero and rounding half-even disagree on the third decimal place and a suite
+     * written under the wrong assumption would not notice.
+     *
+     * <p>Decision log entry DL-079 records the one deliberate divergence exercised here: an amount too
+     * wide for the record is returned intact and refused at the field boundary rather than silently
+     * losing its high-order digits the way the legacy store does.
+     */
+    @Nested
+    @DisplayName("Screen lexemes :: NUMVAL-C into a V99 field truncates like every other store")
+    class ScreenLexemeConversion {
+
+        @ParameterizedTest(name = "[{0}] stores as {1}")
+        @CsvSource({
+            "0, 0.00",
+            "1500, 1500.00",
+            "1500.00, 1500.00",
+            "1500.0, 1500.00",
+            "-250.75, -250.75",
+            "+1500.00, 1500.00",
+            "'  1500.00  ', 1500.00",
+            "'1,234,567.89', 1234567.89",
+            "$1500.00, 1500.00",
+            "100CR, -100.00",
+            "100DB, -100.00",
+            "250.75-, -250.75",
+            ".5, 0.50",
+            "5., 5.00",
+            "0001500.00, 1500.00",
+            "9999999999.99, 9999999999.99"
+        })
+        @DisplayName("an accepted lexeme becomes an exact decimal at the record's two decimal places")
+        void anAcceptedLexemeBecomesAnExactDecimalAtTwoDecimalPlaces(String lexeme, String expected) {
+            BigDecimal stored = ZonedDecimalCodec.fromNumericLexeme(lexeme);
+
+            assertThat(stored)
+                    .as("[%s] must store as %s", lexeme, expected)
+                    .isEqualTo(new BigDecimal(expected));
+            assertThat(stored.scale())
+                    .as("the receiving field is V99, so the stored scale is always two")
+                    .isEqualTo(ZonedDecimalCodec.MONETARY_SCALE);
+        }
+
+        @ParameterizedTest(name = "[{0}] truncates to {1} rather than rounding")
+        @CsvSource({
+            "1.239, 1.23",
+            "1.235, 1.23",
+            "1.239999, 1.23",
+            "-1.239, -1.23",
+            "-1.235, -1.23",
+            "0.009, 0.00",
+            "-0.009, 0.00"
+        })
+        @DisplayName("surplus fractional digits are discarded toward zero, never rounded")
+        void surplusFractionalDigitsAreDiscardedTowardZero(String lexeme, String expected) {
+            assertThat(ZonedDecimalCodec.fromNumericLexeme(lexeme))
+                    .as("[%s] must truncate to %s; half-even would have produced a different cent",
+                            lexeme, expected)
+                    .isEqualTo(new BigDecimal(expected));
+        }
+
+        @Test
+        @DisplayName("the conversion agrees with the string primitive that classifies the lexeme, so "
+                + "the two cannot disagree about what is convertible")
+        void theConversionAgreesWithTheStringPrimitiveThatClassifiesTheLexeme() {
+            for (String lexeme : new String[] {"1500.00", "-250.75", "$1,500.00", "100CR", ".5"}) {
+                assertThat(CobolStringUtils.isNumericLexeme(lexeme)).isTrue();
+                assertThat(ZonedDecimalCodec.fromNumericLexeme(lexeme)).isNotNull();
+            }
+            for (String lexeme : new String[] {"", "   ", "*", "abc", "1.2.3", "1500.00cr"}) {
+                assertThat(CobolStringUtils.isNumericLexeme(lexeme)).isFalse();
+                assertThatIllegalArgumentException()
+                        .isThrownBy(() -> ZonedDecimalCodec.fromNumericLexeme(lexeme));
+            }
+        }
+
+        @Test
+        @DisplayName("a malformed lexeme is refused without appearing in the message, so a rejection "
+                + "cannot put a monetary value in a log")
+        void aMalformedLexemeIsRefusedWithoutAppearingInTheMessage() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> ZonedDecimalCodec.fromNumericLexeme("1234.56X"))
+                    .withMessageContaining("NUMVAL-C")
+                    .withMessageNotContaining("1234");
+        }
+
+        @Test
+        @DisplayName("a null lexeme is refused on the same code path, so a caller catches one type")
+        void aNullLexemeIsRefusedOnTheSameCodePath() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> ZonedDecimalCodec.fromNumericLexeme(null))
+                    .withMessageContaining("must not be null");
+        }
+
+        @Test
+        @DisplayName("a converted lexeme encodes straight back into the field image it belongs in")
+        void aConvertedLexemeEncodesStraightBackIntoTheFieldImage() {
+            BigDecimal creditLimit = ZonedDecimalCodec.fromNumericLexeme("$5,000.00");
+
+            assertThat(ZonedDecimalCodec.encodeMonetary(creditLimit,
+                    ZonedDecimalCodec.WIDTH_PIC_S9_10_V99, "ACCT-CREDIT-LIMIT"))
+                    .as("the screen path and the record path meet at the same value")
+                    .isEqualTo("00000050000{");
+        }
+
+        @Test
+        @DisplayName("a lexeme wider than the receiving field is converted intact and refused at the "
+                + "field boundary rather than silently losing its leading digits")
+        void aLexemeWiderThanTheReceivingFieldIsRefusedAtTheFieldBoundary() {
+            // The screen field is 15 characters while the record field holds ten integer digits, so a
+            // well-formed lexeme can be too large for the record. The legacy edit tests form only and
+            // the legacy store then loses the high-order excess without saying so. Discarding the
+            // leading digits of a credit limit is not a behaviour worth reproducing, so the value is
+            // carried intact and the field width is enforced where field widths belong.
+            BigDecimal tooWide = ZonedDecimalCodec.fromNumericLexeme("999999999999.99");
+
+            assertThat(tooWide).isEqualTo(new BigDecimal("999999999999.99"));
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> ZonedDecimalCodec.encodeMonetary(tooWide,
+                            ZonedDecimalCodec.WIDTH_PIC_S9_10_V99, "ACCT-CREDIT-LIMIT"));
+        }
+    }
 }

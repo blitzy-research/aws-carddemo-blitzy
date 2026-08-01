@@ -327,7 +327,6 @@ class ValidationExceptionTest {
                 .isSameAs(ValidationException.FieldState.INVALID);
     }
 
-    // ------------------------------------------------------------------
     // 3. The message-only constructor
 
     @Test
@@ -415,19 +414,53 @@ class ValidationExceptionTest {
     }
 
     @Test
-    @DisplayName("A null entry inside the supplied list is dropped rather than carried, so no consumer "
-            + "iterating the detail can meet a null element")
-    void aNullEntryInsideTheSuppliedListIsDropped() {
+    @DisplayName("A null entry inside the supplied list is rejected rather than dropped, because "
+            + "silently shortening the detail would lose one of the 39 decorated fields between the "
+            + "service that failed it and the boundary that reports it, with nothing to show for it")
+    void aNullEntryInsideTheSuppliedListIsRejected() {
         List<ValidationException.FieldError> withHole = new ArrayList<>();
         withHole.add(missingAcctStatus());
         withHole.add(null);
         withHole.add(invalidCreditLimit());
 
-        ValidationException thrown = new ValidationException(SUMMARY, withHole);
+        assertThatThrownBy(() -> new ValidationException(SUMMARY, withHole))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> new ValidationException(SUMMARY, withHole,
+                new IllegalStateException("detail was incomplete")))
+                .isInstanceOf(NullPointerException.class);
+    }
 
-        assertThat(thrown.fieldErrors())
-                .containsExactly(missingAcctStatus(), invalidCreditLimit());
-        assertThat(thrown.fieldErrors()).doesNotContainNull();
+    @Test
+    @DisplayName("A null entry is rejected wherever it sits, so a hole at the head or the tail of the "
+            + "detail is no more survivable than one in the middle")
+    void aNullEntryIsRejectedWhereverItSits() {
+        List<ValidationException.FieldError> holeAtHead = new ArrayList<>();
+        holeAtHead.add(null);
+        holeAtHead.add(missingAcctStatus());
+
+        List<ValidationException.FieldError> holeAtTail = new ArrayList<>();
+        holeAtTail.add(missingAcctStatus());
+        holeAtTail.add(null);
+
+        List<ValidationException.FieldError> onlyAHole = new ArrayList<>();
+        onlyAHole.add(null);
+
+        assertThatThrownBy(() -> new ValidationException(SUMMARY, holeAtHead))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> new ValidationException(SUMMARY, holeAtTail))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> new ValidationException(SUMMARY, onlyAHole))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    @DisplayName("A null list is still no detail at all, so rejecting a null element did not make the "
+            + "absent-detail case an error too")
+    void aNullListIsStillNoDetailAtAll() {
+        ValidationException thrown = new ValidationException(SUMMARY, (List<ValidationException.FieldError>) null);
+
+        assertThat(thrown.fieldErrors()).isEmpty();
+        assertThat(thrown.hasFieldErrors()).isFalse();
     }
 
     // 5. Defensive copy on the way in

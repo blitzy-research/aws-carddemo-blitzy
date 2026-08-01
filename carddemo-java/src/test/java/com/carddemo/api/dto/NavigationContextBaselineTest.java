@@ -545,23 +545,24 @@ final class NavigationContextBaselineTest {
     class UserTypeResolution {
 
         @Test
-        @DisplayName("the administrator code resolves to the administrator type and reports administrator "
-                + "authority, which is the routing decision the sign-on program made")
+        @DisplayName("the administrator code resolves to the administrator type and is reported as the "
+                + "echoed administrator code - the same byte the sign-on program branched on, though there "
+                + "it had been written from an authenticated user-security read")
         void theAdministratorCodeResolvesAndReportsAuthority() {
             final NavigationContext context = withUserType(COPYBOOK_ADMIN_TYPE_CODE);
 
             assertThat(context.resolvedUserType()).contains(UserType.ADMIN);
-            assertThat(context.administrator()).isTrue();
+            assertThat(context.echoesAdministratorCode()).isTrue();
         }
 
         @Test
-        @DisplayName("the standard-user code resolves to the standard type and reports no administrator "
-                + "authority, so an ordinary operator cannot reach an administrative route")
+        @DisplayName("the standard-user code resolves to the standard type and is not reported as the "
+                + "echoed administrator code")
         void theStandardUserCodeResolvesWithoutAuthority() {
             final NavigationContext context = withUserType(COPYBOOK_USER_TYPE_CODE);
 
             assertThat(context.resolvedUserType()).contains(UserType.USER);
-            assertThat(context.administrator()).isFalse();
+            assertThat(context.echoesAdministratorCode()).isFalse();
         }
 
         @ParameterizedTest
@@ -573,7 +574,7 @@ final class NavigationContextBaselineTest {
             final NavigationContext context = withUserType(code);
 
             assertThat(context.resolvedUserType()).isEmpty();
-            assertThat(context.administrator()).isFalse();
+            assertThat(context.echoesAdministratorCode()).isFalse();
         }
 
         @Test
@@ -581,7 +582,7 @@ final class NavigationContextBaselineTest {
                 + "single stored character compared exactly and no case folding took place")
         void theLowerCaseAdministratorCodeIsNotAccepted() {
             assertThat(withUserType("a").resolvedUserType()).isEmpty();
-            assertThat(withUserType("a").administrator()).isFalse();
+            assertThat(withUserType("a").echoesAdministratorCode()).isFalse();
         }
 
         @Test

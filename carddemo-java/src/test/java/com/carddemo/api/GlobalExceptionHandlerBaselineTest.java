@@ -17,6 +17,7 @@
 package com.carddemo.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 import java.util.ArrayList;
@@ -651,16 +652,44 @@ class GlobalExceptionHandlerBaselineTest {
         }
 
         @Test
-        @DisplayName("an explicit message overrides the arm default, so a service that already chose its "
-                + "wording keeps it")
-        void anExplicitMessageOverridesTheArmDefault() {
+        @DisplayName("the body is the arm's own legacy text, and a service cannot substitute wording "
+                + "of its own - not even a near miss of a published literal")
+        void theBodyIsTheArmsOwnLegacyTextAndCannotBeSubstituted() {
             final ErrorResponse body = handler.handleOptimisticLockConflict(
                     new OptimisticLockConflictException(
                             OptimisticLockConflictException.ConflictKind.LOCK_NOT_ACQUIRED,
-                            "Account", "1", "Could not lock account for update", null)).getBody();
+                            "Account", "1")).getBody();
 
             assertThat(body).isNotNull();
-            assertThat(body.message()).isEqualTo("Could not lock account for update");
+            assertThat(body.message()).isEqualTo("Could not lock account record for update");
+
+            // "account for update" rather than "account record for update" - a word short of the
+            // legacy literal, and refused at construction rather than published.
+            assertThatThrownBy(() -> new OptimisticLockConflictException(
+                    OptimisticLockConflictException.ConflictKind.LOCK_NOT_ACQUIRED,
+                    "Account", "1", "Could not lock account for update", null))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("the body renders from the classification, so it matches the carrier's own "
+                + "message on every arm rather than depending on which of the two the handler read")
+        void theBodyRendersFromTheClassificationAndMatchesTheCarrierMessage() {
+            for (OptimisticLockConflictException.ConflictKind arm
+                    : OptimisticLockConflictException.ConflictKind.values()) {
+                for (String entity : new String[] {"Account", "Customer"}) {
+                    OptimisticLockConflictException conflict =
+                            new OptimisticLockConflictException(arm, entity, "1");
+                    final ErrorResponse body =
+                            handler.handleOptimisticLockConflict(conflict).getBody();
+
+                    assertThat(body).isNotNull();
+                    assertThat(body.message())
+                            .as("arm %s entity %s", arm, entity)
+                            .isEqualTo(conflict.getMessage())
+                            .isEqualTo(arm.defaultMessage(entity));
+                }
+            }
         }
     }
 

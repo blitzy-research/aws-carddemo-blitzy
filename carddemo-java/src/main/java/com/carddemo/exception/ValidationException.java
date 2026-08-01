@@ -16,7 +16,6 @@
  */
 package com.carddemo.exception;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -32,7 +31,10 @@ import java.util.Objects;
  * {@code app/cbl/COACTUPC.cbl} between L3208 and L3432, always against the same map, with 39
  * distinct validation flags and 39 distinct BMS field names. Those 39 expansions collapse into a
  * single decorator call ({@code api/dto/FieldErrorDecorator}); this exception is the transport for
- * the errors that decorator produces.</p>
+ * the errors that decorator produces. The decorator accumulates them in the legacy's own neutral
+ * terms and {@code service/FieldErrorTranslationService} is the one converter that turns an
+ * accumulation into an instance of this class, so a service never assembles {@link FieldError}
+ * entries by hand. Decision log entry DL-080 records the arrangement.</p>
  *
  * <p>Three properties of the macro are the contract this class exists to preserve: it fires only
  * when the re-enter condition is set, so per-field error states are populated only on
@@ -187,8 +189,9 @@ public class ValidationException extends RuntimeException {
      * account-update screen reports its 39 decorated fields.
      *
      * @param message     the caller-supplied message; passed through unchanged
-     * @param fieldErrors the per-field detail; defensively copied, {@code null} elements are
-     *                    dropped, and {@code null} is treated as no detail at all
+     * @param fieldErrors the per-field detail; defensively copied, and {@code null} is treated as
+     *                    no detail at all
+     * @throws NullPointerException if any element of {@code fieldErrors} is {@code null}
      */
     public ValidationException(String message, List<FieldError> fieldErrors) {
         super(message);
@@ -200,10 +203,11 @@ public class ValidationException extends RuntimeException {
      * from.
      *
      * @param message     the caller-supplied message; passed through unchanged
-     * @param fieldErrors the per-field detail; defensively copied, {@code null} elements are
-     *                    dropped, and {@code null} is treated as no detail at all
+     * @param fieldErrors the per-field detail; defensively copied, and {@code null} is treated as
+     *                    no detail at all
      * @param cause       the underlying cause, passed straight through to
      *                    {@code Throwable}; may be {@code null}
+     * @throws NullPointerException if any element of {@code fieldErrors} is {@code null}
      */
     public ValidationException(String message, List<FieldError> fieldErrors, Throwable cause) {
         super(message, cause);
@@ -234,25 +238,32 @@ public class ValidationException extends RuntimeException {
     }
 
     /**
-     * Copies the supplied field errors into an unmodifiable list, dropping {@code null}
-     * elements and treating a {@code null} or empty argument as no detail at all. This is
-     * the single funnel every constructor uses, so the immutability guarantee cannot be
-     * bypassed and later mutation of the caller's list cannot be observed here.
+     * Copies the supplied field errors into an unmodifiable list, treating a {@code null} or empty
+     * argument as no detail at all and rejecting a {@code null} element. This is the single funnel
+     * every constructor uses, so the immutability guarantee cannot be bypassed and later mutation of
+     * the caller's list cannot be observed here.
      *
-     * @param fieldErrors the caller's list, which may be {@code null} or hold {@code null}
-     *                    elements
+     * <p>The two null cases are deliberately not the same case. A {@code null} list is a caller
+     * saying there is no per-field detail, which is legitimate - the summary-only constructors
+     * produce exactly that. A {@code null} <em>element</em> inside a supplied list is a producer
+     * defect: the caller believed it had detail for that field and did not. Dropping it silently -
+     * which is what this previously did - would let one of the account-update screen's 39 decorated
+     * fields disappear between the service that failed it and the boundary that reports it, and the
+     * caller would see a shorter list with no indication that anything was lost. Failing loudly at
+     * construction is the only outcome that keeps the count the producer intended. It also matches
+     * the two sibling carriers on the same path: {@code FieldErrorDecorator} and
+     * {@code ErrorResponse} both reject {@code null} elements through {@code List.copyOf}, so all
+     * three now agree. Recorded as DL-086.</p>
+     *
+     * @param fieldErrors the caller's list, which may be {@code null} but must hold no {@code null}
+     *                    element
      * @return an unmodifiable, never {@code null} copy
+     * @throws NullPointerException if any element is {@code null}
      */
     private static List<FieldError> immutableCopy(List<FieldError> fieldErrors) {
         if (fieldErrors == null || fieldErrors.isEmpty()) {
             return List.of();
         }
-        List<FieldError> copy = new ArrayList<>(fieldErrors.size());
-        for (FieldError fieldError : fieldErrors) {
-            if (fieldError != null) {
-                copy.add(fieldError);
-            }
-        }
-        return List.copyOf(copy);
+        return List.copyOf(fieldErrors);
     }
 }

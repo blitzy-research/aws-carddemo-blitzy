@@ -218,10 +218,8 @@ public final class DateValidationService {
      */
     private static final char MAX_SINGLE_BYTE_CHARACTER = 0x7F;
 
-    // =================================================================================================
     // Literal fillers of the 80-character result block. Each carries the padding its declared width
     // implies, because that padding occupies result-block positions.
-    // =================================================================================================
 
     /**
      * The message-code label of the result block, an unnamed filler eleven bytes wide carrying a
@@ -436,7 +434,6 @@ public final class DateValidationService {
      */
     private static final byte SPACE_BYTE = (byte) SPACE;
 
-    // =================================================================================================
     // The Language Environment substitution. CALL "CEEDAYS" at [app/cbl/CSUTLDTC.cbl:L116] is replaced
     // by strict java.time parsing, which is behaviour preserving only because STRICT resolution refuses
     // to normalise: a 30th of February fails instead of rolling forward into March.

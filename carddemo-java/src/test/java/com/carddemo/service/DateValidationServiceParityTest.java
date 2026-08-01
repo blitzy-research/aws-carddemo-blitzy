@@ -78,14 +78,12 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
 @DisplayName("DateValidationService — the eleven-stage CCYYMMDD cascade and the callable subprogram")
 class DateValidationServiceParityTest {
 
-    // =================================================================================================
     // LEGACY LITERALS
     //
     // Every string below is the exact diagnostic wording carried by app/cpy/CSUTLDPY.cpy, reproduced
     // here as an expectation rather than imported from the production class. Importing the production
     // constant would make the assertion agree with itself; typing the legacy wording out means a
     // reworded diagnostic fails this suite, which is the point.
-    // =================================================================================================
 
     /** From the {@code EDIT-YEAR-CCYY} blank branch. */
     private static final String YEAR_NOT_SUPPLIED = " : Year must be supplied.";
@@ -124,9 +122,7 @@ class DateValidationServiceParityTest {
     /** The blank state of {@code WS-RETURN-MSG}, which the service models as an empty string. */
     private static final String NO_MESSAGE = "";
 
-    // =================================================================================================
     // LEGACY WIDTHS AND IMAGES
-    // =================================================================================================
 
     /** {@code WS-EDIT-DATE-CCYYMMDD PIC X(08)}. */
     private static final int CCYYMMDD_WIDTH = 8;
@@ -158,9 +154,7 @@ class DateValidationServiceParityTest {
     /** The service under test. It injects no collaborator and holds no state. */
     private final DateValidationService service = new DateValidationService();
 
-    // =================================================================================================
     // HELPERS
-    // =================================================================================================
 
     /**
      * Renders a {@link DateEditFlag} triple as the three-byte {@code WS-EDIT-DATE-FLGS} image.
@@ -192,9 +186,7 @@ class DateValidationServiceParityTest {
         return service.validateDate(candidate, DateFormat.YYYYMMDD);
     }
 
-    // =================================================================================================
     // STAGE ORDERING
-    // =================================================================================================
 
     /**
      * Proves the cascade visits its stages in copybook order.
@@ -288,9 +280,7 @@ class DateValidationServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // THE YEAR STAGE
-    // =================================================================================================
 
     /**
      * Verifies {@code EDIT-YEAR-CCYY} at lines 25-88 of the copybook.
@@ -380,9 +370,7 @@ class DateValidationServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // THE MONTH STAGE
-    // =================================================================================================
 
     /**
      * Verifies {@code EDIT-MONTH} at lines 91-145 of the copybook.
@@ -449,9 +437,7 @@ class DateValidationServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // THE DAY STAGE
-    // =================================================================================================
 
     /**
      * Verifies {@code EDIT-DAY} at lines 150-205 of the copybook.
@@ -514,9 +500,7 @@ class DateValidationServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // THE COMBINED STAGE
-    // =================================================================================================
 
     /**
      * Verifies {@code EDIT-DAY-MONTH-YEAR} at lines 209-280 of the copybook.
@@ -660,9 +644,7 @@ class DateValidationServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // THE LANGUAGE ENVIRONMENT STAGE
-    // =================================================================================================
 
     /**
      * Verifies {@code EDIT-DATE-LE} and {@code EDIT-DATE-LE-EXIT} at lines 284-328 of the copybook.
@@ -724,9 +706,7 @@ class DateValidationServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // FIELD-WIDTH SEMANTICS
-    // =================================================================================================
 
     /**
      * Verifies the {@code MOVE}-to-{@code PIC X(n)} semantics the entry points apply to their
@@ -805,9 +785,7 @@ class DateValidationServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // THE DATE-OF-BIRTH RANGE
-    // =================================================================================================
 
     /**
      * Verifies {@code EDIT-DATE-OF-BIRTH} at lines 341-370 of the copybook.
@@ -908,9 +886,7 @@ class DateValidationServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // THE CALLABLE SUBPROGRAM
-    // =================================================================================================
 
     /**
      * Verifies the {@code CSUTLDTC} substitution: {@code validateDate} and the feedback vocabulary
@@ -1089,9 +1065,7 @@ class DateValidationServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // THE FEEDBACK VOCABULARY
-    // =================================================================================================
 
     /**
      * Verifies {@link DateFeedback} against the {@code FEEDBACK-CODE} condition names at lines 60-70
@@ -1158,9 +1132,7 @@ class DateValidationServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // THE EIGHTY-CHARACTER RESULT BLOCK
-    // =================================================================================================
 
     /**
      * Verifies {@link SubprogramResult} against the {@code WS-MESSAGE} group at lines 42-57 of
@@ -1257,9 +1229,7 @@ class DateValidationServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // THE RESULT-BLOCK WIDTH CONTRACT
-    // =================================================================================================
 
     /**
      * Verifies the width guards on {@link SubprogramResult}'s canonical constructor.
@@ -1395,9 +1365,7 @@ class DateValidationServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // THE CALLER-SIDE ACCEPTANCE RULE
-    // =================================================================================================
 
     /**
      * Verifies {@link DateValidationService#isDateAcceptable} against the caller-side rule at lines
@@ -1450,9 +1418,7 @@ class DateValidationServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // THE FLAG GROUP
-    // =================================================================================================
 
     /**
      * Verifies {@link DateEditFlag} and {@link DateEditResult} against
@@ -1548,9 +1514,7 @@ class DateValidationServiceParityTest {
         }
     }
 
-    // =================================================================================================
     // MANDATORY ARGUMENTS
-    // =================================================================================================
 
     /**
      * Verifies that every entry point refuses a null argument.

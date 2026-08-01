@@ -193,7 +193,7 @@ class NavigationContextSecurityTest {
         @DisplayName("the empty state carries no resolved user type and is not an administrator")
         void theEmptyStateCarriesNoResolvedUserType() {
             assertThat(NavigationContext.empty().resolvedUserType()).isEmpty();
-            assertThat(NavigationContext.empty().administrator()).isFalse();
+            assertThat(NavigationContext.empty().echoesAdministratorCode()).isFalse();
         }
     }
 
@@ -223,20 +223,20 @@ class NavigationContextSecurityTest {
     }
 
     @Nested
-    @DisplayName("The administrator predicate, true for exactly one code")
+    @DisplayName("The echoed-administrator-code predicate, true for exactly one code and authorizing nothing")
     class AdministratorPredicate {
 
         @Test
         @DisplayName("the administrator code answers true")
         void theAdministratorCodeAnswersTrue() {
-            assertThat(context("A", NavigationContext.ProgramContext.ENTER).administrator())
+            assertThat(context("A", NavigationContext.ProgramContext.ENTER).echoesAdministratorCode())
                     .isTrue();
         }
 
         @Test
         @DisplayName("the standard-user code answers false")
         void theStandardUserCodeAnswersFalse() {
-            assertThat(context("U", NavigationContext.ProgramContext.ENTER).administrator())
+            assertThat(context("U", NavigationContext.ProgramContext.ENTER).echoesAdministratorCode())
                     .isFalse();
         }
 
@@ -247,15 +247,15 @@ class NavigationContextSecurityTest {
                 + "exactly what the legacy program's unconditional alternative encodes, so NOT administrator is not "
                 + "the same as user")
         void everyOtherOutcomeAnswersFalse(final String code) {
-            assertThat(context(code, NavigationContext.ProgramContext.ENTER).administrator())
+            assertThat(context(code, NavigationContext.ProgramContext.ENTER).echoesAdministratorCode())
                     .isFalse();
         }
 
         @Test
-        @DisplayName("a lower-case administrator code answers false, so no case folding creeps into an authorization "
-                + "decision's input")
+        @DisplayName("a lower-case administrator code answers false, because the legacy classification was a "
+                + "byte comparison and no case folding may creep into it")
         void aLowerCaseAdministratorCodeAnswersFalse() {
-            assertThat(context("a", NavigationContext.ProgramContext.ENTER).administrator())
+            assertThat(context("a", NavigationContext.ProgramContext.ENTER).echoesAdministratorCode())
                     .isFalse();
         }
 
@@ -264,7 +264,7 @@ class NavigationContextSecurityTest {
         void thePredicateAgreesWithTheVocabulary() {
             for (final UserType type : UserType.values()) {
                 assertThat(context(type.getCode(), NavigationContext.ProgramContext.ENTER)
-                        .administrator()).isEqualTo(type.isAdmin());
+                        .echoesAdministratorCode()).isEqualTo(type.isAdmin());
             }
         }
     }
@@ -567,6 +567,196 @@ class NavigationContextSecurityTest {
                     null, null, null, null, null, null, null, null, null, null, null, null);
             assertThat(handBuilt).isEqualTo(NavigationContext.empty())
                     .hasSameHashCodeAs(NavigationContext.empty());
+        }
+    }
+    /**
+     * The trust boundary the migration introduced. The legacy area lived in CICS-managed storage and
+     * its identity bytes were server-authored from an authenticated read - {@code app/cbl/COSGN00C.cbl}
+     * line 226 writes the identifier and line 227 moves {@code SEC-USR-TYPE} out of the {@code USRSEC}
+     * record, and only then does line 230 branch on {@code CDEMO-USRTYP-ADMIN}. Echoing the same area
+     * through a REST client removes that proof, so these tests fix two properties: the predicate over
+     * the echoed byte cannot be read as authorization, and reconciliation against the authenticated
+     * principal is available in both the reject and the overwrite form. See DL-087.
+     */
+    @Nested
+    @DisplayName("Reconciliation against the authenticated principal, because the echoed identity is input")
+    class PrincipalReconciliation {
+
+        @Test
+        @DisplayName("a tampered user-type byte makes the echo predicate answer true, which is exactly "
+                + "why it is not authorization: a standard user who sends the administrator character "
+                + "reaches the same answer as an administrator")
+        void aTamperedUserTypeByteMakesTheEchoPredicateAnswerTrue() {
+            final NavigationContext tampered =
+                    context("A", NavigationContext.ProgramContext.REENTER);
+
+            assertThat(tampered.echoesAdministratorCode()).isTrue();
+
+            // The same byte, reconciled against a principal who is a standard user, stops claiming it.
+            final NavigationContext reconciled = tampered.reconciledWith(USER_ID, UserType.USER);
+
+            assertThat(reconciled.echoesAdministratorCode()).isFalse();
+            assertThat(reconciled.userType()).isEqualTo(UserType.USER.getCode());
+        }
+
+        @Test
+        @DisplayName("a tampered echo disagrees with the principal, so a caller that prefers to refuse "
+                + "the turn can detect it rather than having to trust the byte")
+        void aTamperedEchoDisagreesWithThePrincipal() {
+            final NavigationContext tampered =
+                    context("A", NavigationContext.ProgramContext.REENTER);
+
+            assertThat(tampered.agreesWith(USER_ID, UserType.USER)).isFalse();
+            assertThat(tampered.agreesWith(USER_ID, UserType.ADMIN)).isTrue();
+        }
+
+        @Test
+        @DisplayName("a tampered user identifier disagrees too, so impersonation is caught on the same "
+                + "check as elevation")
+        void aTamperedUserIdentifierDisagreesToo() {
+            final NavigationContext tampered =
+                    context("A", NavigationContext.ProgramContext.REENTER);
+
+            assertThat(tampered.agreesWith("USER0001", UserType.ADMIN)).isFalse();
+        }
+
+        @Test
+        @DisplayName("the identifier comparison neither trims nor case-folds, because the echoed value "
+                + "travels exactly as received and the user-security key is fixed-width")
+        void theIdentifierComparisonNeitherTrimsNorCaseFolds() {
+            final NavigationContext subject =
+                    context("A", NavigationContext.ProgramContext.REENTER);
+
+            assertThat(subject.agreesWith(USER_ID, UserType.ADMIN)).isTrue();
+            assertThat(subject.agreesWith(" " + USER_ID, UserType.ADMIN)).isFalse();
+            assertThat(subject.agreesWith(USER_ID + " ", UserType.ADMIN)).isFalse();
+            assertThat(subject.agreesWith(USER_ID.toLowerCase(java.util.Locale.ROOT),
+                    UserType.ADMIN)).isFalse();
+        }
+
+        @ParameterizedTest(name = "an echoed code of [{0}] never agrees with a declared principal role")
+        @ValueSource(strings = {"a", "u", "X", " ", "AA", ""})
+        @DisplayName("an undeclared or unresolvable echoed code disagrees with every declared principal "
+                + "role rather than matching one, which is the safe direction for the failure")
+        void anUnresolvableEchoedCodeDisagreesWithEveryDeclaredRole(final String echoed) {
+            final NavigationContext subject =
+                    context(echoed, NavigationContext.ProgramContext.REENTER);
+
+            assertThat(subject.agreesWith(USER_ID, UserType.ADMIN)).isFalse();
+            assertThat(subject.agreesWith(USER_ID, UserType.USER)).isFalse();
+        }
+
+        @Test
+        @DisplayName("an absent echoed code agrees only with an absent principal role, so a turn that "
+                + "carried no identity is not silently promoted to one")
+        void anAbsentEchoedCodeAgreesOnlyWithAnAbsentPrincipalRole() {
+            final NavigationContext subject =
+                    context(null, NavigationContext.ProgramContext.REENTER);
+
+            assertThat(subject.agreesWith(USER_ID, null)).isTrue();
+            assertThat(subject.agreesWith(USER_ID, UserType.ADMIN)).isFalse();
+            assertThat(subject.agreesWith(USER_ID, UserType.USER)).isFalse();
+        }
+
+        @Test
+        @DisplayName("an absent principal identifier agrees only with an absent echoed identifier, so "
+                + "an unauthenticated turn cannot be reconciled against a named operator by omission")
+        void anAbsentPrincipalIdentifierAgreesOnlyWithAnAbsentEchoedIdentifier() {
+            final NavigationContext named =
+                    context("A", NavigationContext.ProgramContext.REENTER);
+            final NavigationContext anonymous = NavigationContext.empty();
+
+            assertThat(named.agreesWith(null, UserType.ADMIN)).isFalse();
+            assertThat(anonymous.agreesWith(null, null)).isTrue();
+            assertThat(anonymous.agreesWith(null, UserType.ADMIN)).isFalse();
+            assertThat(anonymous.agreesWith(USER_ID, null)).isFalse();
+        }
+
+        @Test
+        @DisplayName("reconciliation writes the principal's identity and leaves the other fourteen "
+                + "components byte for byte, because correcting identity is not licence to rewrite "
+                + "echoed navigation state")
+        void reconciliationLeavesTheOtherFourteenComponentsUntouched() {
+            final NavigationContext before =
+                    context("A", NavigationContext.ProgramContext.REENTER);
+
+            final NavigationContext after = before.reconciledWith("USER0001", UserType.USER);
+
+            assertThat(after.userId()).isEqualTo("USER0001");
+            assertThat(after.userType()).isEqualTo("U");
+            assertThat(after.fromTransactionId()).isEqualTo(before.fromTransactionId());
+            assertThat(after.fromProgram()).isEqualTo(before.fromProgram());
+            assertThat(after.toTransactionId()).isEqualTo(before.toTransactionId());
+            assertThat(after.toProgram()).isEqualTo(before.toProgram());
+            assertThat(after.programContext()).isEqualTo(before.programContext());
+            assertThat(after.customerId()).isEqualTo(before.customerId());
+            assertThat(after.customerFirstName()).isEqualTo(before.customerFirstName());
+            assertThat(after.customerMiddleName()).isEqualTo(before.customerMiddleName());
+            assertThat(after.customerLastName()).isEqualTo(before.customerLastName());
+            assertThat(after.accountId()).isEqualTo(before.accountId());
+            assertThat(after.accountStatus()).isEqualTo(before.accountStatus());
+            assertThat(after.cardNumber()).isEqualTo(before.cardNumber());
+            assertThat(after.lastMap()).isEqualTo(before.lastMap());
+            assertThat(after.lastMapset()).isEqualTo(before.lastMapset());
+        }
+
+        @Test
+        @DisplayName("reconciliation is pure, so the tampered instance a caller still holds is "
+                + "unchanged and cannot be mistaken for the corrected one")
+        void reconciliationIsPure() {
+            final NavigationContext before =
+                    context("A", NavigationContext.ProgramContext.REENTER);
+
+            final NavigationContext after = before.reconciledWith("USER0001", UserType.USER);
+
+            assertThat(before.userId()).isEqualTo(USER_ID);
+            assertThat(before.userType()).isEqualTo("A");
+            assertThat(before.echoesAdministratorCode()).isTrue();
+            assertThat(after).isNotSameAs(before).isNotEqualTo(before);
+        }
+
+        @Test
+        @DisplayName("a reconciled instance agrees with the principal it was reconciled against, so "
+                + "the overwrite remedy and the reject remedy cannot disagree with each other")
+        void aReconciledInstanceAgreesWithItsPrincipal() {
+            for (final UserType role : UserType.values()) {
+                final NavigationContext reconciled =
+                        context("A", NavigationContext.ProgramContext.REENTER)
+                                .reconciledWith("USER0001", role);
+
+                assertThat(reconciled.agreesWith("USER0001", role))
+                        .as("role %s", role)
+                        .isTrue();
+                assertThat(reconciled.echoesAdministratorCode())
+                        .as("role %s", role)
+                        .isEqualTo(role.isAdmin());
+            }
+        }
+
+        @Test
+        @DisplayName("an absent principal role clears the byte rather than inventing one, so an "
+                + "unauthenticated turn cannot be reconciled into carrying a role")
+        void anAbsentPrincipalRoleClearsTheByte() {
+            final NavigationContext reconciled =
+                    context("A", NavigationContext.ProgramContext.REENTER)
+                            .reconciledWith(null, null);
+
+            assertThat(reconciled.userId()).isNull();
+            assertThat(reconciled.userType()).isNull();
+            assertThat(reconciled.echoesAdministratorCode()).isFalse();
+            assertThat(reconciled.resolvedUserType()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("reconciliation writes the declared one-character code, so the reconciled instance "
+                + "still carries a raw byte and round-trips like any other")
+        void reconciliationWritesTheDeclaredOneCharacterCode() {
+            final NavigationContext reconciled =
+                    context(null, NavigationContext.ProgramContext.ENTER)
+                            .reconciledWith(USER_ID, UserType.ADMIN);
+
+            assertThat(reconciled.userType()).isEqualTo("A").hasSize(1);
+            assertThat(reconciled.resolvedUserType()).contains(UserType.ADMIN);
         }
     }
 }

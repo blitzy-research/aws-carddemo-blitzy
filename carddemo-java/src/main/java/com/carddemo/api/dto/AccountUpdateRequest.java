@@ -16,7 +16,6 @@
  */
 package com.carddemo.api.dto;
 
-import java.math.BigDecimal;
 
 import jakarta.validation.constraints.Size;
 
@@ -35,7 +34,7 @@ import jakarta.validation.constraints.Size;
  * three independent ways: 54 input families minus 11 protected families, 43 unprotected mapset
  * definitions, and 43 map-to-working-storage moves in {@code COACTUPC} lines 1056-1423. The
  * error-decoration macro {@code app/cpy/CSSETATY.cpy} is expanded 39 times between lines 3208
- * and 3432, so 39 of the 43 are decoration targets and exactly four components are
+ * and 3432, so 39 of the 43 map fields are decoration targets and exactly four of them are
  * editable-but-undecorated: the account id, the account group id, the customer id and the
  * government-issued id.</p>
  *
@@ -58,16 +57,60 @@ import jakarta.validation.constraints.Size;
  *
  * <p><strong>The five monetary components</strong> - credit limit, cash credit limit, current
  * balance, current cycle credit and current cycle debit - are 15-character screen fields staged
- * through 15-character alphanumeric work fields ({@code COACTUPC} lines 412-416) and edited by
- * paragraph {@code 1250-EDIT-SIGNED-9V2} (invoked at line 1486). Their record counterparts are
- * signed zoned decimals with ten integer digits and two decimal places, and the database
- * columns are numeric with precision 12 and scale 2, so they are declared {@link BigDecimal} -
- * never a binary floating-point type, a primitive or a preformatted string. Scale 2 is a
- * contract this request records rather than applies: the estate carries no rounding clause on
- * any arithmetic statement, so every legacy store into a two-decimal field truncates toward
- * zero, and that truncation is applied in exactly one place,
- * {@code com.carddemo.util.ZonedDecimalCodec} (decision log entry D-02). This file performs no
- * arithmetic, rounding, scaling, negation or formatting.</p>
+ * through 15-character <em>alphanumeric</em> work fields ({@code COACTUPC} lines 412-416) and
+ * edited by paragraph {@code 1250-EDIT-SIGNED-9V2} (invoked at line 1486). They are therefore
+ * carried here as 15-character raw screen lexemes, exactly as the map declares them and exactly
+ * as the legacy work fields stage them, and not as decoded numbers.
+ *
+ * <p>The reason is the three-state outcome the edit paragraph produces. It distinguishes a field
+ * that was <em>not supplied</em> (blank, all spaces, or the {@code '*'} marker the previous turn
+ * wrote back, tested at lines 1073, 1087, 1101, 1115 and 1130) from a field that was
+ * <em>supplied but unparseable</em>, and it keeps the operator's own keystrokes in the
+ * alphanumeric field in the second case so the screen can redisplay and decorate them. Only when
+ * the numeric-edit test succeeds does it populate the signed two-decimal view. A decoded numeric
+ * component cannot represent the middle state at all: an unparseable lexeme would fail body
+ * binding before any component was populated, which would replace the one ordered summary message
+ * plus N decorated fields with a single opaque body-read rejection and would lose every other
+ * field's error with it. Carrying the lexeme keeps {@code MISSING} and {@code INVALID}
+ * independently reachable for these five fields, which is what the field-level error contract
+ * requires.
+ *
+ * <p>Their record counterparts remain signed zoned decimals with ten integer digits and two
+ * decimal places, and the database columns remain numeric with precision 12 and scale 2. Decoding
+ * a lexeme to that form is the service's work, not this request's: it evaluates
+ * {@code com.carddemo.util.CobolStringUtils.isUnsuppliedNumericLexeme} and {@code isNumericLexeme}
+ * to reproduce the legacy three-state numeric edit, then converts through the one sanctioned
+ * truncation point, {@code com.carddemo.util.ZonedDecimalCodec.fromNumericLexeme} (decision log
+ * entries D-02, DL-078 and DL-079).
+ * Truncation rather than rounding is required because the estate carries no rounding clause on any
+ * arithmetic statement, so every legacy store into a two-decimal field truncates toward zero. This
+ * file performs no arithmetic, rounding, scaling, negation, parsing or formatting.</p>
+ *
+ * <p><strong>The concurrency token, and why one component is not a map field.</strong> Forty-three
+ * of the components below are the unprotected map fields. The forty-fourth is a concurrency token,
+ * and it is present because the legacy transaction carries state across its turns that the map
+ * never showed.
+ *
+ * <p>{@code COACTUPC} declares a program commarea extension at line 652 whose first group is the
+ * complete old image of the account and the customer as they stood when the screen was presented
+ * (lines 669 onward). That extension is appended to the shared commarea and returned with the
+ * screen (lines 1010-1018), then sliced back off on the following turn (lines 888-892). When the
+ * operator confirms, the program reads both records for update, acquiring a lock on each (line
+ * 3894 onward), and only then compares the freshly locked records field by field against the old
+ * image in paragraph {@code 9700-CHECK-CHANGE-IN-REC}. Any single difference abandons the write.
+ * Re-reading the records at the start of the update turn would not do: the whole point of the
+ * comparison is to detect a change made <em>after</em> the screen was displayed, so the state being
+ * compared has to have travelled with the conversation.
+ *
+ * <p>In the legacy that state was safe because the commarea is held by the transaction manager and
+ * the terminal never sees it. Echoed to a client it is no longer safe, so the token is opaque and
+ * integrity-protected rather than a readable version number: a client can return it and cannot
+ * forge, edit or fabricate one.
+ * {@code com.carddemo.service.AccountConcurrencyTokenService} mints it when the record is presented
+ * and verifies it before the update, raising a conflict when it is absent, altered, or no longer
+ * describes the stored records. Nothing about the records can be read out of it, and it is neither
+ * a map field, a screen field, nor a decoration target. Decision log entry DL-074 records why the
+ * token is a sealed digest pair rather than an echoed version number.</p>
  *
  * <p><strong>Why this request tolerates bad input.</strong> {@code COACTUPC} runs a
  * first-error-wins validation cascade: every edit paragraph is gated on the summary-message
@@ -135,31 +178,34 @@ import jakarta.validation.constraints.Size;
  *        at line 3220.
  * @param openDay account open date, day part - map field {@code OPNDAY}, width 2, decorated at
  *        line 3226.
- * @param creditLimit credit limit - map field {@code ACRDLIM}, width 15 on the screen, two
- *        decimal places in the record. Decorated at line 3232. The service reports
- *        {@code Credit Limit must be supplied} or {@code Credit Limit is not valid}.
+ * @param creditLimit credit limit - map field {@code ACRDLIM}, the raw 15-character screen
+ *        lexeme; two decimal places once the service decodes it into the record. Decorated at
+ *        line 3232. The service reports {@code Credit Limit must be supplied} for the
+ *        not-supplied state and {@code Credit Limit is not valid} for the supplied-but-unparseable
+ *        state, which is why the lexeme rather than a decoded number is carried.
  * @param expiryYear account expiry date, year part - map field {@code EXPYEAR}, width 4,
  *        decorated at line 3238.
  * @param expiryMonth account expiry date, month part - map field {@code EXPMON}, width 2,
  *        decorated at line 3244.
  * @param expiryDay account expiry date, day part - map field {@code EXPDAY}, width 2, decorated
  *        at line 3250.
- * @param cashCreditLimit cash credit limit - map field {@code ACSHLIM}, width 15 on the screen,
- *        two decimal places in the record. Decorated at line 3256.
+ * @param cashCreditLimit cash credit limit - map field {@code ACSHLIM}, the raw 15-character
+ *        screen lexeme; two decimal places once the service decodes it. Decorated at line 3256.
  * @param reissueYear account reissue date, year part - map field {@code RISYEAR}, width 4,
  *        decorated at line 3262. Part of the fourth split date.
  * @param reissueMonth account reissue date, month part - map field {@code RISMON}, width 2,
  *        decorated at line 3268.
  * @param reissueDay account reissue date, day part - map field {@code RISDAY}, width 2,
  *        decorated at line 3274.
- * @param currentBalance current balance - map field {@code ACURBAL}, width 15 on the screen,
- *        two decimal places in the record. Decorated at line 3280.
- * @param currentCycleCredit current cycle credit - map field {@code ACRCYCR}, width 15 on the
- *        screen, two decimal places in the record. Decorated at line 3286.
+ * @param currentBalance current balance - map field {@code ACURBAL}, the raw 15-character screen
+ *        lexeme; two decimal places once the service decodes it. Decorated at line 3280.
+ * @param currentCycleCredit current cycle credit - map field {@code ACRCYCR}, the raw
+ *        15-character screen lexeme; two decimal places once the service decodes it. Decorated at
+ *        line 3286.
  * @param accountGroupId account group id - map field {@code AADDGRP}, width 10. Editable but
  *        never decorated.
- * @param currentCycleDebit current cycle debit - map field {@code ACRCYDB}, width 15 on the
- *        screen, two decimal places in the record. Decorated at line 3292.
+ * @param currentCycleDebit current cycle debit - map field {@code ACRCYDB}, the raw 15-character
+ *        screen lexeme; two decimal places once the service decodes it. Decorated at line 3292.
  * @param customerId customer id - map field {@code ACSTNUM}, width 9. Editable but never
  *        decorated.
  * @param ssnPart1 social-security number, first part - map field {@code ACTSSN1}, width 3,
@@ -234,6 +280,11 @@ import jakarta.validation.constraints.Size;
  *        {@code ACSPFLG}, width 1, decorated at line 3427 from token {@code PRI-CARDHOLDER};
  *        the adjacent comment at line 3426 is transposed and the token governs. Restricted to
  *        yes or no by the service.
+ * @param concurrencyToken the opaque, integrity-protected description of the account and customer
+ *        records as they stood when this screen was presented, minted by
+ *        {@code com.carddemo.service.AccountConcurrencyTokenService} and returned here unchanged by
+ *        the client. Not a map field. Absent or altered is a conflict the service reports, not a
+ *        binding failure, so no constraint is attached.
  */
 public record AccountUpdateRequest(
 
@@ -253,7 +304,7 @@ public record AccountUpdateRequest(
         @Size(max = 2) String openDay,
 
         /* 6. ACRDLIM, width 15 - decorated at COACTUPC:3232 (token CRED-LIMIT). */
-        BigDecimal creditLimit,
+        @Size(max = 15) String creditLimit,
 
         /* 7. EXPYEAR, width 4 - decorated at COACTUPC:3238 (token EXPIRY-YEAR). */
         @Size(max = 4) String expiryYear,
@@ -265,7 +316,7 @@ public record AccountUpdateRequest(
         @Size(max = 2) String expiryDay,
 
         /* 10. ACSHLIM, width 15 - decorated at COACTUPC:3256 (token CASH-CREDIT-LIMIT). */
-        BigDecimal cashCreditLimit,
+        @Size(max = 15) String cashCreditLimit,
 
         /* 11. RISYEAR, width 4 - decorated at COACTUPC:3262 (token REISSUE-YEAR). */
         @Size(max = 4) String reissueYear,
@@ -277,16 +328,16 @@ public record AccountUpdateRequest(
         @Size(max = 2) String reissueDay,
 
         /* 14. ACURBAL, width 15 - decorated at COACTUPC:3280 (token CURR-BAL). */
-        BigDecimal currentBalance,
+        @Size(max = 15) String currentBalance,
 
         /* 15. ACRCYCR, width 15 - decorated at COACTUPC:3286 (token CURR-CYC-CREDIT). */
-        BigDecimal currentCycleCredit,
+        @Size(max = 15) String currentCycleCredit,
 
         /* 16. AADDGRP, width 10 - editable, NOT decorated. */
         @Size(max = 10) String accountGroupId,
 
         /* 17. ACRCYDB, width 15 - decorated at COACTUPC:3292 (token CURR-CYC-DEBIT). */
-        BigDecimal currentCycleDebit,
+        @Size(max = 15) String currentCycleDebit,
 
         /* 18. ACSTNUM, width 9 - editable, NOT decorated. */
         @Size(max = 9) String customerId,
@@ -374,7 +425,13 @@ public record AccountUpdateRequest(
 
         /* 43. ACSPFLG, width 1 - decorated at COACTUPC:3427 (token PRI-CARDHOLDER), which the
          * cascade emits BEFORE the transfer-account id, inverting map declaration order. */
-        @Size(max = 1) String primaryCardHolderIndicator) {
+        @Size(max = 1) String primaryCardHolderIndicator,
+
+        /* Not a map field. The echoed counterpart of the program commarea extension COACTUPC
+         * carries across the pseudo-conversational turn, described on the type above. Opaque and
+         * unbounded by design, and deliberately unannotated: its absence is a conflict for the
+         * service to report, not a binding failure for the framework to reject. */
+        String concurrencyToken) {
 
     /**
      * Fixed stand-in emitted by {@link #toString()} in place of the whole component set.
@@ -389,7 +446,7 @@ public record AccountUpdateRequest(
      * Returns a diagnostic representation that names the type and discloses none of its values.
      *
      * <p><strong>Why the implicit record rendering could not stand.</strong> A record's generated
-     * {@code toString()} prints every component, and every one of the forty-three components of this
+     * {@code toString()} prints every component, and every one of the forty-three map components of this
      * request is either regulated personal data, a regulated financial value, or a key that joins
      * directly to both. The three social-security parts, the three date-of-birth parts, the
      * government-issued identifier, the transfer-account identifier, the three name parts, the

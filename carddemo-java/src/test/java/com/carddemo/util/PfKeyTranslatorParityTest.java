@@ -207,9 +207,7 @@ class PfKeyTranslatorParityTest {
         return value.getBytes(StandardCharsets.US_ASCII).length;
     }
 
-    // =================================================================================================
     // THE TRANSCRIBED TABLES
-    // =================================================================================================
 
     /**
      * Guards the transcription itself.
@@ -261,9 +259,7 @@ class PfKeyTranslatorParityTest {
         }
     }
 
-    // =================================================================================================
     // TRANSLATION OF AN ATTENTION KEY
-    // =================================================================================================
 
     /**
      * Verifies the translation of an attention-key identifier, which is the whole of
@@ -393,9 +389,7 @@ class PfKeyTranslatorParityTest {
         }
     }
 
-    // =================================================================================================
     // THE STORED ACTION IMAGE
-    // =================================================================================================
 
     /**
      * Verifies the action image the translation stores into the five-character work-area field.
@@ -458,9 +452,7 @@ class PfKeyTranslatorParityTest {
         }
     }
 
-    // =================================================================================================
     // READING AN ACTION IMAGE BACK
-    // =================================================================================================
 
     /**
      * Verifies the reverse reading, which recovers an action from a stored field image.
@@ -558,9 +550,7 @@ class PfKeyTranslatorParityTest {
         }
     }
 
-    // =================================================================================================
     // THE PUBLISHED CATALOGUES
-    // =================================================================================================
 
     /**
      * Verifies the two catalogues the utility publishes, which exist so that a caller can enumerate

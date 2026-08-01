@@ -86,8 +86,9 @@
 #   start-up error pointing at the cause. All four names are read back out of the running stack and
 #   confirmed to match the values bound here.
 #
-#   THE NAMES ARE MANDATED, NOT CHOSEN. The five canonical values are fixed by the migration plan
-#   and this file is their authoritative source:
+#   THE NAMES ARE CROSS-FILE CONTRACTS, NOT LOCAL CHOICES. Each of the five values below occurs
+#   byte-identically in this file, in docker-compose.yml and in the emulator bootstrap script, so
+#   changing one here changes nothing until all three change together:
 #     carddemo-batch-staging       object-store bucket
 #     carddemo-jobs.fifo           first-in-first-out submission queue
 #     carddemo-job-submission      message group id
@@ -271,20 +272,24 @@ management:
       endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:${JAEGER_OTLP_HTTP_PORT:4318}/v1/traces}
 
 # The interface description and its viewer, reopened from the baseline's disabled state. This is the
-# profile they exist for: the document is how a developer discovers the endpoints derived from the
-# 17 legacy screens without reading the controllers, and the viewer is how a request is tried
-# against a running compose stack. Both paths come from application.yml, so only the two switches
-# appear here and neither path can drift between profiles.
+# profile it exists for: the document is how a developer discovers the endpoints derived from the
+# 17 legacy screens without reading the controllers. Its path comes from application.yml, so only
+# the switch appears here and the path cannot drift between profiles.
 #
-# Reopening these is safe HERE and nowhere else. The document is a complete description of the
-# request and response shape of every endpoint, and the viewer additionally serves its own static
-# assets and issues requests from the browser. On a developer's machine that is the whole point; on
+# Reopening it is safe HERE and nowhere else. The document is a complete description of the request
+# and response shape of every endpoint. On a developer's machine that is the whole point; on
 # anything reachable by someone else it is a map handed to them. The production overlay does not
-# turn these off - it inherits them off.
+# turn it off - it inherits it off.
+#
+# There is no interactive viewer to reopen, here or anywhere. The browser asset bundle is excluded
+# from the starter in pom.xml, so no profile can render one. This overlay therefore inherits the
+# disabled viewer switch rather than restating it - deliberately the opposite of the pattern used
+# for every genuine concession above, because a switch restated in a profile reads as a choice that
+# profile could reverse, and this one cannot be reversed by configuration at all. Fetch the document
+# directly instead, for example `curl -s localhost:8080/v3/api-docs`. See docs/decision-log.md
+# DL-088.
 springdoc:
   api-docs:
-    enabled: true
-  swagger-ui:
     enabled: true
 
 # Levels only; appender selection and the structured encoder live in logback-spring.xml. Raising the
