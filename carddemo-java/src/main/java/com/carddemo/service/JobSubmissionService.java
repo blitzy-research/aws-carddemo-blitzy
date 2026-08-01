@@ -1086,6 +1086,13 @@ public final class JobSubmissionService {
      * service does not accept whitespace in that identifier, so whitespace is rejected here rather
      * than silently removed - removing it would make two distinct identities collide.
      *
+     * <p>The rejection reports the offending character's zero-based position and code point and never
+     * the identity itself, per decision DL-041. That is not a formality here. A carriage return and a
+     * line feed are both whitespace, so this branch is reached precisely when the identity holds a
+     * line terminator, and the identity is caller-supplied - so echoing it would hand any caller a
+     * way to write a forged line into the service log. The position and the code point tell a caller
+     * exactly which character to remove, which is everything the caller needs and nothing more.
+     *
      * @param submissionId the identity to validate
      * @return {@code submissionId}, unchanged
      * @throws NullPointerException     if {@code submissionId} is {@code null}
@@ -1097,9 +1104,11 @@ public final class JobSubmissionService {
             throw new IllegalArgumentException("submissionId must not be blank");
         }
         for (int index = 0; index < submissionId.length(); index++) {
-            if (Character.isWhitespace(submissionId.charAt(index))) {
+            final char character = submissionId.charAt(index);
+            if (Character.isWhitespace(character)) {
                 throw new IllegalArgumentException("submissionId must not hold whitespace because a"
-                        + " message deduplication identifier may not: '" + submissionId + "'");
+                        + " message deduplication identifier may not; the character at zero-based"
+                        + " position " + index + " is code point " + (int) character);
             }
         }
         return submissionId;
@@ -1139,10 +1148,17 @@ public final class JobSubmissionService {
         }
         final String deduplicationId = submissionId + DEDUPLICATION_ID_SEPARATOR + cardOrdinal;
         if (deduplicationId.length() > DEDUPLICATION_ID_MAX_LENGTH) {
-            throw new IllegalArgumentException("the message deduplication identifier derived from"
-                    + " submission '" + submissionId + "' and card ordinal " + cardOrdinal + " is "
-                    + deduplicationId.length() + " characters, which exceeds the "
-                    + DEDUPLICATION_ID_MAX_LENGTH + " the queue service accepts");
+            // The identity is not repeated here, per decision DL-041. It is caller-supplied, and it
+            // is also redundant - the caller already holds the value it passed. What the caller
+            // cannot work out for itself is the arithmetic that failed, so the message states that
+            // instead: the identity's length, the ordinal whose digits were appended, the composed
+            // length and the ceiling it passed. Those four numbers are what shortening the identity
+            // requires, and none of them is an echo.
+            throw new IllegalArgumentException("the message deduplication identifier composed from"
+                    + " a submission identity of " + submissionId.length() + " characters and card"
+                    + " ordinal " + cardOrdinal + " is " + deduplicationId.length()
+                    + " characters, which exceeds the " + DEDUPLICATION_ID_MAX_LENGTH
+                    + " the queue service accepts");
         }
         return deduplicationId;
     }
@@ -1245,6 +1261,13 @@ public final class JobSubmissionService {
     /**
      * Validates the configured destination queue and returns it unchanged.
      *
+     * <p>The rejection names the property key and the suffix the value has to carry, and does not
+     * repeat the configured value, per decision DL-041. The suffix literal stays because it is this
+     * class's own statement of what it expects rather than an echo of what it was given - the
+     * distinction DL-041 draws when it notes that a message's own prose is not an echo. The property
+     * key is the actionable fact: it points an operator at the exact configuration entry to correct,
+     * and the operator can already read the value there.
+     *
      * @param queueName the configured queue name, queue URL or queue ARN
      * @return {@code queueName}, unchanged
      * @throws IllegalArgumentException if the value is absent, blank, or does not carry the
@@ -1256,7 +1279,7 @@ public final class JobSubmissionService {
             throw new IllegalArgumentException("property " + JOB_SUBMISSION_QUEUE_PROPERTY
                     + " must name a first-in-first-out queue, whose name ends with '"
                     + FIFO_QUEUE_NAME_SUFFIX + "', because job-submission cards must keep their"
-                    + " order; the configured value was '" + configured + "'");
+                    + " order, but the configured value does not carry that suffix");
         }
         return configured;
     }
@@ -1269,15 +1292,45 @@ public final class JobSubmissionService {
      * what keeps a missing resource name from being discovered by an operator instead of by the
      * deployment.
      *
+     * <p>Both bound values are additionally required to be printable US-ASCII, for the reason
+     * {@code requireCardImage} already gives about the card: a control byte "could forge a line in a
+     * log record". The queue name and the message group are written into all four of this class's log
+     * statements through parameter substitution, which does not escape a control character, so a
+     * carriage return in either value would let a log reader split one record into two. Decision
+     * DL-042 draws that boundary for the queue payload and decision D-09 draws it for every value
+     * this module emits; applying it here is the same rule, at the only other place this class takes
+     * a value it will later write out. The rule costs nothing that a real deployment needs: a queue
+     * name, a queue URL, a queue ARN and a message group are each printable US-ASCII by the queue
+     * service's own definition.
+     *
+     * <p>The rejection names the property key, the offending character's zero-based position and its
+     * code point, and never the value, per decision DL-041. The property key is what makes it
+     * actionable - it points an operator at the exact configuration entry, where the value can
+     * already be read.
+     *
      * @param value       the bound value, possibly {@code null}
      * @param propertyKey the configuration key it was bound from, named in the diagnostic
      * @return {@code value}, unchanged
-     * @throws IllegalArgumentException if {@code value} is {@code null} or blank
+     * @throws IllegalArgumentException if {@code value} is {@code null}, blank, or holds a character
+     *                                  outside printable US-ASCII
      */
     private static String requireConfiguredValue(final String value, final String propertyKey) {
         if (value == null || value.isBlank()) {
             throw new IllegalArgumentException("property " + propertyKey + " must be configured with"
                     + " a non-blank value; it is resolved from configuration and has no default");
+        }
+        for (int index = 0; index < value.length(); index++) {
+            final char character = value.charAt(index);
+            if (character < MIN_PRINTABLE_US_ASCII_CHARACTER
+                    || character > MAX_PRINTABLE_US_ASCII_CHARACTER) {
+                throw new IllegalArgumentException("property " + propertyKey + " accepts printable"
+                        + " US-ASCII only, that is code points "
+                        + (int) MIN_PRINTABLE_US_ASCII_CHARACTER + " to "
+                        + (int) MAX_PRINTABLE_US_ASCII_CHARACTER + ", because this value is written"
+                        + " into every log record the service emits about a submission; the"
+                        + " character at zero-based position " + index + " is code point "
+                        + (int) character);
+            }
         }
         return value;
     }

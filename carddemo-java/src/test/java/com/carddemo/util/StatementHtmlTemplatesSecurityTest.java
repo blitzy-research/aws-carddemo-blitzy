@@ -1712,6 +1712,66 @@ class StatementHtmlTemplatesSecurityTest {
     }
 
     @Test
+    @DisplayName("the escaping method passes a line terminator through unchanged, because it is a "
+            + "substitution primitive and not a framing guard")
+    void escapeTextPassesALineTerminatorThroughUnchanged() {
+        // This is the property that explains why the escaping method is the one entry point on this
+        // class that accepts a carriage return: its contract is to substitute five markup characters,
+        // and a line terminator is not one of them. Asserting the pass-through positively - rather
+        // than leaving it as an absence of rejection - is what distinguishes "correct by design" from
+        // "a guard someone forgot", which are indistinguishable from the outside.
+        final String terminators = "\r\n";
+        final String hostile = "FORGED" + terminators + "<script>";
+
+        assertThat(StatementHtmlTemplates.escapeText(terminators))
+                .as("a bare terminator pair must pass through byte-identically")
+                .isEqualTo(terminators);
+        assertThat(StatementHtmlTemplates.escapeText(hostile))
+                .as("the markup characters must be substituted while the terminators survive")
+                .isEqualTo("FORGED" + terminators + "&lt;script&gt;")
+                .contains(terminators);
+    }
+
+    @Test
+    @DisplayName("no path from the escaping method to an emitted record can carry a line terminator, "
+            + "because every composer downstream of it rejects one")
+    void noPathFromEscapingToAnEmittedRecordCanCarryALineTerminator() {
+        // The escaping method's permissiveness is only safe if nothing can turn its output into a
+        // hundred-byte record without a further check. This walks the actual composition path: it
+        // escapes a terminator-bearing value and then offers the escaped result to every composer,
+        // including the framing-only work line, and requires each one to refuse it. Any composer added
+        // later without a guard fails here rather than in production.
+        final String escaped = StatementHtmlTemplates.escapeText("FORGED\r\n<script>");
+
+        assertThat(escaped).as("the escaped value must still hold the terminator, or this test would"
+                + " prove nothing").contains("\r\n");
+
+        final List<Runnable> composers = List.of(
+                () -> StatementHtmlTemplates.accountNumberLine(escaped),
+                () -> StatementHtmlTemplates.customerNameLine(escaped),
+                () -> StatementHtmlTemplates.addressWorkLine(escaped),
+                () -> StatementHtmlTemplates.basicDetailsWorkLine(escaped, "value"),
+                () -> StatementHtmlTemplates.basicDetailsWorkLine("label", escaped),
+                () -> StatementHtmlTemplates.transactionWorkLine(escaped),
+                () -> StatementHtmlTemplates.workLine(escaped));
+
+        for (final Runnable composer : composers) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("every composer must refuse an escaped value that still holds a terminator")
+                    .isThrownBy(composer::run)
+                    .satisfies(rejected -> {
+                        final String message = rejected.getMessage();
+                        assertThat(message).as("a rejection must carry a message").isNotNull();
+                        // The same no-echo rule the rest of the module follows (D-16 / DL-041): the
+                        // diagnostic may not reproduce the value, nor the terminator inside it.
+                        assertThat(message).doesNotContain("FORGED");
+                        assertThat(message.indexOf('\r')).as("no raw carriage return").isEqualTo(-1);
+                        assertThat(message.indexOf('\n')).as("no raw line feed").isEqualTo(-1);
+                    });
+        }
+    }
+
+    @Test
     @DisplayName("the escaping method leaves the entire legitimate domain untouched, which is why "
             + "the hundred-byte parity gate is unaffected for real data")
     void escapeTextLeavesTheLegitimateDomainUntouched() {

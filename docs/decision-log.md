@@ -356,7 +356,20 @@ scheme. Both identifiers are cited from the module and both resolve here.
 **Decision:** rejection diagnostics report the digit count required and the width available, the
 offset and length, or the field name — never the value itself — so that a rejection cannot leak
 account data into a log.
-*Embodied in:* `util/ZonedDecimalCodec.java`, `util/FixedWidthFieldReader.java`.
+
+The rule reaches three kinds of value, and the third is the one an implementation is most likely to
+miss. A *rejected* value is obvious. A *developer-supplied label* — a field name or a record-layout
+name woven into the message — is less obvious, because it reads as the message's own prose while in
+fact arriving from a caller; such a label is sanitised rather than rejected, degrading to a
+substitute that names the offending character's position and code point, because the guard sits on a
+path that is already failing and a diagnostic must never itself fail. A *configured value* written
+into a log statement is the least obvious of the three: parameter substitution escapes nothing, so a
+queue name or a message group carrying a carriage return splits one log record into two just as
+surely as an echoed field value would. All three are covered.
+
+*Embodied in:* `util/ZonedDecimalCodec.java`, `util/FixedWidthFieldReader.java`,
+`util/StatementTextTemplates.java`, `util/StatementHtmlTemplates.java`,
+`util/ReportLineFormatter.java`, `service/JobSubmissionService.java`.
 
 *Also recorded as:* DL-011 and DL-041 — the same decision, recorded independently under the other
 identifier scheme. Both identifiers are cited from the module and both resolve here.
@@ -546,8 +559,20 @@ partially returned and never returned as `null`.
 text. This keeps one encoded byte per character, which the fixed widths of 80, 100, 133 and 430
 bytes depend on, and structurally prevents a control character or a line terminator from entering a
 record.
+
+"Structurally prevents" is a claim about *where* the check sits, and it is only true if the check sits
+at the **input boundary** — on each caller-supplied value as it enters a builder — rather than only on
+the assembled record on its way out. An outbound-only check does reject the record, but it reports a
+defect in an image the caller never handed over, so the diagnostic cannot name the parameter at fault;
+and it leaves each newly added free-text builder unguarded until someone remembers to re-check the
+record. Every free-text `String` parameter of every builder in the three classes below is therefore
+validated on entry, and the assembled-record check is retained behind it as a second line that also
+covers a record supplied whole by a caller.
+
 *Embodied in:* `util/ReportLineFormatter.java`, `util/StatementTextTemplates.java`,
-`util/StatementHtmlTemplates.java`.
+`util/StatementHtmlTemplates.java`. The diagnostic these guards emit is governed by D-16 / DL-041:
+the line-terminator branch fires precisely when the value holds a carriage return or a line feed, so a
+guard that echoed the value there would put a raw terminator into a log line by construction.
 
 ### D-10 — The filler byte is not uniform in the estate; the module emits space filler
 See anomaly 20. `COBOL FILLER X(n)` with no `VALUE` clause is uninitialised, and the sample data
@@ -1130,7 +1155,29 @@ solve.
 
 The rule is scoped honestly: ordinary English punctuation in a message's own prose is not an echo.
 An earlier, over-broad version of this rule banned commas in diagnostics and had to be narrowed to
-the two properties that actually matter.
+the two properties that actually matter. By the same scoping, a literal the class states as its own
+*expectation* — the `.fifo` suffix a queue name must carry, the code-point range a field admits — is
+prose and not an echo, because it describes what was required rather than what was supplied.
+
+The sink is any channel a human or a tool later reads, not merely an exception message. A log
+statement is such a channel, and parameter substitution escapes nothing, so a value interpolated into
+a log record is subject to this rule exactly as a value interpolated into a rejection message is.
+Where a value is bound from configuration and then written into every log record about an operation,
+the rule is satisfied at the boundary — the value is required to be printable US-ASCII when it is
+bound — rather than at each of the log statements that consume it, so that adding a log statement
+later cannot reopen the hole.
+
+Two idioms discharge the rule, chosen by whether the guard is on a failing path already. A guard that
+*rejects* throws, naming the parameter, the admissible range, and the offending character's
+zero-based position and code point. A guard on a value that merely *labels* another failure
+*degrades*, returning a substitute of the same shape, because throwing there would replace the
+original diagnostic with a second, unrelated one and the real defect would be lost.
+
+*Embodied in:* `util/ZonedDecimalCodec.java`, `util/FixedWidthFieldReader.java`,
+`util/StatementTextTemplates.java`, `util/StatementHtmlTemplates.java`,
+`util/ReportLineFormatter.java`, `service/JobSubmissionService.java`. The queue payload boundary that
+protects the published card itself is DL-042; this decision protects everything the module *says*
+about a card, an identity or a field.
 
 *Also recorded as:* D-16 — the same decision, recorded independently under the other identifier
 scheme. Both identifiers are cited from the module and both resolve here.
@@ -1643,15 +1690,17 @@ end pairs the entries that record the same decision under both.
 | `exception/JobSubmissionException.java` | DL-044, anomaly register (6) |
 | `exception/OptimisticLockConflictException.java` | DL-012, DL-083 |
 | `exception/ValidationException.java` | DL-080, DL-086 |
-| `service/JobSubmissionService.java` | DL-043 |
+| `service/JobSubmissionService.java` | DL-041, DL-042, DL-043 |
 | `service/AccountConcurrencyTokenService.java` | DL-074, DL-075, DL-076, DL-077 |
 | `service/FieldErrorTranslationService.java` | DL-080 |
 | `service/SensitiveFieldEncryptionService.java` | DL-005, DL-008 |
-| `util/ReportLineFormatter.java` | anomaly register |
+| `util/ReportLineFormatter.java` | DL-041, anomaly register |
 | `util/CobolStringUtils.java` | DL-078 |
 | `util/SensitiveFieldCodec.java` | DL-009 |
-| `util/ZonedDecimalCodec.java` | DL-079 |
-| `util/StatementHtmlTemplates.java` | DL-037, DL-038, DL-039 |
+| `util/ZonedDecimalCodec.java` | DL-041, DL-079 |
+| `util/FixedWidthFieldReader.java` | DL-041 |
+| `util/StatementTextTemplates.java` | DL-041 |
+| `util/StatementHtmlTemplates.java` | DL-037, DL-038, DL-039, DL-041 |
 | `resources/application.yml` | DL-001, DL-005, DL-008, DL-047, DL-048, DL-088 |
 | `resources/application-local.yml` | DL-045, DL-047, DL-088, anomaly register (7) |
 | `resources/application-prod.yml` | DL-088 |
@@ -1664,7 +1713,7 @@ end pairs the entries that record the same decision under both.
 | `service/AccountConcurrencyTokenServiceTest.java` | DL-074, DL-076, DL-077 |
 | `service/FieldErrorTranslationServiceTest.java` | DL-080 |
 | `util/CobolStringUtilsTest.java` | DL-078 |
-| `util/ZonedDecimalCodecTest.java` | DL-013, DL-014, DL-015, DL-016, DL-079 |
+| `util/ZonedDecimalCodecTest.java` | DL-013, DL-014, DL-015, DL-016, DL-041, DL-079 |
 | `config/ConfigurationProfileBaselineTest.java` | DL-088 |
 | `api/dto/PageMetadataTest.java` | DL-081 |
 | `api/dto/ScreenWorkAreaSecurityTest.java` | DL-082 |
@@ -1710,20 +1759,20 @@ end pairs the entries that record the same decision under both.
 | `exception/ValidationExceptionTest.java` | D-33, D-34 |
 | `resources/db/migration/V1__create_schema.sql` | D-12, D-14 |
 | `service/AbendService.java` | D-41 |
-| `service/JobSubmissionService.java` | D-36 |
+| `service/JobSubmissionService.java` | D-09, D-16, D-36 |
 | `util/CobolStringUtils.java` | D-17, D-18, D-19, D-22, anomaly 18 |
 | `util/CobolStringUtilsTest.java` | anomaly 18, 19 |
-| `util/FixedWidthFieldReader.java` | D-06, D-10, D-11, D-42, anomaly 20 |
-| `util/FixedWidthFieldReaderTest.java` | D-08, D-10, D-11, anomaly 20 |
+| `util/FixedWidthFieldReader.java` | D-06, D-10, D-11, D-16, D-42, anomaly 20 |
+| `util/FixedWidthFieldReaderTest.java` | D-08, D-10, D-11, D-16, anomaly 20 |
 | `util/JclCardImageBuilder.java` | D-27, D-36 |
 | `util/JclCardImageBuilderTest.java` | D-06, D-08, D-11 |
 | `util/PfKeyTranslator.java` | D-20, D-31 |
-| `util/ReportLineFormatter.java` | D-01, D-05, D-06, D-11, D-27, D-30 |
+| `util/ReportLineFormatter.java` | D-01, D-05, D-06, D-09, D-11, D-16, D-27, D-30 |
 | `util/ReportLineFormatterTest.java` | D-02 |
-| `util/StatementHtmlTemplates.java` | D-27, D-44 |
+| `util/StatementHtmlTemplates.java` | D-09, D-16, D-27, D-44 |
 | `util/StatementHtmlTemplatesTest.java` | D-27, D-30, D-49 |
-| `util/StatementTextTemplates.java` | D-05, D-06, D-27, D-30 |
-| `util/StatementTextTemplatesTest.java` | D-05, D-06, D-27, D-44 |
+| `util/StatementTextTemplates.java` | D-05, D-06, D-09, D-16, D-27, D-30 |
+| `util/StatementTextTemplatesTest.java` | D-05, D-06, D-09, D-16, D-27, D-44 |
 | `util/ZonedDecimalCodec.java` | D-01, D-02, D-03, D-06, D-16 |
 | `util/ZonedDecimalCodecTest.java` | D-01, D-02, D-11, D-16 |
 

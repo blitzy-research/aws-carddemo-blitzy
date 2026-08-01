@@ -46,6 +46,26 @@ import java.util.Objects;
  * separated on disk is the writer's decision in the batch layer (decision D-30), so no carriage
  * return, line feed or platform line separator ever appears inside a template produced here.
  *
+ * <p><strong>Every substituted value is refused at the input boundary unless it is printable
+ * US-ASCII.</strong> That is decision D-09, which this class is named as an embodiment of alongside
+ * {@code ReportLineFormatter} and {@code StatementHtmlTemplates}: characters outside the printable
+ * range are rejected in printed output, which keeps one encoded byte per character - the property the
+ * {@value #STATEMENT_RECORD_LENGTH}-byte width rests on - and structurally prevents a control
+ * character or a line terminator from entering a record at all. The check runs on the argument,
+ * before {@link #fitToField(String, int)} truncates or pads, so a stray byte is refused whether or
+ * not it would have survived truncation. The assembled record is then checked a second time, which
+ * is not redundant: the record guard also protects the transcribed literals of this class and is
+ * reachable directly through {@link #toStatementRecordBytes(String)}.
+ *
+ * <p><strong>No rejection message carries the value it rejected.</strong> That is decision DL-041,
+ * also recorded as D-16. Every guard here reports the parameter or the mask that rejected, the
+ * admissible range or expected width, and the offending character's zero-based position and code
+ * point - facts a caller can act on. It never interpolates the value, because a message that echoes
+ * rejected input is a second injection route into whatever reads the log, and the line-terminator
+ * branch in particular fires <em>only</em> when the value holds a carriage return or a line feed, so
+ * echoing there would put a raw terminator into a log line by construction. Ordinary punctuation in
+ * a message's own prose is not an echo; a substituted value is.
+ *
  * <p><strong>The seventeen line groups.</strong>
  * <pre>{@code
  *  #   Group       Source          Component widths (every row sums to exactly 80)
@@ -479,6 +499,29 @@ public final class StatementTextTemplates {
     private static final byte ASCII_LINE_FEED_BYTE = 10;
 
     /**
+     * Lowest character this class admits into a statement record, the ASCII space, given by code
+     * point so that no escape sequence appears anywhere in this file.
+     *
+     * <p>Together with {@link #LAST_PRINTABLE_US_ASCII} this pair defines the printable US-ASCII
+     * range that decision D-09 requires of every byte in printed output: one encoded byte per
+     * character, which the {@value #STATEMENT_RECORD_LENGTH}-byte width depends on, and no control
+     * character or line terminator anywhere in a record.</p>
+     */
+    private static final char FIRST_PRINTABLE_US_ASCII = 0x20;
+
+    /**
+     * Highest character this class admits into a statement record, the tilde, one code point below
+     * the delete control code.
+     */
+    private static final char LAST_PRINTABLE_US_ASCII = 0x7E;
+
+    /**
+     * Mask that widens a signed {@code byte} to its unsigned code point, so that a rejection reports
+     * a code point rather than the negative number Java's signed byte would otherwise render.
+     */
+    private static final int UNSIGNED_BYTE_MASK = 0xFF;
+
+    /**
      * Currency symbol literal of ST-LINE14 at {@code [app/cbl/CBSTM03A.CBL:L136]} and of ST-LINE14A
      * at L141. ST-LINE8 deliberately has none; see the class documentation.
      */
@@ -749,13 +792,17 @@ public final class StatementTextTemplates {
      * @param customerName the assembled customer name; truncated to 75 encoded bytes if longer and
      *                     right-padded with spaces if shorter, exactly as the legacy field does
      * @return one statement record of {@value #STATEMENT_RECORD_LENGTH} US-ASCII bytes
-     * @throws NullPointerException if {@code customerName} is {@code null}; an absent value and an
-     *                              empty value are different, and the legacy field was never absent
+     * @throws NullPointerException     if {@code customerName} is {@code null}; an absent value and
+     *                                  an empty value are different, and the legacy field was never
+     *                                  absent
+     * @throws IllegalArgumentException if {@code customerName} carries a character outside printable
+     *                                  US-ASCII
      */
     public static String stLine1CustomerName(String customerName) {
         Objects.requireNonNull(customerName, "customerName");
         return requireStatementRecordLength(
-                fitToField(customerName, ST_LINE1_NAME_WIDTH)
+                fitToField(requirePrintableUsAscii(customerName, "customerName"),
+                        ST_LINE1_NAME_WIDTH)
                         + fill(SPACE, ST_LINE1_FILLER_WIDTH));
     }
 
@@ -767,12 +814,15 @@ public final class StatementTextTemplates {
      * @param addressLine1 the first address line; truncated to 50 encoded bytes if longer and
      *                     right-padded with spaces if shorter
      * @return one statement record of {@value #STATEMENT_RECORD_LENGTH} US-ASCII bytes
-     * @throws NullPointerException if {@code addressLine1} is {@code null}
+     * @throws NullPointerException     if {@code addressLine1} is {@code null}
+     * @throws IllegalArgumentException if {@code addressLine1} carries a character outside printable
+     *                                  US-ASCII
      */
     public static String stLine2AddressLine1(String addressLine1) {
         Objects.requireNonNull(addressLine1, "addressLine1");
         return requireStatementRecordLength(
-                fitToField(addressLine1, ST_LINE2_ADDRESS_WIDTH)
+                fitToField(requirePrintableUsAscii(addressLine1, "addressLine1"),
+                        ST_LINE2_ADDRESS_WIDTH)
                         + fill(SPACE, ST_LINE2_FILLER_WIDTH));
     }
 
@@ -786,12 +836,15 @@ public final class StatementTextTemplates {
      * @param addressLine2 the second address line; truncated to 50 encoded bytes if longer and
      *                     right-padded with spaces if shorter
      * @return one statement record of {@value #STATEMENT_RECORD_LENGTH} US-ASCII bytes
-     * @throws NullPointerException if {@code addressLine2} is {@code null}
+     * @throws NullPointerException     if {@code addressLine2} is {@code null}
+     * @throws IllegalArgumentException if {@code addressLine2} carries a character outside printable
+     *                                  US-ASCII
      */
     public static String stLine3AddressLine2(String addressLine2) {
         Objects.requireNonNull(addressLine2, "addressLine2");
         return requireStatementRecordLength(
-                fitToField(addressLine2, ST_LINE3_ADDRESS_WIDTH)
+                fitToField(requirePrintableUsAscii(addressLine2, "addressLine2"),
+                        ST_LINE3_ADDRESS_WIDTH)
                         + fill(SPACE, ST_LINE3_FILLER_WIDTH));
     }
 
@@ -805,11 +858,14 @@ public final class StatementTextTemplates {
      *                     state, country and postal code; truncated to 80 encoded bytes if longer
      *                     and right-padded with spaces if shorter
      * @return one statement record of {@value #STATEMENT_RECORD_LENGTH} US-ASCII bytes
-     * @throws NullPointerException if {@code addressLine3} is {@code null}
+     * @throws NullPointerException     if {@code addressLine3} is {@code null}
+     * @throws IllegalArgumentException if {@code addressLine3} carries a character outside printable
+     *                                  US-ASCII
      */
     public static String stLine4AddressLine3(String addressLine3) {
         Objects.requireNonNull(addressLine3, "addressLine3");
-        return requireStatementRecordLength(fitToField(addressLine3, ST_LINE4_ADDRESS_WIDTH));
+        return requireStatementRecordLength(fitToField(
+                requirePrintableUsAscii(addressLine3, "addressLine3"), ST_LINE4_ADDRESS_WIDTH));
     }
 
     /**
@@ -822,13 +878,16 @@ public final class StatementTextTemplates {
      *                  right-padded with spaces if shorter, because the legacy value field is
      *                  alphanumeric rather than numeric-edited
      * @return one statement record of {@value #STATEMENT_RECORD_LENGTH} US-ASCII bytes
-     * @throws NullPointerException if {@code accountId} is {@code null}
+     * @throws NullPointerException     if {@code accountId} is {@code null}
+     * @throws IllegalArgumentException if {@code accountId} carries a character outside printable
+     *                                  US-ASCII
      */
     public static String stLine7AccountId(String accountId) {
         Objects.requireNonNull(accountId, "accountId");
         return requireStatementRecordLength(
                 fitToField(ST_LINE7_LABEL_LITERAL, ST_LINE7_LABEL_WIDTH)
-                        + fitToField(accountId, ST_LINE7_ACCOUNT_ID_WIDTH)
+                        + fitToField(requirePrintableUsAscii(accountId, "accountId"),
+                                ST_LINE7_ACCOUNT_ID_WIDTH)
                         + fill(SPACE, ST_LINE7_FILLER_WIDTH));
     }
 
@@ -874,13 +933,16 @@ public final class StatementTextTemplates {
      *                  right-padded with spaces if shorter, because the legacy value field is
      *                  alphanumeric rather than numeric-edited
      * @return one statement record of {@value #STATEMENT_RECORD_LENGTH} US-ASCII bytes
-     * @throws NullPointerException if {@code ficoScore} is {@code null}
+     * @throws NullPointerException     if {@code ficoScore} is {@code null}
+     * @throws IllegalArgumentException if {@code ficoScore} carries a character outside printable
+     *                                  US-ASCII
      */
     public static String stLine9FicoScore(String ficoScore) {
         Objects.requireNonNull(ficoScore, "ficoScore");
         return requireStatementRecordLength(
                 fitToField(ST_LINE9_LABEL_LITERAL, ST_LINE9_LABEL_WIDTH)
-                        + fitToField(ficoScore, ST_LINE9_FICO_SCORE_WIDTH)
+                        + fitToField(requirePrintableUsAscii(ficoScore, "ficoScore"),
+                                ST_LINE9_FICO_SCORE_WIDTH)
                         + fill(SPACE, ST_LINE9_FILLER_WIDTH));
     }
 
@@ -904,9 +966,10 @@ public final class StatementTextTemplates {
      *                           {@value #REQUIRED_AMOUNT_SCALE}
      * @return one statement record of {@value #STATEMENT_RECORD_LENGTH} US-ASCII bytes
      * @throws NullPointerException     if any argument is {@code null}
-     * @throws IllegalArgumentException if the scale is not {@value #REQUIRED_AMOUNT_SCALE} or the
-     *                                  integer part exceeds {@value #AMOUNT_MASK_INTEGER_DIGITS}
-     *                                  digits
+     * @throws IllegalArgumentException if {@code transactionId} or {@code transactionDetails} carries
+     *                                  a character outside printable US-ASCII, if the scale is not
+     *                                  {@value #REQUIRED_AMOUNT_SCALE}, or if the integer part
+     *                                  exceeds {@value #AMOUNT_MASK_INTEGER_DIGITS} digits
      */
     public static String stLine14Transaction(String transactionId,
                                              String transactionDetails,
@@ -915,9 +978,12 @@ public final class StatementTextTemplates {
         Objects.requireNonNull(transactionDetails, "transactionDetails");
         Objects.requireNonNull(transactionAmount, "transactionAmount");
         return requireStatementRecordLength(
-                fitToField(transactionId, ST_LINE14_TRAN_ID_WIDTH)
+                fitToField(requirePrintableUsAscii(transactionId, "transactionId"),
+                        ST_LINE14_TRAN_ID_WIDTH)
                         + fitToField(FIELD_SEPARATOR, ST_LINE14_SEPARATOR_WIDTH)
-                        + fitToField(transactionDetails, ST_LINE14_TRAN_DETAIL_WIDTH)
+                        + fitToField(
+                                requirePrintableUsAscii(transactionDetails, "transactionDetails"),
+                                ST_LINE14_TRAN_DETAIL_WIDTH)
                         + fitToField(CURRENCY_SYMBOL, ST_LINE14_CURRENCY_WIDTH)
                         + formatAmountMaskWithZeroSuppression(transactionAmount));
     }
@@ -1020,8 +1086,9 @@ public final class StatementTextTemplates {
      * @return a fresh array of exactly {@value #STATEMENT_RECORD_LENGTH} US-ASCII bytes
      * @throws NullPointerException  if {@code record} is {@code null}
      * @throws IllegalStateException if the record is not exactly
-     *                               {@value #STATEMENT_RECORD_LENGTH} US-ASCII bytes, or contains a
-     *                               line terminator
+     *                               {@value #STATEMENT_RECORD_LENGTH} US-ASCII bytes, contains a
+     *                               line terminator, or carries any other byte outside printable
+     *                               US-ASCII
      */
     public static byte[] toStatementRecordBytes(String record) {
         Objects.requireNonNull(record, "record");
@@ -1163,12 +1230,30 @@ public final class StatementTextTemplates {
     }
 
     /**
-     * Checks an assembled record at the full statement record length and confirms it carries no line
-     * terminator.
+     * Checks an assembled record at the full statement record length, confirms it carries no line
+     * terminator, and confirms every remaining byte is printable US-ASCII.
+     *
+     * <p>The three rejections report the measured width, or the offending byte's zero-based position
+     * and code point, and never the record itself. That is decision DL-041, also recorded as D-16: a
+     * diagnostic that echoes the value it rejected is a second injection route into whatever reads
+     * the log, and it is exactly the wrong thing to do here because the terminator branch fires
+     * <em>only</em> when the value holds a carriage return or a line feed, so echoing it would put a
+     * raw terminator into a log line by construction. The width and the code point are the facts a
+     * caller needs; the value adds nothing a caller does not already hold.</p>
+     *
+     * <p>The printable-range check is the record-image half of decision D-09, which requires
+     * characters outside printable US-ASCII to be rejected in printed output. The line-terminator
+     * check is retained ahead of it, and reports its own distinct message, because a terminator is a
+     * materially different defect from a stray control byte: it would split one record into two. A
+     * character this charset cannot represent never reaches the range check, because
+     * {@link String#getBytes(java.nio.charset.Charset)} substitutes for it during the encode above;
+     * such a value is refused at the input boundary instead, by
+     * {@link #requirePrintableUsAscii(String, String)}.</p>
      *
      * @param record the assembled record
      * @return the same record, unchanged, so this can wrap a constant initializer or a return value
-     * @throws IllegalStateException if the length is wrong or a line terminator is present
+     * @throws IllegalStateException if the length is wrong, a line terminator is present, or any
+     *                               byte falls outside printable US-ASCII
      */
     private static String requireStatementRecordLength(String record) {
         byte[] encoded = record.getBytes(StandardCharsets.US_ASCII);
@@ -1176,22 +1261,82 @@ public final class StatementTextTemplates {
             throw new IllegalStateException(
                     "A statement text record must be exactly " + STATEMENT_RECORD_LENGTH
                             + " US-ASCII bytes, per 01 FD-STMTFILE-REC PIC X(80) at"
-                            + " [app/cbl/CBSTM03A.CBL:L45], but this one was " + encoded.length
-                            + " bytes: '" + record + "'");
+                            + " [app/cbl/CBSTM03A.CBL:L45], but this one measured " + encoded.length
+                            + " bytes");
         }
-        for (byte encodedByte : encoded) {
-            if (encodedByte == ASCII_CARRIAGE_RETURN_BYTE || encodedByte == ASCII_LINE_FEED_BYTE) {
+        for (int position = 0; position < encoded.length; position++) {
+            int codePoint = encoded[position] & UNSIGNED_BYTE_MASK;
+            if (codePoint == ASCII_CARRIAGE_RETURN_BYTE || codePoint == ASCII_LINE_FEED_BYTE) {
                 throw new IllegalStateException(
                         "A statement text record must contain no line terminator. The record image is"
                                 + " " + STATEMENT_RECORD_LENGTH + " data bytes; record separation is"
-                                + " the writer's concern in the batch layer: '" + record + "'");
+                                + " the writer's concern in the batch layer. The byte at zero-based"
+                                + " position " + position + " is code point " + codePoint);
+            }
+            if (codePoint < FIRST_PRINTABLE_US_ASCII || codePoint > LAST_PRINTABLE_US_ASCII) {
+                throw new IllegalStateException(
+                        "A statement text record accepts printable US-ASCII only, that is code points"
+                                + " " + (int) FIRST_PRINTABLE_US_ASCII + " to "
+                                + (int) LAST_PRINTABLE_US_ASCII + ", so that one character occupies"
+                                + " exactly one of the " + STATEMENT_RECORD_LENGTH + " bytes. The"
+                                + " byte at zero-based position " + position + " is code point "
+                                + codePoint);
             }
         }
         return record;
     }
 
     /**
+     * Refuses a caller-supplied value that carries anything outside printable US-ASCII, before the
+     * value is fitted into its field.
+     *
+     * <p>This is the input boundary that decision D-09 names this class as an embodiment of, and
+     * until now the class did not have one: every substituted value went straight into
+     * {@link #fitToField(String, int)}, which truncates and pads but does not inspect, so a control
+     * byte was caught only later by the assembled-record invariant - and only if it happened to
+     * survive truncation. Rejecting at the input is strictly better on three counts. The diagnostic
+     * names the offending parameter rather than an anonymous record. The rejection is reached whether
+     * or not the offending byte sits inside the field width. And a caller learns that its own input
+     * is wrong rather than that this class failed an internal check.</p>
+     *
+     * <p>Following DL-041, the message reports the parameter, the admissible range, the offending
+     * character's zero-based position and its code point, and never the value. The position is a
+     * character index rather than an encoded byte offset because the value has not been encoded yet;
+     * for any value this method accepts the two coincide, since printable US-ASCII is one byte per
+     * character. The scan runs over characters, so a value holding something this charset cannot
+     * represent at all is rejected here too, before an encode could silently substitute for it.</p>
+     *
+     * @param value     the caller-supplied value
+     * @param fieldName the parameter name, reported so a caller can act on the rejection
+     * @return {@code value}, unchanged, so this can wrap an argument in place
+     * @throws IllegalArgumentException if any character falls outside printable US-ASCII
+     */
+    private static String requirePrintableUsAscii(String value, String fieldName) {
+        for (int position = 0; position < value.length(); position++) {
+            char character = value.charAt(position);
+            if (character < FIRST_PRINTABLE_US_ASCII || character > LAST_PRINTABLE_US_ASCII) {
+                throw new IllegalArgumentException(fieldName
+                        + " accepts printable US-ASCII only, that is code points "
+                        + (int) FIRST_PRINTABLE_US_ASCII + " to "
+                        + (int) LAST_PRINTABLE_US_ASCII + ", because a statement text record is a"
+                        + " fixed " + STATEMENT_RECORD_LENGTH + "-byte image carrying no terminator."
+                        + " The character at zero-based position " + position + " is code point "
+                        + (int) character);
+            }
+        }
+        return value;
+    }
+
+    /**
      * Checks a rendered amount at the mask width.
+     *
+     * <p>The rejection names the mask and reports the measured width, and never the rendering, so
+     * that this guard follows DL-041 exactly as the record guard above does. Consistency is the
+     * whole argument here: this branch cannot in fact be reached with a line terminator, because a
+     * rendering is assembled from mask positions and {@link java.math.BigInteger#toString()} digits
+     * and the amount guards reject a malformed value upstream. A guard family in which some members
+     * echo and others do not is a family whose rule nobody can state, and the next member added to
+     * it inherits whichever habit its neighbour happened to have.</p>
      *
      * @param rendered    the rendered amount
      * @param maskPicture the picture clause, used only to name the mask in a rejection
@@ -1203,8 +1348,7 @@ public final class StatementTextTemplates {
         if (actualLength != AMOUNT_MASK_LENGTH) {
             throw new IllegalStateException(
                     "Mask " + maskPicture + " must render exactly " + AMOUNT_MASK_LENGTH
-                            + " US-ASCII bytes but rendered " + actualLength + ": '" + rendered
-                            + "'");
+                            + " US-ASCII bytes but rendered " + actualLength);
         }
         return rendered;
     }
@@ -1213,6 +1357,12 @@ public final class StatementTextTemplates {
      * Checks one transcribed literal against the width the legacy source declares for it, so that a
      * mistyped literal -- one space too few in a label, for instance -- fails at class initialization
      * instead of being silently padded or truncated into a plausible-looking wrong record.
+     *
+     * <p>The rejection names the citation and reports the measured width, and never the literal, for
+     * the same reason as its two sibling guards above. The citation is the actionable fact: it points
+     * a maintainer at the exact source line the literal was transcribed from, which is where the
+     * discrepancy has to be resolved, whereas the mistyped literal is already visible in this file a
+     * few lines above the guard.</p>
      *
      * @param literal            the transcribed literal
      * @param expectedByteLength the length the source declares
@@ -1226,7 +1376,7 @@ public final class StatementTextTemplates {
         if (actualLength != expectedByteLength) {
             throw new IllegalStateException(
                     "Statement literal from [" + citation + "] must be " + expectedByteLength
-                            + " US-ASCII bytes but was " + actualLength + ": '" + literal + "'");
+                            + " US-ASCII bytes but was " + actualLength);
         }
     }
 

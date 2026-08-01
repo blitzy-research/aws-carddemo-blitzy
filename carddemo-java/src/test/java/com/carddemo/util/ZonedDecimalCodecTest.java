@@ -1458,4 +1458,164 @@ class ZonedDecimalCodecTest {
                             ZonedDecimalCodec.WIDTH_PIC_S9_10_V99, "ACCT-CREDIT-LIMIT"));
         }
     }
+
+    @Nested
+    @DisplayName("Diagnostic hygiene :: a rejection names the defect, never the rejected value")
+    class DiagnosticHygiene {
+
+        @Test
+        @DisplayName("a legacy field name renders verbatim and quoted, exactly as before, because it "
+                + "is the most useful thing a diagnostic can say")
+        void aPrintableFieldNameRendersVerbatim() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> ZonedDecimalCodec.decodeMonetary("00000012345",
+                            ZonedDecimalCodec.WIDTH_PIC_S9_10_V99, DALYTRAN_AMT))
+                    .withMessageStartingWith("zoned decimal field '" + DALYTRAN_AMT + "':");
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> ZonedDecimalCodec.encodeMonetary(new BigDecimal("99999.99"),
+                            ZonedDecimalCodec.WIDTH_PIC_S9_04_V99, DIS_INT_RATE))
+                    .withMessageStartingWith("zoned decimal field '" + DIS_INT_RATE + "':");
+        }
+
+        @Test
+        @DisplayName("a field name carrying a line terminator degrades to a substitute naming the "
+                + "position and code point, and the real defect is still reported (DL-041, D-16)")
+        void aFieldNameCarryingATerminatorDegradesWithoutHidingTheRealDefect() {
+            String hostile = HOSTILE_MARKER + terminators() + "FORGED AUDIT ENTRY";
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> ZonedDecimalCodec.encodeMonetary(new BigDecimal("99999.99"),
+                            ZonedDecimalCodec.WIDTH_PIC_S9_04_V99, hostile))
+                    .withMessageStartingWith("zoned decimal field (field name not printable"
+                            + " US-ASCII: the character at zero-based position "
+                            + HOSTILE_MARKER.length() + " is code point " + (int) CARRIAGE_RETURN
+                            + "):")
+                    // The real defect - the value does not fit the field - is still what the message
+                    // goes on to report, which is the whole reason this degrades instead of throwing.
+                    .withMessageContaining("the value needs")
+                    .withMessageNotContaining(HOSTILE_MARKER)
+                    .satisfies(ZonedDecimalCodecTest::assertCarriesNoRawTerminator);
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> ZonedDecimalCodec.decodeMonetary("0000001234*",
+                            ZonedDecimalCodec.WIDTH_PIC_S9_09_V99, hostile))
+                    .withMessageContaining("is code point " + (int) CARRIAGE_RETURN)
+                    .withMessageEndingWith("0x2A ('*')")
+                    .withMessageNotContaining(HOSTILE_MARKER)
+                    .satisfies(ZonedDecimalCodecTest::assertCarriesNoRawTerminator);
+        }
+
+        @Test
+        @DisplayName("an absent or blank field name still degrades to the unnamed-field label, so "
+                + "the existing substitute is unchanged")
+        void anAbsentFieldNameStillDegradesToTheUnnamedLabel() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> ZonedDecimalCodec.decodeMonetary("0000001234*",
+                            ZonedDecimalCodec.WIDTH_PIC_S9_09_V99, null))
+                    .withMessageStartingWith("zoned decimal field (unnamed field):");
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> ZonedDecimalCodec.decodeMonetary("0000001234*",
+                            ZonedDecimalCodec.WIDTH_PIC_S9_09_V99, "   "))
+                    .withMessageStartingWith("zoned decimal field (unnamed field):");
+        }
+
+        @Test
+        @DisplayName("a field name that is nothing but whitespace takes the pre-existing blank path, "
+                + "because a carriage return, a line feed and a tab are all whitespace")
+        void aWhitespaceOnlyFieldNameTakesTheBlankPath() {
+            // Worth pinning: the blank test runs first and already covers the terminator-only and
+            // tab-only cases, so those never reach the printable scan. The outcome is the same in the
+            // one respect that matters - no control character reaches the message - but the substitute
+            // differs, and a reader of these messages should know which one to expect.
+            for (String whitespaceOnly : new String[] {terminators(), Character.toString(TAB)}) {
+                assertThatIllegalArgumentException()
+                        .isThrownBy(() -> ZonedDecimalCodec.decodeMonetary("0000001234*",
+                                ZonedDecimalCodec.WIDTH_PIC_S9_09_V99, whitespaceOnly))
+                        .withMessageStartingWith("zoned decimal field (unnamed field):")
+                        .withMessageEndingWith("0x2A ('*')")
+                        .satisfies(ZonedDecimalCodecTest::assertCarriesNoRawTerminator);
+            }
+        }
+
+        @Test
+        @DisplayName("building a diagnostic never itself fails, whatever the field name holds, and "
+                + "the defect being reported always survives intact")
+        void buildingADiagnosticNeverItselfFails() {
+            // Every one of these carries a character that is not whitespace and not printable, so
+            // each reaches the printable scan rather than the blank test above.
+            String[] hostileNames = {
+                Character.toString(DELETE),
+                Character.toString(NUL),
+                Character.toString(ABOVE_US_ASCII),
+                HOSTILE_MARKER + Character.toString(NUL),
+                HOSTILE_MARKER + terminators() + Character.toString(DELETE),
+            };
+
+            for (String hostileName : hostileNames) {
+                assertThatIllegalArgumentException()
+                        .as("a name of %s characters must not derail the diagnostic",
+                                hostileName.length())
+                        .isThrownBy(() -> ZonedDecimalCodec.decodeMonetary("0000001234*",
+                                ZonedDecimalCodec.WIDTH_PIC_S9_09_V99, hostileName))
+                        .withMessageContaining("not printable US-ASCII")
+                        .withMessageEndingWith("0x2A ('*')")
+                        .withMessageNotContaining(HOSTILE_MARKER)
+                        .satisfies(ZonedDecimalCodecTest::assertCarriesNoRawTerminator);
+            }
+        }
+    }
+
+    // Diagnostic-hygiene fixtures. Every control character is given as a decimal code point so that
+    // no escape sequence appears in this file and a terminator found in a message can only have been
+    // echoed from the value under test.
+
+    /** ASCII carriage return, 13. */
+    private static final char CARRIAGE_RETURN = 13;
+
+    /** ASCII line feed, 10. */
+    private static final char LINE_FEED = 10;
+
+    /** ASCII horizontal tab, 9. */
+    private static final char TAB = 9;
+
+    /** ASCII delete, 127: the one control code above the printable range. */
+    private static final char DELETE = 127;
+
+    /** ASCII null, 0: the lowest code point of all. */
+    private static final char NUL = 0;
+
+    /** One code point above the printable range's upper bound and above US-ASCII entirely. */
+    private static final char ABOVE_US_ASCII = 256;
+
+    /**
+     * A distinctive printable token planted in every hostile field name, so that finding it in a
+     * diagnostic proves the name was echoed rather than described.
+     */
+    private static final String HOSTILE_MARKER = "QAMARKFORGEDADMIN";
+
+    /**
+     * Builds a carriage return followed by a line feed without writing an escape sequence.
+     *
+     * @return the two-character CRLF sequence
+     */
+    private static String terminators() {
+        return Character.toString(CARRIAGE_RETURN) + Character.toString(LINE_FEED);
+    }
+
+    /**
+     * Asserts that a diagnostic carries no raw carriage return, line feed or tab, which is the
+     * property decision DL-041 exists to guarantee: a raw terminator inside a log line is a
+     * log-injection primitive regardless of where the offending text came from.
+     *
+     * @param thrown the rejection to inspect
+     */
+    private static void assertCarriesNoRawTerminator(Throwable thrown) {
+        String message = thrown.getMessage();
+        assertThat(message).as("a rejection must carry a message").isNotNull();
+        assertThat(message.indexOf(CARRIAGE_RETURN))
+                .as("a diagnostic must carry no raw carriage return: %s", message).isEqualTo(-1);
+        assertThat(message.indexOf(LINE_FEED))
+                .as("a diagnostic must carry no raw line feed: %s", message).isEqualTo(-1);
+        assertThat(message.indexOf(TAB))
+                .as("a diagnostic must carry no raw tab: %s", message).isEqualTo(-1);
+    }
 }

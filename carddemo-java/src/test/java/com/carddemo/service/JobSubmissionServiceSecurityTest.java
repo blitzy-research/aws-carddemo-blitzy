@@ -29,6 +29,7 @@ import java.util.stream.Stream;
 import io.awspring.cloud.sqs.operations.SendResult;
 import io.awspring.cloud.sqs.operations.SqsOperations;
 import io.awspring.cloud.sqs.operations.SqsSendOptions;
+import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -707,6 +708,219 @@ class JobSubmissionServiceSecurityTest {
 
     /*
      * ========================================================================================
+     * Diagnostic hygiene - decision DL-041.
+     * ========================================================================================
+     */
+
+    @Nested
+    @DisplayName("diagnostic hygiene - a rejection names the defect, never the rejected value")
+    class DiagnosticHygiene {
+
+        @Test
+        @DisplayName("every entry point taking a caller-supplied identity refuses a terminator-bearing one without repeating it")
+        void everyEntryPointRefusesATerminatorBearingIdentityWithoutRepeatingIt() {
+            // This service is the estate's only online-to-batch bridge, and all four of these
+            // entry points take the submission identity from their caller. A carriage return and a
+            // line feed are both whitespace, so the whitespace branch is reached precisely when the
+            // identity holds a line terminator - which means it is the one branch where echoing the
+            // value would put a forged line into the service log by construction. Every entry point
+            // is exercised rather than one, because the guard is only as good as its least-guarded
+            // caller.
+            final List<String> cards = JclCardImageBuilder.build(START_DATE, END_DATE);
+            final String card = cards.get(0);
+            final String hostile = HOSTILE_MARKER + terminators() + "FORGED AUDIT ENTRY";
+
+            final List<ThrowingCallable> entryPoints = List.of(
+                    () -> service.submitTransactionReportJob(hostile, START_DATE, END_DATE),
+                    () -> service.submitCanonicalJobImage(hostile, cards),
+                    () -> service.submitJobStream(hostile, List.of(card)),
+                    () -> service.writeJobSubmissionQueue(hostile, card, FIRST_ORDINAL));
+
+            for (final ThrowingCallable entryPoint : entryPoints) {
+                assertThatExceptionOfType(IllegalArgumentException.class)
+                        .as("a terminator-bearing identity must be refused at every entry point")
+                        .isThrownBy(entryPoint)
+                        .withMessageContaining("must not hold whitespace")
+                        .withMessageNotContaining(HOSTILE_MARKER)
+                        .withMessageNotContaining("FORGED AUDIT ENTRY")
+                        .satisfies(JobSubmissionServiceSecurityTest::assertCarriesNoRawTerminator);
+            }
+
+            assertThat(attempts).as("no message may be published").isEmpty();
+        }
+
+        @Test
+        @DisplayName("the identity rejection names the offending character's zero-based position and code point, which is what shortening or correcting it requires")
+        void theIdentityRejectionNamesThePositionAndCodePoint() {
+            // Suppressing the value is only half of the obligation: the diagnostic still has to be
+            // actionable. The position and the code point identify exactly one character, which is
+            // everything a caller needs to correct the identity and nothing an attacker can use.
+            final String card = JclCardImageBuilder.build(START_DATE, END_DATE).get(0);
+            final String hostile = HOSTILE_MARKER + terminators();
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() ->
+                            service.writeJobSubmissionQueue(hostile, card, FIRST_ORDINAL))
+                    .withMessage("submissionId must not hold whitespace because a message"
+                            + " deduplication identifier may not; the character at zero-based"
+                            + " position " + HOSTILE_MARKER.length() + " is code point "
+                            + (int) CARRIAGE_RETURN);
+
+            assertThat(attempts).as("no message may be published").isEmpty();
+        }
+
+        @Test
+        @DisplayName("an identity built only from whitespace takes the older blank path, so a reader knows which of the two rejections to expect")
+        void anIdentityBuiltOnlyFromWhitespaceTakesTheBlankPath() {
+            // The blank test precedes the character scan, and a carriage return, a line feed and a
+            // tab are all whitespace, so an identity made only of terminators is blank as far as
+            // String.isBlank is concerned and never reaches the scan. Pinning this keeps the two
+            // rejections distinguishable: a caller reading "must not be blank" is not left
+            // wondering why the position of the offending character was withheld.
+            final String card = JclCardImageBuilder.build(START_DATE, END_DATE).get(0);
+
+            for (final String whitespaceOnly
+                    : List.of(terminators(), Character.toString(TAB), " \t\r\n ")) {
+                assertThatExceptionOfType(IllegalArgumentException.class)
+                        .as("a whitespace-only identity must be refused as blank")
+                        .isThrownBy(() ->
+                                service.writeJobSubmissionQueue(whitespaceOnly, card, FIRST_ORDINAL))
+                        .withMessage("submissionId must not be blank")
+                        .satisfies(JobSubmissionServiceSecurityTest::assertCarriesNoRawTerminator);
+            }
+
+            assertThat(attempts).as("no message may be published").isEmpty();
+        }
+
+        @Test
+        @DisplayName("the queue rejection names the property and the suffix it requires, and does not repeat the configured value")
+        void theQueueRejectionNamesThePropertyAndTheSuffixOnly() {
+            // The suffix literal stays because it is this class's own statement of what it expects,
+            // not an echo of what it was given. The property key is the actionable fact - it points
+            // an operator at the exact configuration entry, where the value can already be read -
+            // so repeating the value adds nothing and would carry a deployment-supplied string into
+            // a startup log line. The value used here is printable, so the suffix check is what
+            // rejects it; the control-character rule is asserted separately below because it is a
+            // different branch and it runs first.
+            final String suffixlessQueue = "JOBS-" + HOSTILE_MARKER;
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("a queue name without the first-in-first-out suffix must be refused")
+                    .isThrownBy(() -> new JobSubmissionService(sqsOperations, suffixlessQueue,
+                            MESSAGE_GROUP_ID))
+                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue")
+                    .withMessageContaining(".fifo")
+                    .withMessageNotContaining(HOSTILE_MARKER)
+                    .satisfies(JobSubmissionServiceSecurityTest::assertCarriesNoRawTerminator);
+
+            // The same obligation applies to the message group, which is bound from configuration
+            // in exactly the same way.
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("a blank message group must be refused without echoing what was bound")
+                    .isThrownBy(() -> new JobSubmissionService(sqsOperations, QUEUE_NAME,
+                            Character.toString(TAB)))
+                    .withMessageContaining("carddemo.aws.sqs.message-group-id")
+                    .satisfies(JobSubmissionServiceSecurityTest::assertCarriesNoRawTerminator);
+        }
+
+        @Test
+        @DisplayName("a configured queue name or message group carrying a control character is refused, because both are written into every log record the service emits")
+        void aConfiguredValueCarryingAControlCharacterIsRefused() {
+            // This class states the reason itself, in the card guard: a control byte "could forge a
+            // line in a log record". The queue name and the message group are substituted into all
+            // four of this class's log statements, and parameter substitution escapes nothing, so a
+            // carriage return in either value would let a log reader split one record into two.
+            // Both values are printable US-ASCII by the queue service's own definition, so the rule
+            // refuses nothing a real deployment needs.
+            final String forgedQueue = "JOBS" + terminators() + HOSTILE_MARKER + ".fifo";
+            final String forgedGroup = "JOBS" + terminators() + HOSTILE_MARKER;
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("a queue name holding a terminator must be refused even though it carries"
+                            + " the required suffix, so the suffix cannot be used to slip one past")
+                    .isThrownBy(() ->
+                            new JobSubmissionService(sqsOperations, forgedQueue, MESSAGE_GROUP_ID))
+                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue")
+                    .withMessageContaining("printable US-ASCII only")
+                    .withMessageContaining("position 4")
+                    .withMessageContaining("code point " + (int) CARRIAGE_RETURN)
+                    .withMessageNotContaining(HOSTILE_MARKER)
+                    .satisfies(JobSubmissionServiceSecurityTest::assertCarriesNoRawTerminator);
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("a message group holding a terminator must be refused")
+                    .isThrownBy(() ->
+                            new JobSubmissionService(sqsOperations, QUEUE_NAME, forgedGroup))
+                    .withMessageContaining("carddemo.aws.sqs.message-group-id")
+                    .withMessageContaining("printable US-ASCII only")
+                    .withMessageContaining("code point " + (int) CARRIAGE_RETURN)
+                    .withMessageNotContaining(HOSTILE_MARKER)
+                    .satisfies(JobSubmissionServiceSecurityTest::assertCarriesNoRawTerminator);
+
+            // Every printable value the queue service itself accepts must still construct, so the
+            // rule is a control-character rule and not an alphanumeric one: a queue URL and a queue
+            // ARN both carry punctuation this guard has to let through.
+            for (final String legitimate : List.of("JOBS.fifo",
+                    "https://sqs.us-east-1.amazonaws.com/000000000000/JOBS.fifo",
+                    "arn:aws:sqs:us-east-1:000000000000:JOBS.fifo")) {
+                assertThat(new JobSubmissionService(sqsOperations, legitimate, MESSAGE_GROUP_ID))
+                        .as("the legitimate configured value [%s] must construct", legitimate)
+                        .isNotNull();
+            }
+        }
+
+        @Test
+        @DisplayName("the deduplication-length rejection reports the lengths and the ceiling rather than the identity it composed them from")
+        void theDeduplicationLengthRejectionReportsLengthsRatherThanTheIdentity() {
+            // This guard fires on a caller-supplied identity that is well formed but too long, so
+            // no terminator can reach it - the whitespace scan runs first. It is still covered by
+            // the same rule: the four numbers a caller needs to shorten the identity are the
+            // identity's length, the ordinal, the composed length and the ceiling, and the identity
+            // itself is redundant because the caller passed it.
+            final String card = JclCardImageBuilder.build(START_DATE, END_DATE).get(0);
+            final String overLong = HOSTILE_MARKER
+                    + "x".repeat(EXPECTED_DEDUPLICATION_ID_LIMIT - HOSTILE_MARKER.length());
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> service.writeJobSubmissionQueue(overLong, card, FIRST_ORDINAL))
+                    .withMessageContaining(String.valueOf(overLong.length()))
+                    .withMessageContaining(String.valueOf(EXPECTED_DEDUPLICATION_ID_LIMIT))
+                    .withMessageNotContaining(HOSTILE_MARKER);
+
+            assertThat(attempts).as("no message may be published").isEmpty();
+        }
+
+        @Test
+        @DisplayName("a card carrying a control byte is refused by ordinal, position and code point, never by quoting the card")
+        void aCardCarryingAControlByteIsRefusedWithoutQuotingIt() {
+            // The card is the queue payload, so this boundary is the one decision DL-042 governs;
+            // it is asserted here as well because the same message must satisfy DL-041. A card is
+            // eighty bytes of caller-influenced text, and quoting it would be the largest echo this
+            // class could make.
+            final String legitimate = JclCardImageBuilder.build(START_DATE, END_DATE).get(0);
+            final String forged = HOSTILE_MARKER + terminators()
+                    + legitimate.substring(HOSTILE_MARKER.length() + terminators().length());
+
+            assertThat(forged.length())
+                    .as("the forged card must keep the contractual width, so width is not what"
+                            + " rejects it")
+                    .isEqualTo(EXPECTED_CARD_WIDTH);
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() ->
+                            service.writeJobSubmissionQueue("submission", forged, FIRST_ORDINAL))
+                    .withMessageContaining("non-printable")
+                    .withMessageContaining("code point " + (int) CARRIAGE_RETURN)
+                    .withMessageNotContaining(HOSTILE_MARKER)
+                    .satisfies(JobSubmissionServiceSecurityTest::assertCarriesNoRawTerminator);
+
+            assertThat(attempts).as("no message may be published").isEmpty();
+        }
+    }
+
+
+    /*
+     * ========================================================================================
      * The ignore-on-error contract.
      * ========================================================================================
      */
@@ -1089,6 +1303,60 @@ class JobSubmissionServiceSecurityTest {
     private List<String> deduplicationIds() {
         return this.attempts.stream().map(PublishedMessage::messageDeduplicationId).toList();
     }
+
+    /*
+     * ========================================================================================
+     * Diagnostic-hygiene fixtures and assertions.
+     * ========================================================================================
+     */
+
+    /** A carriage return: whitespace, and the first half of a forged log record. */
+    private static final char CARRIAGE_RETURN = 13;
+
+    /** A line feed: whitespace, and the byte a log reader treats as ending a record. */
+    private static final char LINE_FEED = 10;
+
+    /** A tab: whitespace that is not a line terminator, so the two rejections stay separable. */
+    private static final char TAB = 9;
+
+    /**
+     * Text a forged log record would carry.
+     *
+     * <p>Asserting on a marker rather than on the terminator alone is what makes a leak visible
+     * instead of inferred: if this string reaches a diagnostic, the value was echoed, whatever
+     * happened to the control characters around it.
+     */
+    private static final String HOSTILE_MARKER = "QAMARKFORGEDADMIN";
+
+    /**
+     * The two-character sequence that ends a log record.
+     *
+     * @return a carriage return followed by a line feed
+     */
+    private static String terminators() {
+        return Character.toString(CARRIAGE_RETURN) + Character.toString(LINE_FEED);
+    }
+
+    /**
+     * Asserts that a rejection's message carries no raw control character.
+     *
+     * <p>This is the property decision DL-041 exists to protect. A message that contains a raw
+     * carriage return, line feed or tab can be split by a log reader into records the service never
+     * wrote, so the check is made on the message itself rather than on the value that produced it.
+     *
+     * @param thrown the rejection to inspect
+     */
+    private static void assertCarriesNoRawTerminator(final Throwable thrown) {
+        final String message = thrown.getMessage();
+        assertThat(message).as("a rejection must carry a message").isNotNull();
+        assertThat(message.indexOf(CARRIAGE_RETURN))
+                .as("a diagnostic must carry no raw carriage return: %s", message).isEqualTo(-1);
+        assertThat(message.indexOf(LINE_FEED))
+                .as("a diagnostic must carry no raw line feed: %s", message).isEqualTo(-1);
+        assertThat(message.indexOf(TAB))
+                .as("a diagnostic must carry no raw tab: %s", message).isEqualTo(-1);
+    }
+
 
     /**
      * One recorded publish attempt: everything the service asked the queue to do with one card.

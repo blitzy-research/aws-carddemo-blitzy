@@ -281,7 +281,7 @@ jobs:
           ./mvnw -B --version
           docker version --format 'Docker server {{.Server.Version}}'
 
-      # ---- gate 1 of 2: build, test and coverage ---------------------------------------------
+      # ---- gate 1 of 3: build, test and coverage ---------------------------------------------
       # A compiler warning, a failing test in either tier, or coverage under the floor ends this
       # step. The supply chain scan is switched off for this invocation only, because it is run
       # by itself in the next step; leaving it on here would either scan twice or, when this step
@@ -296,7 +296,50 @@ jobs:
         continue-on-error: true
         run: ./mvnw -B clean verify -Ddependency-check.skip=true
 
-      # ---- gate 2 of 2: supply chain --------------------------------------------------------
+      # ---- gate 2 of 3: locale-hostile re-execution -----------------------------------------
+      # The module pins -Duser.language=en -Duser.country=US in test.jvm.args so that a test's
+      # result never depends on the machine running it. That pinning is correct, and it has one
+      # cost: it makes the suite structurally unable to observe a locale defect. The module emits
+      # fixed-width records whose widths are counted in bytes, and two JDK behaviours would break
+      # them under a different default locale - a locale whose numbering system is not Latin makes
+      # String.format("%d", n) emit non-ASCII digits, and Turkish casing folds ASCII i to U+0130,
+      # which is not a US-ASCII byte at all. Decision D-27 forbids every locale-sensitive formatter
+      # for exactly this reason, but a forbidden call is only actually absent if something checks.
+      #
+      # This step is that check: the unit tier is re-run twice with the default locale overridden,
+      # once for each hazard. tr-TR carries the casing hazard and ar-EG the numbering hazard, so the
+      # pair covers both ways a default locale can change an emitted byte. Only test.jvm.args is
+      # overridden - the timezone and file encoding stay pinned, so a failure here can only be a
+      # locale defect and not a clock or charset difference.
+      #
+      # The unit tier alone is re-run, not verify: this is a byte-output property of pure functions,
+      # the container-backed tiers add execution time without adding locale surface, and coverage
+      # and the supply chain are already gated above.
+      #
+      # Each locale writes its Surefire XML to its OWN reports directory rather than the default
+      # one. That is not tidiness, it is what keeps the evidence bundle below honest. This step runs
+      # the whole unit tier after the build gate has already written target/surefire-reports, so
+      # without the redirect the second execution would overwrite every report the build gate
+      # produced and the uploaded test-reports artifact would silently describe an ar-EG run while
+      # claiming to be the pinned one. Redirecting per locale keeps all three executions readable
+      # side by side and keeps each one attributable to the locale that produced it.
+      - name: Locale-hostile re-execution gate
+        id: locale_gate
+        if: always()
+        continue-on-error: true
+        run: |
+          for locale in 'tr TR' 'ar EG'; do
+            set -- $locale
+            printf '::group::unit tier under %s-%s\n' "$1" "$2"
+            ./mvnw -B -ntp test \
+              -Ddependency-check.skip=true \
+              -Djacoco.skip=true \
+              -Dtest.reports.dir="target/surefire-reports-locale-$1-$2" \
+              -Dtest.jvm.args="-XX:+EnableDynamicAgentLoading -Xshare:off -Duser.language=$1 -Duser.country=$2 -Duser.timezone=UTC -Dfile.encoding=UTF-8"
+            echo '::endgroup::'
+          done
+
+      # ---- gate 3 of 3: supply chain --------------------------------------------------------
       # Invoked on its own and unconditionally. This goal needs only the resolved dependency
       # graph, not compiled output, so it produces a verdict and a report even when the step
       # above failed outright - which is the whole point of separating them. Configuration comes
@@ -355,6 +398,7 @@ jobs:
           path: |
             carddemo-java/target/surefire-reports/**
             carddemo-java/target/failsafe-reports/**
+            carddemo-java/target/surefire-reports-locale-*/**
           if-no-files-found: warn
           retention-days: 30
 
@@ -506,9 +550,9 @@ jobs:
       # point of the gate, so a verdict that omits one is not evidence even when the exit status
       # happens to be right.
       #
-      # The three gates fail differently on purpose, and reading all three is what makes that
-      # uniform here. The first two continue on error so that each publishes its evidence
-      # regardless of the other, which means their failures reach this step rather than stopping
+      # The four gates fail differently on purpose, and reading all four is what makes that
+      # uniform here. The first three continue on error so that each publishes its evidence
+      # regardless of the others, which means their failures reach this step rather than stopping
       # the job. The deployability gate does not continue on error, and it is skipped outright when
       # the build gate failed, because there is then no artifact to start.
       #
@@ -520,13 +564,16 @@ jobs:
         if: always()
         run: |
           build_gate='${{ steps.build_gate.outcome }}'
+          locale_gate='${{ steps.locale_gate.outcome }}'
           supply_chain_gate='${{ steps.supply_chain_gate.outcome }}'
           deployability_gate='${{ steps.deployability_gate.outcome }}'
           printf 'build, test and coverage gate : %s\n' "$build_gate"
+          printf 'locale-hostile gate           : %s\n' "$locale_gate"
           printf 'supply chain gate             : %s\n' "$supply_chain_gate"
           printf 'deployability gate            : %s\n' "$deployability_gate"
           failed=0
           if [ "$build_gate" != 'success' ]; then failed=1; fi
+          if [ "$locale_gate" != 'success' ]; then failed=1; fi
           if [ "$supply_chain_gate" != 'success' ]; then failed=1; fi
           if [ "$deployability_gate" != 'success' ]; then failed=1; fi
           if [ "$failed" -ne 0 ]; then

@@ -19,6 +19,7 @@ package com.carddemo.util;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 
+import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -128,6 +129,22 @@ class StatementTextTemplatesTest {
 
     /** ASCII colon, 58. Closes each of the three twenty-byte labels. */
     private static final byte ASCII_COLON_BYTE = 58;
+
+    /** ASCII delete, 127. The one control code above the printable range; rejected, never emitted. */
+    private static final byte ASCII_DELETE_BYTE = 127;
+
+    /** Lowest code point the class admits, the space, 32. */
+    private static final int FIRST_PRINTABLE_CODE_POINT = 32;
+
+    /** Highest code point the class admits, the tilde, 126. */
+    private static final int LAST_PRINTABLE_CODE_POINT = 126;
+
+    /**
+     * A distinctive printable token planted in every hostile input so that an assertion can prove a
+     * rejection message does not echo the value it rejected. It carries no character escape, so its
+     * presence in a diagnostic can only have come from the rejected value itself.
+     */
+    private static final String INJECTION_MARKER = "QAMARKFORGEDADMIN";
 
     // Expected geometry, written out as literals so that every number this test asserts against
     // is visible at the point of use rather than borrowed from the class under test.
@@ -1407,6 +1424,169 @@ class StatementTextTemplatesTest {
                 .hasMessageContaining("must contain no line terminator");
     }
 
+    // Diagnostic hygiene and the input boundary. Decision DL-041, also recorded as D-16, forbids a
+    // rejection message from carrying the value it rejected; decision D-09 requires a character
+    // outside printable US-ASCII to be refused in printed output, and names this class as one of the
+    // three embodiments of that rule. The tests below hold both.
+
+    @Test
+    @DisplayName("no rejection message echoes the value it rejected, and none carries a raw "
+            + "terminator: every entry point that takes caller text is swept (DL-041, D-16)")
+    void noRejectionMessageEchoesTheValueItRejected() {
+        String hostile = hostileText();
+        BigDecimal amount = new BigDecimal("1.23");
+
+        assertRejectionIsHygienic(() -> StatementTextTemplates.stLine1CustomerName(hostile));
+        assertRejectionIsHygienic(() -> StatementTextTemplates.stLine2AddressLine1(hostile));
+        assertRejectionIsHygienic(() -> StatementTextTemplates.stLine3AddressLine2(hostile));
+        assertRejectionIsHygienic(() -> StatementTextTemplates.stLine4AddressLine3(hostile));
+        assertRejectionIsHygienic(() -> StatementTextTemplates.stLine7AccountId(hostile));
+        assertRejectionIsHygienic(() -> StatementTextTemplates.stLine9FicoScore(hostile));
+        assertRejectionIsHygienic(
+                () -> StatementTextTemplates.stLine14Transaction(hostile, "detail", amount));
+        assertRejectionIsHygienic(
+                () -> StatementTextTemplates.stLine14Transaction("id", hostile, amount));
+        assertRejectionIsHygienic(() -> StatementTextTemplates.toStatementRecordBytes(hostile));
+        assertRejectionIsHygienic(() -> StatementTextTemplates.toStatementRecordBytes(
+                eightyByteRecordWith(ASCII_LINE_FEED_BYTE)));
+        assertRejectionIsHygienic(() -> StatementTextTemplates.toStatementRecordBytes(
+                eightyByteRecordWith(ASCII_CARRIAGE_RETURN_BYTE)));
+        assertRejectionIsHygienic(() -> StatementTextTemplates.toStatementRecordBytes(
+                eightyByteRecordWith(ASCII_TAB_BYTE)));
+    }
+
+    @Test
+    @DisplayName("every builder that takes caller text refuses a line terminator at the input "
+            + "boundary, naming the parameter, the position and the code point (D-09)")
+    void everyFreeTextBuilderRefusesATerminatorAtTheInputBoundary() {
+        String hostile = hostileText();
+        int terminatorPosition = INJECTION_MARKER.length();
+        BigDecimal amount = new BigDecimal("1.23");
+
+        assertInputBoundaryRejection(() -> StatementTextTemplates.stLine1CustomerName(hostile),
+                "customerName", terminatorPosition, ASCII_CARRIAGE_RETURN_BYTE);
+        assertInputBoundaryRejection(() -> StatementTextTemplates.stLine2AddressLine1(hostile),
+                "addressLine1", terminatorPosition, ASCII_CARRIAGE_RETURN_BYTE);
+        assertInputBoundaryRejection(() -> StatementTextTemplates.stLine3AddressLine2(hostile),
+                "addressLine2", terminatorPosition, ASCII_CARRIAGE_RETURN_BYTE);
+        assertInputBoundaryRejection(() -> StatementTextTemplates.stLine4AddressLine3(hostile),
+                "addressLine3", terminatorPosition, ASCII_CARRIAGE_RETURN_BYTE);
+        assertInputBoundaryRejection(() -> StatementTextTemplates.stLine7AccountId(hostile),
+                "accountId", terminatorPosition, ASCII_CARRIAGE_RETURN_BYTE);
+        assertInputBoundaryRejection(() -> StatementTextTemplates.stLine9FicoScore(hostile),
+                "ficoScore", terminatorPosition, ASCII_CARRIAGE_RETURN_BYTE);
+        assertInputBoundaryRejection(
+                () -> StatementTextTemplates.stLine14Transaction(hostile, "detail", amount),
+                "transactionId", terminatorPosition, ASCII_CARRIAGE_RETURN_BYTE);
+        assertInputBoundaryRejection(
+                () -> StatementTextTemplates.stLine14Transaction("id", hostile, amount),
+                "transactionDetails", terminatorPosition, ASCII_CARRIAGE_RETURN_BYTE);
+    }
+
+    @Test
+    @DisplayName("the input boundary refuses a tab, a delete and a character US-ASCII cannot "
+            + "represent, so no substituted byte can reach a record (D-09)")
+    void theInputBoundaryRefusesEveryNonPrintableCharacter() {
+        assertInputBoundaryRejection(
+                () -> StatementTextTemplates.stLine1CustomerName(oneCharacterValue(ASCII_TAB_BYTE)),
+                "customerName", 0, ASCII_TAB_BYTE);
+        assertInputBoundaryRejection(
+                () -> StatementTextTemplates.stLine1CustomerName(
+                        oneCharacterValue(ASCII_DELETE_BYTE)),
+                "customerName", 0, ASCII_DELETE_BYTE);
+
+        // A character above the US-ASCII range would be silently replaced by a question mark on
+        // encode, so the scan runs over characters and refuses it before any encode can happen.
+        assertThatThrownBy(() -> StatementTextTemplates.stLine2AddressLine1(
+                Character.toString(LAST_PRINTABLE_CODE_POINT + 1)))
+                .isExactlyInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("addressLine1")
+                .hasMessageContaining("code point " + (LAST_PRINTABLE_CODE_POINT + 1));
+    }
+
+    @Test
+    @DisplayName("the wrong-length rejection reports the measured width and nothing else "
+            + "(DL-041)")
+    void theWrongLengthRejectionReportsTheMeasuredWidthOnly() {
+        String seventyNineBytes = INJECTION_MARKER + "A".repeat(79 - INJECTION_MARKER.length());
+        assertThat(asciiLength(seventyNineBytes)).isEqualTo(79);
+
+        assertThatThrownBy(
+                () -> StatementTextTemplates.toStatementRecordBytes(seventyNineBytes))
+                .isExactlyInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("must be exactly 80 US-ASCII bytes")
+                .hasMessageContaining("measured 79 bytes")
+                .satisfies(StatementTextTemplatesTest::assertMessageIsHygienic);
+    }
+
+    @Test
+    @DisplayName("the terminator rejection names the zero-based position and the code point of the "
+            + "offending byte instead of echoing the record (DL-041)")
+    void theTerminatorRejectionNamesThePositionAndCodePoint() {
+        int midpoint = EXPECTED_RECORD_LENGTH / 2;
+
+        assertThatThrownBy(() -> StatementTextTemplates.toStatementRecordBytes(
+                eightyByteRecordWith(ASCII_LINE_FEED_BYTE)))
+                .isExactlyInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("must contain no line terminator")
+                .hasMessageContaining("zero-based position " + midpoint)
+                .hasMessageContaining("code point " + ASCII_LINE_FEED_BYTE);
+        assertThatThrownBy(() -> StatementTextTemplates.toStatementRecordBytes(
+                eightyByteRecordWith(ASCII_CARRIAGE_RETURN_BYTE)))
+                .isExactlyInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("must contain no line terminator")
+                .hasMessageContaining("zero-based position " + midpoint)
+                .hasMessageContaining("code point " + ASCII_CARRIAGE_RETURN_BYTE);
+    }
+
+    @Test
+    @DisplayName("a record carrying a control byte that is not a terminator is rejected under its "
+            + "own distinct message, so the two defects stay distinguishable (D-09)")
+    void aRecordCarryingANonTerminatorControlByteIsRejected() {
+        int midpoint = EXPECTED_RECORD_LENGTH / 2;
+
+        assertThatThrownBy(() -> StatementTextTemplates.toStatementRecordBytes(
+                eightyByteRecordWith(ASCII_TAB_BYTE)))
+                .isExactlyInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("accepts printable US-ASCII only")
+                .hasMessageContaining("code points " + FIRST_PRINTABLE_CODE_POINT + " to "
+                        + LAST_PRINTABLE_CODE_POINT)
+                .hasMessageContaining("zero-based position " + midpoint)
+                .hasMessageContaining("code point " + ASCII_TAB_BYTE)
+                .satisfies(StatementTextTemplatesTest::assertMessageIsHygienic);
+        assertThatThrownBy(() -> StatementTextTemplates.toStatementRecordBytes(
+                eightyByteRecordWith(ASCII_DELETE_BYTE)))
+                .isExactlyInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("accepts printable US-ASCII only")
+                .hasMessageContaining("code point " + ASCII_DELETE_BYTE);
+    }
+
+    @Test
+    @DisplayName("the input boundary refuses nothing legitimate: every one of the ninety-five "
+            + "printable US-ASCII characters is accepted and reaches its field unchanged")
+    void everyPrintableUsAsciiCharacterIsAccepted() {
+        String printable = allPrintableUsAscii();
+        assertThat(printable).hasSize(
+                LAST_PRINTABLE_CODE_POINT - FIRST_PRINTABLE_CODE_POINT + 1);
+
+        // The address field spans the whole record, so ninety-five characters are truncated to
+        // eighty exactly as before: the guard admits every printable character and changes no width.
+        String record = StatementTextTemplates.stLine4AddressLine3(printable);
+        assertThat(asciiLength(record)).isEqualTo(EXPECTED_RECORD_LENGTH);
+        assertThat(record).isEqualTo(printable.substring(0, EXPECTED_RECORD_LENGTH));
+        assertFreeOfTerminatorsAndTabs(record);
+
+        for (int codePoint = FIRST_PRINTABLE_CODE_POINT;
+                codePoint <= LAST_PRINTABLE_CODE_POINT;
+                codePoint++) {
+            String single = Character.toString(codePoint);
+            assertThat(asciiLength(StatementTextTemplates.stLine1CustomerName(single)))
+                    .as("code point %s must be admitted", codePoint)
+                    .isEqualTo(EXPECTED_RECORD_LENGTH);
+        }
+    }
+
+
     // Private helpers. Every width and every content comparison in this test goes through these,
     // so no assertion is ever made on a trimmed, normalised or default-charset-encoded value.
 
@@ -1559,6 +1739,109 @@ class StatementTextTemplatesTest {
     }
 
     /**
+     * Builds the hostile value planted into every entry point that takes caller text: the printable
+     * marker, then a carriage return and a line feed, then more printable text. Both terminators are
+     * given as decimal code points, so no character escape sequence appears in this file and the
+     * marker can only reach a diagnostic by being echoed.
+     *
+     * @return a value carrying a marker and an embedded CRLF
+     */
+    private static String hostileText() {
+        byte[] terminators = {ASCII_CARRIAGE_RETURN_BYTE, ASCII_LINE_FEED_BYTE};
+        return INJECTION_MARKER + new String(terminators, StandardCharsets.US_ASCII)
+                + "FORGED AUDIT ENTRY";
+    }
+
+    /**
+     * Builds a one-character value from a code point, so a single non-printable character can be fed
+     * to a builder without writing an escape sequence.
+     *
+     * @param codePoint the code point to carry
+     * @return a value of exactly one character
+     */
+    private static String oneCharacterValue(byte codePoint) {
+        return Character.toString(codePoint);
+    }
+
+    /**
+     * Builds the whole printable US-ASCII range in ascending order, used to prove the input boundary
+     * refuses nothing legitimate.
+     *
+     * @return the ninety-five printable characters, space first and tilde last
+     */
+    private static String allPrintableUsAscii() {
+        StringBuilder printable = new StringBuilder();
+        for (int codePoint = FIRST_PRINTABLE_CODE_POINT;
+                codePoint <= LAST_PRINTABLE_CODE_POINT;
+                codePoint++) {
+            printable.append((char) codePoint);
+        }
+        return printable.toString();
+    }
+
+    /**
+     * Asserts that a call is rejected and that its message is hygienic in the sense decision DL-041
+     * requires: it carries no raw terminator, no raw tab, and no fragment of the value it rejected.
+     *
+     * @param call the call expected to be rejected
+     */
+    private static void assertRejectionIsHygienic(ThrowingCallable call) {
+        assertThatThrownBy(call)
+                .isInstanceOf(RuntimeException.class)
+                .satisfies(StatementTextTemplatesTest::assertMessageIsHygienic);
+    }
+
+    /**
+     * Asserts that one rejection message carries no control character and does not echo the rejected
+     * value.
+     *
+     * <p>The marker is printable and appears in no message prose, so finding it in a diagnostic can
+     * only mean the value was interpolated. The control-character checks are the direct expression of
+     * why that matters: a raw terminator inside a log line is a log-injection primitive.</p>
+     *
+     * @param thrown the rejection to inspect
+     */
+    private static void assertMessageIsHygienic(Throwable thrown) {
+        String message = thrown.getMessage();
+        assertThat(message).as("a rejection must carry a message").isNotNull();
+        assertThat(message.indexOf((char) ASCII_LINE_FEED_BYTE))
+                .as("a diagnostic must carry no raw line feed (DL-041): %s", message)
+                .isEqualTo(-1);
+        assertThat(message.indexOf((char) ASCII_CARRIAGE_RETURN_BYTE))
+                .as("a diagnostic must carry no raw carriage return (DL-041): %s", message)
+                .isEqualTo(-1);
+        assertThat(message.indexOf((char) ASCII_TAB_BYTE))
+                .as("a diagnostic must carry no raw tab (DL-041): %s", message)
+                .isEqualTo(-1);
+        assertThat(message)
+                .as("a diagnostic must not echo the value it rejected (DL-041)")
+                .doesNotContain(INJECTION_MARKER);
+    }
+
+    /**
+     * Asserts that a value is refused at the input boundary rather than at the assembled-record
+     * invariant, and that the rejection names the parameter, the offending position and the code
+     * point without echoing the value.
+     *
+     * @param call             the call expected to be rejected
+     * @param expectedField    the parameter name the message must name
+     * @param expectedPosition the zero-based character position the message must report
+     * @param expectedByte     the code point the message must report
+     */
+    private static void assertInputBoundaryRejection(ThrowingCallable call,
+                                                     String expectedField,
+                                                     int expectedPosition,
+                                                     byte expectedByte) {
+        assertThatThrownBy(call)
+                .isExactlyInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(expectedField)
+                .hasMessageContaining("accepts printable US-ASCII only")
+                .hasMessageContaining("zero-based position " + expectedPosition)
+                .hasMessageContaining("code point " + expectedByte)
+                .satisfies(StatementTextTemplatesTest::assertMessageIsHygienic);
+    }
+
+    /**
      * Builds an eighty-byte record of spaces carrying one given byte, used to prove that an
      * embedded terminator is rejected. The byte is supplied as a decimal code point so that no
      * character escape sequence appears in this file.
@@ -1573,6 +1856,185 @@ class StatementTextTemplatesTest {
         }
         image[EXPECTED_RECORD_LENGTH / 2] = embedded;
         return new String(image, StandardCharsets.US_ASCII);
+    }
+
+    /*
+     * ========================================================================================
+     * Locale invariance - decision D-27.
+     * ========================================================================================
+     */
+
+    /**
+     * Turkish, whose casing rules fold ASCII {@code i} to a non-ASCII character.
+     */
+    private static final java.util.Locale TURKISH = java.util.Locale.forLanguageTag("tr-TR");
+
+    /**
+     * The locales the amount masks are re-rendered under.
+     *
+     * <p>Four carry a non-Latin default numbering system, under which
+     * {@code String.format("%03d", 7)} and {@code new DecimalFormat("000")} emit non-ASCII digits;
+     * the fifth carries the Turkish casing rules. Between them they cover both ways a default locale
+     * could change an emitted byte.
+     */
+    private static final java.util.List<java.util.Locale> HOSTILE_LOCALES = java.util.List.of(
+            TURKISH,
+            java.util.Locale.forLanguageTag("ar-EG-u-nu-arab"),
+            java.util.Locale.forLanguageTag("fa-IR-u-nu-arabext"),
+            java.util.Locale.forLanguageTag("bn-BD-u-nu-beng"),
+            java.util.Locale.forLanguageTag("my-MM-u-nu-mymr"));
+
+    /**
+     * Evaluates a supplier with the JVM's default locale temporarily replaced.
+     *
+     * <p>The build pins {@code -Duser.language=en -Duser.country=US}, so no other test in this class
+     * can observe a locale defect. The previous default is restored in a {@code finally} block, and
+     * the format category is restored explicitly because
+     * {@link java.util.Locale#setDefault(java.util.Locale)} overwrites both categories. Surefire runs
+     * this module with no parallelism, so mutating this process-wide setting cannot disturb a
+     * concurrently running test.
+     *
+     * @param locale the locale to install for the duration of the call
+     * @param body   the value to compute under that locale
+     * @return whatever {@code body} produced
+     */
+    private static String underLocale(final java.util.Locale locale,
+            final java.util.function.Supplier<String> body) {
+        final java.util.Locale previousDefault = java.util.Locale.getDefault();
+        final java.util.Locale previousFormat =
+                java.util.Locale.getDefault(java.util.Locale.Category.FORMAT);
+        try {
+            java.util.Locale.setDefault(locale);
+            return body.get();
+        } finally {
+            java.util.Locale.setDefault(previousDefault);
+            java.util.Locale.setDefault(java.util.Locale.Category.FORMAT, previousFormat);
+        }
+    }
+
+    @Test
+    @DisplayName("both amount masks render byte-identically under every hostile locale, which is what makes decision D-27 an enforced property rather than an implementation habit")
+    void bothAmountMasksRenderByteIdenticallyUnderEveryHostileLocale() {
+        // D-27 forbids BigDecimal.toString, NumberFormat, DecimalFormat and every other
+        // locale-sensitive formatter here, because a locale can introduce a grouping separator, a
+        // different decimal separator, a different minus glyph or a non-Latin digit set - and any one
+        // of those is a byte-parity failure in a fixed 13-position mask. The build pins en-US, so
+        // until now nothing could observe a regression against that decision. These values are chosen
+        // to exercise each of the four hazards: a grouping-width magnitude, a fractional part, a
+        // negative sign, and a value whose leading zeros are suppressed.
+        final java.util.List<BigDecimal> amounts = java.util.List.of(
+                new BigDecimal("1234567.89"),
+                new BigDecimal("-1234567.89"),
+                new BigDecimal("0.01"),
+                new BigDecimal("-0.01"),
+                new BigDecimal("0.00"),
+                // The largest value the mask admits: 9 integer digits, a point, 2 fraction digits and
+                // the trailing sign position add up to the 13 characters the mask provides. A tenth
+                // integer digit is rejected rather than truncated, which a separate test pins.
+                new BigDecimal("999999999.99"),
+                new BigDecimal("-999999999.99"));
+
+        for (final BigDecimal amount : amounts) {
+            final String pinnedMaskA =
+                    StatementTextTemplates.formatAmountMaskWithoutZeroSuppression(amount);
+            final String pinnedMaskB =
+                    StatementTextTemplates.formatAmountMaskWithZeroSuppression(amount);
+
+            for (final java.util.Locale hostile : HOSTILE_LOCALES) {
+                assertThat(underLocale(hostile,
+                        () -> StatementTextTemplates.formatAmountMaskWithoutZeroSuppression(amount)))
+                        .as("mask A for %s under %s", amount, hostile.toLanguageTag())
+                        .isEqualTo(pinnedMaskA);
+                assertThat(underLocale(hostile,
+                        () -> StatementTextTemplates.formatAmountMaskWithZeroSuppression(amount)))
+                        .as("mask B for %s under %s", amount, hostile.toLanguageTag())
+                        .isEqualTo(pinnedMaskB);
+            }
+
+            // The mask is a fixed-width US-ASCII field, so its width and its byte set are asserted
+            // as well: a non-Latin digit would encode to more than one byte and a grouping separator
+            // would displace the decimal point.
+            for (final String mask : java.util.List.of(pinnedMaskA, pinnedMaskB)) {
+                assertThat(mask).hasSize(EXPECTED_MASK_LENGTH);
+                assertThat(mask.getBytes(StandardCharsets.US_ASCII)).hasSize(EXPECTED_MASK_LENGTH);
+                for (int position = 0; position < mask.length(); position++) {
+                    final char rendered = mask.charAt(position);
+                    assertThat((int) rendered)
+                            .as("mask character at position %d of [%s] must be printable US-ASCII",
+                                    position, mask)
+                            .isBetween(FIRST_PRINTABLE_CODE_POINT, LAST_PRINTABLE_CODE_POINT);
+                }
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("every 80-byte record that embeds an amount is byte-identical under every hostile locale")
+    void everyRecordEmbeddingAnAmountIsByteIdenticalUnderEveryHostileLocale() {
+        // The masks are asserted above in isolation; this asserts the three builders that place a
+        // mask inside a complete 80-byte record, because a record is what actually reaches a file and
+        // a locale defect confined to one builder would otherwise pass.
+        final BigDecimal amount = new BigDecimal("-1234.56");
+        final String pinnedBalance = StatementTextTemplates.stLine8CurrentBalance(amount);
+        final String pinnedTotal = StatementTextTemplates.stLine14aTotalExpenditure(amount);
+        final String pinnedTransaction =
+                StatementTextTemplates.stLine14Transaction("00000000000000001", "Purchase", amount);
+
+        for (final java.util.Locale hostile : HOSTILE_LOCALES) {
+            assertThat(underLocale(hostile,
+                    () -> StatementTextTemplates.stLine8CurrentBalance(amount)))
+                    .as("stLine8CurrentBalance under %s", hostile.toLanguageTag())
+                    .isEqualTo(pinnedBalance);
+            assertThat(underLocale(hostile,
+                    () -> StatementTextTemplates.stLine14aTotalExpenditure(amount)))
+                    .as("stLine14aTotalExpenditure under %s", hostile.toLanguageTag())
+                    .isEqualTo(pinnedTotal);
+            assertThat(underLocale(hostile, () -> StatementTextTemplates.stLine14Transaction(
+                    "00000000000000001", "Purchase", amount)))
+                    .as("stLine14Transaction under %s", hostile.toLanguageTag())
+                    .isEqualTo(pinnedTransaction);
+        }
+
+        for (final String record
+                : java.util.List.of(pinnedBalance, pinnedTotal, pinnedTransaction)) {
+            assertThat(record.getBytes(StandardCharsets.US_ASCII)).hasSize(EXPECTED_RECORD_LENGTH);
+        }
+    }
+
+    @Test
+    @DisplayName("the record encoder and the input-boundary guard behave identically under a Turkish default locale, where a locale-sensitive case fold would diverge")
+    void theEncoderAndTheInputGuardAreUnchangedUnderATurkishDefaultLocale() {
+        // Turkish is the case that would break a fold built on String.toUpperCase: ASCII i folds to
+        // U+0130 there, which is not a US-ASCII byte. Nothing in this class folds case, and this test
+        // is what keeps that true - both for the emitted record and for the guard that inspects
+        // incoming text, since a guard that lower-cased its input before comparing would be just as
+        // wrong as a builder that upper-cased its output.
+        final String mixedCase = "Ibrahim Iliescu";
+        final String pinned = StatementTextTemplates.stLine1CustomerName(mixedCase);
+
+        assertThat(underLocale(TURKISH,
+                () -> StatementTextTemplates.stLine1CustomerName(mixedCase)))
+                .as("a mixed-case name must be placed verbatim under tr-TR")
+                .isEqualTo(pinned)
+                .contains(mixedCase);
+
+        // The guard must still reject a terminator under tr-TR, and still refuse to echo it.
+        final String hostile = INJECTION_MARKER + "\r\n";
+        final String message = underLocale(TURKISH, () -> {
+            try {
+                StatementTextTemplates.stLine1CustomerName(hostile);
+                return "NO REJECTION";
+            } catch (final IllegalArgumentException rejected) {
+                return rejected.getMessage();
+            }
+        });
+
+        assertThat(message)
+                .as("the input-boundary guard must still fire under tr-TR")
+                .contains("code point 13")
+                .doesNotContain(INJECTION_MARKER);
+        assertThat(message.indexOf('\r')).as("no raw carriage return").isEqualTo(-1);
+        assertThat(message.indexOf('\n')).as("no raw line feed").isEqualTo(-1);
     }
 
 }

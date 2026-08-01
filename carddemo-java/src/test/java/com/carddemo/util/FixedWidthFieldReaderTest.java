@@ -1740,4 +1740,164 @@ class FixedWidthFieldReaderTest {
         }
     }
 
+    @Nested
+    @DisplayName("diagnostic hygiene - a message names the defect, never the rejected value")
+    class DiagnosticHygiene {
+
+        @Test
+        @DisplayName("a legacy field name still renders verbatim and quoted, because that is the "
+                + "most useful thing a diagnostic can say")
+        void aPrintableFieldNameRendersVerbatim() {
+            FixedWidthFieldReader reader =
+                    FixedWidthFieldReader.of(ACCOUNT, ACCOUNT_IMAGE_ROW_0, ACCOUNT_WIDTH);
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> reader.field("ACCT-ID", ACCOUNT_WIDTH, 10))
+                    .withMessageContaining("field 'ACCT-ID'")
+                    .withMessageContaining(ACCOUNT);
+        }
+
+        @Test
+        @DisplayName("a field name carrying a line terminator degrades to a substitute naming the "
+                + "position and code point, and the real slice defect is still reported")
+        void aFieldNameCarryingATerminatorDegradesWithoutHidingTheRealDefect() {
+            FixedWidthFieldReader reader =
+                    FixedWidthFieldReader.of(ACCOUNT, ACCOUNT_IMAGE_ROW_0, ACCOUNT_WIDTH);
+            String hostile = HOSTILE_MARKER + terminators() + "FORGED AUDIT ENTRY";
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> reader.field(hostile, ACCOUNT_WIDTH, 10))
+                    .withMessageContaining("field (name not printable US-ASCII: the character at"
+                            + " zero-based position " + HOSTILE_MARKER.length() + " is code point "
+                            + (int) CARRIAGE_RETURN + ")")
+                    // The real defect - the slice runs past the record - is still reported, which is
+                    // why the name degrades instead of throwing.
+                    .withMessageContaining("slice out of range")
+                    .withMessageContaining("recordWidth=" + ACCOUNT_WIDTH)
+                    .withMessageNotContaining(HOSTILE_MARKER)
+                    .satisfies(FixedWidthFieldReaderTest::assertCarriesNoRawTerminator);
+        }
+
+        @Test
+        @DisplayName("the builder's placement diagnostics degrade a hostile field name too, so every "
+                + "route to a field label is closed")
+        void theBuilderDegradesAHostileFieldNameAsWell() {
+            String hostile = HOSTILE_MARKER + terminators() + "FORGED AUDIT ENTRY";
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> FixedWidthFieldReader.builder(ACCOUNT, ACCOUNT_WIDTH)
+                            .putAlphanumeric(hostile, 0, 4, "TOO LONG A VALUE"))
+                    .withMessageContaining("name not printable US-ASCII")
+                    .withMessageContaining("value does not fit")
+                    .withMessageNotContaining(HOSTILE_MARKER)
+                    .satisfies(FixedWidthFieldReaderTest::assertCarriesNoRawTerminator);
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> FixedWidthFieldReader.builder(ACCOUNT, ACCOUNT_WIDTH)
+                            .putNumeric(hostile, 0, 4, "123456"))
+                    .withMessageContaining("name not printable US-ASCII")
+                    .withMessageNotContaining(HOSTILE_MARKER)
+                    .satisfies(FixedWidthFieldReaderTest::assertCarriesNoRawTerminator);
+        }
+
+        @Test
+        @DisplayName("a hostile artefact name is refused at construction, because the artefact is "
+                + "written into every diagnostic this reader will ever produce")
+        void aHostileArtefactNameIsRefusedAtConstruction() {
+            String hostile = HOSTILE_MARKER + terminators() + "FORGED AUDIT ENTRY";
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> FixedWidthFieldReader.of(
+                            hostile, ACCOUNT_IMAGE_ROW_0, ACCOUNT_WIDTH))
+                    .withMessageContaining("artefact accepts printable US-ASCII only")
+                    .withMessageContaining("zero-based position " + HOSTILE_MARKER.length())
+                    .withMessageContaining("is code point " + (int) CARRIAGE_RETURN)
+                    .withMessageNotContaining(HOSTILE_MARKER)
+                    .satisfies(FixedWidthFieldReaderTest::assertCarriesNoRawTerminator);
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> FixedWidthFieldReader.builder(hostile, ACCOUNT_WIDTH))
+                    .withMessageContaining("artefact accepts printable US-ASCII only");
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> FixedWidthFieldReader.of(hostile,
+                            ACCOUNT_IMAGE_ROW_0.getBytes(StandardCharsets.US_ASCII),
+                            ACCOUNT_WIDTH))
+                    .withMessageContaining("artefact accepts printable US-ASCII only");
+        }
+
+        @Test
+        @DisplayName("the artefact rejection covers every non-printable character, and the existing "
+                + "blank and null rejections are unchanged")
+        void theArtefactRejectionCoversEveryNonPrintableCharacterAndKeepsTheOlderRules() {
+            for (char hostile : new char[] {CARRIAGE_RETURN, LINE_FEED, TAB, DELETE, NUL,
+                ABOVE_US_ASCII}) {
+                assertThatIllegalArgumentException()
+                        .as("code point %s must be refused in an artefact name", (int) hostile)
+                        .isThrownBy(() -> FixedWidthFieldReader.builder(
+                                ACCOUNT + hostile, ACCOUNT_WIDTH))
+                        .withMessageContaining("artefact accepts printable US-ASCII only")
+                        .withMessageContaining("is code point " + (int) hostile);
+            }
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> FixedWidthFieldReader.builder("   ", ACCOUNT_WIDTH))
+                    .withMessageContaining("artefact must name the record layout");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> FixedWidthFieldReader.builder(null, ACCOUNT_WIDTH))
+                    .withMessageContaining("artefact must not be null");
+        }
+    }
+
+    // Diagnostic-hygiene fixtures. Control characters are given as decimal code points, so no escape
+    // sequence appears here and a terminator found in a message can only have been echoed.
+
+    /** ASCII carriage return, 13. */
+    private static final char CARRIAGE_RETURN = 13;
+
+    /** ASCII line feed, 10. */
+    private static final char LINE_FEED = 10;
+
+    /** ASCII horizontal tab, 9. */
+    private static final char TAB = 9;
+
+    /** ASCII delete, 127: the one control code above the printable range. */
+    private static final char DELETE = 127;
+
+    /** ASCII null, 0. */
+    private static final char NUL = 0;
+
+    /** One code point above US-ASCII entirely. */
+    private static final char ABOVE_US_ASCII = 256;
+
+    /**
+     * A distinctive printable token planted in every hostile label, so that finding it in a
+     * diagnostic proves the label was echoed rather than described.
+     */
+    private static final String HOSTILE_MARKER = "QAMARKFORGEDADMIN";
+
+    /**
+     * Builds a carriage return followed by a line feed without writing an escape sequence.
+     *
+     * @return the two-character CRLF sequence
+     */
+    private static String terminators() {
+        return Character.toString(CARRIAGE_RETURN) + Character.toString(LINE_FEED);
+    }
+
+    /**
+     * Asserts that a diagnostic carries no raw carriage return, line feed or tab. A raw terminator
+     * inside a log line is a log-injection primitive whatever the provenance of the offending text,
+     * which is why a caller-supplied label is checked even though it is metadata rather than data.
+     *
+     * @param thrown the rejection to inspect
+     */
+    private static void assertCarriesNoRawTerminator(Throwable thrown) {
+        String message = thrown.getMessage();
+        assertThat(message).as("a rejection must carry a message").isNotNull();
+        assertThat(message.indexOf(CARRIAGE_RETURN))
+                .as("a diagnostic must carry no raw carriage return: %s", message).isEqualTo(-1);
+        assertThat(message.indexOf(LINE_FEED))
+                .as("a diagnostic must carry no raw line feed: %s", message).isEqualTo(-1);
+        assertThat(message.indexOf(TAB))
+                .as("a diagnostic must carry no raw tab: %s", message).isEqualTo(-1);
+    }
+
 }

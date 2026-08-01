@@ -1189,6 +1189,192 @@ class CobolStringUtilsTest {
         }
     }
 
+    /*
+     * ========================================================================================
+     * Locale invariance.
+     * ========================================================================================
+     */
+
+    @Nested
+    @DisplayName("locale invariance - the default locale cannot change a single emitted byte")
+    class LocaleInvariance {
+
+        @Test
+        @DisplayName("the ASCII fold is unchanged under a Turkish default locale, which is the one locale where String.toUpperCase would diverge")
+        void theAsciiFoldIsUnchangedUnderATurkishDefaultLocale() {
+            // Turkish is the decisive case rather than an arbitrary one. Under tr-TR the JDK folds
+            // the lower-case dotted i to U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE, which is not
+            // an ASCII byte at all, so an implementation built on String.toUpperCase() would emit a
+            // two-byte character into a field whose width is counted in bytes. The 26-character
+            // table this class uses cannot do that, and this test is what proves the difference
+            // rather than assuming it.
+            final String foldedInTurkey = underLocale(TURKISH,
+                    () -> CobolStringUtils.asciiUpperFold(LOWER_TABLE));
+
+            assertThat(foldedInTurkey)
+                    .as("the fold must produce the 26-character upper table under any locale")
+                    .isEqualTo(UPPER_TABLE);
+            assertThat(foldedInTurkey.getBytes(StandardCharsets.US_ASCII))
+                    .as("the folded value must still be one byte per character")
+                    .hasSize(CASE_TABLE_SIZE);
+
+            // Stated at the level of the single character, so a failure names the defect directly.
+            assertThat(underLocale(TURKISH, () -> CobolStringUtils.asciiUpperFold("i")))
+                    .as("i must fold to ASCII I, not to the Turkish dotted capital")
+                    .isEqualTo("I")
+                    .isNotEqualTo("i".toUpperCase(TURKISH));
+        }
+
+        @Test
+        @DisplayName("zero-fill emits ASCII zeros under an Arabic-Indic digit locale, where a locale-sensitive formatter would emit Arabic-Indic digits")
+        void zeroFillEmitsAsciiZerosUnderAnArabicIndicDigitLocale() {
+            // Under a locale whose default numbering system is arab, String.format("%03d", 7) emits
+            // U+0660 U+0660 U+0667. This primitive pads rather than formats, so it cannot, and that
+            // is the property worth pinning: the padding byte has to be ASCII zero, not "the locale's
+            // zero digit".
+            final String padded = underLocale(ARABIC_INDIC,
+                    () -> CobolStringUtils.rightJustifyZeroFill("7", MENU_OPTION_WIDTH + 1));
+
+            assertThat(padded).isEqualTo("007");
+            assertThat(padded).doesNotContain(ARABIC_INDIC_DIGIT_THREE);
+            for (final byte emitted : padded.getBytes(StandardCharsets.US_ASCII)) {
+                assertThat((char) emitted)
+                        .as("every emitted byte must be an ASCII digit")
+                        .isBetween('0', '9');
+            }
+        }
+
+        @Test
+        @DisplayName("every published primitive returns byte-identical results under each hostile locale, so the pinned harness is no longer the only reason the module is correct")
+        void everyPublishedPrimitiveIsByteIdenticalUnderEachHostileLocale() {
+            // The build pins -Duser.language=en -Duser.country=US, which means a locale defect would
+            // be invisible to every other test in this suite. This test removes that blindness for
+            // this class by computing each result under the pinned locale and then again under five
+            // hostile ones, and requiring the bytes to match. It asserts the invariance rather than
+            // the values, so it keeps holding as the primitives' own expectations evolve.
+            for (final java.util.Locale hostile : HOSTILE_LOCALES) {
+                assertThat(underLocale(hostile, () -> CobolStringUtils.asciiUpperFold(
+                        FIXTURE_EMBOSSED_NAME)))
+                        .as("asciiUpperFold under %s", hostile.toLanguageTag())
+                        .isEqualTo(FIXTURE_EMBOSSED_NAME_FOLDED);
+                assertThat(underLocale(hostile, () -> CobolStringUtils.rightJustifyZeroFill("5",
+                        MENU_OPTION_WIDTH)))
+                        .as("rightJustifyZeroFill under %s", hostile.toLanguageTag())
+                        .isEqualTo("05");
+                assertThat(underLocale(hostile, () -> CobolStringUtils
+                        .plainDecimalOfNumericLexeme("$1,234.5")))
+                        .as("plainDecimalOfNumericLexeme under %s", hostile.toLanguageTag())
+                        .isEqualTo("1234.5");
+                assertThat(underLocale(hostile, () -> String.valueOf(
+                        CobolStringUtils.isAlphaOrSpace(FIXTURE_EMBOSSED_NAME))))
+                        .as("isAlphaOrSpace under %s", hostile.toLanguageTag())
+                        .isEqualTo("true");
+                assertThat(underLocale(hostile, () -> String.valueOf(
+                        CobolStringUtils.isAlphaNumericOrSpace(FIXTURE_EMBOSSED_NAME + " 1"))))
+                        .as("isAlphaNumericOrSpace under %s", hostile.toLanguageTag())
+                        .isEqualTo("true");
+                assertThat(underLocale(hostile, () -> String.valueOf(
+                        CobolStringUtils.isNumericLexeme("1,234.5"))))
+                        .as("isNumericLexeme under %s", hostile.toLanguageTag())
+                        .isEqualTo("true");
+                assertThat(underLocale(hostile, () -> String.valueOf(
+                        CobolStringUtils.isUnsuppliedNumericLexeme("   "))))
+                        .as("isUnsuppliedNumericLexeme under %s", hostile.toLanguageTag())
+                        .isEqualTo("true");
+            }
+        }
+
+        @Test
+        @DisplayName("the membership predicates keep rejecting the locale-native characters a locale-aware implementation would start accepting")
+        void theMembershipPredicatesStillRejectLocaleNativeCharacters() {
+            // A locale-aware predicate built on Character.isLetter or Character.isDigit would begin
+            // accepting these under the matching locale, because both are Unicode-aware and neither
+            // consults the locale at all - the danger is not that the locale changes the answer but
+            // that a reader assumes a locale-hostile input is a locale problem and relaxes the table.
+            // The 52- and 62-character tables are the contract, so these stay rejected everywhere.
+            for (final java.util.Locale hostile : HOSTILE_LOCALES) {
+                assertThat(underLocale(hostile, () -> String.valueOf(
+                        CobolStringUtils.isAlphaOrSpace(DOTLESS_I))))
+                        .as("the Turkish dotless i is outside the 52-character table under %s",
+                                hostile.toLanguageTag())
+                        .isEqualTo("false");
+                assertThat(underLocale(hostile, () -> String.valueOf(
+                        CobolStringUtils.isAlphaNumericOrSpace(ARABIC_INDIC_DIGIT_THREE))))
+                        .as("an Arabic-Indic digit is outside the 62-character table under %s",
+                                hostile.toLanguageTag())
+                        .isEqualTo("false");
+                assertThat(underLocale(hostile, () -> String.valueOf(
+                        CobolStringUtils.isNumericLexeme(ARABIC_INDIC_DIGIT_THREE))))
+                        .as("an Arabic-Indic digit is not a well-formed numeric lexeme under %s",
+                                hostile.toLanguageTag())
+                        .isEqualTo("false");
+            }
+        }
+    }
+
+
+    /*
+     * ========================================================================================
+     * Locale-invariance fixtures.
+     * ========================================================================================
+     */
+
+    /**
+     * Turkish, the one locale in which {@code String.toUpperCase()} folds ASCII {@code i} to a
+     * non-ASCII character.
+     */
+    private static final java.util.Locale TURKISH = java.util.Locale.forLanguageTag("tr-TR");
+
+    /**
+     * A locale whose default numbering system emits Arabic-Indic digits, under which
+     * {@code String.format("%03d", 7)} produces {@code U+0660 U+0660 U+0667}.
+     */
+    private static final java.util.Locale ARABIC_INDIC =
+            java.util.Locale.forLanguageTag("ar-EG-u-nu-arab");
+
+    /**
+     * The locales this class runs its invariance checks under.
+     *
+     * <p>Four of the five carry a non-Latin default numbering system, which is what would corrupt a
+     * locale-sensitive numeric formatter; the fifth carries the Turkish casing rules, which is what
+     * would corrupt a locale-sensitive fold. Between them they cover both ways a default locale can
+     * change an emitted byte.
+     */
+    private static final java.util.List<java.util.Locale> HOSTILE_LOCALES = java.util.List.of(
+            TURKISH,
+            ARABIC_INDIC,
+            java.util.Locale.forLanguageTag("fa-IR-u-nu-arabext"),
+            java.util.Locale.forLanguageTag("bn-BD-u-nu-beng"),
+            java.util.Locale.forLanguageTag("my-MM-u-nu-mymr"));
+
+    /**
+     * Evaluates a supplier with the JVM's default locale temporarily replaced.
+     *
+     * <p>The build pins {@code -Duser.language=en -Duser.country=US}, so a locale defect cannot be
+     * observed by any test that does not do this. The previous default is restored in a
+     * {@code finally} block, and the format category is restored explicitly because
+     * {@link java.util.Locale#setDefault(java.util.Locale)} overwrites both categories. Surefire is
+     * configured with no parallelism in this module, so mutating this process-wide setting cannot
+     * disturb a concurrently running test.
+     *
+     * @param locale the locale to install for the duration of the call
+     * @param body   the value to compute under that locale
+     * @return whatever {@code body} produced
+     */
+    private static String underLocale(final java.util.Locale locale,
+            final java.util.function.Supplier<String> body) {
+        final java.util.Locale previousDefault = java.util.Locale.getDefault();
+        final java.util.Locale previousFormat =
+                java.util.Locale.getDefault(java.util.Locale.Category.FORMAT);
+        try {
+            java.util.Locale.setDefault(locale);
+            return body.get();
+        } finally {
+            java.util.Locale.setDefault(previousDefault);
+            java.util.Locale.setDefault(java.util.Locale.Category.FORMAT, previousFormat);
+        }
+    }
+
     /**
      * Conversion pairs, each one a lexeme an operator could type at the 15-character field and the
      * plain decimal text it must become.

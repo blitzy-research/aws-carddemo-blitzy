@@ -171,6 +171,18 @@ public final class FixedWidthFieldReader {
     private static final char MAX_ASCII = 0x7F;
 
     /**
+     * Lowest printable US-ASCII code point, the space. With {@link #LAST_PRINTABLE_ASCII} this pair
+     * bounds what a diagnostic label may carry. It deliberately says nothing about what a record
+     * <em>value</em> may carry: a slice is returned untrimmed and uninspected, because trailing
+     * spaces and blank timestamp fields are contractual in this estate, and a record image is checked
+     * only for being 7-bit ASCII. The narrower rule applies to labels alone.
+     */
+    private static final char FIRST_PRINTABLE_ASCII = 0x20;
+
+    /** Highest printable US-ASCII code point, the tilde, one below the delete control code. */
+    private static final char LAST_PRINTABLE_ASCII = 0x7E;
+
+    /**
      * Uppercase hexadecimal digits, held as an immutable {@link String} rather than a
      * {@code char[]} so that this class carries no mutable static state of any kind.
      */
@@ -586,10 +598,20 @@ public final class FixedWidthFieldReader {
      * contract is that a message identifies its subject; a reader built with an empty name produces
      * diagnostics nobody can act on.
      *
+     * <p>A name carrying anything outside printable US-ASCII is rejected here too, and this is the
+     * right place for that check rather than at each interpolation. The artefact name is woven into
+     * ten different diagnostics and into {@link #toString()}, so a name holding a carriage return or
+     * a line feed would be a log-injection primitive reachable ten different ways - exactly what
+     * decision DL-041 forbids. Because the name is supplied once, at construction, and every mapper
+     * supplies a compile-time constant, rejecting it once at the boundary closes all ten sites and
+     * costs a caller nothing. It also fails at the point the mistake was made, rather than later
+     * inside an unrelated slice.
+     *
      * @param artefact candidate layout name
      * @return the same name, once validated
      * @throws NullPointerException     if {@code artefact} is {@code null}
-     * @throws IllegalArgumentException if {@code artefact} contains no non-space character
+     * @throws IllegalArgumentException if {@code artefact} contains no non-space character, or
+     *                                  carries a character outside printable US-ASCII
      */
     private static String requireArtefact(String artefact) {
         Objects.requireNonNull(artefact, "artefact must not be null");
@@ -604,6 +626,17 @@ public final class FixedWidthFieldReader {
             throw new IllegalArgumentException(
                     "artefact must name the record layout so diagnostics can identify it, "
                             + "but it contained no non-space character");
+        }
+        for (int i = 0; i < artefact.length(); i++) {
+            char candidate = artefact.charAt(i);
+            if (candidate < FIRST_PRINTABLE_ASCII || candidate > LAST_PRINTABLE_ASCII) {
+                throw new IllegalArgumentException(
+                        "artefact accepts printable US-ASCII only, that is code points "
+                                + (int) FIRST_PRINTABLE_ASCII + " to " + (int) LAST_PRINTABLE_ASCII
+                                + ", because the name is written into every diagnostic this reader"
+                                + " produces; the character at zero-based position " + i
+                                + " is code point " + (int) candidate);
+            }
         }
         return artefact;
     }
@@ -761,13 +794,38 @@ public final class FixedWidthFieldReader {
     }
 
     /**
-     * Renders an optional field name as a diagnostic fragment.
+     * Renders an optional field name as a diagnostic fragment, degrading a name that is not safe to
+     * render rather than passing it through.
+     *
+     * <p>The field name is caller-supplied metadata rather than rejected data, so it is not the
+     * subject of decision DL-041 in the obvious sense; it is caught by that decision all the same,
+     * because a name arriving here with a carriage return or a line feed in it would put a raw
+     * terminator into a log line, and a diagnostic that can be made to do that is a log-injection
+     * primitive whatever the provenance of the offending text. The name is the one fragment of these
+     * messages this class does not author itself, so it is the one fragment that has to be checked.
+     * A printable name renders exactly as before - the eleven mappers pass legacy field names such as
+     * {@code ACCT-ID} and {@code CARD-NUM}, which are the most useful thing a diagnostic can say.</p>
+     *
+     * <p>It degrades rather than throwing because every caller is already on a failure path,
+     * assembling the message for a defect it has just detected. Throwing here would discard that
+     * message and report an unrelated one, hiding the real fault behind a secondary one.</p>
      *
      * @param fieldName field name, or {@code null} when the caller supplied none
-     * @return {@code ""} when no name was supplied, otherwise {@code " field 'NAME'"}
+     * @return {@code ""} when no name was supplied, {@code " field 'NAME'"} for a printable name, and
+     *         a substitute fragment naming the offending position and code point otherwise
      */
     private static String describeField(String fieldName) {
-        return fieldName == null ? "" : " field '" + fieldName + "'";
+        if (fieldName == null) {
+            return "";
+        }
+        for (int i = 0; i < fieldName.length(); i++) {
+            char candidate = fieldName.charAt(i);
+            if (candidate < FIRST_PRINTABLE_ASCII || candidate > LAST_PRINTABLE_ASCII) {
+                return " field (name not printable US-ASCII: the character at zero-based position "
+                        + i + " is code point " + (int) candidate + ")";
+            }
+        }
+        return " field '" + fieldName + "'";
     }
 
     /**
@@ -1019,8 +1077,11 @@ public final class FixedWidthFieldReader {
             requireSliceWithin(artefact, fieldName, offset, length, recordWidth);
             byte[] encoded = encodeAscii(artefact, fieldName, value);
             if (encoded.length > length) {
+                // The field name goes through describeField rather than being interpolated
+                // directly, so that this site cannot become the one place a hostile label reaches a
+                // log line. Every other diagnostic in this class already routes through it.
                 throw new IllegalArgumentException("value does not fit " + artefact
-                        + " record image field '" + fieldName + "': field width is " + length
+                        + " record image" + describeField(fieldName) + ": field width is " + length
                         + " encoded bytes but the value is " + encoded.length
                         + " encoded bytes; a fixed-width field is never truncated to fit, because a"
                         + " truncated value would leave the record the right width and the wrong"

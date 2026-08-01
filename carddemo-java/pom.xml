@@ -377,6 +377,22 @@
          ============================================================== -->
     <test.jvm.args>-XX:+EnableDynamicAgentLoading -Xshare:off -Duser.language=en -Duser.country=US -Duser.timezone=UTC -Dfile.encoding=UTF-8</test.jvm.args>
 
+    <!-- ==============================================================
+         Unit tier report destination.
+
+         The default is exactly the path Surefire would have used on its own, so declaring it
+         changes nothing about an ordinary build. It exists because Surefire's reportsDirectory
+         parameter declares no user property of its own, which means -Dsurefire.reportsDirectory is
+         accepted on the command line and then silently ignored. Routing the parameter through a
+         property here is what makes the destination genuinely overridable.
+
+         The continuous integration locale gate re-runs this tier with the default locale changed.
+         Without an overridable destination that re-run would overwrite the reports the pinned run
+         produced, and the published evidence would describe the wrong execution while appearing
+         intact. Overriding this property per locale keeps each execution attributable.
+         ============================================================== -->
+    <test.reports.dir>${project.build.directory}/surefire-reports</test.reports.dir>
+
   </properties>
 
   <!-- ================================================================
@@ -849,6 +865,7 @@
         <version>${maven-surefire-plugin.version}</version>
         <configuration>
           <argLine>@{argLine} ${test.jvm.args}</argLine>
+          <reportsDirectory>${test.reports.dir}</reportsDirectory>
           <includes>
             <include>**/*Test.java</include>
           </includes>

@@ -305,6 +305,17 @@ public final class ZonedDecimalCodec {
     /** Highest code point that {@link StandardCharsets#US_ASCII} can represent. */
     private static final int MAX_ASCII_CODE_POINT = 0x7F;
 
+    /**
+     * Lowest printable US-ASCII code point, the space. Together with
+     * {@link #LAST_PRINTABLE_US_ASCII} this pair is the single definition of "printable" in this
+     * class, used both when describing a byte and when deciding whether a caller-supplied field name
+     * is safe to render into a diagnostic.
+     */
+    private static final char FIRST_PRINTABLE_US_ASCII = 0x20;
+
+    /** Highest printable US-ASCII code point, the tilde, one below the delete control code. */
+    private static final char LAST_PRINTABLE_US_ASCII = 0x7E;
+
     /** Label used in a diagnostic message when the caller supplied no field name. */
     private static final String UNNAMED_FIELD = "(unnamed field)";
 
@@ -937,22 +948,48 @@ public final class ZonedDecimalCodec {
     private static String describeByte(byte value) {
         int unsigned = value & 0xFF;
         String hex = String.format("0x%02X", unsigned);
-        if (unsigned >= ' ' && unsigned <= '~') {
+        if (unsigned >= FIRST_PRINTABLE_US_ASCII && unsigned <= LAST_PRINTABLE_US_ASCII) {
             return hex + " ('" + (char) unsigned + "')";
         }
         return hex;
     }
 
     /**
-     * Formats the field name for a diagnostic, degrading to a fixed substitute label when the
-     * caller supplied none, so that building a message can never mask the defect being reported.
+     * Formats the field name for a diagnostic, degrading to a substitute label when the caller
+     * supplied none or supplied one that is not safe to render.
      *
-     * @param  fieldName the legacy field name, possibly {@code null} or blank
-     * @return the quoted field name, or the substitute label
+     * <p><strong>Why a name is inspected at all.</strong> The field name is developer-supplied
+     * metadata, not rejected data, so at first glance it looks exempt from decision DL-041. It is
+     * not, and for a concrete reason: a name that reaches here holding a carriage return or a line
+     * feed would put a raw terminator into a log line, which is the very log-injection primitive
+     * DL-041 exists to close. The name is the one fragment of these messages this class does not
+     * itself author, so it is the one fragment that has to be checked. A printable name renders
+     * exactly as before, quoted and byte-for-byte unchanged, because the legacy field names this
+     * class is called with - {@code ACCT-CURR-BAL}, {@code DIS-INT-RATE}, {@code DALYTRAN-AMT} - are
+     * the most useful thing a diagnostic can say and nothing about them needs altering.</p>
+     *
+     * <p><strong>Why it degrades instead of throwing.</strong> Every call site of this method is
+     * already on a failure path, assembling the message for a defect it has just detected. Throwing
+     * here would replace that message with a second, unrelated one and the original defect would be
+     * lost - the caller would be told its field name is malformed and never told what was actually
+     * wrong with its data. So an unsafe name is replaced by a substitute that reports the offending
+     * character's zero-based position and code point, in the same shape as
+     * {@link #UNNAMED_FIELD}, and the real diagnostic proceeds intact.</p>
+     *
+     * @param  fieldName the legacy field name, possibly {@code null}, blank, or unsafe to render
+     * @return the quoted field name, or a substitute label; never {@code null} and never a value
+     *         carrying a character outside printable US-ASCII
      */
     private static String fieldLabel(String fieldName) {
         if (fieldName == null || fieldName.isBlank()) {
             return UNNAMED_FIELD;
+        }
+        for (int position = 0; position < fieldName.length(); position++) {
+            char character = fieldName.charAt(position);
+            if (character < FIRST_PRINTABLE_US_ASCII || character > LAST_PRINTABLE_US_ASCII) {
+                return "(field name not printable US-ASCII: the character at zero-based position "
+                        + position + " is code point " + (int) character + ")";
+            }
         }
         return "'" + fieldName + "'";
     }
