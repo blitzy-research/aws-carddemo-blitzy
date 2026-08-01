@@ -29,27 +29,23 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Unit test for {@link StatementTextTemplates}, the holder of the plain-text account statement
  * layout.
  *
- * <h2>What this test is for</h2>
+ * <p><strong>What this test is for.</strong> The statement text record is exactly 80 US-ASCII bytes
+ * wide and the layout has exactly seventeen line groups, every one of which sums to those 80 bytes.
+ * The emitted statement file is compared byte for byte against a golden fixture, so this class is a
+ * byte-parity surface: a template that is one space out, or that picks the wrong amount mask,
+ * produces output that looks entirely plausible in a diff viewer and still fails the comparison.
+ * Every assertion below is therefore made on the {@link StandardCharsets#US_ASCII} encoded image
+ * rather than on a trimmed or normalised string, and every width is measured in encoded bytes rather
+ * than in string characters.</p>
  *
- * <p>The statement text record is exactly 80 US-ASCII bytes wide and the layout has exactly
- * seventeen line groups, every one of which sums to those 80 bytes. The emitted statement file is
- * compared byte for byte against a golden fixture, so this class is a byte-parity surface: a
- * template that is one space out, or that picks the wrong amount mask, produces output that looks
- * entirely plausible in a diff viewer and still fails the comparison. Every assertion below is
- * therefore made on the {@link StandardCharsets#US_ASCII} encoded image rather than on a trimmed or
- * normalised string, and every width is measured in encoded bytes rather than in string
- * characters.</p>
+ * <p><strong>The expectations are an independent oracle.</strong> Every expected record is
+ * hand-written from the verified component widths and caption literals of the seventeen line groups.
+ * No expectation is produced by calling a constant or a method of the class under test, no
+ * expectation is a captured snapshot of previous output, and no assertion compares a value to
+ * itself. A dedicated test asserts the geometry of the oracle itself, so a typing slip in an
+ * expectation fails loudly here instead of silently agreeing with a wrong implementation.</p>
  *
- * <h2>The expectations are an independent oracle</h2>
- *
- * <p>Every expected record in this file is hand-written from the verified component widths and
- * caption literals of the seventeen line groups. No expectation is produced by calling a constant or
- * a method of the class under test, no expectation is a captured snapshot of previous output, and no
- * assertion compares a value to itself. A dedicated test asserts the geometry of the oracle itself,
- * so a typing slip in an expectation fails loudly here instead of silently agreeing with a wrong
- * implementation.</p>
- *
- * <h2>The three hazards this test exists to pin down</h2>
+ * <p><strong>The three hazards this test exists to pin down.</strong>
  *
  * <ol>
  *   <li><strong>The two banners use different splits.</strong> The start banner is 31 asterisks, an
@@ -69,52 +65,39 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       differ for the same zero-suppressible input.</li>
  * </ol>
  *
- * <h2>Shared mask semantics asserted here</h2>
- *
- * <p>The sign is trailing in both masks: a negative value ends in a minus and a non-negative value
- * ends in a space. A plus sign is never emitted, and its absence is asserted by byte value. A
- * blank-when-zero clause appears nowhere in the legacy estate, so a zero value always renders its
- * decimal point and two fraction digits rather than an empty field. Values arrive already at scale
- * two with truncation applied upstream; this test never re-scales, never selects a rounding mode and
- * never performs arithmetic on an amount. A value at another scale, and a value whose integer part
- * needs more than nine digits, are both rejected rather than quietly adjusted, and both rejections
+ * <p><strong>Shared mask semantics asserted here.</strong> The sign is trailing in both masks: a
+ * negative value ends in a minus and a non-negative value ends in a space. A plus sign is never
+ * emitted, and its absence is asserted by byte value. A blank-when-zero clause appears nowhere in
+ * the legacy estate, so a zero value always renders its decimal point and two fraction digits
+ * rather than an empty field. Values arrive already at scale two with truncation applied upstream;
+ * this test never re-scales, never selects a rounding mode and never performs arithmetic on an
+ * amount. A value at another scale (decision D-05) and a value whose integer part needs more than
+ * nine digits (decision D-06) are both rejected rather than quietly adjusted, and both rejections
  * are asserted on type and on message content.</p>
  *
- * <h2>How the expectations are built</h2>
+ * <p><strong>How the expectations are built.</strong> Every expected record and every expected mask
+ * below is a hand-written literal, mirroring the production decision to hold this layout as literal
+ * constants rather than render it through a templating engine (decision D-27): a template introduces
+ * whitespace and ordering variability that a byte-for-byte comparison cannot absorb, so the literals
+ * are the contract. For the same reason no format-string abstraction, no locale-sensitive number
+ * formatting and no text-block reflow is used to build an expectation.</p>
  *
- * <p>Every expected record and every expected mask below is a hand-written literal. That mirrors the
- * production decision to hold this layout as literal constants rather than to render it through a
- * templating engine: a template introduces whitespace and ordering variability that a byte-for-byte
- * comparison cannot absorb, so the literals are the contract. For the same reason no format-string
- * abstraction, no locale-sensitive number formatting and no text-block reflow is used to build an
- * expectation, and no expectation is ever produced by calling the class under test.</p>
- *
- * <h2>Deliberately not covered here</h2>
- *
- * <p>The order in which records are emitted, the fact that the rule line occupies three distinct
- * positions in that order, page structure, and the mapping of the altered 350-byte transaction
- * record all belong to the batch tier and the statement generation service. This test asserts only
- * that the rule line is a single reusable constant. The 100-byte HTML statement stream is a separate
- * record width in a separate holder; the job stream declares the same data-definition name at 80 in
- * one step and at 100 in the next, and that conflict is resolved to 80 for the text stream and 100
- * for the HTML stream, which is why 80 is what is asserted here. The two-byte timestamp truncation
- * introduced by the job's re-projection is likewise outside this class.</p>
- *
- * <h2>Provenance</h2>
- *
- * <p>Layout facts taken from the legacy estate at commit
- * 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release stamp CardDemo_v1.0-15-g27d6c6f-68
- * dated 2022-07-19. Provenance is recorded here as documentation only and is never asserted against
- * a member of the class under test.</p>
+ * <p><strong>Deliberately not covered here.</strong> The order in which records are emitted, the
+ * fact that the rule line occupies three distinct positions in that order, page structure, and the
+ * mapping of the altered 350-byte transaction record all belong to the batch tier and the statement
+ * generation service; this test asserts only that the rule line is a single reusable constant. The
+ * 100-byte HTML statement stream is a separate record width in a separate holder, and the job stream
+ * declares the same data-definition name at 80 in one step and at 100 in the next - a conflict
+ * resolved to 80 for the text stream and 100 for the HTML stream (decision D-44), which is why 80 is
+ * what is asserted here. The two-byte timestamp truncation introduced by the job's re-projection is
+ * likewise outside this class.</p>
  */
+@DisplayName("StatementTextTemplates :: eighty-byte plain-text statement line templates")
 class StatementTextTemplatesTest {
 
-    // -----------------------------------------------------------------------------------------
-    // ASCII byte values used for byte-level inspection. Every one is given as a decimal code
-    // point rather than as a character escape, so that no escape sequence of any kind appears
-    // anywhere in this file -- in particular none that could be mistaken for an emitted line
-    // terminator or tab.
-    // -----------------------------------------------------------------------------------------
+    // ASCII byte values used for byte-level inspection, each given as a decimal code point rather
+    // than a character escape, so that no escape sequence appears anywhere in this file - in
+    // particular none that could be mistaken for an emitted line terminator or tab.
 
     /** ASCII horizontal tab, 9. Detected and asserted absent; never emitted. */
     private static final byte ASCII_TAB_BYTE = 9;
@@ -146,10 +129,8 @@ class StatementTextTemplatesTest {
     /** ASCII colon, 58. Closes each of the three twenty-byte labels. */
     private static final byte ASCII_COLON_BYTE = 58;
 
-    // -----------------------------------------------------------------------------------------
     // Expected geometry, written out as literals so that every number this test asserts against
     // is visible at the point of use rather than borrowed from the class under test.
-    // -----------------------------------------------------------------------------------------
 
     /** Expected width of one statement text record, in encoded bytes. */
     private static final int EXPECTED_RECORD_LENGTH = 80;
@@ -172,17 +153,14 @@ class StatementTextTemplatesTest {
     /** Expected text width of the end banner. Two fewer than the start banner's. */
     private static final int EXPECTED_END_BANNER_TEXT_WIDTH = 16;
 
-    // -----------------------------------------------------------------------------------------
-    // THE INDEPENDENT ORACLE :: the eight wholly fixed line groups.
-    //
-    // Composition of each, hand-derived from the declared component widths:
+    // The eight wholly fixed line groups. Composition of each, hand-derived from the declared
+    // component widths:
     //   start banner  31 asterisk + 18 text          + 31 asterisk
     //   rule line     80 hyphen
     //   basic details 33 space    + 14 field         + 33 space   (13-char literal, ONE pad byte)
     //   summary       30 space    + 20 field         + 30 space   (19 caps, ONE trailing space)
     //   columns       16 field    + 51 field         + 13 field   (35 pad; TWO leading spaces)
     //   end banner    32 asterisk + 16 text          + 32 asterisk
-    // -----------------------------------------------------------------------------------------
 
     /** Start banner: 31 asterisks, the 18-byte start text, 31 asterisks. */
     private static final String E_ST_LINE0_START_BANNER =
@@ -208,12 +186,9 @@ class StatementTextTemplatesTest {
     private static final String E_ST_LINE15_END_BANNER =
             "********************************END OF STATEMENT********************************";
 
-    // -----------------------------------------------------------------------------------------
-    // THE INDEPENDENT ORACLE :: the nine line groups that carry substituted values.
-    //
-    // Character fields follow a fixed-width move: a shorter value is padded on the right with
-    // spaces and a longer value is truncated on the right, both measured in encoded bytes.
-    // -----------------------------------------------------------------------------------------
+    // The nine line groups that carry substituted values. Character fields follow a fixed-width
+    // move: a shorter value is padded on the right with spaces and a longer value is truncated on
+    // the right, both measured in encoded bytes.
 
     /** Name line: a 13-character name padded to 75, then the 5-byte filler. */
     private static final String E_ST_LINE1_SHORT_NAME =
@@ -319,14 +294,10 @@ class StatementTextTemplatesTest {
     private static final String E_ST_LINE14A_ZERO =
             "Total EXP:                                                        $         .00 ";
 
-    // -----------------------------------------------------------------------------------------
-    // THE INDEPENDENT ORACLE :: the two 13-character trailing-minus masks.
-    //
-    // Geometry of both: 9 integer positions, a literal decimal point, 2 fraction positions and a
-    // trailing sign position. Mask A prints leading zeros; mask B replaces them with spaces up to
-    // but never past the decimal point. Fraction digits are never suppressed by either mask. A
-    // negative value ends in a minus, a non-negative value in a space, and never in a plus.
-    // -----------------------------------------------------------------------------------------
+    // The two 13-character trailing-minus masks. Geometry of both: 9 integer positions, a literal
+    // decimal point, 2 fraction positions and a trailing sign position. Mask A prints leading
+    // zeros; mask B replaces them with spaces up to but never past the decimal point. Fraction
+    // digits are never suppressed by either mask.
 
     /** Mask A for one point two three: eight zeros, a nine, the point, the fraction, a space. */
     private static final String E_MASK_A_ONE_POINT_TWO_THREE = "000000001.23 ";
@@ -371,11 +342,9 @@ class StatementTextTemplatesTest {
     private static final String E_MASK_B_MAXIMUM_NEGATIVE = "999999999.99-";
 
 
-    // =========================================================================================
     // The oracle checks itself first. If a hand-written expectation above has one space too many
     // or too few, this test fails before any comparison against the class under test runs, which
     // is what stops a mistyped expectation from quietly agreeing with a wrong implementation.
-    // =========================================================================================
 
     @Test
     @DisplayName("the hand-written oracle is itself well formed: every expected record is eighty "
@@ -433,9 +402,7 @@ class StatementTextTemplatesTest {
         assertThat(asciiLength(E_MASK_B_MAXIMUM_NEGATIVE)).isEqualTo(EXPECTED_MASK_LENGTH);
     }
 
-    // =========================================================================================
     // Record width :: every fixed constant and every builder result is exactly eighty bytes.
-    // =========================================================================================
 
     @Test
     @DisplayName("every wholly fixed line group is exactly eighty encoded bytes")
@@ -486,9 +453,7 @@ class StatementTextTemplatesTest {
                 .isEqualTo(EXPECTED_RECORD_LENGTH);
     }
 
-    // =========================================================================================
     // TRAP ONE :: the two banners use different asterisk splits.
-    // =========================================================================================
 
     @Test
     @DisplayName("the start banner is thirty-one asterisks, an eighteen-byte text and thirty-one "
@@ -556,9 +521,7 @@ class StatementTextTemplatesTest {
                 .isEqualTo(EXPECTED_RECORD_LENGTH);
     }
 
-    // =========================================================================================
     // The rule line :: one constant, three emitted positions.
-    // =========================================================================================
 
     @Test
     @DisplayName("the rule line is exactly eighty hyphens and nothing else")
@@ -591,9 +554,7 @@ class StatementTextTemplatesTest {
     }
 
 
-    // =========================================================================================
     // TRAP TWO :: the pad counts inside the fixed captions are contractual content.
-    // =========================================================================================
 
     @Test
     @DisplayName("the basic-details heading is thirty-three spaces, a fourteen-byte field holding a "
@@ -675,9 +636,7 @@ class StatementTextTemplatesTest {
         assertThat(StatementTextTemplates.ST_LINE13_TRAN_AMOUNT_WIDTH).isEqualTo(13);
     }
 
-    // =========================================================================================
     // The value-carrying line groups.
-    // =========================================================================================
 
     @Test
     @DisplayName("the name line is a seventy-five-byte name field followed by a five-byte filler")
@@ -842,11 +801,9 @@ class StatementTextTemplatesTest {
     }
 
 
-    // =========================================================================================
     // TRAP THREE :: two thirteen-character trailing-minus masks, differing only in whether the
     // leading integer positions are suppressed. Each is exercised through its own name; neither
     // is selected here by a flag, and the two are never merged.
-    // =========================================================================================
 
     @Test
     @DisplayName("mask A does NOT suppress leading zeros: they are printed as zero characters")
@@ -1051,9 +1008,7 @@ class StatementTextTemplatesTest {
         assertThat(runLength(asciiBytes(withSuppression), 0, ASCII_SPACE_BYTE)).isEqualTo(0);
     }
 
-    // =========================================================================================
     // The declared geometry constants.
-    // =========================================================================================
 
     @Test
     @DisplayName("the record width is eighty, the line group count is seventeen and the mask width "
@@ -1093,15 +1048,11 @@ class StatementTextTemplatesTest {
     }
 
 
-    // =========================================================================================
-    // The value contract :: scale in, no arithmetic, no silent adjustment.
-    //
-    // Amounts arrive already at scale two with truncation toward zero already applied by the
-    // upstream codec and the computing services -- the legacy estate contains no rounding clause
-    // anywhere, so truncation is the estate-wide policy. Nothing here re-scales, selects a
-    // rounding mode or performs arithmetic; a value at any other scale is a caller defect and is
-    // rejected so that a truncation-policy violation cannot hide inside formatting.
-    // =========================================================================================
+    // The value contract: amounts arrive already at scale two with truncation toward zero already
+    // applied upstream, because the estate declares no rounding clause anywhere. Nothing here
+    // re-scales, selects a rounding mode or performs arithmetic; a value at any other scale is a
+    // caller defect and is rejected so that a truncation-policy violation cannot hide inside
+    // formatting.
 
     @Test
     @DisplayName("a value at scale zero is rejected, and the rejection names both the expected and "
@@ -1240,9 +1191,7 @@ class StatementTextTemplatesTest {
                 .hasMessageContaining("does not fit mask Z(9).99-");
     }
 
-    // =========================================================================================
     // Character-field semantics :: right-truncate, right-pad, both measured in encoded bytes.
-    // =========================================================================================
 
     @Test
     @DisplayName("a character value shorter than its field is padded on the right with spaces to "
@@ -1302,10 +1251,8 @@ class StatementTextTemplatesTest {
                 .isEqualTo(asciiBytes(E_ST_LINE14_TRUNCATED));
     }
 
-    // =========================================================================================
     // No line terminator, no tab. The emitted record is eighty data bytes; record separation is
     // the writer's concern in the batch layer.
-    // =========================================================================================
 
     @Test
     @DisplayName("no fixed constant and no builder result contains a line feed, a carriage return "
@@ -1344,10 +1291,8 @@ class StatementTextTemplatesTest {
                 StatementTextTemplates.formatAmountMaskWithZeroSuppression(new BigDecimal("1.23")));
     }
 
-    // =========================================================================================
     // Absent values are rejected. An absent value and an empty value are different things, and
     // the legacy fields were never absent.
-    // =========================================================================================
 
     @Test
     @DisplayName("a null argument is rejected for each builder parameter independently")
@@ -1405,10 +1350,8 @@ class StatementTextTemplatesTest {
                 .hasMessage("record");
     }
 
-    // =========================================================================================
     // Encoding to the record image. The charset decision belongs with the layout, so no writer
     // has to make it, and it is always US-ASCII rather than the platform default.
-    // =========================================================================================
 
     @Test
     @DisplayName("a record encodes to exactly eighty US-ASCII bytes, in a freshly allocated array")
@@ -1464,10 +1407,8 @@ class StatementTextTemplatesTest {
                 .hasMessageContaining("must contain no line terminator");
     }
 
-    // =========================================================================================
     // Private helpers. Every width and every content comparison in this test goes through these,
     // so no assertion is ever made on a trimmed, normalised or default-charset-encoded value.
-    // =========================================================================================
 
     /**
      * Encodes a value to its US-ASCII image. Named explicitly at every boundary so that no

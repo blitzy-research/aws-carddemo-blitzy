@@ -78,19 +78,35 @@
 # runner, which is what makes the zero-warning deployable-artifact requirement
 # reproducible rather than machine-dependent.
 #
-# Provenance. The executable body below is the canonical Apache Maven Wrapper
-# POSIX launcher, version 3.3.4, taken unmodified from the only-script
-# distribution published on Maven Central as
+# Provenance. The executable body below derives from the canonical Apache Maven
+# Wrapper POSIX launcher, version 3.3.4, as published on Maven Central in
 #   org.apache.maven.wrapper:maven-wrapper-distribution:3.3.4:zip:only-script
 # whose mvnw member has SHA-256
 #   cae96cef89ebea3531221f4ae17c23cf8edf67d00eae8306d4186ae1bbed4d02
-# so the resolution, download, checksum and exec logic can be re-verified
-# against upstream at any time. The CardDemo additions are confined to the
-# licence header, this comment block, the three extra ENV vars documented
-# above and the wrapperVersion line in the properties parser; none of them
-# alters control flow. Using the canonical script rather than a bespoke
-# downloader is deliberate: a developer's existing expectations of ./mvnw are
-# part of the contract.
+# so this file can be diffed against upstream at any time. Using the canonical
+# script rather than a bespoke downloader is deliberate: a developer's existing
+# expectations of ./mvnw are part of the contract.
+#
+# Deviations from upstream, stated exhaustively so the diff is never a surprise.
+# Presentation-only: the licence header, these comment blocks, the three extra
+# MVNW_* environment variables documented above and the wrapperVersion line in
+# the properties parser. Behavioural, and confined to making the JDK-only
+# prerequisite above literally true - each is annotated inline where it appears:
+#   1. The URL is never rewritten to the -bin.tar.gz variant when unzip is
+#      missing. Upstream fetches that second archive while still validating it
+#      against the .zip digest pinned in the properties file, which cannot
+#      succeed; keeping the pinned .zip is what lets the digest describe the
+#      bytes that actually arrive.
+#   2. SHA-256 validation falls back to java.security when neither sha256sum nor
+#      shasum is on PATH, instead of exiting 1. Verification stays mandatory: a
+#      mismatch still fails closed, and only an absent JDK now stops the build.
+#   3. Extraction falls back to the JDK's zip filesystem provider when unzip is
+#      missing, replacing an untar branch that can no longer be reached because
+#      no .tar.gz is ever downloaded.
+# Resolution, caching, HTTP authentication, argument forwarding and the exec
+# handover are untouched, and the cache directory this launcher computes for a
+# given distributionUrl is unchanged, so an existing ~/.m2/wrapper/dists entry
+# is still found and reused.
 #
 # No committed jar. This module uses the wrapper's only-script distribution
 # type, declared in .mvn/wrapper/maven-wrapper.properties. In that mode the
@@ -267,15 +283,24 @@ verbose "Couldn't find MAVEN_HOME, downloading and installing it ..."
 verbose "Downloading from: $distributionUrl"
 verbose "Downloading to: $TMP_DOWNLOAD_DIR/$distributionUrlName"
 
-# select .zip or .tar.gz
-if ! command -v unzip >/dev/null; then
-  distributionUrl="${distributionUrl%.zip}.tar.gz"
-  distributionUrlName="${distributionUrl##*/}"
-fi
+# CardDemo modification. The archive is ALWAYS the .zip named in
+# .mvn/wrapper/maven-wrapper.properties, and the URL is never rewritten here.
+#
+# The upstream launcher switches the URL to the .tar.gz variant when unzip is
+# absent, but distributionSha256Sum digests the .zip. Downloading a different
+# archive than the one the digest describes makes verification fail every time,
+# so that path could never install Maven - it could only fail, and it could only
+# fail on precisely the machines that have no unzip, which is where the wrapper
+# has to work hardest. Keeping the pinned .zip means the digest always describes
+# the bytes actually fetched.
+#
+# Absent unzip is handled where it is actually a problem - at extraction, by the
+# JDK-only fallback further down - rather than by fetching a second archive whose
+# checksum this project does not pin.
 
 # verbose opt
-__MVNW_QUIET_WGET=--quiet __MVNW_QUIET_CURL=--silent __MVNW_QUIET_UNZIP=-q __MVNW_QUIET_TAR=''
-[ "${MVNW_VERBOSE-}" != true ] || __MVNW_QUIET_WGET='' __MVNW_QUIET_CURL='' __MVNW_QUIET_UNZIP='' __MVNW_QUIET_TAR=v
+__MVNW_QUIET_WGET=--quiet __MVNW_QUIET_CURL=--silent __MVNW_QUIET_UNZIP=-q
+[ "${MVNW_VERBOSE-}" != true ] || __MVNW_QUIET_WGET='' __MVNW_QUIET_CURL='' __MVNW_QUIET_UNZIP=''
 
 # normalize http auth
 case "${MVNW_PASSWORD:+has-password}" in
@@ -329,9 +354,48 @@ if [ -n "${distributionSha256Sum-}" ]; then
     if echo "$distributionSha256Sum  $TMP_DOWNLOAD_DIR/$distributionUrlName" | shasum -a 256 -c >/dev/null 2>&1; then
       distributionSha256Result=true
     fi
+  elif set_java_home; then
+    # CardDemo addition: digest the archive with the JDK when no digest utility is
+    # on PATH. Neither sha256sum nor shasum is specified by POSIX, so requiring one
+    # would contradict this project's stated prerequisite of a JDK alone - and the
+    # upstream launcher's response to their absence is to exit 1, which turns a
+    # missing convenience utility into a build that cannot run. java.security
+    # computes the same digest, is present by definition wherever this script can
+    # run Maven at all, and keeps verification mandatory rather than optional: the
+    # digest is still compared, and a mismatch still fails closed below.
+    verbose " - No digest utility found; digesting with the JDK ..."
+    javaDigestSource="$TMP_DOWNLOAD_DIR/WrapperSha256.java"
+    cat >"$javaDigestSource" <<'END_WRAPPER_SHA256'
+public class WrapperSha256 {
+  public static void main(String[] args) throws Exception {
+    java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+    byte[] buffer = new byte[65536];
+    try (java.io.InputStream input =
+        java.nio.file.Files.newInputStream(java.nio.file.Paths.get(args[0]))) {
+      for (int read = input.read(buffer); read != -1; read = input.read(buffer)) {
+        digest.update(buffer, 0, read);
+      }
+    }
+    StringBuilder hex = new StringBuilder(64);
+    for (byte value : digest.digest()) {
+      hex.append(Character.forDigit((value >> 4) & 0xF, 16));
+      hex.append(Character.forDigit(value & 0xF, 16));
+    }
+    System.out.println(hex);
+  }
+}
+END_WRAPPER_SHA256
+    "$(native_path "$JAVACCMD")" "$(native_path "$javaDigestSource")" || die "Failed to compile WrapperSha256.java"
+    computedSha256Sum="$("$(native_path "$JAVACMD")" -cp "$(native_path "$TMP_DOWNLOAD_DIR")" WrapperSha256 "$(native_path "$TMP_DOWNLOAD_DIR/$distributionUrlName")")" || die "Failed to compute the distribution SHA-256 with the JDK"
+    # The configured value is lowercase hex by contract and the digest above is
+    # emitted lowercase, so a plain string comparison is exact; trim only removes
+    # the line terminator the JVM printed.
+    if [ "$(trim "$computedSha256Sum")" = "$distributionSha256Sum" ]; then
+      distributionSha256Result=true
+    fi
   else
-    echo "Checksum validation was requested but neither 'sha256sum' or 'shasum' are available." >&2
-    echo "Please install either command, or disable validation by removing 'distributionSha256Sum' from your maven-wrapper.properties." >&2
+    echo "Checksum validation was requested but no 'sha256sum' or 'shasum' is available and no JDK could be located." >&2
+    echo "Set JAVA_HOME to a JDK, or put java and javac on PATH, so the digest can be computed without either command." >&2
     exit 1
   fi
   if [ $distributionSha256Result = false ]; then
@@ -344,8 +408,71 @@ fi
 # unzip and move
 if command -v unzip >/dev/null; then
   unzip ${__MVNW_QUIET_UNZIP:+"$__MVNW_QUIET_UNZIP"} "$TMP_DOWNLOAD_DIR/$distributionUrlName" -d "$TMP_DOWNLOAD_DIR" || die "failed to unzip"
+elif set_java_home; then
+  # CardDemo addition: extract the pinned .zip with the JDK when unzip is absent.
+  # This replaces the upstream 'tar xzf' branch, which could only ever run against
+  # the .tar.gz variant the launcher no longer fetches. The JDK's own zip
+  # filesystem provider reads exactly the archive whose digest was verified above,
+  # so no second archive - and no second, unpinned checksum - is needed to install
+  # Maven without unzip.
+  #
+  # The provider is opened with enablePosixFileAttributes so that each extracted
+  # file receives the permission bits recorded in the archive, which is what makes
+  # bin/mvn executable and leaves bin/mvn.cmd alone: this path produces the same
+  # file modes as native unzip rather than guessing from path names. Directories
+  # are created with the platform default instead, so a directory's own bits can
+  # never be applied before its contents are written. Where the platform has no
+  # POSIX view at all - Windows running under Cygwin or MinGW - the launchers
+  # under bin/ are marked executable directly, which is the only bit that matters
+  # there. Extraction outside the target directory is refused: the provider itself
+  # rejects an archive whose entry names contain '..', and the check below is kept
+  # as a second, independent barrier.
+  verbose " - No unzip found; extracting with the JDK ..."
+  javaUnzipSource="$TMP_DOWNLOAD_DIR/WrapperUnzipper.java"
+  cat >"$javaUnzipSource" <<'END_WRAPPER_UNZIPPER'
+public class WrapperUnzipper {
+  public static void main(String[] args) throws Exception {
+    java.nio.file.Path archive = java.nio.file.Paths.get(args[0]).toAbsolutePath().normalize();
+    java.nio.file.Path target = java.nio.file.Paths.get(args[1]).toAbsolutePath().normalize();
+    boolean posix = java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
+    java.util.Map<String, Object> options = new java.util.HashMap<>();
+    options.put("enablePosixFileAttributes", Boolean.TRUE);
+    try (java.nio.file.FileSystem zip = java.nio.file.FileSystems.newFileSystem(archive, options)) {
+      for (java.nio.file.Path root : zip.getRootDirectories()) {
+        try (java.util.stream.Stream<java.nio.file.Path> entries = java.nio.file.Files.walk(root)) {
+          java.util.Iterator<java.nio.file.Path> iterator = entries.iterator();
+          while (iterator.hasNext()) {
+            java.nio.file.Path entry = iterator.next();
+            String name = root.relativize(entry).toString();
+            if (name.isEmpty()) {
+              continue;
+            }
+            java.nio.file.Path resolved = target.resolve(name).normalize();
+            if (!resolved.startsWith(target)) {
+              throw new java.io.IOException("Refusing to extract outside the target directory: " + name);
+            }
+            if (java.nio.file.Files.isDirectory(entry)) {
+              java.nio.file.Files.createDirectories(resolved);
+              continue;
+            }
+            java.nio.file.Files.createDirectories(resolved.getParent());
+            java.nio.file.Files.copy(entry, resolved, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            if (posix) {
+              java.nio.file.Files.setPosixFilePermissions(resolved, java.nio.file.Files.getPosixFilePermissions(entry));
+            } else if (name.contains("bin/")) {
+              resolved.toFile().setExecutable(true, false);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+END_WRAPPER_UNZIPPER
+  "$(native_path "$JAVACCMD")" "$(native_path "$javaUnzipSource")" || die "Failed to compile WrapperUnzipper.java"
+  "$(native_path "$JAVACMD")" -cp "$(native_path "$TMP_DOWNLOAD_DIR")" WrapperUnzipper "$(native_path "$TMP_DOWNLOAD_DIR/$distributionUrlName")" "$(native_path "$TMP_DOWNLOAD_DIR")" || die "failed to extract the distribution with the JDK"
 else
-  tar xzf${__MVNW_QUIET_TAR:+"$__MVNW_QUIET_TAR"} "$TMP_DOWNLOAD_DIR/$distributionUrlName" -C "$TMP_DOWNLOAD_DIR" || die "failed to untar"
+  die "Cannot extract $distributionUrlName: no 'unzip' is available and no JDK could be located. Set JAVA_HOME to a JDK, or put java and javac on PATH."
 fi
 
 # Find the actual extracted directory name (handles snapshots where filename != directory name)

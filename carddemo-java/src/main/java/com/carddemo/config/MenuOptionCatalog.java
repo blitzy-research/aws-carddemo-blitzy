@@ -25,114 +25,77 @@ import org.springframework.context.annotation.Configuration;
 /**
  * Immutable catalog of the ten CardDemo user-menu options and the four administrator-menu options.
  *
- * <h2>Provenance</h2>
- * Translated from the AWS CardDemo z/OS mainframe application at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The two legacy authorities are:
- * <ul>
- *   <li>{@code app/cpy/COMEN02Y.cpy} &mdash; 95 lines. Group item {@code CARDDEMO-MAIN-MENU-OPTIONS} on
- *       line 19 holds the <strong>user</strong> menu. Its declared population,
- *       {@code CDEMO-MENU-OPT-COUNT} on line 21, is <strong>10</strong>. The redefining table view on
- *       lines 87-92 names the four components of one entry: a two-digit option number, a 35-character
- *       option name, an eight-character target program name and a one-character user-type code.</li>
- *   <li>{@code app/cpy/COADM02Y.cpy} &mdash; 51 lines. Group item {@code CARDDEMO-ADMIN-MENU-OPTIONS} on
- *       line 19 holds the <strong>administrator</strong> menu. Its declared population,
- *       {@code CDEMO-ADMIN-OPT-COUNT} on line 20, is <strong>4</strong>. The redefining table view on
- *       lines 44-48 names only <em>three</em> components of one entry: option number, option name and
- *       target program name.</li>
- * </ul>
- * No copybook is read at runtime and no COBOL statement is reproduced here. Only member names, field
- * names, declared widths, line numbers and the menu label text itself cross over, and the label text
- * crosses over because it is the external screen contract rather than implementation detail.
+ * <p>The two legacy authorities are {@code app/cpy/COMEN02Y.cpy}, whose group item
+ * {@code CARDDEMO-MAIN-MENU-OPTIONS} on line 19 holds the <strong>user</strong> menu with a declared
+ * population of <strong>10</strong> ({@code CDEMO-MENU-OPT-COUNT}, line 21) and whose redefining table
+ * view on lines 87-92 names four components per entry &mdash; a two-digit option number, a 35-character
+ * name, an eight-character target program name and a one-character user-type code &mdash; and
+ * {@code app/cpy/COADM02Y.cpy}, whose {@code CARDDEMO-ADMIN-MENU-OPTIONS} on line 19 holds the
+ * <strong>administrator</strong> menu with a declared population of <strong>4</strong>
+ * ({@code CDEMO-ADMIN-OPT-COUNT}, line 20) and whose table view on lines 44-48 names only
+ * <em>three</em> components. Only member names, field names, declared widths, line numbers and the menu
+ * label text cross over; the label text crosses over because it is the external screen contract rather
+ * than implementation detail.
  *
- * <h2>Populated count, never table capacity</h2>
- * The legacy tables are declared larger than they are filled: the user table has capacity for twelve
- * entries and the administrator table for nine, while the {@code ...-OPT-COUNT} items quoted above
- * declare that ten and four are actually populated. The count items are the authoritative sizes, so this
- * catalog publishes exactly {@link #USER_MENU_OPTION_COUNT} and {@link #ADMIN_MENU_OPTION_COUNT} entries
- * and never pads to capacity. Modelling capacity instead of population would place two additional empty
- * rows on the user menu and five on the administrator menu, which is a visible behavioural regression
- * rather than a harmless generalisation. Neither capacity figure is published as a value anywhere in this
- * class &mdash; both are named in this description only, because a reader has to know that the tables are
- * bigger than their contents to understand why the counts are what they are &mdash; and
- * {@link #findUserOption(int)} deliberately reports an empty result for the unpopulated tail positions.
+ * <p><strong>Populated count, never table capacity.</strong> The legacy tables are declared larger than
+ * they are filled &mdash; capacity twelve and nine against populations of ten and four &mdash; and the
+ * count items are the authoritative sizes. This catalog publishes exactly
+ * {@link #USER_MENU_OPTION_COUNT} and {@link #ADMIN_MENU_OPTION_COUNT} entries and never pads to
+ * capacity, because modelling capacity would place two additional empty rows on the user menu and five on
+ * the administrator menu &mdash; a visible behavioural regression rather than a harmless generalisation.
+ * Neither capacity figure is published as a value anywhere in this class; both are named here only so a
+ * reader knows the tables are bigger than their contents, and {@link #findUserOption(int)} deliberately
+ * reports an empty result for the unpopulated tail positions.
  *
- * <h2>Two entry shapes, deliberately not unified</h2>
- * The two copybooks look alike and are not. A user entry occupies
+ * <p><strong>Two entry shapes, deliberately not unified.</strong> A user entry occupies
  * {@value #USER_MENU_ENTRY_LENGTH} bytes because it carries the one-character user-type code; an
  * administrator entry occupies {@value #ADMIN_MENU_ENTRY_LENGTH} bytes because it has no such component
- * at all. {@link UserMenuOption} and {@link AdminMenuOption} therefore stay separate record types. A
+ * at all. {@link UserMenuOption} and {@link AdminMenuOption} therefore stay separate record types: a
  * single shared record would have to invent a user-type value for administrator rows, and inventing a
- * value the legacy record layout does not contain is a fidelity defect, not a convenience.
+ * value the legacy layout does not contain is a fidelity defect, not a convenience.
  *
- * <h2>The user-type code stays raw</h2>
- * {@link UserMenuOption#userType()} returns the one-character code exactly as the copybook literal
- * carries it. It is neither parsed into an enumeration here nor validated against a known set of codes,
- * so an unrecognised code can never make this catalog fail. Interpreting the code &mdash; and deciding
- * what an unrecognised one means &mdash; belongs to the service layer, in keeping with the same raw-code
- * discipline the persistence layer applies to the security record.
+ * <p><strong>The user-type code stays raw.</strong> {@link UserMenuOption#userType()} returns the
+ * one-character code exactly as the copybook literal carries it, neither parsed into an enumeration nor
+ * validated against a known set, so an unrecognised code can never make this catalog fail. Interpreting
+ * the code &mdash; and deciding what an unrecognised one means &mdash; belongs to the service layer, in
+ * keeping with the raw-code discipline the persistence layer applies to the security record.
  *
- * <h2>Bean semantics</h2>
- * A container-managed singleton, so a collaborator reaches it by constructor injection rather than by
- * static access. That mirrors how this migration treats the copybooks with wide fan-out: a declaration the
- * legacy estate duplicated textually in every including program becomes one injected instance here, which
- * is what keeps a single copy authoritative.
+ * <p><strong>Bean semantics.</strong> A container-managed singleton, reached by constructor injection
+ * rather than static access, which mirrors how this migration treats the copybooks with wide fan-out: a
+ * declaration the legacy duplicated textually in every including program becomes one injected instance.
+ * The class declares no factory method, so lite mode is stated explicitly on the annotation: a full-mode
+ * class is subclassed at runtime to intercept factory-method calls, which this class has none of and
+ * which would forbid it from being {@code final}, and keeping it unproxied leaves the module's runtime
+ * proxy and reflection surface untouched.
  *
- * <p>The class declares no factory methods, so it is registered in lite mode. That is stated explicitly on
- * the annotation rather than left to the default, for two reasons: a full-mode configuration class is
- * subclassed at runtime to intercept factory-method calls, which this class has none of and which would
- * additionally forbid it from being {@code final}; and keeping it unproxied leaves the module's runtime
- * proxy and reflection surface untouched, which the low-level-code audit measures.</p>
+ * <p><strong>This is a pure data catalog.</strong> Two closely related legacy behaviours belong to the
+ * menu service that injects this bean &mdash; <strong>which is not delivered yet</strong> &mdash; and are
+ * intentionally absent here so that neither is implemented twice. The first is the "coming soon" rule:
+ * {@code app/cbl/COMEN01C.cbl} line 138 compares the first five characters of the selected option's
+ * target program name against a dummy-program literal and reports the option as not yet available when
+ * they match. None of the fourteen entries published here targets a dummy program, so this catalog holds
+ * no dummy entry, but the check itself must still be reproduced faithfully because the catalog is not the
+ * only thing that can supply a program name to it. The second is blank-to-zero option normalisation:
+ * {@code app/cbl/COADM01C.cbl} lines 45-46 and 123, and identically {@code app/cbl/COMEN01C.cbl} line
+ * 123, normalise a blank in a right-justified two-character option field so that a single-digit entry
+ * becomes a zero-filled two-digit value. That behaviour lives in
+ * {@link com.carddemo.util.CobolStringUtils#rightJustifyZeroFill(String, int)}, which the caller applies
+ * before looking an option number up here; this class performs no string normalisation of any kind.
+ * Screen rendering, routing, authorisation and error decoration are likewise outside it.
  *
- * <h2>What this catalog deliberately does not do</h2>
- * This is a pure data catalog. Two closely related legacy behaviours belong to
- * {@code com.carddemo.service.MenuService}, which injects this bean, and are intentionally absent here so
- * that neither is implemented twice:
- * <ul>
- *   <li><strong>The "coming soon" rule.</strong> {@code app/cbl/COMEN01C.cbl} line 138 compares the first
- *       five characters of the selected option's target program name against a dummy-program literal and
- *       reports the option as not yet available when they match. None of the fourteen entries published
- *       here targets a dummy program, so this catalog holds no dummy entry &mdash; but the check itself
- *       still has to be reproduced faithfully by the service, because the catalog is not the only thing
- *       that can supply a program name to it.</li>
- *   <li><strong>Blank-to-zero option normalisation.</strong> {@code app/cbl/COADM01C.cbl} lines 45-46 and
- *       123, and identically {@code app/cbl/COMEN01C.cbl} line 123, normalise a blank in a right-justified
- *       two-character option field so that a single-digit entry becomes a zero-filled two-digit value.
- *       That behaviour lives in {@code com.carddemo.util.CobolStringUtils}, whose
- *       {@code rightJustifyZeroFill} primitive the service calls before looking an option number up here.
- *       This class performs no string normalisation of any kind.</li>
- * </ul>
- * Screen rendering, routing, authorisation and error decoration are likewise outside this class.
+ * <p><strong>Three source anomalies are recorded rather than propagated</strong> &mdash; rows 24 to 26 of
+ * the source anomaly register. The operative consequence of the first is that the commented-out
+ * alternative label above user option 8 stays inactive: it is published neither as a value nor as a
+ * constant nor as a conditional alternative, and option 8 is <strong>not</strong> role-gated, because
+ * activating it would be feature expansion. The other two &mdash; a mislabelled title comment in both
+ * copybooks and a divergent release stamp on the administrator copybook &mdash; change nothing here: the
+ * data item is followed rather than the comment, and the content is migrated as found.
  *
- * <h2>Source anomalies recorded, not propagated and not silently corrected</h2>
- * Three anomalies in the two source copybooks are carried into the decision log rather than into
- * behaviour:
- * <ol>
- *   <li><strong>An inactive alternative label for user option 8.</strong> The line immediately above the
- *       live label &mdash; {@code app/cpy/COMEN02Y.cpy} line 69 &mdash; is a COBOL comment carrying a
- *       different label for the same option, one that would describe the option as restricted to
- *       administrators. It is inactive in the legacy source and stays inactive here: it is published
- *       neither as a value nor as a constant nor as a conditional alternative, and option 8 is not
- *       role-gated. Activating it would be feature expansion.</li>
- *   <li><strong>A mislabelled title comment in both copybooks.</strong> Line 2 of
- *       {@code app/cpy/COMEN02Y.cpy} and line 2 of {@code app/cpy/COADM02Y.cpy} carry the same
- *       administrator-menu title text, yet the first of the two declares
- *       {@code CARDDEMO-MAIN-MENU-OPTIONS} and holds the ten user options. The data item is correct and
- *       the comment is a copy-and-paste defect, so this catalog follows the data item.</li>
- *   <li><strong>A divergent version stamp.</strong> The trailer of {@code app/cpy/COADM02Y.cpy} on line 50
- *       records release stamp {@code CardDemo_v1.0-26-g42273c1-79} dated 2022-07-20, whereas the stamp
- *       carried by the rest of the estate, including {@code app/cpy/COMEN02Y.cpy} on line 94, is
- *       {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The administrator copybook is therefore a
- *       later revision than its siblings. Its content is migrated as found; the discrepancy is recorded
- *       only so that a future reviewer comparing stamps does not read it as a transcription error.</li>
- * </ol>
- *
- * <h2>Thread safety</h2>
- * Stateless and deeply immutable. Both catalogs are built once with the immutable {@code java.util.List}
- * factory and are held in {@code private static final} fields; both element types are records whose
- * components are {@code int} and {@code String}; there is no setter, no lazily populated field and no
- * mutable state of any kind, so the singleton is safe for unsynchronised concurrent use and the published
- * lists cannot be modified by a caller.
+ * <p><strong>Thread safety.</strong> Stateless and deeply immutable. Both catalogs are built once with
+ * the immutable {@code java.util.List} factory and held in {@code private static final} fields; both
+ * element types are records whose components are {@code int} and {@code String}; there is no setter, no
+ * lazily populated field and no mutable state of any kind, so the singleton is safe for unsynchronised
+ * concurrent use and the published lists cannot be modified by a caller.
  */
 @Configuration(proxyBeanMethods = false)
 public final class MenuOptionCatalog {
@@ -168,8 +131,7 @@ public final class MenuOptionCatalog {
      *
      * <p>An option number is validated against the field it occupies rather than against the current
      * population, because the number is part of the record layout while the population is not. Requesting
-     * a number in this range that no populated entry carries is therefore an ordinary miss rather than a
-     * failure, which is what {@link #findUserOption(int)} and {@link #findAdminOption(int)} report.</p>
+     * a number in range that no populated entry carries is an ordinary miss, not a failure.</p>
      */
     public static final int OPTION_NUMBER_MAXIMUM = 99;
 
@@ -198,8 +160,7 @@ public final class MenuOptionCatalog {
      * Declared width of the user-type component, from the {@code PIC X(01)} clause of
      * {@code CDEMO-MENU-OPT-USRTYPE} in {@code app/cpy/COMEN02Y.cpy} line 92.
      *
-     * <p>This component exists in the user table only. The administrator table has no counterpart, which
-     * is the whole reason the two entry types are modelled separately.</p>
+     * <p>Present in the user table only, which is why the two entry types are modelled separately.</p>
      */
     public static final int USER_OPTION_USER_TYPE_WIDTH = 1;
 
@@ -224,11 +185,10 @@ public final class MenuOptionCatalog {
      * The raw one-character user-type code that every one of the ten user-menu entries carries, exactly as
      * the copybook literals write it.
      *
-     * <p>It is published as the literal code and not as an enumeration constant, so that this
-     * configuration-layer catalog stays free of any dependency on the domain layer and so that the
-     * meaning of the code is decided in exactly one place, the service layer. Note in particular that all
-     * ten entries carry this same code, including option 8, whose inactive commented-out variant would
-     * have suggested otherwise.</p>
+     * <p>Published as the literal code rather than an enumeration constant, so this configuration-layer
+     * catalog stays free of any dependency on the domain layer and the meaning of the code is decided in
+     * exactly one place. All ten entries carry this same code, including option 8, whose inactive
+     * commented-out variant would have suggested otherwise.</p>
      */
     public static final String STANDARD_USER_TYPE_CODE = "U";
 
@@ -249,10 +209,8 @@ public final class MenuOptionCatalog {
             new UserMenuOption(5, "Credit Card Update", "COCRDUPC", STANDARD_USER_TYPE_CODE),
             new UserMenuOption(6, "Transaction List", "COTRN00C", STANDARD_USER_TYPE_CODE),
             new UserMenuOption(7, "Transaction View", "COTRN01C", STANDARD_USER_TYPE_CODE),
-            // Option 8 takes the label that is live in app/cpy/COMEN02Y.cpy line 70. The COBOL comment on
-            // line 69 immediately above it carries an alternative label for this same option; that variant
-            // is inactive in the legacy source and is deliberately left inactive here, neither reproduced
-            // as a value nor offered as an alternative, and the option is not role-gated.
+            // Option 8 takes the label live at app/cpy/COMEN02Y.cpy line 70. The inactive alternative on
+            // line 69 stays inactive and the option is not role-gated: anomaly 24.
             new UserMenuOption(8, "Transaction Add", "COTRN02C", STANDARD_USER_TYPE_CODE),
             new UserMenuOption(9, "Transaction Reports", "CORPT00C", STANDARD_USER_TYPE_CODE),
             new UserMenuOption(10, "Bill Payment", "COBIL00C", STANDARD_USER_TYPE_CODE));
@@ -271,12 +229,10 @@ public final class MenuOptionCatalog {
             new AdminMenuOption(4, "User Delete (Security)", "COUSR03C"));
 
     static {
-        // The copybooks state their population twice over: once as an explicit count item and once as the
-        // number of entries actually written out. Both catalogs above transcribe the entries, and the two
-        // count constants transcribe the count items, so the agreement between them is a property of the
-        // source that this class can and does verify at class-initialisation time. Failing here is a fail
-        // fast on a transcription mistake, which is strictly better than serving a menu of the wrong
-        // length; it cannot be reached while the two declarations above remain consistent.
+        // The copybooks state their population twice: as an explicit count item and as the number of
+        // entries actually written out. The catalogs above transcribe the entries and the count constants
+        // transcribe the count items, so their agreement is a property of the source, verified here at
+        // class initialisation. It cannot be reached while the two declarations above stay consistent.
         requireDeclaredPopulation(USER_MENU_OPTIONS.size(), USER_MENU_OPTION_COUNT, "CDEMO-MENU-OPT-COUNT");
         requireDeclaredPopulation(
                 ADMIN_MENU_OPTIONS.size(), ADMIN_MENU_OPTION_COUNT, "CDEMO-ADMIN-OPT-COUNT");
@@ -286,10 +242,9 @@ public final class MenuOptionCatalog {
      * Creates the catalog singleton.
      *
      * <p>This catalog sits at the base of the dependency graph and has no collaborators, so constructor
-     * injection contributes no parameters. The constructor is declared explicitly rather than left
-     * implicit so that the absence of collaborators is a visible, reviewable property of the class, and
-     * so that {@code com.carddemo.service.MenuService} has an unambiguous single constructor to inject
-     * this bean through.</p>
+     * injection contributes no parameters. Declared explicitly rather than left implicit so that the
+     * absence of collaborators is a visible, reviewable property, and so that a consumer has an
+     * unambiguous single constructor to inject this bean through.</p>
      */
     public MenuOptionCatalog() {
         // No collaborators to inject: both catalogs are declared in this source file and are immutable.

@@ -37,58 +37,69 @@ import org.junit.jupiter.params.provider.EnumSource;
  * concurrency-safety mechanism of the account-update transaction {@code CAUP}, implemented by
  * {@code app/cbl/COACTUPC.cbl}.
  *
- * <p>This is a pure unit test. It starts no application context, no persistence unit, no embedded
- * or containerised database and no messaging emulator; it constructs the type directly and asserts
- * its contract. Everything asserted here is verifiable without a running system, which is exactly
- * why it belongs in the unit tier rather than the integration tier.</p>
+ * <p>A pure unit test: no application context, no persistence unit, no database and no messaging
+ * emulator. It constructs the type directly and asserts its contract, so everything asserted here is
+ * verifiable without a running system.</p>
  *
- * <h2>Three distinct legacy states, and they are not interchangeable</h2>
+ * <p><strong>Three distinct legacy states, not interchangeable.</strong> The legacy write path
+ * renders three outcomes, each carried by its own level-88 condition name over one shared field and
+ * each with its own operator-facing text. The record could not be locked for update at all - set at
+ * {@code app/cbl/COACTUPC.cbl} L3912 when the account read-for-update does not return a normal
+ * response, and at L3939 for the customer read-for-update - and that single state owns
+ * <strong>two</strong> operator texts. The record was locked but the rewrite failed - set on the
+ * account-rewrite failure arm at L4079 and the customer-rewrite failure arm at L4098. The record
+ * changed before the update could be applied - the outcome of the before-and-after image comparison
+ * in paragraph {@code 9700-CHECK-CHANGE-IN-REC} (L4109-L4192, exit label L4193), set at its account
+ * mismatch exit L4143 and its customer mismatch exit L4189.</p>
  *
- * <p>The legacy write path renders three different outcomes, each carried by its own level-88
- * condition name over one shared field, and each with its own operator-facing text:</p>
- *
- * <ol>
- *   <li><em>The record could not be locked for update at all.</em> Set at
- *       {@code app/cbl/COACTUPC.cbl} L3912 when the account read-for-update does not return a
- *       normal response, and at L3939 for the customer read-for-update. This one state owns
- *       <strong>two</strong> operator texts, one naming the account record and one naming the
- *       customer record.</li>
- *   <li><em>The record was locked but the rewrite itself failed.</em> Set on the account-rewrite
- *       failure arm at L4079 and on the customer-rewrite failure arm at L4098.</li>
- *   <li><em>The record changed before the update could be applied.</em> This is the outcome of the
- *       before-and-after image comparison in paragraph {@code 9700-CHECK-CHANGE-IN-REC}
- *       (L4109-L4192, exit label L4193), set at its account mismatch exit L4143 and its customer
- *       mismatch exit L4189.</li>
- * </ol>
- *
- * <h2>Four verbatim operator literals for three states</h2>
- *
- * <p>The condition names at {@code app/cbl/COACTUPC.cbl} L517-L524 carry the operator text as their
- * {@code VALUE}, so the condition name and the text an operator reads are one and the same thing.
- * Four texts serve the three states: {@code Could not lock account record for update} (L517-L518),
+ * <p><strong>Four verbatim operator literals for three states.</strong> The condition names at
+ * {@code app/cbl/COACTUPC.cbl} L517-L524 carry the operator text as their {@code VALUE}, so the
+ * condition name and the text an operator reads are the same thing:
+ * {@code Could not lock account record for update} (L517-L518),
  * {@code Could not lock customer record for update} (L519-L520),
  * {@code Record changed by some one else. Please review} (L521-L522) and
  * {@code Update of record failed} (L523-L524). A fifth condition name in the same block, at
  * L525-L526, carries {@code Error reading Card Data File}; that text belongs to the card
- * cross-reference read path, not to the write-conflict path, and this test asserts it has not
- * leaked in.</p>
+ * cross-reference read path and this test asserts it has not leaked in. Two properties of the third
+ * literal are deliberate legacy spelling and are asserted so that no future tidy-up can quietly
+ * change what an operator sees: the phrase is <strong>two words</strong>, and the literal ends at
+ * {@code review} with <strong>no trailing full stop</strong> - the period visible in the COBOL
+ * listing is the statement terminator, outside the quoted value.</p>
  *
- * <p>Two properties of the third literal are deliberate legacy spelling and are asserted here so
- * that no future "tidy up" can quietly change what an operator sees: the phrase is
- * <strong>two words</strong>, and the literal ends at {@code review} with <strong>no trailing full
- * stop</strong> - the period visible in the COBOL listing is the statement terminator, outside the
- * quoted value. Faithful beats idiomatic: both of the corrections a careful engineer would
- * instinctively make would be behavioural changes to an external contract.</p>
+ * <p><strong>The dispatch order, and why the conflict is recoverable.</strong> The
+ * {@code EVALUATE} at {@code app/cbl/COACTUPC.cbl} L2606-L2615 dispatches the three states in a
+ * fixed clause order - lock error at L2607-L2608, then failed update at L2609-L2610, then changed
+ * data at L2611-L2612 - with a default changes-okayed arm at L2613-L2614. The changed-data arm sets
+ * a <em>show details</em> state that re-displays the screen so the operator can review the current
+ * values, and the literal itself says {@code Please review}, so that path is recoverable and
+ * non-abending - which is why the type under test is deliberately unrelated to
+ * {@link AbendException}. A separate arm of the same {@code EVALUATE}, at L2634-L2639, handles an
+ * unexpected data scenario by populating the abend context with code {@code 0001}, a blank reason
+ * and an unexpected-data-scenario message, then performing the abend routine; that arm is
+ * {@link AbendException} territory, and this test pins the separation.</p>
  *
- * <h2>The ordered three-arm dispatch, and why the conflict is recoverable</h2>
+ * <p><strong>Why "extends RuntimeException" is the rollback assertion.</strong>
+ * {@code EXEC CICS SYNCPOINT ROLLBACK} occurs exactly once in the estate, at
+ * {@code app/cbl/COACTUPC.cbl} L4100, on the customer-rewrite failure arm; the account-rewrite
+ * failure arm at L4076-L4081 sets the same state and does <em>not</em> roll back, because the
+ * account write is the first of the two and there is as yet nothing to undo. Spring's declarative
+ * transaction management rolls back by default <strong>only on unchecked exceptions</strong>, so
+ * were this type checked the surrounding transaction would <em>commit</em> silently on a detected
+ * conflict - precisely the lost update the legacy image comparison existed to prevent. Extending
+ * {@link RuntimeException} is therefore the load-bearing property, and it is pinned below. The
+ * container-backed half of the proof - two concurrent updates against a {@code @Version}-annotated
+ * row on a real relational database, asserting both that this exception surfaces and that the
+ * surrounding boundary rolls back - requires a container and a persistence unit and so belongs to
+ * the integration tier rather than here.</p>
  *
- * <p>The {@code EVALUATE} at {@code app/cbl/COACTUPC.cbl} L2606-L2615 dispatches the three states
- * in a fixed clause order - lock error at L2607-L2608, then failed update at L2609-L2610, then
- * changed data at L2611-L2612 - with a default "changes okayed and done" arm at L2613-L2614.
- * Critically, the changed-data arm sets a <em>show details</em> state, which re-displays the screen
- * so the operator can review the current values. The literal itself says {@code Please review}.
- * <strong>This path is therefore recoverable and non-abending</strong>, which is why the type under
- * test is deliberately unrelated to {@link AbendException}.</p>
+ * <p><strong>Stronger isolation is an intentional improvement.</strong> All eight application file
+ * definitions in {@code app/csd/CARDDEMO.CSD} - at L1, L13, L25, L37, L50, L63, L76 and L88 - carry,
+ * identically, uncommitted read integrity, a locking update model, no journalling and no recovery, so
+ * correctness rested entirely on that locking model plus each program's own image comparison.
+ * PostgreSQL READ COMMITTED combined with the JPA {@code @Version} column is strictly stronger than
+ * that baseline: conflicts the legacy field-by-field comparison would have missed are now caught.
+ * Recorded as decision log entry D-15, so the stronger guarantee is read as the improvement it is
+ * rather than as a behavioural change.</p>
  *
  * <p>A separate arm of the same {@code EVALUATE}, at L2634-L2639, handles an unexpected data
  * scenario by populating the abend context with code {@code 0001}, a blank reason and an
@@ -98,7 +109,8 @@ import org.junit.jupiter.params.provider.EnumSource;
  *
  * <h2>Why "extends RuntimeException" is the rollback assertion</h2>
  *
- * <p>{@code EXEC CICS SYNCPOINT ROLLBACK} occurs exactly <strong>once</strong> in the entire legacy
+ * <p>An explicit transaction-manager rollback request occurs exactly <strong>once</strong> in the
+ * entire legacy
  * estate, at {@code app/cbl/COACTUPC.cbl} <strong>L4100</strong>, on the customer-rewrite failure
  * arm; the program sets the locked-but-update-failed state, rolls back, and jumps to the
  * write-processing exit at L4105. The account-rewrite failure arm at L4076-L4081 sets the same

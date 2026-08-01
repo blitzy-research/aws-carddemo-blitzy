@@ -36,68 +36,54 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Unit tests for {@link FileStatusException}, the type that carries a raw two-character COBOL
  * {@code FILE STATUS} value and deliberately interprets nothing about it.
  *
- * <p>These are pure unit tests: no Spring context, no containers, no mocks. The class under test has
- * no collaborators to isolate, so every assertion below is made against a real instance.
+ * <p>Pure unit tests: no Spring context, no containers, no mocks. The class under test has no
+ * collaborators to isolate, so every assertion is made against a real instance.
  *
- * <h2>The contract under test: carry, never classify</h2>
- * <p>The legacy estate never branches on the raw two bytes. Each batch program declares the status as
- * a split group of two single-character items ({@code CBACT01C} lines 46-48, named on the
- * {@code SELECT} at lines 29-33), normalises it into a coarse numeric result in the read paragraph
- * at lines 92-103 - {@code "00"} becomes 0, {@code "10"} becomes 16, everything else becomes 12 -
- * and only then branches, on the coarse condition names {@code APPL-AOK} (value 0) and
- * {@code APPL-EOF} (value 16) declared at lines 61-63. The open and close paragraphs seed that same
- * coarse variable with 8 before normalising and have no end-of-file arm at all. The coarse variable,
- * not the raw status, is what the read loops test: it is referenced roughly 223 times across the
- * estate, out of 229 raw occurrences of its name once the eight declarations are discounted.
+ * <p><strong>Carry, never classify.</strong> The legacy estate never branches on the raw two bytes.
+ * Each batch program declares the status as a split group of two single-character items
+ * ({@code CBACT01C} lines 46-48, named on the {@code SELECT} at lines 29-33), normalises it into a
+ * coarse numeric result in the read paragraph at lines 92-103 - {@code "00"} becomes 0, {@code "10"}
+ * becomes 16, everything else becomes 12 - and only then branches, on the coarse condition names
+ * {@code APPL-AOK} (value 0) and {@code APPL-EOF} (value 16) declared at lines 61-63. The open and
+ * close paragraphs seed that same coarse variable with 8 before normalising and have no
+ * end-of-file arm at all. The coarse variable, not the raw status, is what the read loops test: it
+ * is referenced on roughly 223 lines across the estate, out of 229 raw occurrences of its name once
+ * the eight declarations are discounted. The display routine behaves the same way -
+ * {@code 9910-DISPLAY-IO-STATUS} ({@code CBACT01C} lines 176-189) merely reformats the two bytes
+ * for the operator under a fixed prefix, packing the second byte as a binary value when the pair is
+ * non-numeric or the first byte is {@code '9'} and zero-padding it otherwise, and never asks what
+ * the code <em>means</em>. That two-level model is decision log entry D-21.
  *
- * <p>The display routine behaves the same way. {@code 9910-DISPLAY-IO-STATUS} ({@code CBACT01C}
- * lines 176-189) merely reformats the two bytes for the operator under a fixed prefix - packing the
- * second byte as a binary value when the pair is non-numeric or the first byte is {@code '9'}, and
- * zero-padding it otherwise - and never asks what the code <em>means</em>. That single paragraph is
- * the carry-don't-interpret contract in miniature, and it is why {@link FileStatusException} exposes
- * the code and its two halves and nothing more.
+ * <p><strong>Only the fine level is tested here.</strong> The coarse tri-state outcome - all-OK,
+ * end-of-file, error, mirroring the legacy coarse values 0, 16 and 12 - is a nested type belonging
+ * to the layer above and is exercised through its owning class in that package's tests. Nothing
+ * here asserts anything about it, because collapsing the two levels into one is precisely the
+ * mistake the migration forbids.
  *
- * <h2>The other level of the model is not tested here</h2>
- * <p>The model has two levels, and this file owns exactly one of them. The coarse tri-state outcome
- * - all-OK, end-of-file, error, mirroring the legacy coarse values 0, 16 and 12 - is a nested type
- * belonging to the layer above, declared inside the batch step template or the file maintenance
- * service, and it is exercised through its owning class in those packages' own tests. Nothing here
- * asserts anything about it, because collapsing the two levels into one is precisely the mistake the
- * migration forbids.
+ * <p><strong>The observed vocabulary is documentation, not a whitelist.</strong> A census of the
+ * estate finds nine distinct two-character status literals anywhere in the source: {@code 00},
+ * {@code 01}, {@code 02}, {@code 04}, {@code 05}, {@code 10}, {@code 12}, {@code 23} and
+ * {@code 31}. In an actual status-testing context only three are ever compared: {@code 00} on 73
+ * lines, {@code 10} on 7, and {@code 23} on three lines in two programs - {@code CBACT04C} lines
+ * 422 and 436, which fold {@code 00} and {@code 23} together as the non-error outcome and then
+ * re-test {@code 23} on its own to select the default disclosure group, and {@code CBTRN02C} line
+ * 481. The tests below assert that any well-formed two-character value is carried, including values
+ * the source never encountered. Two further values, {@code 22} and {@code 35}, appear in earlier
+ * project documentation but in zero source members, so they carry no behaviour and no test depends
+ * on them; that correction is decision log entry D-22.
  *
- * <h2>The observed status vocabulary, and two corrections</h2>
- * <p>A census of the estate finds nine distinct two-character status literals anywhere in the
- * source: {@code 00}, {@code 01}, {@code 02}, {@code 04}, {@code 05}, {@code 10}, {@code 12},
- * {@code 23} and {@code 31}. In an actual status-testing context only three are ever compared:
- * {@code 00} 73 times, {@code 10} 7 times, and {@code 23} exactly once - the fallback that selects
- * the default disclosure group in {@code CBACT04C}, where lines 422 and 436 first fold {@code 00}
- * and {@code 23} together as the non-error outcome and then re-test {@code 23} on its own.
+ * <p><strong>No status enumeration is imported.</strong> {@link FileStatusException} carries a raw
+ * {@code String} and imports nothing at all, which keeps this leaf layer free of dependencies on
+ * the layers above it, and these tests bind to {@code String} for the same reason. Enumerating
+ * status codes belongs to the domain enumeration package and is covered by its own tests.
  *
- * <p>That census is documentation, not a whitelist, and the tests below assert precisely that: any
- * well-formed two-character value is carried, including values the source never encountered. Two
- * further values, {@code 22} and {@code 35}, appear in earlier documentation but in zero source
- * members - an exhaustive search of every program and copybook finds no comparison against either -
- * so they carry no behaviour, no test here depends on them, and the correction belongs in the
- * migration decision log rather than in an assertion.
- *
- * <h2>Why the status enumeration is deliberately absent from this file</h2>
- * <p>{@link FileStatusException} carries a raw {@code String} and imports nothing at all, which
- * keeps this leaf layer free of dependencies on the layers above it. These tests bind to
- * {@code String} for the same reason. Enumerating status codes is a concern of the domain
- * enumeration package, is covered by that package's own tests, and importing it here would assert a
- * coupling that production deliberately does not have.
- *
- * <h2>Logging the status and abending are two steps, not one type</h2>
- * <p>At every legacy I/O failure the sequence is identical: emit the diagnostic, move the raw
- * two-byte status into the display field, emit the status, and only then abend - the read arm at
- * {@code CBACT01C} lines 110-113, the open arm at lines 144-147 and the close arm at lines 162-165,
- * and again in the three invalid-key handlers of {@code CBTRN03C} at lines 488, 498 and 508. Because
- * that ordering is contractual, {@link FileStatusException} and {@link AbendException} are
- * independent types, and one of the tests below pins that independence down.
- *
- * <p>Provenance of the migrated behaviour, cited and never transcribed: source checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
+ * <p><strong>Logging the status and abending are two steps.</strong> At every legacy I/O failure the
+ * sequence is identical: emit the diagnostic, move the raw two-byte status into the display field,
+ * emit the status, and only then abend - the read arm at {@code CBACT01C} lines 110-113, the open
+ * arm at lines 144-147, the close arm at lines 162-165, and again in the three invalid-key handlers
+ * of {@code CBTRN03C} at lines 488, 498 and 508. Because that ordering is contractual,
+ * {@link FileStatusException} and {@link AbendException} are independent types, and one of the tests
+ * below pins that independence down.
  *
  * @see FileStatusException
  */
@@ -420,19 +406,13 @@ class FileStatusExceptionTest {
     /**
      * The two levels of the legacy status model stay two levels.
      *
-     * <p>The fine level is the raw two-byte status, which this type carries. The coarse level is the
-     * all-OK / end-of-file / error outcome that the layer above derives from it, and it lives with
-     * that layer. Nothing here classifies, so there is no {@code isEndOfFile()}, no
-     * {@code isNotFound()}, no {@code severity()} and no conversion to a coarse outcome; the tests
-     * in this group therefore call only the declared carrying members, and the absence of any
-     * interpretation method is proved at compile time by the fact that no such call can be written.
-     * No reflective enumeration of members is performed, deliberately: a compile-time proof is
-     * stronger than a reflective one, and reflection in a test only adds noise to the low-level code
-     * audit.
-     *
-     * <p>The strongest evidence that the levels have not been collapsed is structural rather than
-     * documentary. Because the two non-error statuses are refused by the constructor, no instance of
-     * this type can ever exist that represents success or end of file.
+     * <p>The fine level is the raw two-byte status, which this type carries; the coarse level is the
+     * all-OK / end-of-file / error outcome the layer above derives from it. Nothing here classifies,
+     * so there is no {@code isEndOfFile()}, no {@code isNotFound()}, no {@code severity()} and no
+     * conversion to a coarse outcome - an absence proved at compile time by the fact that no such
+     * call can be written, which is stronger than a reflective check and keeps the low-level code
+     * audit clean. The structural evidence is stronger still: because the two non-error statuses are
+     * refused by the constructor, no instance can exist that represents success or end of file.
      */
     @Nested
     @DisplayName("the two-level status model is not collapsed into one")

@@ -13,8 +13,12 @@
 # either express or implied. See the License for the specific
 # language governing permissions and limitations under the License
 
-# =================================================================================================
-# application.yml - shared configuration baseline for the CardDemo Java module.
+# Shared configuration baseline for the CardDemo Java module. Every setting here is inherited by the
+# three profile overlays, which differ from it only in endpoints and credentials:
+#   application-local.yml -> the Docker Compose stack in carddemo-java/docker-compose.yml
+#   application-test.yml  -> Testcontainers-provided endpoints
+#   application-prod.yml  -> every secret resolved from the environment, with no fallback
+# An overlay may override a key declared here; none introduces a competing key prefix.
 #
 # ROLE
 #   Every setting below is inherited by all three profile overlays, which differ from it ONLY in
@@ -31,13 +35,38 @@
 #   in this module. The legacy estate is cited by member name, resource name, record width, field
 #   count and code value only, and is never copied here.
 #
+# THIS BASELINE IS FAIL-CLOSED, and that is a property to be preserved rather than a description
+# of how it happens to be set today. The rule for every setting here is: assume the profile that
+# inherits it is production. A convenience is therefore never declared here and then narrowed by
+# the production overlay - it is declared closed here and WIDENED by the profile that needs it,
+# because a deployment can forget to select a profile but it cannot forget to inherit this file.
+# Concretely, four settings are closed here and opened only in application-local.yml:
+#     management.endpoints.web.exposure.include   three endpoints, each a cross-file contract
+#     management.endpoint.health.show-details     never - aggregate status only
+#     management.endpoint.health.show-components  never
+#     springdoc.api-docs / springdoc.swagger-ui   both disabled
+# and one is closed here and relaxed only in the local and test overlays:
+#     carddemo.security.require-https             true
+#
+# A PROFILE-LESS START CANNOT REACH A RUNNING STATE, and it fails during start-up rather than
+# serving anything. Three values that the application cannot operate without are declared in NO
+# profile and defaulted NOWHERE - not to an empty value and not to a placeholder:
+#     spring.datasource.url                        no data source can be determined
+#     carddemo.security.jwt.secret                 no token can be signed or verified
+#     carddemo.security.field-encryption.key       no regulated field can be sealed or read
+# Each overlay binds all three; this file binds none. The first of them is resolved by the data
+# source auto-configuration during context refresh, and with no url and no embedded database on
+# the runtime class path that resolution throws, so the failure is deterministic and arrives
+# before the first request is accepted. This is the intended behaviour and it is asserted by a
+# test, so weakening it by adding a default here fails the build rather than passing review.
+#
 # WHAT IS DELIBERATELY ABSENT - every absence below is a recorded decision, not an oversight
 #   * No active and no default profile. The platform supplies it: the module Dockerfile sets
 #     SPRING_PROFILES_ACTIVE=local and Compose passes it through. Baking one in would let a
 #     deployment that forgets the variable silently inherit an entire development environment - a
 #     local datasource, a development signing value, a wider management surface - which is the
 #     environment-scale equivalent of a defaulted credential. Failing fast is the correct
-#     behaviour.
+#     behaviour, and the paragraph above records exactly which three absent values produce it.
 #   * No pool sizing and no time-out override on the datasource. The pool keeps its shipped
 #     defaults because no legacy baseline exists to tune against.
 #   * No JVM heap figure, no worker-thread count, no latency or volume figure of any kind.
@@ -51,23 +80,18 @@
 # =================================================================================================
 
 spring:
-
-  # The service label carried on every meter and every exported trace, and the name by which this
-  # application identifies itself to the metrics collector, the dashboards and the trace sink.
-  # The Prometheus scrape job in config/prometheus/prometheus.yml is separately named
-  # carddemo-java and it is that job label the provisioned dashboard panels filter on, so the two
-  # names coexist by design and neither one may be renamed to match the other.
+  # The service label carried on every meter and exported trace. The Prometheus scrape job in
+  # config/prometheus/prometheus.yml is separately named carddemo-java and it is that job label the
+  # dashboard panels filter on, so the two names coexist by design.
   application:
     name: carddemo
 
-  # Deterministic JSON for the REST contract. The request and response types are derived from the
-  # 17 screen field maps of the legacy online estate, so the wire shape is part of the published
-  # interface contract and must not drift with a framework default:
-  #   non_null              - a field the screen did not carry is omitted rather than sent as null
-  #   ISO-8601 dates        - never epoch numbers
-  #   lenient unknown input - a client may echo back a field this endpoint does not consume
-  #   plain decimals        - every monetary and rate value is a fixed-scale decimal carried from a
-  #                           zoned-decimal field; scientific notation would corrupt it on the wire
+  # Deterministic JSON for the REST contract. The request and response types derive from the 17
+  # screen field maps, so the wire shape is part of the published interface contract and must not
+  # drift with a framework default: absent fields are omitted rather than sent as null, dates are
+  # ISO-8601 rather than epoch numbers, unknown request properties are tolerated so a client may
+  # echo a field this endpoint does not consume, and decimals are rendered plainly because
+  # scientific notation would corrupt a fixed-scale value carried from a zoned-decimal field.
   jackson:
     default-property-inclusion: non_null
     serialization:
@@ -84,13 +108,10 @@ spring:
   datasource:
     driver-class-name: org.postgresql.Driver
 
-  # The migrations own the schema; the persistence provider only checks that the mapped entities
-  # still agree with the migrated tables. `validate` is a start-up cross-check that the eleven
-  # entities match the eleven fixed-width record layouts they were derived from, and it is never
-  # `create`, `create-drop` or `update`: nothing in this module may author or alter a table
-  # outside a versioned migration. No dialect is declared either - the provider detects
-  # PostgreSQL 16 correctly, and a hardcoded dialect is a drift risk. Statement echo belongs in
-  # the local overlay, not here.
+  # The migrations own the schema; the provider only checks that the mapped entities still agree
+  # with the migrated tables. `validate` is never `create`, `create-drop` or `update`: nothing here
+  # may author or alter a table outside a versioned migration. No dialect is declared, because the
+  # provider detects PostgreSQL 16 correctly and a hardcoded dialect is a drift risk.
   jpa:
     open-in-view: false
     hibernate:
@@ -103,33 +124,24 @@ spring:
           time_zone: UTC
 
   # -----------------------------------------------------------------------------------------------
-  # Schema evolution: versioned, forward-only, and the ONLY path by which a table or a row is
-  # created in this module. There is no framework-managed initialisation script and no root-level
-  # bootstrap file of any kind, so the four migrations below are the whole story. The four
-  # version-prefixed names listed next are consequently the ONLY script names mentioned anywhere in
-  # this file - none of them is a framework-recognised bootstrap name, and no boot-time initialiser
-  # property is declared for them.
+  # Schema evolution: versioned, forward-only, and the only path by which a table or a row is
+  # created. There is no framework-managed initialisation script and no boot-time initialiser
+  # property, so the migrations on the location list below are the whole story.
   #
-  #   V1__create_schema.sql        the eleven application tables      db/migration - every profile
-  #   V2__create_indexes.sql       keys and alternate-index equivalents
-  #                                                                  db/migration - every profile
-  #   V3__seed_reference_data.sql  reference rows measured from the sample datasets
-  #                                                                  db/seed      - local + test ONLY
-  #   V4__seed_user_security.sql   the ten sign-on identities, hashed
-  #                                                                  db/seed      - local + test ONLY
+  #   V1__create_schema.sql   the eleven application tables       db/migration - every profile
+  #   V2__create_indexes.sql  keys and alternate-index equivalents db/migration - every profile
   #
-  # The location list below is deliberately db/migration ALONE. The two seed migrations are not
-  # reachable from this file, which is precisely what keeps sample rows and seeded sign-on
-  # identities out of a production migration: application-local.yml and application-test.yml add
-  # classpath:db/seed for themselves, and application-prod.yml never does.
+  # The location list is deliberately db/migration alone. Reference-data and sign-on seeds must not
+  # be reachable from this file: they belong under db/seed, which application-local.yml and
+  # application-test.yml add for themselves and application-prod.yml never does. That is what keeps
+  # sample rows and seeded sign-on identities out of a production migration.
   #
-  # Version 11 of the migration tool resolves its PostgreSQL support from a separate artifact
-  # (org.flywaydb:flyway-database-postgresql, declared in pom.xml beside flyway-core). Without
-  # that artifact the build still succeeds and the application then fails at run time, so the two
-  # must stay declared together.
+  # Version 11 of the migration tool resolves PostgreSQL support from a separate artefact declared
+  # beside flyway-core in pom.xml; without it the build still succeeds and the application then
+  # fails at run time, so the two must stay declared together.
   #
-  # baseline-on-migrate stays off: this is a greenfield schema with nothing to baseline, and
-  # enabling it would let V1 be skipped in silence against a database that already holds objects.
+  # baseline-on-migrate stays off: nothing exists to baseline, and enabling it would let V1 be
+  # skipped in silence against a database that already holds objects.
   flyway:
     enabled: true
     locations: classpath:db/migration
@@ -140,25 +152,20 @@ spring:
   # -----------------------------------------------------------------------------------------------
   # Batch orchestration.
   #
-  # Jobs run on demand only - launched through the job-launch REST surface, through the ordered
-  # message-queue bridge that replaces the legacy online-to-batch hand-off, or by a test - and
-  # NEVER at application start-up. An implicit start-up run would write rows before a fixture
-  # comparison had the chance to read them, and it would leave every measured step duration
-  # meaningless.
+  # Jobs run on demand only - through the job-launch REST surface, through the ordered message-queue
+  # bridge that replaces the legacy online-to-batch hand-off, or from a test - and never at
+  # start-up. An implicit start-up run would write rows before a fixture comparison could read them
+  # and would make every measured step duration meaningless.
   #
-  # SCOPE, and why there are nine job configurations rather than dozens: of the ~78
-  # program-invocation steps across the 29 legacy job members and 2 cataloged procedures, only
-  # NINE invoke an application COBOL program. All the remaining steps are dataset-utility
-  # invocations - IDCAMS, SDSF, SORT, IEFBR14, IEBGENER, DFHCSDUP - and they are absorbed entirely
-  # by the migrations above, by the Compose service definitions, and by test fixtures. They become
-  # no job step at all.
+  # Nine job configurations rather than dozens because, of the ~78 program-invocation steps across
+  # the 29 legacy job members and 2 cataloged procedures, only nine invoke an application COBOL
+  # program; the rest are dataset-utility invocations absorbed by the migrations, the Compose
+  # service definitions and test fixtures.
   #
-  # The batch metadata tables are created by the batch framework's own bundled script and NOT by
-  # V1__create_schema.sql. That division is exactly what keeps the application-table count at
-  # eleven: V1 creates the eleven business tables and nothing else, and the property below
-  # provisions the framework's metadata tables beside them, under the prefix stated here so a
-  # reader can tell the two families apart at a glance. The production overlay narrows this to
-  # `never`, so production DDL only ever arrives through a reviewed migration.
+  # The batch metadata tables come from the batch framework's own bundled script, not from
+  # V1__create_schema.sql, which is what keeps the application-table count at eleven. The prefix
+  # below lets a reader tell the two families apart. The production overlay narrows this to `never`
+  # so production DDL only arrives through a reviewed migration.
   batch:
     job:
       enabled: false
@@ -167,72 +174,80 @@ spring:
       table-prefix: BATCH_
 
   # Region only. Endpoint overrides and credentials are profile scoped: local and test aim the
-  # object-store, queue and notification clients at the emulator that Compose or Testcontainers
-  # provides, through spring.cloud.aws.endpoint; production declares no override at all and
-  # resolves its region and credentials from the environment or from an assumed role.
+  # object-store, queue and notification clients at an emulator; production declares no override.
   cloud:
     aws:
       region:
         static: ${AWS_REGION:us-east-1}
 
-  # In-flight work is allowed to finish before the process exits. The module image runs the JVM as
-  # process 1 under an exec-form entry point, so a termination signal reaches the JVM directly; a
-  # batch chunk in progress commits instead of being cut mid-transaction.
+  # In-flight work finishes before the process exits. The JVM runs as process 1 under an exec-form
+  # entry point, so a termination signal reaches it directly and a batch chunk in progress commits.
   lifecycle:
     timeout-per-shutdown-phase: 30s
 
 server:
-  # 8080 is the port the module image exposes, the port Compose publishes, and the port the
-  # Prometheus scrape target addresses. APP_PORT exists only so that several independent clones of
-  # this stack can run side by side; the fallback must stay 8080.
+  # 8080 is the port the image exposes, the port Compose publishes and the port the scrape target
+  # addresses. APP_PORT lets independent clones run side by side; the fallback must stay 8080.
   port: ${APP_PORT:8080}
   shutdown: graceful
   # The error body is deliberately NOT shaped here. A failed request is rendered by this module's
   # own exception handler into its ErrorResponse contract, whose per-field MISSING and INVALID
-  # states carry the two distinct conditions the legacy screens signalled by changing a field's
-  # display attribute. A framework-wide error format would flatten those two states into one and
-  # silently change the interface contract.
+  # states carry the two conditions the legacy screens signalled by changing a field's display
+  # attribute. A framework-wide error format would flatten them into one.
 
-# =================================================================================================
 # Observability. This block is a cross-file contract, not a convenience.
 #
-#   /actuator/health     - the HEALTHCHECK target of carddemo-java/Dockerfile, and the gate that
-#                          any Compose service waiting on this application depends upon. If it
-#                          stops answering, or if the base path moves, the container never reports
-#                          healthy and everything gated on it never starts.
-#   /actuator/prometheus - the scrape target declared in config/prometheus/prometheus.yml, and the
-#                          surface every panel of config/grafana/dashboards/carddemo-overview.json
-#                          reads. It is also where the performance baseline is measured.
+#   /actuator/health     - the HEALTHCHECK target of carddemo-java/Dockerfile and the gate any
+#                          Compose service waiting on this application depends upon.
+#   /actuator/prometheus - the scrape target in config/prometheus/prometheus.yml and the surface
+#                          every panel of config/grafana/dashboards/carddemo-overview.json reads.
 #
-# Both of those paths are resolved literally by those sibling files, which is why the default
-# /actuator base path is stated explicitly below and must not be changed. Whatever request
-# authorization this module applies has to leave the health probe and the scrape endpoint
-# reachable; securing them would break the container image and the metrics pipeline together.
+# Both paths are resolved literally by those sibling files, which is why the default /actuator base
+# path is stated explicitly and must not move. Request authorization must leave the health probe and
+# the scrape endpoint reachable, or the container image and the metrics pipeline break together.
 #
-# Together with logback-spring.xml, this block replaces the legacy estate's only diagnostic
-# channel. The 28 programs carry roughly 230 console-write statements between them, and that is
-# the entire instrumentation of the system being migrated: those writes become structured log
-# events, meters and spans.
-#
-# The percentile histograms below are INSTRUMENTATION and not a threshold - they let a
-# distribution be observed. No target percentile, no latency figure and no volume figure appears
-# anywhere in this module, because the legacy estate documents none for the migration to be held
-# to. The baseline is established from what these meters record.
-# =================================================================================================
+# The percentile histograms below are instrumentation and not a threshold. No target percentile,
+# latency or volume figure appears anywhere in this module, because the legacy estate documents
+# none; the baseline is established from what these meters record.
 management:
   endpoints:
     web:
       base-path: /actuator
       exposure:
-        include: health,info,metrics,prometheus
+        # THE MINIMUM SURFACE THAT STILL HONOURS THIS MODULE'S CROSS-FILE CONTRACTS, and nothing
+        # beyond it. Exactly three endpoints are published, and each one is published because a
+        # sibling file resolves its path literally:
+        #   health     - the HEALTHCHECK of carddemo-java/Dockerfile and the readiness gate every
+        #                Compose service waiting on this application depends upon
+        #   prometheus - the scrape target of config/prometheus/prometheus.yml and the surface the
+        #                provisioned dashboard panels read; also where the baseline is measured
+        #   info       - build and Java-version confirmation, with property publication switched
+        #                off below, so it can identify the artifact but never its configuration
+        #
+        # `metrics` is deliberately NOT here. It enumerates every registered meter name and lets
+        # any single meter be queried, which describes the shape of the running system to anyone
+        # who can reach it while adding nothing the scrape endpoint does not already provide to
+        # the collector. The local overlay adds it back, together with the environment, bean,
+        # mapping and logger endpoints, because diagnosing on a developer's own machine is what
+        # those are for.
+        #
+        # This list is IDENTICAL to the production overlay's list, and that is the point: the
+        # shared baseline is the production posture, and a profile widens it deliberately rather
+        # than a profile having to remember to narrow it.
+        include: health,info,prometheus
   endpoint:
     health:
-      # Component detail is shown so that a failed migration or an unreachable database surfaces in
-      # the probe body itself rather than only as an aggregate status. That payload carries
-      # component names, the database product name and the validation query - never a URL, never a
-      # user, never a credential. The production overlay narrows both of these to `never`.
-      show-details: always
-      show-components: always
+      # Aggregate status only. The probe answers UP or DOWN and nothing else.
+      #
+      # Component detail is genuinely useful - it is how a failed migration or an unreachable
+      # database surfaces in the probe body instead of only in the log - but the payload that
+      # carries it also names every health contributor, the database product and version, and the
+      # validation query, which together describe the internals of a system to an unauthenticated
+      # caller. That is a diagnostic convenience, so it belongs to the profile where diagnosis
+      # happens: the local overlay turns both of these back to `always`. Production and any
+      # profile that forgets to override inherit the closed setting from here.
+      show-details: never
+      show-components: never
       # Liveness and readiness groups, for an orchestrated deployment. /actuator/health itself
       # remains the reachable aggregate, and that aggregate is what the image HEALTHCHECK reads.
       probes:
@@ -251,9 +266,8 @@ management:
       enabled: true
   metrics:
     tags:
-      # A common tag on every meter. Named `application` deliberately: the scrape target already
-      # contributes `service` and `tier` labels of its own, and a meter tag sharing one of those
-      # names would be renamed by the collector on ingest.
+      # Named `application` deliberately: the scrape target contributes `service` and `tier`
+      # labels, and a meter tag sharing one of those names would be renamed by the collector.
       application: ${spring.application.name}
     distribution:
       percentiles-histogram:
@@ -282,19 +296,32 @@ management:
 # The generated OpenAPI document IS the published, machine-readable description of the endpoints
 # derived from the legacy screens. There is no separate hand-maintained contract document to keep
 # in step with the code.
+#
+# BOTH SURFACES ARE OFF IN THE SHARED BASELINE, and each path is still declared so that a profile
+# turning a surface on inherits the agreed path rather than inventing one.
+#
+# The document describes every endpoint, every request and response field, and every declared
+# error of the migrated screen contract. That is precisely what a developer and a contract test
+# need, and precisely what an unauthenticated caller should not be handed: served openly it is a
+# ready-made map of the attack surface, and the viewer bundle additionally serves static assets
+# and executes requests from the browser. Neither belongs to a posture that a deployment inherits
+# by forgetting to choose one.
+#
+# The local overlay turns both back on. Nothing in the module reads these two flags to decide
+# whether to BUILD the document: com.carddemo.config.OpenApiConfig contributes the description
+# bean unconditionally, so the contract stays assertable by a test under any profile while the
+# HTTP surface that would serve it stays closed unless a profile opens it.
 springdoc:
   api-docs:
-    enabled: true
+    enabled: false
     path: /v3/api-docs
   swagger-ui:
-    enabled: true
+    enabled: false
     path: /swagger-ui.html
-    # The static bundle that renders the document is a pinned build, declared once in the build
-    # file. The value below is substituted from that same declaration while resources are being
-    # processed, so the pin keeps exactly one home and a later remediation of the bundle needs no
-    # edit here. Left unset, the library reaches for a bundle build of its own naming, which the
-    # pinned artifact does not carry: the rendered viewer then answers 404 even though the
-    # generated document is served normally. Verified by request, not by reading.
+    # The static bundle that renders the document is pinned once in the build file and substituted
+    # here during resource filtering, so the pin keeps one home. Left unset, the library reaches
+    # for a bundle build of its own naming that the pinned artefact does not carry, and the viewer
+    # then answers 404 even though the document itself is served. Verified by request.
     version: '@swagger-ui.version@'
     operations-sorter: alpha
     tags-sorter: alpha
@@ -308,23 +335,16 @@ logging:
     org.springframework.batch: INFO
     org.flywaydb: INFO
 
-# =================================================================================================
-# Application namespace.
+# Application namespace: the logical resource names the legacy job streams carried as dataset
+# references and the CICS definition carried as resource definitions. The overlays reuse these exact
+# key paths, so a job parameter reads identically under every profile.
 #
-# These are the logical resource names that the legacy job streams carried as dataset references
-# and that the CICS definition carried as resource definitions, bound here by this module's own
-# configuration-properties types. The overlays reuse these exact key paths, so a job parameter
-# reads identically under every profile and no profile invents a competing prefix.
-#
-# Every value below is a resource NAME or a non-sensitive setting. Endpoints and credentials are
-# never declared here: local, test and production differ only in where a resource lives and in who
-# is permitted to reach it.
-# =================================================================================================
+# Every value here is a resource name or a non-sensitive setting; endpoints and credentials are
+# never declared at this level.
 carddemo:
   aws:
-    # Batch file staging, standing in for the sequential output datasets and the
-    # generation-data-group bases the legacy jobs wrote to. One prefix per output family, so every
-    # artifact a run produces stays addressable and no family can overwrite another.
+    # Batch file staging, standing in for the sequential output datasets and generation-data-group
+    # bases the legacy jobs wrote to. One prefix per output family, so no family overwrites another.
     s3:
       bucket: ${CARDDEMO_S3_BUCKET:carddemo-batch-staging}
       prefix:
@@ -339,9 +359,32 @@ carddemo:
     # failure ignored rather than raised. All three properties of that contract are preserved -
     # the fixed record width, an ordered message group so append order survives, and a publish
     # failure that is logged and tolerated instead of aborting the caller.
+    #
+    # The two names below are the module's canonical values and are fixed by the migration plan,
+    # not chosen here. The queue is carddemo-jobs.fifo and the message group is
+    # carddemo-job-submission; the same two strings appear byte-identically in every profile
+    # overlay, in docker-compose.yml and in the emulator bootstrap script. Neither is a free
+    # choice. The .fifo suffix is not decoration: the queue service rejects a first-in-first-out
+    # queue whose name omits it, which is a start-up failure rather than a style preference. The
+    # group id must be one stable value, because append order is preserved only within a single
+    # message group, and append order is the part of the legacy queue contract that acceptance
+    # drains a real queue to verify.
+    #
+    # The legacy resource name JOBS is not discarded by using these values. It is carried where it
+    # is actually contractual - in the frozen operator message text emitted when a submission
+    # fails, which names the transient-data queue verbatim and is asserted character for character
+    # - and as provenance in this comment and in the traceability matrix, rather than as the
+    # resource name itself. An infrastructure name and an operator-visible message are two
+    # different contracts, and only the second is byte-compared. Namespacing the resource to this
+    # module is what stops a target resource colliding with an unrelated queue in a shared account.
+    #
+    # Both are environment-overridable so that a deployment can relocate them without editing a
+    # file. The group id is bound here rather than only in the overlays because the production
+    # profile intentionally restates just the queue: without this binding production would inherit
+    # a hard-coded group id that no environment could correct.
     sqs:
-      job-submission-queue: ${CARDDEMO_SQS_QUEUE:JOBS.fifo}
-      message-group-id: JOBS
+      job-submission-queue: ${CARDDEMO_SQS_QUEUE:carddemo-jobs.fifo}
+      message-group-id: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:carddemo-job-submission}
       record-length: 80
       fail-on-error: false
     # Job-completion fan-out, part of the message-queue integration named in the target stack. It
@@ -349,27 +392,50 @@ carddemo:
     sns:
       job-notification-topic: ${CARDDEMO_SNS_TOPIC:carddemo-job-notifications}
   security:
-    # NO SIGNING VALUE IS DECLARED HERE, and none is defaulted - not even an empty one, and not a
-    # placeholder. Only the two non-sensitive claim settings appear below. The overlays bind the
-    # signing material itself: a throwaway development value locally and in tests, and a
-    # no-fallback environment reference in production, so that a missing value aborts start-up
-    # instead of quietly binding something harmless-looking.
+    # NO SIGNING VALUE IS DECLARED HERE, and none is defaulted - not even an empty one. The
+    # overlays bind the signing material: a throwaway development value locally and in tests, and
+    # a no-fallback environment reference in production, so a missing value aborts start-up.
     #
-    # The issuer differs from spring.application.name above on purpose. It is a token claim, it is
-    # asserted as such by the tests, and it names the module and its artifact rather than the
-    # metric service label; the two are separate contracts and neither should be edited to match
+    # The issuer differs from spring.application.name on purpose: it is a token claim naming the
+    # module and its artefact, not the metric service label, and neither should be edited to match
     # the other.
     #
-    # DOCUMENTED PARITY EXCEPTION. The legacy sign-on record held an eight-character password in
-    # clear text and the sign-on program compared the entered value against it directly. This
-    # module stores a BCrypt hash and verifies against that hash instead. It is the one place where
-    # the no-hardcoded-credentials requirement outranks byte-for-byte behavioural faithfulness, it
-    # is a deliberate divergence rather than an accident, and it is written up in
-    # docs/decision-log.md rather than left implicit here. No value from that legacy record is
-    # restated anywhere in this module.
+    # DOCUMENTED PARITY EXCEPTION, stated here as a requirement on the credential-verification
+    # layer. The legacy sign-on record held an eight-character cleartext password and the sign-on
+    # program compared the entered value against it directly. This module's credential column is
+    # sized for a hash instead, and no component may store or compare a cleartext credential. That
+    # is the one place where the no-hardcoded-credentials requirement outranks byte-for-byte
+    # faithfulness. No value from the legacy record is restated anywhere in this module.
     jwt:
       issuer: carddemo-java
       expiration: PT30M
-    # Transport expectations are profile scoped: relaxed for a developer addressing containers on
-    # their own machine, required in production.
-    require-https: false
+    # FIELD ENCRYPTION AT REST. The customer record carries two regulated identity values in clear
+    # text on the mainframe - a nine-digit national identifier and a twenty-character
+    # government-issued identifier - and neither is stored in that form here. Both are sealed into an
+    # authenticated, versioned envelope by com.carddemo.util.SensitiveFieldCodec (AES-256 in
+    # Galois/Counter Mode) before they reach a column, and the customer entity refuses any value that
+    # is not already sealed, so cleartext cannot reach the database through application code.
+    #
+    # NO KEY IS DECLARED HERE, and none is defaulted - not an empty value, not a placeholder. The key
+    # is a secret, and the same rule the signing material follows applies to it: the overlays bind it,
+    # with a throwaway value locally and in tests and a no-fallback environment reference in
+    # production, so a missing key aborts start-up instead of quietly sealing data under something
+    # accidental. A deployment that changes the key can no longer read what the previous key sealed;
+    # that is a property of authenticated encryption, not a defect, and it is why the value belongs in
+    # managed configuration rather than in this file.
+    #
+    # DOCUMENTED PARITY EXCEPTION, in the same class as the BCrypt substitution above. Encrypting at
+    # rest is a divergence from the legacy design rather than a translation of it: it changes no record
+    # image, no field offset and no output byte, and it is written up in docs/decision-log.md.
+    #
+    # TRANSPORT IS REQUIRED IN THE SHARED BASELINE. A bearer token and a sealed identity value are
+    # both worthless over plaintext: the token can be lifted from the wire and replayed until it
+    # expires, and the sealed value is only sealed at rest, so it travels in the clear once an
+    # endpoint has decrypted it for a response. Requiring transport security is therefore not an
+    # independent hardening step but the condition under which the two settings above mean
+    # anything.
+    #
+    # It is relaxed ONLY by the two overlays that address containers on the same machine - local
+    # and test - and each of them states the relaxation explicitly, so the concession is visible in
+    # the profile that takes it rather than inherited silently by every profile.
+    require-https: true

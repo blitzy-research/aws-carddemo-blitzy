@@ -50,60 +50,66 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 /**
- * Unit tests for {@link SignOnRequest}, the transport contract for the two operator-entered
- * fields of legacy CICS transaction {@code CC00}.
- *
- * <h2>What is under test</h2>
+ * Unit tests for {@link SignOnRequest}, the transport contract for the two operator-entered fields of
+ * legacy CICS transaction {@code CC00}.
  *
  * <p>{@link SignOnRequest} replaces the inbound half of the 3270 sign-on screen driven by
- * {@code app/cbl/COSGN00C.cbl}, a 260-line program with six paragraphs. The screen layout
- * lives in {@code app/bms/COSGN00.bms}, 210 lines, where the user-id field is defined at
- * line 156 and the password field at line 175, each declared eight characters wide. The
- * generated symbolic map the program actually reads is {@code app/cpy-bms/COSGN00.CPY},
- * whose inbound group declares {@code USERIDI} at line 72 and {@code PASSWDI} at line 78,
- * again eight characters each. The persisted credential record is
- * {@code app/cpy/CSUSR01Y.cpy}, an 80-byte layout whose {@code SEC-USR-ID} field at line 18
- * occupies bytes 1 through 8 and whose {@code SEC-USR-PWD} field at line 21 occupies bytes
- * 49 through 56. Presentation side and persistence side therefore agree: both values are
- * eight characters wide, and both are alphanumeric rather than numeric.</p>
+ * {@code app/cbl/COSGN00C.cbl}, a 260-line program with six paragraphs. The screen layout lives in
+ * {@code app/bms/COSGN00.bms}, where the user-id field is defined at line 156 and the password field
+ * at line 175, each eight characters wide; the generated symbolic map the program reads is
+ * {@code app/cpy-bms/COSGN00.CPY}, whose inbound group declares {@code USERIDI} at line 72 and
+ * {@code PASSWDI} at line 78, again eight characters each; and the persisted credential record is
+ * {@code app/cpy/CSUSR01Y.cpy}, an 80-byte layout whose {@code SEC-USR-ID} field at line 18 occupies
+ * bytes 1 through 8 and whose {@code SEC-USR-PWD} field at line 21 occupies bytes 49 through 56.
+ * Presentation side and persistence side therefore agree: both values are eight characters wide and
+ * both are alphanumeric rather than numeric.</p>
  *
- * <h2>The width is asserted behaviourally, in both directions, for both values</h2>
- *
- * <p>This class owns the folder-level acceptance obligation that the sign-on user id and the
- * sign-on password are each bounded at eight characters. That obligation is discharged by
- * behaviour and not by inspecting a declaration: for each of the two values independently, a
- * value of exactly eight characters is accepted with no violation at all, and a value of
- * nine characters produces a bound violation. Both directions are also swept across a range
- * of lengths so the bound is pinned as inclusive at eight rather than merely "around"
+ * <p><strong>The width is asserted behaviourally, in both directions, for both values.</strong> For
+ * each value independently, a value of exactly eight characters is accepted with no violation at all
+ * and a value of nine characters produces a bound violation, and both directions are swept across a
+ * range of lengths so the bound is pinned as inclusive at eight rather than merely "around"
  * eight.</p>
  *
- * <h2>Why the bound is the only constraint, and why that is behaviour rather than taste</h2>
+ * <p><strong>Why the bound is the only constraint.</strong> {@code COSGN00C} tests the two submitted
+ * values for emptiness inside a single ordered cascade at lines 118 through 129: the user id is
+ * examined first, the password second, and because the construct stops at the first matching clause a
+ * submission with <em>both</em> values empty reports the user-id prompt alone - never the password
+ * prompt, and never both messages together. Bean Validation evaluates constraints in an unspecified
+ * order and reports every violation it finds, so a pair of presence constraints on this type would
+ * emit two messages where the legacy screen emits exactly one. That is an observable difference on an
+ * external interface, so the presence test stays in the service layer where the ordering can be
+ * honoured. This class therefore proves the absence of every other constraint by behaviour: two
+ * nulls yield no violation, two empty strings yield no violation, and two all-space values yield no
+ * violation, and no character-class, format, digit or strength rule fires either, because the legacy
+ * screen applies none and any of them would reject input the legacy system accepts.</p>
  *
- * <p>{@code COSGN00C} tests the two submitted values for emptiness inside a single ordered
- * cascade at lines 118 through 129: the user id is examined first, the password second, and
- * because the construct stops at the first matching clause a submission with <em>both</em>
- * values empty reports the user-id prompt alone. Never the password prompt, and never both
- * messages together. Bean Validation, by contrast, evaluates constraints in an unspecified
- * order and reports every violation it finds, so a pair of presence constraints on this type
- * would emit two messages where the legacy screen emits exactly one. That is an observable
- * difference on an external interface, so the presence test has to stay in the service layer
- * where the ordering can be honoured.</p>
+ * <p><strong>The credential is carried, never printed.</strong> The password field is defined on the
+ * mapset with the non-display attribute, so the legacy terminal never echoed it, and
+ * {@link SignOnRequest#toString()} honours that by substituting a fixed placeholder - which is what
+ * stops the credential reaching a log line, an exception message or a test-failure report. The
+ * complementary half matters just as much and is asserted here too: the password must still
+ * deserialize from a request body, because an endpoint cannot verify a credential it refuses to
+ * read.</p>
  *
- * <p>This class therefore proves the absence of every other constraint by behaviour: an
- * instance carrying two nulls yields no violation, an instance carrying two empty strings
- * yields no violation, and an instance carrying two all-space values yields no violation. No
- * character-class, format, digit or strength rule fires either, because the legacy screen
- * applies none and any of them would reject input the legacy system accepts.</p>
+ * <p><strong>Credential verification is not exercised here and cannot be: no password encoder and no
+ * verifying sign-on path exists anywhere in the module yet.</strong> Replacing the legacy plaintext
+ * comparison at line 223 of {@code COSGN00C} with hashed verification is a documented parity
+ * exception that remains an unmet requirement, recorded as decision log entry D-12. No credential
+ * encoder, authentication token, user-details type or security annotation appears in this class, and
+ * the eight-character value used below is synthetic: it is not the value the legacy provisioning job
+ * seeds, which appears nowhere in this module's test sources.</p>
  *
  * <h2>The credential is carried, never printed</h2>
  *
  * <p>The password field is defined on the mapset with the non-display attribute, so the
  * legacy terminal never echoed it. {@link SignOnRequest#toString()} honours that by
  * substituting a fixed placeholder for the value, which is what stops the credential
- * reaching a log line, an exception message or a test-failure report. The complementary half
- * of the contract matters just as much and is asserted here too: the password must still
- * deserialize from a request body, because an endpoint cannot verify a credential it refuses
- * to read.</p>
+ * reaching a log line, an exception message or a test-failure report. The transport contract
+ * is deliberately asymmetric in the same spirit and is asserted here in both directions: the
+ * password must still deserialize from a request body, because an endpoint cannot verify a
+ * credential it refuses to read, and it must never serialize into any document, because a
+ * request object reused as a response, a cache entry, a queued message or a trace attribute
+ * would otherwise carry the credential outward.</p>
  *
  * <p>Credential verification itself is not exercised here and cannot be. Hashed verification
  * replaces the legacy plaintext comparison at line 223 of {@code COSGN00C}, and that
@@ -147,23 +153,12 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 class SignOnRequestTest {
 
     /*
-     * ==================================================================
      * THE INDEPENDENT ORACLE
-     * ==================================================================
-     * Every expected value in this class is a literal hand-derived from
-     * the legacy artefacts or from the Bean Validation and Jackson
-     * specifications. Nothing here asks the type under test to supply its
-     * own expected value, nothing snapshots its output, and no assertion
-     * compares one production call against another production call.
      *
-     * The redaction placeholder is declared as a private constant on the
-     * production type, so it cannot be referenced from here even though
-     * this class sits in the same package. Its text is therefore restated
-     * below as an independent literal, read off the production source
-     * rather than obtained from it at run time - which is exactly the
-     * property that makes the assertion meaningful: if the production
-     * constant were ever changed, this class would fail rather than
-     * silently follow.
+     * Every expected value in this class is a literal hand-derived from the legacy artefacts or
+     * from the Bean Validation and Jackson specifications. Nothing here asks the type under test
+     * to supply its own expected value, nothing snapshots its output, and no assertion compares
+     * one production call against another production call.
      *
      * ------------------------------------------------------------------
      * Two points where the production type differs from a first reading
@@ -176,12 +171,14 @@ class SignOnRequestTest {
      *    therefore asserts value equality, which is the contract the type
      *    actually declares, rather than the identity equality a plain
      *    final class without overrides would have given.
-     * 2. The password component carries no serialization annotation at
-     *    all - neither a total suppression nor a write-only access mode -
-     *    so it both serializes and deserializes. This class asserts that
-     *    round trip rather than inventing a write-only contract the
-     *    production source does not declare. Redaction is enforced on the
-     *    diagnostic channel, which is where the leak risk actually is.
+     * 2. The password component is annotated with the write-only access
+     *    mode rather than suppressed outright, so it deserializes from a
+     *    request body and is omitted from every serialized document. This
+     *    class asserts that asymmetry directly - inbound binding in one
+     *    group of tests, outbound absence in another - rather than the
+     *    symmetric round trip an unannotated component would have given.
+     *    A symmetric round trip is asserted for the user id only, which
+     *    is an identifier rather than a secret.
      */
 
     /** Screen and record width of the user id, in characters. */
@@ -259,6 +256,12 @@ class SignOnRequestTest {
      * and plain rather than scientific decimal notation. That last setting has no field to
      * act on here and is configured only so the mapper stays a faithful stand-in for the one
      * the application builds.</p>
+     *
+     * <p>That the stand-in is still faithful is asserted in
+     * {@link ApplicationJsonContractTest}, which builds the mapper from a real context that has read
+     * the module's {@code application.yml} and compares the two on this type's own payload. A change
+     * to the module's settings therefore surfaces there rather than leaving this file confidently
+     * asserting a shape no client receives.</p>
      */
     private static final ObjectMapper SHARED_SETTINGS_MAPPER = JsonMapper.builder()
             .defaultPropertyInclusion(
@@ -965,13 +968,22 @@ class SignOnRequestTest {
     }
 
     /**
-     * The wire contract: the credential must deserialize, and absent values must be omitted.
+     * The wire contract, which is deliberately asymmetric: the credential must deserialize and
+     * must never serialize.
      *
-     * <p>Redaction protects the diagnostic channel, not the transport channel. An endpoint
-     * cannot verify a credential it refuses to read, so the password component carries no
-     * serialization annotation and this group asserts that it moves in both directions. The
-     * shape of the emitted document is asserted too, because the emitted property set is what
-     * proves the contract is exactly two values.</p>
+     * <p>An endpoint cannot verify a credential it refuses to read, so the inbound direction is
+     * asserted to work exactly as before - a document carrying the password binds it, an explicit
+     * null binds absence, and an unknown property is tolerated by the shared settings. The
+     * outbound direction is asserted to be closed: the password component is annotated
+     * {@code WRITE_ONLY}, so no document this type is serialized into contains it, under any
+     * value, including the empty string.</p>
+     *
+     * <p>These assertions are negative on purpose. Redaction of {@code toString()} protects the
+     * diagnostic channel only; it does nothing about a request object reused as a response body,
+     * a cached entry, a queued message, an audit event, a request snapshot or a trace attribute.
+     * The emitted property set is therefore pinned exactly, so that reintroducing the credential
+     * to the outbound document - by removing the annotation, by adding an accessor, or by any
+     * other route - fails the build rather than shipping.</p>
      */
     @Nested
     @DisplayName("JSON contract")
@@ -990,25 +1002,35 @@ class SignOnRequestTest {
         }
 
         @Test
-        @DisplayName("both properties are emitted when populated, so neither is suppressed")
-        void bothPropertiesAreEmittedWhenPopulated() throws JsonProcessingException {
+        @DisplayName("only the user id is emitted; the credential is suppressed even when populated")
+        void onlyTheUserIdIsEmittedAndTheCredentialIsSuppressed() throws JsonProcessingException {
             SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
 
             Map<String, Object> properties = propertiesOf(jsonOf(request));
 
-            assertThat(properties)
-                    .containsEntry(USER_ID_PROPERTY, USER_ID_AT_WIDTH)
-                    .containsEntry(CREDENTIAL_PROPERTY, SYNTHETIC_CREDENTIAL);
+            assertThat(properties).containsEntry(USER_ID_PROPERTY, USER_ID_AT_WIDTH);
+            assertThat(properties).doesNotContainKey(CREDENTIAL_PROPERTY);
         }
 
         @Test
-        @DisplayName("the emitted document carries exactly two properties and no third")
-        void theEmittedDocumentCarriesExactlyTwoProperties() throws JsonProcessingException {
+        @DisplayName("the emitted document carries exactly one property and no second")
+        void theEmittedDocumentCarriesExactlyOneProperty() throws JsonProcessingException {
             SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
 
             Map<String, Object> properties = propertiesOf(jsonOf(request));
 
-            assertThat(properties).containsOnlyKeys(USER_ID_PROPERTY, CREDENTIAL_PROPERTY);
+            assertThat(properties).containsOnlyKeys(USER_ID_PROPERTY);
+        }
+
+        @Test
+        @DisplayName("the serialized text contains the credential nowhere, in no form")
+        void theSerializedTextContainsTheCredentialNowhere() throws JsonProcessingException {
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+
+            String document = jsonOf(request);
+
+            assertThat(document).doesNotContain(SYNTHETIC_CREDENTIAL);
+            assertThat(document).doesNotContain(CREDENTIAL_PROPERTY);
         }
 
         @Test
@@ -1032,15 +1054,14 @@ class SignOnRequestTest {
         }
 
         @Test
-        @DisplayName("an empty string is emitted, because only an absent value is omitted")
-        void anEmptyStringIsEmitted() throws JsonProcessingException {
+        @DisplayName("an empty user id is emitted, but an empty credential is still suppressed")
+        void anEmptyUserIdIsEmittedAndAnEmptyCredentialIsNot() throws JsonProcessingException {
             SignOnRequest request = new SignOnRequest("", "");
 
             Map<String, Object> properties = propertiesOf(jsonOf(request));
 
-            assertThat(properties)
-                    .containsEntry(USER_ID_PROPERTY, "")
-                    .containsEntry(CREDENTIAL_PROPERTY, "");
+            assertThat(properties).containsEntry(USER_ID_PROPERTY, "");
+            assertThat(properties).doesNotContainKey(CREDENTIAL_PROPERTY);
         }
 
         @Test
@@ -1084,23 +1105,26 @@ class SignOnRequestTest {
         }
 
         @Test
-        @DisplayName("a populated instance survives a serialize and deserialize cycle unchanged")
-        void aPopulatedInstanceSurvivesARoundTripUnchanged() throws JsonProcessingException {
+        @DisplayName("a serialize and deserialize cycle keeps the user id and drops the credential")
+        void aRoundTripKeepsTheUserIdAndDropsTheCredential() throws JsonProcessingException {
             SignOnRequest original = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
 
             SignOnRequest restored = parse(jsonOf(original));
 
-            assertThat(restored).isEqualTo(original);
+            assertThat(restored.userId()).isEqualTo(USER_ID_AT_WIDTH);
+            assertThat(restored.password()).isNull();
+            assertThat(restored).isNotEqualTo(original);
         }
 
         @Test
-        @DisplayName("the credential is never emitted as anything but its own characters")
-        void theCredentialIsNeverEmittedAsAnythingButItsOwnCharacters() throws JsonProcessingException {
+        @DisplayName("no substitute for the credential is emitted either, not even the placeholder")
+        void noSubstituteForTheCredentialIsEmittedEither() throws JsonProcessingException {
             SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
 
             String document = jsonOf(request);
 
             assertThat(document).doesNotContain(REDACTION_PLACEHOLDER_TEXT);
+            assertThat(document).doesNotContain(SYNTHETIC_CREDENTIAL);
         }
     }
 
@@ -1176,27 +1200,27 @@ class SignOnRequestTest {
         }
 
         @Test
-        @DisplayName("a lower-case value survives the serialize direction too")
+        @DisplayName("a lower-case user id survives the serialize direction; the credential is absent")
         void aLowerCaseValueSurvivesTheSerializeDirection() throws JsonProcessingException {
             SignOnRequest request = new SignOnRequest("admin001", "abcd1234");
 
             Map<String, Object> properties = propertiesOf(jsonOf(request));
 
-            assertThat(properties)
-                    .containsEntry(USER_ID_PROPERTY, "admin001")
-                    .containsEntry(CREDENTIAL_PROPERTY, "abcd1234");
+            assertThat(request.password()).isEqualTo("abcd1234");
+            assertThat(properties).containsEntry(USER_ID_PROPERTY, "admin001");
+            assertThat(properties).doesNotContainKey(CREDENTIAL_PROPERTY);
         }
 
         @Test
-        @DisplayName("a padded value survives the serialize direction too, still untrimmed")
+        @DisplayName("a padded user id survives the serialize direction untrimmed; the credential is absent")
         void aPaddedValueSurvivesTheSerializeDirection() throws JsonProcessingException {
             SignOnRequest request = new SignOnRequest("USER1   ", "  ABCD  ");
 
             Map<String, Object> properties = propertiesOf(jsonOf(request));
 
-            assertThat(properties)
-                    .containsEntry(USER_ID_PROPERTY, "USER1   ")
-                    .containsEntry(CREDENTIAL_PROPERTY, "  ABCD  ");
+            assertThat(request.password()).isEqualTo("  ABCD  ");
+            assertThat(properties).containsEntry(USER_ID_PROPERTY, "USER1   ");
+            assertThat(properties).doesNotContainKey(CREDENTIAL_PROPERTY);
         }
 
         @Test
@@ -1264,15 +1288,14 @@ class SignOnRequestTest {
 
             assertThat(document).contains("\"" + USER_ID_PROPERTY + "\":\"00000042\"");
             assertThat(properties.get(USER_ID_PROPERTY)).isInstanceOf(String.class).isNotInstanceOf(Number.class);
-            assertThat(properties.get(CREDENTIAL_PROPERTY)).isInstanceOf(String.class).isNotInstanceOf(Number.class);
+            assertThat(properties).doesNotContainKey(CREDENTIAL_PROPERTY);
         }
 
         @Test
-        @DisplayName("an all-digit value never loses a leading zero through a round trip")
+        @DisplayName("an all-digit credential never loses a leading zero on the inbound direction")
         void anAllDigitValueNeverLosesALeadingZero() throws JsonProcessingException {
-            SignOnRequest original = new SignOnRequest("00000001", "00000009");
-
-            SignOnRequest restored = parse(jsonOf(original));
+            SignOnRequest restored = parse("{\"" + USER_ID_PROPERTY + "\":\"00000001\",\""
+                    + CREDENTIAL_PROPERTY + "\":\"00000009\"}");
 
             assertThat(restored.userId()).isEqualTo("00000001");
             assertThat(restored.password()).isEqualTo("00000009");
@@ -1411,13 +1434,16 @@ class SignOnRequestTest {
         }
 
         @Test
-        @DisplayName("re-emitting the instance yields exactly the two inputs and no screen furniture")
+        @DisplayName("re-emitting the instance yields the user id alone and no screen furniture")
         void reEmittingTheInstanceYieldsExactlyTheTwoInputs() throws JsonProcessingException {
             SignOnRequest request = parse(DOCUMENT_OFFERING_EVERY_OMITTED_MEMBER);
 
             Map<String, Object> properties = propertiesOf(jsonOf(request));
 
-            assertThat(properties).containsOnlyKeys(USER_ID_PROPERTY, CREDENTIAL_PROPERTY);
+            assertThat(properties)
+                    .as("none of the screen furniture is bound, and the write-only credential is not "
+                            + "emitted either, so the user id is the whole of the outbound document")
+                    .containsOnlyKeys(USER_ID_PROPERTY);
         }
 
         @ParameterizedTest(name = "{0} is not part of the request contract")
@@ -1444,13 +1470,20 @@ class SignOnRequestTest {
         }
 
         @Test
-        @DisplayName("the contract is exactly two members wide, matching the two operator-typed items")
+        @DisplayName("the contract is exactly two members wide inbound and one member wide outbound")
         void theContractIsExactlyTwoMembersWide() throws JsonProcessingException {
             SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
 
-            Map<String, Object> properties = propertiesOf(jsonOf(request));
+            SignOnRequest bound = parse("{\"" + USER_ID_PROPERTY + "\":\"" + USER_ID_AT_WIDTH
+                    + "\",\"" + CREDENTIAL_PROPERTY + "\":\"" + SYNTHETIC_CREDENTIAL + "\"}");
 
-            assertThat(properties).hasSize(2);
+            assertThat(bound.userId()).isNotNull();
+            assertThat(bound.password())
+                    .as("both operator-typed items of the screen bind on the inbound direction")
+                    .isNotNull();
+            assertThat(propertiesOf(jsonOf(request)))
+                    .as("but the credential is write-only, so only one member is ever emitted")
+                    .hasSize(1);
         }
 
         @Test

@@ -22,34 +22,31 @@ import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
 /**
- * Fixed-width templates for the plain-text account statement record produced by the legacy
- * statement generator.
+ * Fixed-width templates for the plain-text account statement record produced by the legacy statement
+ * generator, and the sole holder of the statement text layout.
  *
- * <p>This class is the sole holder of the statement text layout. Fixed-width layout knowledge is
- * confined to the {@code util} layer, and every literal, filler width, explicit space count and
- * numeric-edited mask below is an external output contract verified byte for byte against the
- * legacy source. A golden-file comparison at exactly {@value #STATEMENT_RECORD_LENGTH} bytes per
- * record is what proves it.</p>
+ * <p>Every literal, filler width, explicit space count and numeric-edited mask below is an external
+ * output contract verified byte for byte against the legacy source; a golden-file comparison at exactly
+ * {@value #STATEMENT_RECORD_LENGTH} bytes per record is what proves it.
  *
  * <h2>Record geometry</h2>
  *
  * <p>The text output file is selected at {@code [app/cbl/CBSTM03A.CBL:L39]} and its record is
- * declared at {@code [app/cbl/CBSTM03A.CBL:L45]} as {@code 01 FD-STMTFILE-REC PIC X(80).} -- a
- * fixed {@value #STATEMENT_RECORD_LENGTH}-byte record. The line templates occupy
+ * declared at {@code [app/cbl/CBSTM03A.CBL:L45]} as a single alphanumeric item named
+ * {@code FD-STMTFILE-REC} that is fixed at {@value #STATEMENT_RECORD_LENGTH} bytes. The line
+ * templates occupy
  * {@code [app/cbl/CBSTM03A.CBL:L85-L146]} and there are exactly
- * {@value #STATEMENT_LINE_GROUP_COUNT} of them: verified by a raw read with control characters
- * exposed, so the count is seventeen -- not sixteen and not eighteen. The figures
- * {@value #STATEMENT_LINE_GROUP_COUNT} and {@value #STATEMENT_RECORD_LENGTH} are factual layout
- * evidence read out of the source, not tuning or service-level figures.</p>
+ * {@value #STATEMENT_LINE_GROUP_COUNT} of them - verified by a raw read with control characters
+ * exposed, so the count is seventeen, not sixteen and not eighteen. Both figures are factual layout
+ * evidence read out of the source, not tuning or service-level figures.
  *
  * <p><strong>The record image carries no line terminator.</strong> The COBOL source file itself has
- * CRLF line endings, but that is a property of the source text, not of the emitted records. Each
- * emitted record is exactly {@value #STATEMENT_RECORD_LENGTH} data bytes. Whether and how records
- * are separated on disk is the writer's decision in the batch layer, so no carriage return, line
- * feed or platform line separator ever appears inside a template produced here.</p>
+ * CRLF line endings, but that is a property of the source text and not of the emitted records. Each
+ * emitted record is exactly {@value #STATEMENT_RECORD_LENGTH} data bytes; whether and how records are
+ * separated on disk is the writer's decision in the batch layer (decision D-30), so no carriage
+ * return, line feed or platform line separator ever appears inside a template produced here.
  *
- * <h2>The seventeen line groups</h2>
- *
+ * <p><strong>The seventeen line groups.</strong>
  * <pre>{@code
  *  #   Group       Source          Component widths (every row sums to exactly 80)
  * --   ----------  --------------  ---------------------------------------------------------------
@@ -82,31 +79,25 @@ import java.util.Objects;
  * 17   ST-LINE15   L143-L146       32 asterisk + 16 text 'END OF STATEMENT' + 32 asterisk
  * }</pre>
  *
- * <h2>The two banners have different splits -- do not unify them</h2>
+ * <p><strong>The two banners have different splits - do not unify them.</strong> The start banner is
+ * 31 asterisk bytes, an 18-byte text field and 31 asterisk bytes; the end banner is 32, 16 and 32.
+ * Both total {@value #STATEMENT_RECORD_LENGTH} and both texts fill their fields exactly -
+ * {@code START OF STATEMENT} is 18 characters and {@code END OF STATEMENT} is 16 - so the asterisk
+ * counts nevertheless differ, 31 against 32, because the two texts differ in length by two. The two
+ * banners are therefore declared independently from their own width constants, deliberately
+ * <em>not</em> produced by a shared centring helper that computes the padding from the text length, and
+ * neither count is corrected toward the other. A static verification block asserts each split on its
+ * own and asserts that the two asterisk counts remain different, so any future attempt to tidy the
+ * asymmetry away fails at class initialization rather than silently in a statement.
  *
- * <p>The start banner is 31 asterisk bytes, an 18-byte text field and 31 asterisk bytes. The end
- * banner is 32 asterisk bytes, a 16-byte text field and 32 asterisk bytes. Both total
- * {@value #STATEMENT_RECORD_LENGTH}, and both texts happen to fill their fields exactly --
- * {@code START OF STATEMENT} is 18 characters and {@code END OF STATEMENT} is 16. The asterisk
- * counts nevertheless differ, 31 against 32, because the two texts differ in length by two.</p>
+ * <p><strong>The three rule lines.</strong> Three of the seventeen groups are
+ * {@value #RULE_LINE_WIDTH} hyphens: ST-LINE5, ST-LINE10 and ST-LINE12. They are identical in content
+ * but occupy three distinct positions in the statement, so the content is exposed once as
+ * {@link #RULE_LINE} and referenced by the three position-named constants {@link #ST_LINE5_RULE},
+ * {@link #ST_LINE10_RULE} and {@link #ST_LINE12_RULE}. All three positions are genuinely emitted and
+ * must not be collapsed out of the emitted sequence.
  *
- * <p>The two banners are therefore declared independently from their own width constants. They are
- * deliberately <em>not</em> produced by a shared centring helper that computes the padding from the
- * text length, and neither count is "corrected" toward the other. A static verification block
- * asserts each split on its own and asserts that the two asterisk counts remain different, so any
- * future attempt to tidy the asymmetry away fails at class initialization rather than silently in a
- * statement.</p>
- *
- * <h2>The three rule lines</h2>
- *
- * <p>Three of the seventeen groups are {@value #RULE_LINE_WIDTH} hyphens: ST-LINE5, ST-LINE10 and
- * ST-LINE12. They are identical in content but occupy three distinct positions in the statement, so
- * the content is exposed once as {@link #RULE_LINE} and referenced by the three position-named
- * constants {@link #ST_LINE5_RULE}, {@link #ST_LINE10_RULE} and {@link #ST_LINE12_RULE}. The three
- * positions are all genuinely emitted; they must not be collapsed out of the emitted sequence.</p>
- *
- * <h2>The two numeric-edited masks</h2>
- *
+ * <p><strong>The two numeric-edited masks.</strong>
  * <pre>{@code
  * Mask  PIC         Width  Zero suppression                    Used by
  * ----  ---------   -----  ----------------------------------  --------------------------
@@ -115,48 +106,62 @@ import java.util.Objects;
  *                                                              ST-TOTAL-TRAMT  (L142)
  * }</pre>
  *
- * <p>Both masks are 9 integer positions, a literal decimal point, 2 fraction positions and a
- * trailing sign position: {@code 9 + 1 + 2 + 1 = 13}. The sign occupies the final character. A
- * negative value emits a minus; a non-negative value emits a space. A plus sign is never emitted,
- * and no comma or other grouping separator ever appears.</p>
- *
- * <p>Zero suppression for mask B replaces leading zero digits in the integer part with spaces, up
- * to but not past the decimal point. All nine integer positions are suppression positions, so a
- * value below one renders with nine leading spaces before the decimal point. Fraction digits are
- * never suppressed. Mask A suppresses nothing, so the same small value renders with leading zero
- * characters. The two masks are therefore <strong>not interchangeable</strong>, and each is exposed
- * through its own explicitly named method so a caller cannot silently pick the wrong one.</p>
+ * <p>Both masks are 9 integer positions, a literal decimal point, 2 fraction positions and a trailing
+ * sign position: {@code 9 + 1 + 2 + 1 = 13}. The sign occupies the final character; a negative value
+ * emits a minus and a non-negative value a space. A plus is never emitted and no comma or other
+ * grouping separator ever appears. Zero suppression for mask B replaces leading zero digits in the
+ * integer part with spaces, up to but not past the decimal point; all nine integer positions are
+ * suppression positions, so a value below one renders with nine leading spaces before the decimal
+ * point, and fraction digits are never suppressed. Mask A suppresses nothing, so the same small value
+ * renders with leading zero characters. The two are therefore <strong>not interchangeable</strong> and
+ * each is exposed through its own explicitly named method so a caller cannot silently pick the wrong
+ * one.
  *
  * <p><strong>Four distinct numeric-edited masks exist across the two output formats.</strong> The
  * transaction report copybook {@code [app/cpy/CVTRA07Y.cpy]} declares 15-character
- * <em>leading</em>-sign masks with comma grouping -- {@code -ZZZ,ZZZ,ZZZ.ZZ} and
- * {@code +ZZZ,ZZZ,ZZZ.ZZ} -- for a 133-byte report line. The two statement masks here have no
- * commas, are 13 characters wide and place the sign last. Selecting a report mask for a statement
- * field, or the reverse, is a silent byte-parity failure that no compiler can catch.</p>
+ * <em>leading</em>-sign masks with comma grouping - {@code -ZZZ,ZZZ,ZZZ.ZZ} and
+ * {@code +ZZZ,ZZZ,ZZZ.ZZ} - for a 133-byte report line. The two statement masks here have no commas,
+ * are 13 characters wide and place the sign last. Selecting a report mask for a statement field, or
+ * the reverse, is a silent byte-parity failure that no compiler can catch.
  *
- * <h2>Numeric formatting policy</h2>
+ * <p><strong>Numeric formatting policy.</strong> {@code BigDecimal.toString()},
+ * {@code BigDecimal.toPlainString()}, {@code String.valueOf(BigDecimal)},
+ * {@code java.text.NumberFormat}, {@code java.text.DecimalFormat} and every other locale-sensitive
+ * formatter are forbidden here (decision D-27): a locale can introduce a grouping comma, a different
+ * decimal separator or a different minus glyph, any one of which breaks byte parity. Both masks are
+ * rendered character by character into a fixed 13-position buffer from the value's unscaled digits,
+ * obtained from {@link BigInteger#toString()} applied to {@code unscaledValue().abs()}. That call is
+ * safe where the {@code BigDecimal} equivalents are not: it is specified as the radix-10 representation
+ * using ASCII digit characters only, it is locale-independent, it inserts no grouping separator, and
+ * taking the absolute value first means no sign glyph is ever involved. The sign is applied separately
+ * into the trailing sign position.
  *
- * <p>{@code BigDecimal.toString()}, {@code BigDecimal.toPlainString()},
- * {@code String.valueOf(BigDecimal)}, {@code java.text.NumberFormat},
- * {@code java.text.DecimalFormat} and every other locale-sensitive formatter are forbidden here: a
- * locale can introduce a grouping comma, a different decimal separator or a different minus glyph,
- * any one of which breaks byte parity. Both masks are instead rendered character by character into
- * a fixed 13-position buffer from the value's unscaled digits.</p>
+ * <p><strong>Scale and magnitude contract.</strong> Values arrive already at scale
+ * {@value #REQUIRED_AMOUNT_SCALE} with {@code RoundingMode.DOWN} applied upstream by the zoned-decimal
+ * codec and the computing service, and <strong>this class never scales, never rounds and never performs
+ * arithmetic on a value</strong>: it only formats one. Two rejections follow, and both are divergences
+ * from the legacy silent {@code MOVE} recorded in the decision log rather than justified here. A value
+ * at any other scale is rejected and never re-scaled, per decision D-05, because re-scaling would place
+ * a second rounding policy alongside the estate-wide truncation policy that the total absence of
+ * {@code ROUNDED} clauses in the source mandates. An integer part exceeding nine digits is rejected
+ * rather than left-truncated, per decision D-06: a COBOL {@code MOVE} truncates on the left and the
+ * legacy program does exactly that when it moves a ten-integer-digit account balance into this
+ * nine-integer-digit mask, but emitting a plausible wrong amount into a financial statement is worse
+ * than failing, and the estate's own field widths mean valid data cannot reach the condition.
  *
- * <p>The digits themselves are obtained from {@link BigInteger#toString()} applied to
- * {@code unscaledValue().abs()}. That call is safe where the {@code BigDecimal} equivalents are not:
- * it is specified as the radix-10 representation using ASCII digit characters only, it is
- * locale-independent, it inserts no grouping separator, and taking the absolute value first means no
- * sign glyph is ever involved. The sign is applied separately into the trailing sign position.</p>
+ * <p><strong>Character field semantics: truncate and pad.</strong> A supplied character value longer
+ * than its field is truncated to the field width and a shorter one padded on the right with ASCII
+ * spaces - never zeros, nulls or tabs. That matches a COBOL {@code MOVE} into a {@code PIC X(n)} field
+ * and is genuinely the legacy behaviour rather than a convenience: the generator moves a 100-byte
+ * transaction description into the 49-byte detail field of ST-LINE14, so the tail is lost on the
+ * mainframe too. Both truncation and padding are measured in encoded bytes using
+ * {@link StandardCharsets#US_ASCII} explicitly, never in {@code String} characters and never against
+ * the platform default charset.
  *
- * <p>Values arrive already at scale {@value #REQUIRED_AMOUNT_SCALE} with {@code RoundingMode.DOWN}
- * applied upstream by the zoned-decimal codec and by the computing service. <strong>This class never
- * scales, never rounds and never performs arithmetic on a value</strong>: it only formats one. A
- * value at any other scale is a caller defect and is rejected rather than silently re-scaled,
- * because silently re-scaling would hide a truncation-policy violation. Truncation rather than
- * rounding is the estate-wide policy precisely because the legacy source contains zero
- * {@code ROUNDED} clauses, so half-even and half-up rounding are excluded by contract, not by
- * taste.</p>
+ * <p><strong>The currency symbol is inconsistent, and the inconsistency is preserved.</strong>
+ * ST-LINE14 and ST-LINE14A each carry a literal dollar sign immediately before their amount field;
+ * ST-LINE8, the current-balance line, carries none. That inconsistency is in the source: no currency
+ * symbol is added to the balance line and none is removed from the transaction lines.
  *
  * <p>An integer part exceeding nine digits is rejected rather than left-truncated. A COBOL
  * {@code MOVE} would truncate on the left, and the legacy program does exactly that when it moves a
@@ -184,8 +189,9 @@ import java.util.Objects;
  * <h2>Related context, implemented elsewhere</h2>
  *
  * <ul>
- *   <li>The HTML statement output is a different record width -- declared at
- *       {@code [app/cbl/CBSTM03A.CBL:L47]} as {@code 01 FD-HTMLFILE-REC PIC X(100).} -- and its
+ *   <li>The HTML statement output is a different record width -- a single fixed one-hundred-byte
+ *       alphanumeric item named {@code FD-HTMLFILE-REC}, declared at
+ *       {@code [app/cbl/CBSTM03A.CBL:L47]} -- and its
  *       literals live in a separate holder for that stream. The two are strictly separate: an
  *       80-byte template must never leak into the 100-byte stream or the reverse.</li>
  *   <li>The generator's control flow is a hand-rolled dispatcher driven by a data-definition-name
@@ -195,10 +201,10 @@ import java.util.Objects;
  *   <li>The statement work area {@code [app/cpy/COSTM01.CPY]} becomes a request/response type in the
  *       API layer. This class neither imports nor references it, and imports nothing from this
  *       module at all.</li>
- *   <li>{@code [app/jcl/CREASTMT.JCL]} declares the same data-definition name at {@code LRECL=80} in
- *       one step and {@code LRECL=100} in the next. The conflict is resolved to 80 for the text
- *       stream and 100 for the HTML stream, matching the two record declarations in the program. It
- *       is noted for the record and changes nothing here.</li>
+ *   <li>{@code [app/jcl/CREASTMT.JCL]} declares the same data-definition name with a record length of
+ *       eighty in one step and of one hundred in the next. The conflict is resolved to 80 for the
+ *       text stream and 100 for the HTML stream, matching the two record declarations in the
+ *       program. It is noted for the record and changes nothing here.</li>
  *   <li>The statement text output has no page-break logic. Page sizing and line counting belong to
  *       the transaction report path, which is a different output format at a different width.</li>
  * </ul>
@@ -234,33 +240,25 @@ import java.util.Objects;
  *       layer.</li>
  *   <li>A templating engine is forbidden. The lines are literal constants at fixed widths, because
  *       byte-identical output cannot survive an engine's whitespace and ordering variability.</li>
- *   <li>{@code [app/jcl/CREASTMT.JCL]} declares the same data-definition name at {@code LRECL=80}
- *       and {@code LRECL=100} in consecutive steps; resolved to 80 for the text stream and 100 for
- *       the HTML stream, matching the two record declarations.</li>
+ *   <li>{@code [app/jcl/CREASTMT.JCL]} declares the same data-definition name with a record length of
+ *       eighty and of one hundred in consecutive steps; resolved to 80 for the text stream and 100
+ *       for the HTML stream, matching the two record declarations.</li>
  * </ol>
  *
  * <h2>Thread safety</h2>
  *
  * <p>This class is a stateless holder of immutable constants and pure static functions. It holds no
- * mutable static state, performs no input or output, reads no clock, environment or random source,
- * and is therefore safe for unsynchronized concurrent use.</p>
- *
- * <h2>Provenance</h2>
- *
- * <p>Translated from the legacy estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Sources are cited, never transcribed; the
- * line literals and mask descriptions reproduced here are external output contracts.</p>
+ * mutable static state, performs no input or output, reads no clock, environment or random source, and
+ * is therefore safe for unsynchronized concurrent use.
  */
 public final class StatementTextTemplates {
 
-    // -----------------------------------------------------------------------------------------
     // Record geometry. Factual layout evidence read out of the legacy source.
-    // -----------------------------------------------------------------------------------------
 
     /**
-     * Length in US-ASCII bytes of one plain-text statement record, from
-     * {@code 01 FD-STMTFILE-REC PIC X(80).} at {@code [app/cbl/CBSTM03A.CBL:L45]}.
+     * Length in US-ASCII bytes of one plain-text statement record. The record is a single
+     * alphanumeric item named {@code FD-STMTFILE-REC}, fixed at eighty bytes, declared at
+     * {@code [app/cbl/CBSTM03A.CBL:L45]}.
      */
     public static final int STATEMENT_RECORD_LENGTH = 80;
 
@@ -270,9 +268,7 @@ public final class StatementTextTemplates {
      */
     public static final int STATEMENT_LINE_GROUP_COUNT = 17;
 
-    // -----------------------------------------------------------------------------------------
     // Component widths, one named constant per declared component of each of the seventeen groups.
-    // -----------------------------------------------------------------------------------------
 
     /** ST-LINE0 asterisk run, declared twice at {@code [app/cbl/CBSTM03A.CBL:L87]} and L89. */
     public static final int ST_LINE0_ASTERISK_WIDTH = 31;
@@ -421,9 +417,7 @@ public final class StatementTextTemplates {
     /** ST-LINE15 banner text field at {@code [app/cbl/CBSTM03A.CBL:L145]}. */
     public static final int ST_LINE15_TEXT_WIDTH = 16;
 
-    // -----------------------------------------------------------------------------------------
     // Mask geometry, shared by both trailing-minus statement masks.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * Rendered width in US-ASCII bytes of either statement amount mask: nine integer positions, a
@@ -443,10 +437,8 @@ public final class StatementTextTemplates {
      */
     public static final int REQUIRED_AMOUNT_SCALE = 2;
 
-    // -----------------------------------------------------------------------------------------
     // Single characters and byte values used to build and pad the records. Padding is always the
     // ASCII space -- never a zero, never a null, never a tab.
-    // -----------------------------------------------------------------------------------------
 
     /** The one and only pad character for character fields. */
     private static final char SPACE = ' ';
@@ -495,10 +487,8 @@ public final class StatementTextTemplates {
     /** Single-space separator literal of ST-LINE14 at {@code [app/cbl/CBSTM03A.CBL:L134]}. */
     private static final String FIELD_SEPARATOR = " ";
 
-    // -----------------------------------------------------------------------------------------
     // Mask picture clauses, carried as text purely so a rejection message can name the mask that
     // rejected the value.
-    // -----------------------------------------------------------------------------------------
 
     /** Picture clause of mask A, from {@code [app/cbl/CBSTM03A.CBL:L113]}. */
     private static final String MASK_A_PICTURE = "9(9).99-";
@@ -506,13 +496,11 @@ public final class StatementTextTemplates {
     /** Picture clause of mask B, from {@code [app/cbl/CBSTM03A.CBL:L137]} and L142. */
     private static final String MASK_B_PICTURE = "Z(9).99-";
 
-    // -----------------------------------------------------------------------------------------
     // Literal text fragments, transcribed character for character from the legacy declarations.
     // These are private because the assembled records below are the public contract; the static
     // verification block asserts every one of them against the width the source declares.
     //
     // Declared ahead of the assembled records because static fields initialize in textual order.
-    // -----------------------------------------------------------------------------------------
 
     /** Start banner text at {@code [app/cbl/CBSTM03A.CBL:L88]}: 18 characters, filling its field. */
     private static final String ST_LINE0_TEXT_LITERAL = "START OF STATEMENT";
@@ -573,13 +561,11 @@ public final class StatementTextTemplates {
     /** End banner text at {@code [app/cbl/CBSTM03A.CBL:L145]}: 16 characters, filling its field. */
     private static final String ST_LINE15_TEXT_LITERAL = "END OF STATEMENT";
 
-    // -----------------------------------------------------------------------------------------
     // Layout verification. Every literal width, every group's component sum, the banner asymmetry
     // and the mask geometry are checked once, at class initialization. This block is declared
     // BEFORE the assembled records below, and static initializers run in textual order, so the
     // inputs are verified before anything is built from them: a layout regression fails at class
     // initialization instead of showing up later as a golden-file mismatch.
-    // -----------------------------------------------------------------------------------------
 
     static {
         // Literals that fill their field exactly.
@@ -649,10 +635,8 @@ public final class StatementTextTemplates {
                 AMOUNT_MASK_LENGTH);
     }
 
-    // -----------------------------------------------------------------------------------------
     // The eight wholly fixed line groups. Each is assembled from explicit literals and explicit
     // padding at the declared component widths, then checked at the full record length.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * ST-LINE0 -- the start banner, from {@code [app/cbl/CBSTM03A.CBL:L86-L89]}.
@@ -750,14 +734,12 @@ public final class StatementTextTemplates {
         throw new AssertionError("StatementTextTemplates is a static utility and is not instantiable");
     }
 
-    // -----------------------------------------------------------------------------------------
     // The nine line groups that carry substituted values. Each returns one complete record of
     // exactly STATEMENT_RECORD_LENGTH US-ASCII bytes, with no line terminator.
     //
     // Character arguments follow COBOL MOVE semantics into a PIC X(n) field: a value longer than
     // its field is truncated to the field width and a shorter one is padded on the right with ASCII
     // spaces. Truncation and padding are measured in encoded bytes, never in String characters.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * ST-LINE1 -- the customer name line, from {@code [app/cbl/CBSTM03A.CBL:L90-L92]}.
@@ -965,12 +947,10 @@ public final class StatementTextTemplates {
                         + formatAmountMaskWithZeroSuppression(totalTransactionAmount));
     }
 
-    // -----------------------------------------------------------------------------------------
     // The two numeric-edited masks. They are exposed as two explicitly named methods, never as one
     // method with a flag argument, so that a caller cannot silently select the wrong mask. The
     // shared private renderer below guarantees that the geometry and the trailing-minus semantics
     // stay identical between them; zero suppression is the only difference.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * Mask A -- {@code 9(9).99-}, from {@code [app/cbl/CBSTM03A.CBL:L113]}.
@@ -1048,10 +1028,8 @@ public final class StatementTextTemplates {
         return requireStatementRecordLength(record).getBytes(StandardCharsets.US_ASCII);
     }
 
-    // -----------------------------------------------------------------------------------------
     // Private layout primitives. Everything below is pure: no input or output, no clock, no
     // environment, no randomness, no mutable state that outlives a call.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * Renders a value into one of the two 13-position trailing-minus statement masks.

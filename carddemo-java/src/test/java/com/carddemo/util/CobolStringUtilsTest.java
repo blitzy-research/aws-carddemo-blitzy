@@ -43,64 +43,47 @@ import org.junit.jupiter.params.provider.ValueSource;
  * and the fixed-field justification rule &mdash; and never from what a Java developer would expect
  * the method to do.
  *
- * <p><strong>Independent-oracle discipline.</strong> No assertion in this file calls a method of
+ * <p><strong>Independent-oracle discipline.</strong> No assertion calls a method of
  * {@link CobolStringUtils} to compute the value it then compares against, and no expectation is a
  * captured snapshot of an earlier run. Expected values are written out as literals, or derived from
  * this class's own hand-written copies of the character tables, or derived from the ASCII code chart
  * by an explicit range test. The range test is deliberately a <em>different</em> mechanism from the
- * table lookup the production code uses, so that the two cannot fail in the same direction
- * together.
+ * table lookup the production code uses, so the two cannot fail in the same direction together.
  *
- * <p><strong>Scope: exactly four primitives.</strong> An earlier scoping note recorded three. The
- * verified contract is four, because reading the {@code FROM} table at each of the seven
- * {@code CONVERTING} sites proves the breakdown is three alphabetic, two <em>alphanumeric</em> and
- * two upper-fold rather than five alphabetic and two upper-fold. The four are
- * {@link CobolStringUtils#isAlphaOrSpace(String)},
+ * <p><strong>Scope: exactly four primitives.</strong> Reading the {@code FROM} table at each of the
+ * seven {@code CONVERTING} sites gives three alphabetic, two <em>alphanumeric</em> and two
+ * upper-fold, so the contract is {@link CobolStringUtils#isAlphaOrSpace(String)},
  * {@link CobolStringUtils#isAlphaNumericOrSpace(String)},
  * {@link CobolStringUtils#asciiUpperFold(String)} and
- * {@link CobolStringUtils#rightJustifyZeroFill(String, int)}. They are covered by one nested group
- * each. The class also holds a single private table-membership helper, shared by the first two
- * predicates; it is exercised only through them, because reaching a private member from a test would
- * require reflection and the unsafe-code audit budget for reflection is zero.
+ * {@link CobolStringUtils#rightJustifyZeroFill(String, int)}, one nested group each. The single
+ * private table-membership helper shared by the first two predicates is exercised only through them,
+ * because reaching a private member from a test would require reflection and the unsafe-code audit
+ * budget for reflection is zero.
  *
- * <p><strong>Deliberately absent, and asserted nowhere.</strong> There is no numeric-only predicate,
- * because the numeric-only table pair the account-update program declares at
- * {@code [app/cbl/COACTUPC.cbl:L609]} and {@code [app/cbl/COACTUPC.cbl:L612]} appears in no
- * {@code INSPECT} statement anywhere in the estate. There is no tokeniser, because the estate
- * contains <b>zero</b> {@code UNSTRING} statements &mdash; inventing tokeniser behaviour and testing
- * it would be feature expansion. There is no selection-bitmap helper and no tally helper: the
- * {@code REPLACING} site at {@code [app/cbl/COCRDLIC.cbl:L1090]} and the {@code TALLYING} site at
+ * <p><strong>Deliberately absent, and asserted nowhere.</strong> No numeric-only predicate, because
+ * the numeric-only table pair declared at {@code [app/cbl/COACTUPC.cbl:L609]} and
+ * {@code [app/cbl/COACTUPC.cbl:L612]} appears in no {@code INSPECT} statement anywhere in the
+ * estate. No tokeniser, because the estate contains <b>zero</b> {@code UNSTRING} statements. No
+ * selection-bitmap helper and no tally helper: the {@code REPLACING} site at
+ * {@code [app/cbl/COCRDLIC.cbl:L1090]} and the {@code TALLYING} site at
  * {@code [app/cbl/COCRDLIC.cbl:L1079]}, both inside paragraph {@code 2250-EDIT-ARRAY} at
  * {@code [app/cbl/COCRDLIC.cbl:L1073]}, carry seven-row card-list page knowledge and belong to the
- * card-list service. There is no date handling, which belongs to the date-validation service. And
- * there is no pad-to-width helper: the tail-fill behaviour of the {@code STRING} statement at
- * {@code [app/cbl/CBACT04C.cbl:L485]} through {@code [app/cbl/CBACT04C.cbl:L489]} &mdash; where a
+ * card-list service. No date handling, which belongs to the date-validation service. And no
+ * pad-to-width helper: the tail-fill behaviour of the {@code STRING} statement at
+ * {@code [app/cbl/CBACT04C.cbl:L485]} through {@code [app/cbl/CBACT04C.cbl:L489]}, where a
  * 13-character literal and an 11-character account identifier are written into a {@code PIC X(100)}
- * field with no pointer, no overflow clause and no preceding re-initialisation, so that positions 25
- * through 100 retain whatever they already held &mdash; is a mechanism owned by the
- * interest-calculation service, not by this layer.
+ * field with no pointer, no overflow clause and no preceding re-initialisation so that positions 25
+ * through 100 retain whatever they already held, belongs to the interest-calculation service.
  *
- * <p><strong>A note on how the banned idioms are named.</strong> Two Java idioms are forbidden here:
- * the Unicode letter-class predicates from {@code java.lang.Character}, and the library
- * upper-casing method on {@link String} in either its ambient-locale or its explicit-locale form.
- * This file describes both in prose rather than spelling out their identifiers, so that a mechanical
- * self-audit which greps the source for those identifiers finds no hit and cannot be satisfied by a
- * comment that merely mentions them. The tests that guard against each are named for the behaviour
- * they protect.
+ * <p><strong>How the banned idioms are named.</strong> Two Java idioms are forbidden here: the
+ * Unicode letter-class predicates from {@code java.lang.Character}, and the library upper-casing
+ * method on {@link String} in either its ambient-locale or its explicit-locale form. Both are
+ * described in prose rather than spelled out, so that a mechanical self-audit which greps the source
+ * for those identifiers finds no hit and cannot be satisfied by a comment that merely mentions them.
+ * The tests that guard against each are named for the behaviour they protect.
  *
- * <p><strong>Test tier.</strong> This is a pure unit test. It touches no container, no Spring
- * context, no database, no queue, no network and no file system, so it is deterministic and needs no
- * external state. It asserts no elapsed time and no throughput figure: the performance baseline is
- * established by instrumented batch runs, not by a unit test.
- *
- * <p><strong>Provenance.</strong> Legacy source read at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}; upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated {@code 2022-07-19}. The citations in this file address
- * that checkout. The stamp is recorded here as provenance only and is never asserted against a
- * source member, because the estate is not uniform: most members carry it, a few carry later stamps,
- * the screen mapsets differ, and some members carry none. No COBOL source text is transcribed into
- * this file &mdash; only citations, widths, paragraph names and the literal ASCII character tables
- * cross the boundary.
+ * <p>This is a pure unit test: no container, no Spring context, no database, no queue, no network
+ * and no file system, and no elapsed-time or throughput assertion.
  */
 @DisplayName("CobolStringUtils - faithful COBOL INSPECT primitives")
 class CobolStringUtilsTest {
@@ -288,11 +271,11 @@ class CobolStringUtilsTest {
      * {@code [app/cbl/COCRDUPC.cbl:L841]}).
      *
      * <p><b>The mechanism, and why embedded spaces pass.</b> The legacy edit is not a
-     * character-class test. It blanks every table character in place and then asks whether the
-     * remainder, once trimmed, has length zero. A character that was <em>already</em> a space
-     * survives the conversion as a space and is therefore trimmed away exactly as a blanked letter
-     * is. The faithful predicate is consequently "every character is a letter <em>or a space</em>",
-     * which is also what the estate's own comments at those three sites state.
+     * character-class test: it blanks every table character in place and then asks whether the
+     * trimmed remainder has length zero. A character that was <em>already</em> a space survives the
+     * conversion as a space and is trimmed away exactly as a blanked letter is, so the faithful
+     * predicate is "every character is a letter <em>or a space</em>" &mdash; which is also what the
+     * estate's own comments at those three sites state.
      */
     @Nested
     @DisplayName("isAlphaOrSpace - 52-character alphabetic table, spaces included")
@@ -468,25 +451,23 @@ class CobolStringUtilsTest {
      * {@code [app/cbl/COACTUPC.cbl:L2081]} in paragraph {@code 1240-EDIT-ALPHANUM-OPT}
      * ({@code [app/cbl/COACTUPC.cbl:L2061]} to {@code [app/cbl/COACTUPC.cbl:L2105]}).
      *
-     * <p><b>Why this group exists at all.</b> These two sites are the census correction. Earlier
-     * project documentation grouped all five non-fold conversion sites as alphabetic; reading the
-     * {@code FROM} operand proves two of them convert the 62-character table. Routing them through
-     * the alphabetic predicate would reject digits the legacy system accepts, which is a behavioural
-     * regression rather than a tidy-up.
+     * <p><b>Why this group exists at all.</b> Two of the five non-fold conversion sites convert the
+     * 62-character table rather than the 52-character one, which the {@code FROM} operand states
+     * outright. Routing them through the alphabetic predicate would reject digits the legacy system
+     * accepts, which is a behavioural regression rather than a tidy-up.
      *
      * <p><b>Source anomaly 18 &mdash; the code governs, not the comment.</b> The comment at
-     * {@code [app/cbl/COACTUPC.cbl:L2078]} claims the second site permits letters and spaces only.
-     * The statement immediately below it, at {@code [app/cbl/COACTUPC.cbl:L2079]} through
+     * {@code [app/cbl/COACTUPC.cbl:L2078]} claims the second site permits letters and spaces only,
+     * while the statement immediately below it, at {@code [app/cbl/COACTUPC.cbl:L2079]} through
      * {@code [app/cbl/COACTUPC.cbl:L2082]}, moves the alphanumeric group into the 62-character
      * {@code FROM} field and converts against it. The comment is stale, exactly as the transposed
      * macro comments at {@code [app/cbl/COACTUPC.cbl:L3427]} through
-     * {@code [app/cbl/COACTUPC.cbl:L3435]} are. The alphanumeric semantic is therefore correct, and
-     * {@link #digitsSeparateTheTwoPredicates()} pins it so that a later reader who trusts the
-     * comment cannot quietly narrow this site back to the alphabetic table.
+     * {@code [app/cbl/COACTUPC.cbl:L3435]} are, so the alphanumeric semantic is correct and
+     * {@link #digitsSeparateTheTwoPredicates()} pins it against a later reader who trusts the
+     * comment.
      *
-     * <p><b>Source anomaly 19 is not represented here.</b> The validation flag condition names at
-     * that site are misspelled in the source. Flag state is a field-error-decoration and
-     * validation-exception concern, so nothing is asserted about it in this file.
+     * <p>Source anomaly 19, the misspelled validation-flag condition names at that site, is a
+     * field-error-decoration and validation-exception concern, so nothing is asserted about it here.
      */
     @Nested
     @DisplayName("isAlphaNumericOrSpace - 62-character alphanumeric table, spaces included")
@@ -642,19 +623,18 @@ class CobolStringUtilsTest {
      * {@code [app/cbl/COCRDUPC.cbl:L1498]}, which runs before the before-and-after image comparison
      * at {@code [app/cbl/COCRDUPC.cbl:L1503]} through {@code [app/cbl/COCRDUPC.cbl:L1508]}.
      *
-     * <p><b>The mechanism.</b> Each character of the input is looked up in the 26-character lower
-     * table, and when found is replaced by the character at the same position of the 26-character
-     * upper table. A character absent from the lower table is never touched. That is a
-     * position-for-position substitution over a closed set of 26 characters, not a general
-     * case-mapping operation.
+     * <p><b>The mechanism.</b> Each input character is looked up in the 26-character lower table and,
+     * when found, replaced by the character at the same position of the 26-character upper table; a
+     * character absent from the lower table is never touched. That is a position-for-position
+     * substitution over a closed set, not a general case-mapping operation.
      *
      * <p><b>Why the library upper-casing method is forbidden.</b> Its no-argument form varies with
-     * the ambient default locale, and <em>both</em> forms &mdash; including the explicit
-     * root-locale overload &mdash; are Unicode-aware. Two consequences are fatal here. They
-     * transform characters this table leaves alone, so the folded value differs from the legacy one;
-     * and they can expand a single character into several, changing the length of a value that must
-     * occupy exactly 50 positions of a card record. The sharp-s case below is the decisive
-     * demonstration: the library method turns it into two letters, while the table leaves it as one.
+     * the ambient default locale, and <em>both</em> forms &mdash; including the explicit root-locale
+     * overload &mdash; are Unicode-aware. Two consequences are fatal: they transform characters this
+     * table leaves alone, and they can expand one character into several, changing the length of a
+     * value that must occupy exactly 50 positions of a card record. The sharp-s case below is the
+     * decisive demonstration &mdash; the library method turns it into two letters, the table leaves
+     * it as one.
      */
     @Nested
     @DisplayName("asciiUpperFold - strict 26-character table substitution")
@@ -830,14 +810,14 @@ class CobolStringUtilsTest {
 
     /**
      * {@link CobolStringUtils#rightJustifyZeroFill(String, int)} &mdash; the menu-option
-     * normalisation.
+     * normalisation, step three of a four-step legacy idiom.
      *
-     * <p>The legacy idiom is four steps, of which this method is the third. The receiving field is
-     * declared right-justified and two positions wide at {@code [app/cbl/COADM01C.cbl:L45]} and
-     * {@code [app/cbl/COMEN01C.cbl:L45]}, and the numeric field it feeds is two digits wide at
-     * {@code [app/cbl/COADM01C.cbl:L46]} and {@code [app/cbl/COMEN01C.cbl:L46]}. Inside paragraph
-     * {@code PROCESS-ENTER-KEY} ({@code [app/cbl/COADM01C.cbl:L115]},
-     * {@code [app/cbl/COMEN01C.cbl:L115]}) the two programs are line-for-line identical:
+     * <p>The receiving field is declared right-justified and two positions wide at
+     * {@code [app/cbl/COADM01C.cbl:L45]} and {@code [app/cbl/COMEN01C.cbl:L45]}, and the numeric
+     * field it feeds is two digits wide at {@code [app/cbl/COADM01C.cbl:L46]} and
+     * {@code [app/cbl/COMEN01C.cbl:L46]}. Inside paragraph {@code PROCESS-ENTER-KEY}
+     * ({@code [app/cbl/COADM01C.cbl:L115]}, {@code [app/cbl/COMEN01C.cbl:L115]}) the two programs
+     * are line-for-line identical:
      * <ol>
      *   <li>a backward scan finds the last non-space position, flooring the index at one
      *       ({@code [app/cbl/COADM01C.cbl:L117]} to {@code [app/cbl/COADM01C.cbl:L121]});</li>
@@ -849,17 +829,16 @@ class CobolStringUtilsTest {
      *       ({@code [app/cbl/COADM01C.cbl:L124]}).</li>
      * </ol>
      *
-     * <p><b>Not asserted here, by design.</b> Steps one, two and four belong to the menu service, and
-     * so does everything the normalised value is then judged against: the non-numeric test, the
-     * upper bound against the option count, the rejection of a zero option, and the operator message
-     * at {@code [app/cbl/COADM01C.cbl:L131]}. This method has no opinion about whether {@code "00"}
-     * is a usable option &mdash; it only produces it.
+     * <p>Steps one, two and four belong to the menu service, and so does everything the normalised
+     * value is then judged against: the non-numeric test, the upper bound against the option count,
+     * the rejection of a zero option, and the operator message at
+     * {@code [app/cbl/COADM01C.cbl:L131]}. This method has no opinion about whether {@code "00"} is
+     * a usable option &mdash; it only produces it.
      *
      * <p><b>The counter-intuitive part.</b> A right-justified receiver keeps the sender's
-     * <em>rightmost</em> characters. A sender shorter than the receiver lands at the right with the
-     * left space-filled; a sender <em>longer</em> than the receiver loses its <em>leading</em>
-     * excess, not its trailing excess. A right-truncating implementation would look more natural and
-     * would silently diverge, so the left truncation is pinned by
+     * <em>rightmost</em> characters, so a sender longer than the receiver loses its <em>leading</em>
+     * excess rather than its trailing excess. A right-truncating implementation would look more
+     * natural and would silently diverge, so the left truncation is pinned by
      * {@link #truncatesOnTheLeftNotTheRight()}.
      */
     @Nested

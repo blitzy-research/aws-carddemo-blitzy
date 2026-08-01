@@ -29,169 +29,99 @@ import com.carddemo.exception.FileStatusException;
 /**
  * The single abend path of the migrated estate: emits the operator diagnostic, then raises.
  *
- * <h2>Provenance</h2>
- * Translated from the AWS CardDemo z/OS mainframe application at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy authorities are
- * {@code app/cpy/CSMSG02Y.cpy}, which declares the 134-byte {@code ABEND-DATA} context; the nine
- * batch calls to the Language Environment abort routine {@code CEE3ABD}; and the four online CICS
- * {@code ABEND} commands. The legacy source is cited, never transcribed.
+ * <p><strong>Thirteen legacy abend sites, two tiers, one service.</strong> Nine are on the batch tier and
+ * every one is a static call to {@code CEE3ABD} from a paragraph named {@code 9999-ABEND-PROGRAM}:
+ * {@code app/cbl/CBACT01C.cbl} line 173, {@code CBACT02C} line 158, {@code CBACT03C} line 158,
+ * {@code CBACT04C} line 632, {@code CBCUS01C} line 158, {@code CBTRN01C} line 473, {@code CBTRN02C}
+ * line 711, {@code CBTRN03C} line 630 and {@code CBSTM03A.CBL} line 923. Four are on the online tier and
+ * every one is a CICS {@code ABEND} command issued from a paragraph named {@code ABEND-ROUTINE}:
+ * {@code app/cbl/COACTUPC.cbl} line 4222, {@code COACTVWC} line 934, {@code COCRDSLC} line 875 and
+ * {@code COCRDUPC} line 1550. There is no third path, which is why there is no third entry point here.
  *
- * <h2>What this service replaces</h2>
- * The estate has exactly two abend paths and thirteen abend sites, and this one service replaces
- * all of them. There is no third path, which is why there is no third entry point here.
+ * <p>Those four online sites belong to a five-program family &mdash; {@code COACTUPC}, {@code COACTVWC},
+ * {@code COCRDLIC}, {@code COCRDSLC} and {@code COCRDUPC} &mdash; the only family that includes the
+ * attention-key copybook {@code CSSTRPFY} and the screen work-area copybook {@code CVCRD01Y}. Four sites
+ * across five members is not an oversight: {@code COCRDLIC} comments out its inclusion of the
+ * abend-context copybook at {@code app/cbl/COCRDLIC.cbl} line 283, whereas the other four include it live
+ * at {@code COACTUPC} line 632, {@code COACTVWC} line 238, {@code COCRDSLC} line 224 and
+ * {@code COCRDUPC} line 343. Having no context to send, {@code COCRDLIC} registers no abend handler and
+ * issues no abend. The estate's other twelve online programs never abend, and wiring them to this service
+ * would invent behaviour the legacy does not have.
  *
- * <p>Nine sites are on the batch tier and every one of them is a static call to {@code CEE3ABD}
- * from a paragraph the members name {@code 9999-ABEND-PROGRAM}:
+ * <p><strong>Emit-then-abend is the contract, not a convenience.</strong> Every legacy site emits its
+ * diagnostic <em>before</em> it abends, and every entry point here reproduces that ordering: the log call
+ * precedes the {@code throw} in the same method body, never in a caller's {@code catch}. On a mainframe
+ * the diagnostic reached the operator whether or not anything survived to handle the abend, so a
+ * {@code catch}-based equivalent would lose exactly the diagnostic the operator needs at the moment the
+ * run is failing. All nine batch members display the literal {@code ABENDING PROGRAM} immediately before
+ * calling {@code CEE3ABD}, and the two that carry a file status display that status first as well; the
+ * online routine transmits the whole 134-byte context to the terminal, deregisters the program's abend
+ * handler, and only then issues the abend.
  *
- * <ul>
- *   <li>{@code app/cbl/CBACT01C.cbl} line 173</li>
- *   <li>{@code app/cbl/CBACT02C.cbl} line 158</li>
- *   <li>{@code app/cbl/CBACT03C.cbl} line 158</li>
- *   <li>{@code app/cbl/CBACT04C.cbl} line 632</li>
- *   <li>{@code app/cbl/CBCUS01C.cbl} line 158</li>
- *   <li>{@code app/cbl/CBTRN01C.cbl} line 473</li>
- *   <li>{@code app/cbl/CBTRN02C.cbl} line 711</li>
- *   <li>{@code app/cbl/CBTRN03C.cbl} line 630</li>
- *   <li>{@code app/cbl/CBSTM03A.CBL} line 923</li>
- * </ul>
+ * <p><strong>The 134-byte context.</strong> {@code app/cpy/CSMSG02Y.cpy} declares {@code ABEND-DATA} as
+ * four space-initialised character fields summing to 134. This service does not restate those widths: it
+ * populates {@link AbendException}, which owns them as constants and renders the image through its own
+ * fixed-width context method, so the layout is declared in exactly one place. The culprit field carries
+ * the <strong>program name</strong> &mdash; eight characters, precisely the width of a COBOL member name
+ * &mdash; so callers should pass the legacy member name they are translating and a Java log line and a
+ * mainframe abend then name the same culprit.
  *
- * <p>Four sites are on the online tier and every one of them is a CICS {@code ABEND} command
- * issued from a paragraph the members name {@code ABEND-ROUTINE}:
+ * <p><strong>The diagnostic vocabulary belongs to the caller, not to this service.</strong> Operation
+ * descriptions are the legacy display literals and each call site chose its own wording; resource names
+ * are the legacy DD, dataset and CICS file names. Every one arrives as a parameter and none is declared
+ * here.
  *
- * <ul>
- *   <li>{@code app/cbl/COACTUPC.cbl} line 4222</li>
- *   <li>{@code app/cbl/COACTVWC.cbl} line 934</li>
- *   <li>{@code app/cbl/COCRDSLC.cbl} line 875</li>
- *   <li>{@code app/cbl/COCRDUPC.cbl} line 1550</li>
- * </ul>
+ * <p><strong>What this service deliberately does not do.</strong> It does not terminate the process and
+ * holds no notion of a return code: an abend becomes a thrown exception, and translating the batch tier's
+ * non-zero completion code belongs to the job and step layer. It does not model program cancellation
+ * either. The {@code CANCEL} token appears six times in {@code app/cbl} and not one occurrence is the
+ * COBOL {@code CANCEL} statement: four are the {@code CANCEL} option of the CICS {@code HANDLE ABEND}
+ * command, which deregisters the issuing program's own handler on the line immediately above each online
+ * abend, and two are prose inside comments. The equivalent of deregistering a handler in a Spring runtime
+ * is simply the absence of a {@code catch}, so no registration, deregistration or module-unload operation
+ * is offered.
  *
- * <p>Those four online sites belong exclusively to a five-program family -- {@code COACTUPC},
- * {@code COACTVWC}, {@code COCRDLIC}, {@code COCRDSLC} and {@code COCRDUPC} -- which is the only
- * family in the estate that includes the attention-key copybook {@code CSSTRPFY} and the screen
- * work-area copybook {@code CVCRD01Y}. Four sites across five members is not an oversight in this
- * translation: {@code COCRDLIC} contains no abend construct whatsoever, and the reason is visible
- * one line at a time in the source. Its inclusion of the abend-context copybook is commented out
- * at {@code app/cbl/COCRDLIC.cbl} line 283, whereas the other four members include it live at
- * {@code COACTUPC} line 632, {@code COACTVWC} line 238, {@code COCRDSLC} line 224 and
- * {@code COCRDUPC} line 343. Having no context to send, {@code COCRDLIC} also registers no abend
- * handler and issues no abend. A reader should therefore expect the online abend path to be
- * reachable from four of those five features and from no other online program: the estate's other
- * twelve online programs never abend, and wiring them to this service would invent behaviour the
- * legacy does not have.
- *
- * <h2>Emit-then-abend is the contract, not a convenience</h2>
- * Every legacy abend site emits its diagnostic <em>before</em> it abends, and this service
- * reproduces that ordering at every entry point: the log call precedes the {@code throw} in the
- * same method body, never in a caller's {@code catch}. The ordering is observable, so reversing it
- * would be a behavioural regression rather than a stylistic difference. On a mainframe the
- * diagnostic reached the operator whether or not anything survived to handle the abend; a
- * {@code catch}-based equivalent would lose exactly the diagnostic the operator needs at exactly
- * the moment the run is failing.
- *
- * <p>The batch tier proves the ordering nine times over: all nine members display the literal
- * {@code ABENDING PROGRAM} immediately before calling {@code CEE3ABD}, and the two members that
- * carry a file status display that status first as well. {@code app/cbl/CBACT01C.cbl} does so at
- * three structurally identical sites, on its read path (lines 110 to 113), its open path (lines 144
- * to 147) and its close path (lines 162 to 165); each displays the operation diagnostic, moves the
- * raw two-byte status into a display field, performs the status display, and only then performs the
- * abend paragraph. The online tier proves the same ordering differently: the abend routine in
- * {@code app/cbl/COACTUPC.cbl} transmits the whole 134-byte context to the terminal, deregisters
- * the program's abend handler, and only then issues the abend.
- *
- * <h2>The 134-byte context</h2>
- * {@code app/cpy/CSMSG02Y.cpy} declares {@code ABEND-DATA} as four character fields, each
- * initialised to spaces: {@code ABEND-CODE} at {@code PIC X(4)}, {@code ABEND-CULPRIT} at
- * {@code PIC X(8)}, {@code ABEND-REASON} at {@code PIC X(50)} and {@code ABEND-MSG} at
- * {@code PIC X(72)}, which sum to 134. This service does not restate those widths. It populates
- * {@link AbendException}, which owns them as constants and renders the image through its own
- * fixed-width context method, so the layout is declared in exactly one place.
- *
- * <p>The culprit field carries the <strong>program name</strong>. The online routine moves the
- * member's own program-name literal into {@code ABEND-CULPRIT}, and eight characters is precisely
- * the width of a COBOL member name. Callers should pass the legacy member name they are
- * translating -- {@code CBACT01C}, {@code COACTUPC} and so on -- so that a Java log line and a
- * mainframe abend name the same culprit.
- *
- * <h2>Diagnostic vocabulary this service accepts but does not own</h2>
- * The operation descriptions are the legacy display literals, and they belong to the calling
- * service because each call site chose its own wording. The estate's file-oriented abend paths use
- * {@code ERROR READING ACCOUNT FILE}, {@code ERROR OPENING ACCTFILE},
- * {@code ERROR CLOSING ACCOUNT FILE}, {@code ERROR READING DISCLOSURE GROUP FILE},
- * {@code ERROR READING DEFAULT DISCLOSURE GROUP} and {@code ERROR READING XREF FILE}. The resource
- * names are the legacy DD, dataset and CICS file names: {@code ACCTDAT}, {@code DISCGRP},
- * {@code TCATBAL}, {@code CARDDAT}, {@code CUSTDAT}, {@code TRANSACT}, {@code USRSEC} and
- * {@code CARDXREF}. They are listed here so a reader can see the vocabulary at a glance; every one
- * arrives as a parameter and none is declared in this class.
- *
- * <h2>What this service deliberately does not do</h2>
- * It does not terminate the process, and it holds no notion of a return code. An abend becomes a
- * thrown exception; translating the batch tier's non-zero completion code is the job and step
- * layer's responsibility, and the partial-success code that the transaction posting program sets
- * belongs to that program's own service. It does not model program cancellation either. The
- * {@code CANCEL} token appears six times in {@code app/cbl}, and not one occurrence is the COBOL
- * {@code CANCEL} statement: four are the {@code CANCEL} option of the CICS
- * {@code HANDLE ABEND} command, which deregisters the issuing program's own abend handler on the
- * line immediately above each online abend, and two are prose inside comments. Handler
- * registration and deregistration have no equivalent in a Spring runtime -- the equivalent of
- * deregistering a handler is simply the absence of a {@code catch} -- so no registration,
- * deregistration or module-unload operation is offered here.
- *
- * <h2>Thread safety</h2>
- * Stateless and immutable: no instance field, no mutable static, no accumulated abend history and
- * no counter. A single container-managed instance is safely shared by every caller on every thread,
- * on both the request-serving and the batch-executing side.
+ * <p>Stateless and immutable: no instance field, no mutable static, no accumulated abend history and no
+ * counter, so a single container-managed instance is safely shared across every thread on both tiers.
  */
 @Service
 public final class AbendService {
 
     /**
-     * The diagnostic channel that replaces the estate's console display statements.
-     *
-     * <p>Named for this class, so that the {@code com.carddemo.service} level configured per
-     * profile governs it. The logger lives here and not on the exception types precisely because
-     * emit-then-abend is this service's obligation: the exceptions carry context and deliberately
-     * hold no logger, so there is exactly one place where an abend is recorded.
+     * The diagnostic channel that replaces the estate's console display statements. Named for this class so
+     * the per-profile {@code com.carddemo.service} level governs it. The logger lives here and not on the
+     * exception types precisely because emit-then-abend is this service's obligation: the exceptions carry
+     * context and deliberately hold no logger, so there is exactly one place where an abend is recorded.
      */
     private static final Logger LOG = LoggerFactory.getLogger(AbendService.class);
 
     /**
-     * The operator-facing text the batch members display immediately before abending, reproduced
-     * verbatim from {@code 9999-ABEND-PROGRAM} in all nine of them, for example
-     * {@code app/cbl/CBACT01C.cbl} line 170.
-     *
-     * <p>Kept as the leading token of the abend log line so that an operator searching a Java log
-     * for the phrase they already know finds the same event.
+     * The operator-facing text the batch members display immediately before abending, reproduced verbatim
+     * from {@code 9999-ABEND-PROGRAM} in all nine of them, for example {@code app/cbl/CBACT01C.cbl} line
+     * 170. Kept as the leading token of the abend log line so an operator searching a Java log for the
+     * phrase they already know finds the same event.
      */
     private static final String ABENDING_PROGRAM = "ABENDING PROGRAM";
 
     /**
-     * Rendered in a log line in place of a value the caller did not supply.
-     *
-     * <p>The legacy fields are initialised to spaces, so a missing value is never an error here.
-     * A visible marker is used rather than an empty gap because an empty gap in a log line reads
-     * as a formatting fault and invites a reader to doubt the record.
+     * Rendered in a log line in place of a value the caller did not supply. The legacy fields are
+     * initialised to spaces, so a missing value is never an error here. A visible marker is used rather
+     * than an empty gap because an empty gap reads as a formatting fault.
      */
     private static final String NOT_SUPPLIED = "(none)";
 
     /**
-     * Rendered beside a raw file status that falls outside the vocabulary the estate exercises.
-     *
-     * <p>Such a status is a legitimate runtime condition rather than a fault. The legacy
-     * status-display paragraph has a dedicated branch for a status that is not numeric or whose
-     * first character is {@code 9}, so the estate itself anticipates values it never tests against.
-     * The marker records that the code was not recognised while the raw characters are logged
-     * unchanged next to it.
+     * Rendered beside a raw file status that falls outside the vocabulary the estate exercises. Such a
+     * status is a legitimate runtime condition rather than a fault: the legacy status-display paragraph has
+     * a dedicated branch for a status that is not numeric or whose first character is {@code 9}, so the
+     * estate itself anticipates values it never tests against. The raw characters are logged unchanged
+     * beside the marker.
      */
     private static final String OUTSIDE_VOCABULARY = "(outside declared vocabulary)";
 
     /**
-     * Creates the abend service singleton.
-     *
-     * <p>This service sits at the base of the dependency graph and injects no collaborator, so
-     * constructor injection contributes no parameters. The constructor is declared explicitly
-     * rather than left implicit so that the absence of collaborators is a visible, reviewable
-     * property of the class.
+     * Creates the abend service singleton. Declared explicitly rather than left implicit so that the
+     * absence of collaborators is a visible, reviewable property of the class.
      */
     public AbendService() {
         // No collaborators to inject: the abend path depends on nothing but its own arguments.
@@ -225,22 +155,20 @@ public final class AbendService {
     }
 
     /**
-     * Abends on the batch tier carrying whatever I/O context the caller has, reproducing the
-     * legacy sequence of an operation diagnostic, then the raw file status, then
-     * {@code 9999-ABEND-PROGRAM}.
+     * Abends on the batch tier carrying whatever I/O context the caller has, reproducing the legacy sequence
+     * of an operation diagnostic, then the raw file status, then {@code 9999-ABEND-PROGRAM}.
      *
-     * <p>This is the shape of every file-driven batch abend. {@code app/cbl/CBACT01C.cbl} performs
-     * it at three structurally identical sites -- its read path (lines 110 to 113), its open path
-     * (lines 144 to 147) and its close path (lines 162 to 165) -- and the remaining batch members
-     * repeat the pattern. All of that context arrives here in one ERROR log line, emitted before
-     * the abend is raised, so an operator reads the operation, the resource, the raw status and the
-     * culprit together rather than reassembling them from separate lines.
+     * <p>The shape of every file-driven batch abend. {@code app/cbl/CBACT01C.cbl} performs it at three
+     * structurally identical sites &mdash; read path lines 110 to 113, open path lines 144 to 147, close
+     * path lines 162 to 165 &mdash; and the remaining batch members repeat the pattern. All of that context
+     * arrives here in one ERROR log line, emitted before the abend is raised, so an operator reads the
+     * operation, the resource, the raw status and the culprit together.
      *
-     * <p>The batch tier carries no {@code ABEND-DATA} area: the abend-context copybook is included
-     * by four online members and by no batch member, and the batch paragraphs move a numeric abend
-     * code into a binary item instead. The 134-character context image is therefore not emitted
-     * here; it belongs to the online tier alone. The abend code is
-     * {@value AbendException#BATCH_ABEND_CODE}, the value the batch paragraphs set.
+     * <p>The batch tier carries no {@code ABEND-DATA} area: the abend-context copybook is included by four
+     * online members and by no batch member, and the batch paragraphs move a numeric abend code into a
+     * binary item instead. The 134-character context image is therefore not emitted here; it belongs to the
+     * online tier alone. The abend code is {@value AbendException#BATCH_ABEND_CODE}, the value the batch
+     * paragraphs set.
      *
      * <p><strong>Never returns normally.</strong>
      *
@@ -298,22 +226,20 @@ public final class AbendService {
     }
 
     /**
-     * Abends on the online tier with an explicit operator message, reproducing
-     * {@code ABEND-ROUTINE}.
+     * Abends on the online tier with an explicit operator message, reproducing {@code ABEND-ROUTINE}.
      *
-     * <p>The online path differs from the batch path in three ways, all of them taken from the
-     * source rather than chosen here. The abend code is {@value AbendException#ONLINE_ABEND_CODE}
-     * rather than the batch value, which is why the two tiers have separate entry points and why a
-     * caller cannot reach the wrong one by accident. The four online members populate the 134-byte
-     * {@code ABEND-DATA} area and transmit the whole of it before abending, so this method emits
-     * the rendered context image as well as the field-by-field diagnostic. And no online program in
-     * the estate declares a {@code FILE STATUS} item -- the online tier tests the CICS command
-     * response condition instead -- so this method accepts no raw file status; offering one would
-     * invite callers to invent a value the legacy never had.
+     * <p>The online path differs from the batch path in three ways, all taken from the source. The abend
+     * code is {@value AbendException#ONLINE_ABEND_CODE} rather than the batch value, which is why the two
+     * tiers have separate entry points and why a caller cannot reach the wrong one by accident. The four
+     * online members populate the 134-byte {@code ABEND-DATA} area and transmit the whole of it before
+     * abending, so this method emits the rendered context image as well as the field-by-field diagnostic.
+     * And no online program declares a {@code FILE STATUS} item &mdash; the online tier tests the CICS
+     * command response condition instead &mdash; so this method accepts no raw file status; offering one
+     * would invite callers to invent a value the legacy never had.
      *
-     * <p><strong>Never returns normally.</strong> Note that constructing the exception is not
-     * raising it: the instance is built so its rendered image can be emitted, exactly as the legacy
-     * populated the context area before transmitting it, and only then is it thrown.
+     * <p><strong>Never returns normally.</strong> Constructing the exception is not raising it: the instance
+     * is built so its rendered image can be emitted, exactly as the legacy populated the context area before
+     * transmitting it, and only then is it thrown.
      *
      * @param programName     the failing program, carried into {@code ABEND-CULPRIT}; at most
      *                        {@value AbendException#CULPRIT_LENGTH} characters
@@ -339,29 +265,20 @@ public final class AbendService {
     /**
      * Emits a raw file status as an operator diagnostic <strong>without</strong> raising anything.
      *
-     * <p>This reproduces the status-display paragraph that the batch members perform immediately
-     * before their abend paragraph. Eight of the nine abending batch members carry one, and they do
-     * not agree on its name: six call it {@code 9910-DISPLAY-IO-STATUS}
-     * ({@code app/cbl/CBACT01C.cbl} line 176, {@code CBACT02C} line 161, {@code CBACT03C} line 161,
-     * {@code CBACT04C} line 635, {@code CBTRN02C} line 714 and {@code CBTRN03C} line 633) while two
-     * call it {@code Z-DISPLAY-IO-STATUS} ({@code app/cbl/CBCUS01C.cbl} line 161 and
-     * {@code app/cbl/CBTRN01C.cbl} line 476). The ninth, {@code CBSTM03A}, has no such paragraph
-     * because it inspects a subprogram return code rather than a file status. The naming
-     * inconsistency is a source artefact with no behavioural consequence -- the two variants are
-     * otherwise identical routines -- so the translation gives it a single Java name and records the
-     * divergence in the project decision log.
+     * <p>Reproduces the status-display paragraph that the batch members perform immediately before their
+     * abend paragraph. Eight of the nine abending batch members carry one and they do not agree on its name:
+     * six call it {@code 9910-DISPLAY-IO-STATUS} ({@code app/cbl/CBACT01C.cbl} line 176, {@code CBACT02C}
+     * line 161, {@code CBACT03C} line 161, {@code CBACT04C} line 635, {@code CBTRN02C} line 714 and
+     * {@code CBTRN03C} line 633) while two call it {@code Z-DISPLAY-IO-STATUS}
+     * ({@code app/cbl/CBCUS01C.cbl} line 161 and {@code app/cbl/CBTRN01C.cbl} line 476). The ninth,
+     * {@code CBSTM03A}, has none because it inspects a subprogram return code rather than a file status. One
+     * Java name is given to both spellings, per decision log entry D-41.
      *
-     * <p>It exists separately from the abend entry points because the legacy separated them: the
-     * status display is performed on its own wherever the program intends to <em>continue</em>, and
-     * is performed immediately before the abend paragraph wherever it does not. A caller that has
-     * decided to carry on can therefore still emit the diagnostic, which is the whole point of
-     * keeping this method non-raising.
-     *
-     * <p>The status is logged verbatim under the legacy operator prefix, which the exception type
-     * publishes as {@code FileStatusException.DISPLAY_PREFIX}, so a Java log line carries the same
-     * leading text an operator already recognises. The status is neither normalised nor validated:
-     * it is reported exactly as it arrived, and the resolved vocabulary name is added beside it only
-     * as a reading aid.
+     * <p>It exists separately from the abend entry points because the legacy separated them: the status
+     * display runs on its own wherever the program intends to <em>continue</em>, and immediately before the
+     * abend paragraph wherever it does not. The status is logged verbatim under the legacy operator prefix,
+     * which the exception type publishes as {@code FileStatusException.DISPLAY_PREFIX}, and is neither
+     * normalised nor validated; the resolved vocabulary name is added beside it only as a reading aid.
      *
      * @param rawFileStatus the raw two-character {@code FILE STATUS} exactly as reported;
      *                      {@code null} is tolerated and rendered as an explicit marker, because a
@@ -382,24 +299,21 @@ public final class AbendService {
     }
 
     /**
-     * Emits the diagnostic for a failed file operation and abends on the batch tier, chaining the
-     * raw status as the cause.
+     * Emits the diagnostic for a failed file operation and abends on the batch tier, chaining the raw status
+     * as the cause.
      *
-     * <p>This is the whole of the legacy file-failure sequence in one call: the operation
-     * diagnostic, the raw status, and the abend, in that order. It is the convenience form of
-     * {@link #abendBatch(String, String, String, String, String)} for the common case where the
-     * trigger is a file status, and it differs from that method in one respect that matters -- the
-     * raised abend carries a {@code FileStatusException} as its cause, so the raw two-character
-     * status survives on the exception chain and not only in the log.
+     * <p>The whole of the legacy file-failure sequence in one call: operation diagnostic, raw status, abend,
+     * in that order. The convenience form of {@link #abendBatch(String, String, String, String, String)} for
+     * the common case where the trigger is a file status, differing in one respect that matters &mdash; the
+     * raised abend carries a {@code FileStatusException} as its cause, so the raw two-character status
+     * survives on the exception chain and not only in the log.
      *
-     * <p>The status is validated before anything is constructed. A status of
-     * {@value FileStatusException#STATUS_SUCCESS} reports success and a status of
-     * {@value FileStatusException#STATUS_END_OF_FILE} reports end of file; neither is an error, and
-     * end of file in particular is how every sequential read loop in the batch tier terminates
-     * normally. Passing either is a programming fault rather than a runtime condition, so it is
-     * rejected here with the same {@code IllegalArgumentException} the exception type itself raises,
-     * rather than being allowed to construct an invalid instance. Rejecting it in this method keeps
-     * the failure attributable to the misuse instead of surfacing from inside a constructor.
+     * <p>The status is validated before anything is constructed. {@value FileStatusException#STATUS_SUCCESS}
+     * reports success and {@value FileStatusException#STATUS_END_OF_FILE} reports end of file; neither is an
+     * error, and end of file in particular is how every sequential read loop in the batch tier terminates
+     * normally. Passing either is a programming fault rather than a runtime condition, so it is rejected
+     * here with the same {@code IllegalArgumentException} the exception type raises, keeping the failure
+     * attributable to the misuse instead of surfacing from inside a constructor.
      *
      * <p><strong>Never returns normally.</strong>
      *
@@ -468,24 +382,20 @@ public final class AbendService {
     /**
      * The single place an abend is recorded, and the reason emit-then-abend holds everywhere.
      *
-     * <p>Every abend entry point calls this before it raises, and nothing else in the module logs an
-     * abend, so the ordering is a property of this class rather than a convention callers have to
-     * remember. One structured line carries every field, because the legacy emitted the operation
-     * text, the raw status and the abend announcement as consecutive displays that an operator read
-     * together; splitting them across lines would let an interleaved log separate them.
+     * <p>Every abend entry point calls this before it raises, and nothing else in the module logs an abend,
+     * so the ordering is a property of this class rather than a convention callers have to remember. One
+     * structured line carries every field, because the legacy emitted the operation text, the raw status and
+     * the abend announcement as consecutive displays that an operator read together; splitting them would
+     * let an interleaved log separate them. The line opens with the literal the batch members display
+     * immediately before abending, so an operator searching for the phrase they already know still finds the
+     * event.
      *
-     * <p>The line opens with the literal the batch members display immediately before abending, so
-     * that an operator searching for the phrase they already know still finds the event. The abend
-     * code, the culprit and the reason are always present because every abend has all three. The
-     * I/O context is appended only when the caller actually supplied it, which is the convention the
-     * file-status exception already follows in composing its own detail message: a label with
-     * nothing after it tells a reader less than its absence does, and the online tier legitimately
-     * has no file status, no operation description and no resource name at all.
-     *
-     * <p>Composed rather than parameterised precisely because the field set is conditional, and
-     * guarded by a level check so nothing is composed when nobody is listening. The composed value
-     * is passed as the single-argument message, which SLF4J takes verbatim without substitution, so
-     * a brace occurring inside a caller's own text cannot corrupt the line.
+     * <p>Abend code, culprit and reason are always present. The I/O context is appended only when the caller
+     * supplied it, because a label with nothing after it tells a reader less than its absence does and the
+     * online tier legitimately has no file status, operation description or resource name. Composed rather
+     * than parameterised precisely because the field set is conditional, guarded by a level check, and
+     * passed as the single-argument message, which SLF4J takes verbatim so a brace inside a caller's own
+     * text cannot corrupt the line.
      *
      * @param abendCode     the abend code being raised, which is the tier's own constant
      * @param programName   the failing program, as supplied by the caller
@@ -531,15 +441,11 @@ public final class AbendService {
      * Emits the rendered fixed-width abend context, reproducing the online transmission of the whole
      * {@code ABEND-DATA} area.
      *
-     * <p>Called on the online path only, because only the online members carry that area. The image
-     * is emitted at DEBUG rather than at ERROR because the preceding ERROR line already carries all
-     * four field values in a readable form; what this adds is the byte-exact image, including the
-     * space padding, for a reader comparing Java output against a mainframe screen capture. The
-     * level check avoids rendering the image at all when nobody is listening.
-     *
-     * <p>The image and its length both come from the exception, which owns the four legacy widths as
-     * constants. No width, offset or padding rule is restated here: that knowledge belongs to the
-     * exception and to the fixed-width utilities, not to a service.
+     * <p>Called on the online path only, because only the online members carry that area. Emitted at DEBUG
+     * rather than ERROR because the preceding ERROR line already carries all four field values readably;
+     * what this adds is the byte-exact image, space padding included, for a reader comparing Java output
+     * against a mainframe screen capture. The image and its length both come from the exception, which owns
+     * the four legacy widths as constants, so no width, offset or padding rule is restated here.
      *
      * @param abend the abend whose context image is to be emitted; never {@code null}, because
      *              every caller has just constructed it
@@ -617,12 +523,10 @@ public final class AbendService {
     /**
      * Builds the abend reason for a file-status-triggered abend.
      *
-     * <p>Deliberately factual and deliberately short. It is not an external-contract literal: the
-     * reason field is only ever transmitted on the online tier, and no online program in the estate
-     * has a file status, so no legacy text exists for this combination to be faithful to. Inventing
-     * operator prose here would be feature expansion, so the value is the labelled status and
-     * nothing more. It is comfortably inside the legacy reason width, because the status is always
-     * exactly two characters.
+     * <p>Deliberately factual and deliberately short, and <em>not</em> an external-contract literal: the
+     * reason field is only ever transmitted on the online tier and no online program has a file status, so
+     * no legacy text exists for this combination to be faithful to. Inventing operator prose here would be
+     * feature expansion, so the value is the labelled status and nothing more.
      *
      * @param rawFileStatus the validated raw two-character status
      * @return the reason text to carry into the legacy {@code ABEND-REASON} field
@@ -634,15 +538,12 @@ public final class AbendService {
     /**
      * Resolves a raw status to its vocabulary name, purely as a reading aid for the log.
      *
-     * <p>The lookup is a total function over every possible input: {@code null} renders as the
-     * not-supplied marker and an unrecognised value renders as the outside-vocabulary marker, so no
-     * status can make this diagnostic throw. That tolerance is taken from the source rather than
-     * chosen for safety's sake -- the legacy status-display paragraph has an explicit branch for a
-     * status that is not numeric or whose first character is {@code 9}, which is exactly the case of
-     * a value outside the vocabulary the estate tests.
-     *
-     * <p>Nothing branches on the resolved value and nothing is normalised by it. The raw status is
-     * always logged alongside it and remains the authoritative value.
+     * <p>A total function over every possible input: {@code null} renders as the not-supplied marker and an
+     * unrecognised value as the outside-vocabulary marker, so no status can make this diagnostic throw. That
+     * tolerance is taken from the source &mdash; the legacy status-display paragraph has an explicit branch
+     * for a status that is not numeric or whose first character is {@code 9}. Nothing branches on the
+     * resolved value and nothing is normalised by it; the raw status is always logged alongside it and
+     * remains authoritative.
      *
      * @param rawFileStatus the raw two-character status, possibly {@code null}
      * @return the vocabulary name, or a marker when the status is absent or unrecognised
@@ -672,12 +573,10 @@ public final class AbendService {
     }
 
     /**
-     * The single test for whether a caller actually supplied a piece of optional context.
-     *
-     * <p>Blank counts as absent as well as {@code null}, because the legacy context fields are
-     * initialised to spaces and a space-filled field carries no more information than an unset one.
-     * Every rendering decision in this class routes through here, so a value cannot be treated as
-     * present in one log line and absent in another.
+     * The single test for whether a caller actually supplied a piece of optional context. Blank counts as
+     * absent as well as {@code null}, because the legacy context fields are initialised to spaces. Every
+     * rendering decision in this class routes through here, so a value cannot be treated as present in one
+     * log line and absent in another.
      *
      * @param value the value to test, possibly {@code null}
      * @return {@code true} when the value is non-{@code null} and not blank

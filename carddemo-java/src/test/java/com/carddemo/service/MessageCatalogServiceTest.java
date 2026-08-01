@@ -34,46 +34,30 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 /**
  * Unit tests for the shared common-message and screen-title catalog.
  *
- * <h2>What is under test and why it matters</h2>
- * The class under test is the migrated form of two legacy copybooks: {@code app/cpy/CSMSG01Y.cpy}, which
- * declares the {@code CCDA-COMMON-MESSAGES} group with two {@code PIC X(50)} elementary items, and
- * {@code app/cpy/COTTL01Y.cpy}, which declares the {@code CCDA-SCREEN-TITLE} group with three
- * {@code PIC X(40)} elementary items. Each copybook was textually included by all 17 online COBOL
- * programs, so the migration collapses 34 textual inclusions into a single injected singleton.
+ * <p>The class under test is the migrated form of two legacy copybooks: {@code app/cpy/CSMSG01Y.cpy},
+ * declaring {@code CCDA-COMMON-MESSAGES} as two {@code PIC X(50)} items, and
+ * {@code app/cpy/COTTL01Y.cpy}, declaring {@code CCDA-SCREEN-TITLE} as three {@code PIC X(40)} items. Each
+ * was textually included by all 17 online COBOL programs, so the migration collapses 34 textual inclusions
+ * into a single injected singleton.
  *
- * <p>Every value published by that singleton is a fixed-width external contract rather than incidental
- * whitespace. The two common messages reach a REST response body by way of the sign-on, menu, account,
- * card, transaction, user-administration, bill-payment and report services, so shortening a value or
+ * <p>Every published value is a fixed-width external contract rather than incidental whitespace: the two
+ * common messages reach a REST response body by way of the online services, so shortening a value or
  * normalising its padding would change the wire contract. These tests therefore assert the padding as
- * deliberately as they assert the visible text.</p>
+ * deliberately as the visible text. In {@code app/cbl/COSGN00C.cbl} (transaction {@code CC00}) the
+ * attention-key decision in {@code MAIN-PARA} places the thank-you message into {@code WS-MESSAGE} on the
+ * exit-key arm at line 89 and sends plain text without raising the error flag, whereas its default arm
+ * raises the error flag at line 92 first and only then places the invalid-key message at line 93. This
+ * class covers the text alone; flag state, cursor placement and routing belong to the services that own
+ * them.
  *
- * <h2>Where the legacy estate emits these values</h2>
- * In {@code app/cbl/COSGN00C.cbl} (transaction {@code CC00}) the attention-key decision in
- * {@code MAIN-PARA} places the thank-you message into the {@code WS-MESSAGE} work field on the exit-key
- * arm at line 89 and sends plain text without raising the error flag, whereas its default arm raises the
- * error flag at line 92 first and only then places the invalid-key message at line 93 before re-sending
- * the sign-on screen. This class covers the text alone; flag state, cursor placement and routing belong
- * to the services that own them.
+ * <p><strong>Oracle rules.</strong> Every expected value is a literal declared in this test class, so the
+ * oracle is independent of the code it judges: no expected value is produced by calling the class under
+ * test or any production formatter, codec, template holder or record mapper. Padding is written as an
+ * explicit repeat count rather than as trailing whitespace, so the count is visible to a reviewer and
+ * cannot be stripped by an editor. Every width assertion measures encoded bytes, never character count,
+ * because these are byte-width contracts. No fixed-width value is ever trimmed before comparison; trimming
+ * appears only where the assertion is explicitly about visible text, such as the trailing full-stop run.
  *
- * <h2>How these tests are written</h2>
- * <ul>
- *   <li>Every expected value is a literal declared in this test class, so the oracle is independent of
- *       the code it judges. No expected value is produced by calling the class under test, or any
- *       production formatter, codec, template holder or record mapper.</li>
- *   <li>Padding is written as an explicit repeat count rather than as trailing whitespace, so the count
- *       is visible to a reviewer and cannot be silently removed by an editor that strips line ends.</li>
- *   <li>Every width assertion measures encoded bytes, never character count, because these are byte-width
- *       contracts and a character-count assertion would pass on a value that is byte-wrong.</li>
- *   <li>No fixed-width value is ever trimmed before being compared. Trimming appears only where the
- *       assertion is explicitly about the visible text, such as the trailing full-stop run.</li>
- *   <li>This is a plain unit test. It starts no container, opens no connection, binds no port, loads no
- *       application context and reads no file, because the class under test has no collaborators.</li>
- * </ul>
- *
- * <h2>Provenance</h2>
- * Legacy authorities read at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Only field names, field widths and
- * the contract text itself are carried across; no COBOL statement is reproduced here.
  */
 @DisplayName("Common message catalog: the shared screen text keeps its legacy fixed widths")
 class MessageCatalogServiceTest {
@@ -734,4 +718,3 @@ class MessageCatalogServiceTest {
         }
     }
 }
-

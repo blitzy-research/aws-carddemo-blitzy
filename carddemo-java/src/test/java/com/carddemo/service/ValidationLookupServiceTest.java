@@ -19,13 +19,19 @@ package com.carddemo.service;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -48,54 +54,58 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 /**
  * Unit tests for the three externalised validation lookup tables.
  *
- * <h2>What is under test and why it matters</h2>
- * The class under test is the migrated form of {@code app/cpy/CSLKPCDY.cpy}, a 1318-line copybook whose
+ * <p>The class under test is the migrated form of {@code app/cpy/CSLKPCDY.cpy}, a 1318-line copybook whose
  * entire body is level-88 condition-name literal lists rather than a data structure. It declares three
  * elementary items carrying five conditions between them: one three-byte item hosting the full area-code
  * list and its two subsets, one two-byte item hosting the state-code list, and one four-byte sub-field
  * hosting the state-plus-first-two-of-ZIP list. The migration externalises those lists into three JSON
- * classpath resources and publishes them as immutable sets.
+ * classpath resources and publishes them as immutable sets. The copybook has exactly one includer anywhere
+ * in the estate, {@code app/cbl/COACTUPC.cbl}, so the whole lookup surface is reached through the
+ * account-update feature alone &mdash; which is why these tests are exhaustive rather than representative:
+ * there is no second caller whose own tests would catch a table that had quietly drifted.
  *
- * <p>The copybook has exactly one includer anywhere in the estate, {@code app/cbl/COACTUPC.cbl}, so the
- * whole lookup surface is reached through the account-update feature alone. No other program exercises any
- * part of it. That is why these tests are exhaustive rather than representative: there is no second caller
- * whose own tests would catch a table that had quietly drifted.</p>
+ * <p><strong>The cardinalities are themselves the contract.</strong> Five counts are binding and the class
+ * under test re-verifies all five on construction rather than trusting the resources it loads: 410
+ * general-purpose area codes and 80 easily-recognisable ones, both loaded; 490 area codes in total,
+ * <em>derived</em> by unioning those two subsets rather than stored as a third array, since the 490 is an
+ * exact partition &mdash; 410 plus 80 is 490 and the two subsets share no element at all &mdash; and
+ * deriving the union removes the three-way consistency hazard a third stored copy would create; 56 state,
+ * district and territory codes; and 240 four-character state-plus-ZIP combinations.
  *
- * <h2>The cardinalities are themselves the contract</h2>
- * Five counts are binding, and the class under test re-verifies all five when it is constructed rather than
- * trusting the resources it loads. Four are stored and one is derived:
- * <ul>
- *   <li>410 general-purpose area codes and 80 easily-recognisable area codes, both loaded.</li>
- *   <li>490 area codes in total, <em>derived</em> by unioning those two subsets rather than stored as a
- *       third array. The 490 is an exact partition of the two subsets: 410 plus 80 is 490, and the two
- *       subsets share no element at all. Deriving the union is what removes the three-way consistency
- *       hazard that a third stored copy would create.</li>
- *   <li>56 state, district and territory codes.</li>
- *   <li>240 state-plus-ZIP combinations, four characters each.</li>
- * </ul>
+ * <p><strong>Two failure modes these tests exist to catch</strong>, both properties that a hand-edit to one
+ * of the JSON resources would break silently, producing a service that starts, answers questions and is
+ * wrong. <em>The partition could stop being exact:</em> a single value added to both area-code subsets, or
+ * moved from one to the other, changes what the general-purpose predicate accepts without changing any
+ * count a casual reviewer would check, so the union-equality and empty-intersection assertions below are the
+ * highest-value assertions in this class. <em>The two address tables could be conflated:</em> six of the 62
+ * prefixes appearing in the 240 combinations are absent from the 56 state codes, so cross-checking a
+ * composite key's leading two characters against the state table would reject addresses the legacy system
+ * accepts, and these tests prove the two predicates are independent and never intersected.
  *
- * <h2>The two failure modes these tests exist to catch</h2>
- * Both are properties that a hand-edit to one of the JSON resources would break silently, producing a
- * service that starts, answers questions and is wrong:
- * <ul>
- *   <li><strong>The partition could stop being exact.</strong> A single value added to both area-code
- *       subsets, or moved from one to the other, changes what the general-purpose predicate accepts without
- *       changing any count that a casual reviewer would check. The union-equality and empty-intersection
- *       assertions below are the highest-value assertions in this class.</li>
- *   <li><strong>The two address tables could be conflated.</strong> Six of the 62 prefixes appearing in the
- *       240 combinations are absent from the 56 state codes, so cross-checking a composite key's leading
- *       two characters against the state table would reject addresses the legacy system accepts. These
- *       tests prove the two predicates are independent and are never intersected.</li>
- * </ul>
+ * <p><strong>Oracle rules.</strong> Every expected count is a literal declared in this class, so the oracle
+ * is independent of the code it judges: no expected value is produced by calling the class under test or any
+ * production formatter, codec, template holder or record mapper. Membership is checked exhaustively rather
+ * than sampled, against a second independent view of each resource parsed directly in the test, and the
+ * service's published set and that independent parse must agree element for element. Every width assertion
+ * measures encoded bytes rather than character count, because these are byte-width contracts. The failure
+ * paths are driven through the resource-loading collaborator the constructor already accepts, using an
+ * in-test double that serves doctored content for one location and the real resource for the others; no
+ * private field is ever read and there is no reflection anywhere in this class.
  *
  * <h2>How these tests are written</h2>
  * <ul>
  *   <li>Every expected count is a literal declared in this class, so the oracle is independent of the code
  *       it judges. No expected value is produced by calling the class under test, or any production
  *       formatter, codec, template holder or record mapper.</li>
- *   <li>Membership is checked exhaustively rather than sampled, against a second, independent view of each
- *       resource parsed directly in the test. The service's published set and that independent parse must
- *       agree element for element.</li>
+ *   <li>Membership is checked exhaustively rather than sampled, and the expectation is anchored outside the
+ *       production resources. The values every level-88 condition declares were extracted mechanically from
+ *       the copybook into four golden fixtures under {@code fixtures/expected/lookup/}, each pinned by a
+ *       SHA-256 digest literal declared in this class. Every published table is judged against those
+ *       fixtures element for element and by whole-table digest, and every legacy value is additionally
+ *       pushed through the predicate that is supposed to accept it. Re-parsing a production resource and
+ *       comparing the service against it would prove only that the loader works, so nothing here does
+ *       that: the production resources are read for two purposes only, to assert their structural shape and
+ *       to build the doctored copies that drive the constructor's rejection paths.</li>
  *   <li>Every width assertion measures encoded bytes rather than character count, because these are byte
  *       width contracts and a character-count assertion would pass on a value that is byte-wrong.</li>
  *   <li>This is a plain unit test. It starts no container, opens no database connection, binds no port and
@@ -168,21 +178,94 @@ class ValidationLookupServiceTest {
     private static final int EXPECTED_STATE_AND_FIRST_ZIP2_WIDTH = 4;
 
     /**
-     * Class-loader path of the area-code resource, used by the independent oracle. This is the same file the
-     * class under test loads through the resource abstraction, read here by a different route so that the
-     * two views are genuinely independent.
+     * Class-loader path of the area-code resource. It is read directly here for two purposes only: to assert
+     * the resource's structural shape, and to build doctored copies that drive the constructor's rejection
+     * paths. It is never used as an expected value, because judging the loaded table against the file it was
+     * loaded from would prove only that the loader works.
      */
     private static final String NANPA_RESOURCE_PATH = "/lookup/nanpa-area-codes.json";
 
     /**
-     * Class-loader path of the state-code resource, used by the independent oracle.
+     * Class-loader path of the state-code resource, read for the same two purposes as the area-code
+     * resource and never used as an expected value.
      */
     private static final String US_STATE_RESOURCE_PATH = "/lookup/us-state-codes.json";
 
     /**
-     * Class-loader path of the state-plus-ZIP resource, used by the independent oracle.
+     * Class-loader path of the state-plus-ZIP resource, read for the same two purposes as the area-code
+     * resource and never used as an expected value.
      */
     private static final String STATE_ZIP_RESOURCE_PATH = "/lookup/state-zip-prefixes.json";
+
+    // ------------------------------------------------------------------------------------------------
+    // The legacy-anchored oracle. Every expected membership in this class traces back to the level-88
+    // condition lists in app/cpy/CSLKPCDY.cpy, which is read-only reference material and is never modified
+    // or transcribed. The values those conditions declare were extracted mechanically into the four golden
+    // fixtures named below - one canonical, ascending, one-token-per-line US-ASCII file per stored list -
+    // and each fixture is pinned by a SHA-256 digest literal so that an edit to a fixture is a test failure
+    // rather than a silent change of expectation. No fixture holds any COBOL text: they carry values only.
+    // ------------------------------------------------------------------------------------------------
+
+    /**
+     * Class-loader path of the golden general-purpose area codes, extracted from the 410 values the
+     * {@code VALID-GENERAL-PURP-CODE} condition declares.
+     */
+    private static final String GOLDEN_GENERAL_PURPOSE_PATH =
+            "/fixtures/expected/lookup/nanpa-general-purpose-area-codes.txt";
+
+    /**
+     * Class-loader path of the golden easily-recognisable area codes, extracted from the 80 values the
+     * {@code VALID-EASY-RECOG-AREA-CODE} condition declares.
+     */
+    private static final String GOLDEN_EASY_RECOGNITION_PATH =
+            "/fixtures/expected/lookup/nanpa-easily-recognisable-area-codes.txt";
+
+    /**
+     * Class-loader path of the golden state codes, extracted from the 56 values the
+     * {@code VALID-US-STATE-CODE} condition declares.
+     */
+    private static final String GOLDEN_US_STATE_PATH = "/fixtures/expected/lookup/us-state-codes.txt";
+
+    /**
+     * Class-loader path of the golden state-plus-ZIP combinations, extracted from the 240 values the
+     * {@code VALID-US-STATE-ZIP-CD2-COMBO} condition declares.
+     */
+    private static final String GOLDEN_STATE_ZIP_PATH =
+            "/fixtures/expected/lookup/us-state-zip-prefixes.txt";
+
+    /** Digest algorithm used to pin every golden fixture. Mandatory in every conforming JVM. */
+    private static final String GOLDEN_DIGEST_ALGORITHM = "SHA-256";
+
+    /**
+     * Pinned digest of the canonical form of the 410 general-purpose area codes, computed over the legacy
+     * condition list at extraction time.
+     */
+    private static final String GOLDEN_GENERAL_PURPOSE_DIGEST =
+            "0a989369e9648196c5e4208df84c76332b2ef5d3a49fcb0fea839ec3397e4f7f";
+
+    /** Pinned digest of the canonical form of the 80 easily-recognisable area codes. */
+    private static final String GOLDEN_EASY_RECOGNITION_DIGEST =
+            "c92d4380d609d5ca74c226a8d09d149976ee4755ae98e9bffcc0ca118b16bd45";
+
+    /**
+     * Pinned digest of the canonical form of the 490-value area-code union.
+     *
+     * <p>No golden file carries this list. The legacy copybook declares it as its own condition, and the
+     * extraction proved that condition to be exactly the union of the two subsets, so the union is derived
+     * here just as the class under test derives it. Keeping only the digest means there is no third stored
+     * copy to fall out of step, which is the same reasoning that keeps a third array out of the production
+     * resource.</p>
+     */
+    private static final String GOLDEN_PHONE_AREA_CODE_UNION_DIGEST =
+            "2c3f82fc194043fe57bec77240318aae8d4f2f76ebe5a3c9df3dfe8605d678d2";
+
+    /** Pinned digest of the canonical form of the 56 state, district and territory codes. */
+    private static final String GOLDEN_US_STATE_DIGEST =
+            "8842130558100f9982cb2e490092c50479c13c723fe55d4caffa80d79447803e";
+
+    /** Pinned digest of the canonical form of the 240 state-plus-ZIP combinations. */
+    private static final String GOLDEN_STATE_ZIP_DIGEST =
+            "38169c4ad5168d2da09ea2204e74a84c5d065cfeae3130244d2fbbc7efc374b6";
 
     /**
      * Name of the general-purpose array inside the area-code resource, spelled out here rather than read
@@ -291,12 +374,10 @@ class ValidationLookupServiceTest {
     private static final ValidationLookupService SERVICE =
             new ValidationLookupService(MAPPER, new DefaultResourceLoader());
 
-    // ------------------------------------------------------------------------------------------------
     // Independent oracle. Each of these reads one JSON resource through the class loader directly, which
     // is a different route from the resource abstraction the class under test uses. Nothing here consults
     // the class under test, so a table that had drifted would be caught by disagreement between the two
     // views rather than by both views being wrong in the same way.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * Parses a resource that is a bare JSON array of tokens, preserving declaration order and duplicates so
@@ -345,12 +426,10 @@ class ValidationLookupServiceTest {
         return subset;
     }
 
-    // ------------------------------------------------------------------------------------------------
     // Failure-path seam. The constructor already accepts the resource-loading collaborator, so pointing
     // the service at doctored content needs no reflection, no subclass of the service and no change to
     // production code. One location is overridden per case; every other location resolves normally, which
     // keeps each failure attributable to the single table being doctored.
-    // ------------------------------------------------------------------------------------------------
 
     /**
      * A resource loader that serves supplied content for one location and delegates everything else to the
@@ -408,9 +487,9 @@ class ValidationLookupServiceTest {
     /**
      * Serialises a test-built collection to JSON text.
      *
-     * <p>Serialising input is not the same thing as computing an expected value: the counts and membership
-     * this class asserts on are all literals or independent parses. This only spares the tests from
-     * hand-escaping large arrays.</p>
+     * <p>Serialising input is not the same thing as computing an expected value: every count and every
+     * membership this class asserts on comes either from a literal declared here or from a legacy-derived
+     * golden fixture. This only spares the tests from hand-escaping large arrays.</p>
      *
      * @param value the collection to serialise
      * @return its JSON form
@@ -467,6 +546,94 @@ class ValidationLookupServiceTest {
      */
     private static int encodedWidth(final String token) {
         return token.getBytes(StandardCharsets.US_ASCII).length;
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Golden-fixture access and digest pinning.
+    // ------------------------------------------------------------------------------------------------
+
+    /**
+     * Reads a golden fixture as raw bytes, so that the digest covers the file exactly as it sits on disk
+     * rather than a re-encoded view of it.
+     *
+     * @param classpathPath absolute class-loader path of the fixture
+     * @return the fixture's bytes
+     * @throws IOException if the fixture cannot be read
+     */
+    private static byte[] goldenBytes(final String classpathPath) throws IOException {
+        try (InputStream fixture = ValidationLookupServiceTest.class.getResourceAsStream(classpathPath)) {
+            assertThat(fixture)
+                    .as("the golden fixture %s must be present on the test classpath", classpathPath)
+                    .isNotNull();
+            return fixture.readAllBytes();
+        }
+    }
+
+    /**
+     * Reads a golden fixture as its list of tokens, one per line, in the order the file declares them.
+     *
+     * @param classpathPath absolute class-loader path of the fixture
+     * @return the tokens the fixture declares
+     * @throws IOException if the fixture cannot be read
+     */
+    private static List<String> goldenTokens(final String classpathPath) throws IOException {
+        final String content = new String(goldenBytes(classpathPath), StandardCharsets.US_ASCII);
+        final List<String> tokens = new ArrayList<>();
+        for (final String line : content.split("\n", -1)) {
+            if (!line.isEmpty()) {
+                tokens.add(line);
+            }
+        }
+        return tokens;
+    }
+
+    /**
+     * Computes the lower-case hexadecimal SHA-256 digest of the supplied content.
+     *
+     * @param content the bytes to digest
+     * @return the digest in lower-case hexadecimal
+     */
+    private static String sha256Hex(final byte[] content) {
+        final MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance(GOLDEN_DIGEST_ALGORITHM);
+        } catch (final NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException(
+                    GOLDEN_DIGEST_ALGORITHM + " is mandatory in a conforming JVM", unavailable);
+        }
+        return HexFormat.of().formatHex(digest.digest(content));
+    }
+
+    /**
+     * Computes the digest of a token collection in the same canonical form the golden fixtures are stored
+     * in: ascending order, one token per line, every line terminated, encoded as US-ASCII.
+     *
+     * <p>Canonicalising before digesting is what lets one literal stand in for a whole table. Iteration
+     * order cannot influence the result, so the digest answers only the question that matters - whether the
+     * membership is exactly the legacy membership.</p>
+     *
+     * @param tokens the tokens to digest, in any order
+     * @return the digest of their canonical form, in lower-case hexadecimal
+     */
+    private static String canonicalDigest(final Collection<String> tokens) {
+        final StringBuilder canonical = new StringBuilder();
+        for (final String token : new TreeSet<>(tokens)) {
+            canonical.append(token).append('\n');
+        }
+        return sha256Hex(canonical.toString().getBytes(StandardCharsets.US_ASCII));
+    }
+
+    /**
+     * Derives the area-code union from the two golden subsets, exactly as the copybook's own 490-value
+     * condition was proved to be the union of its two subset conditions.
+     *
+     * @return the 490 legacy area codes
+     * @throws IOException if either golden fixture cannot be read
+     */
+    private static Set<String> goldenAreaCodeUnion() throws IOException {
+        final Set<String> union = new LinkedHashSet<>(goldenTokens(GOLDEN_GENERAL_PURPOSE_PATH));
+        union.addAll(goldenTokens(GOLDEN_EASY_RECOGNITION_PATH));
+        return union;
     }
 
     @Nested
@@ -1021,132 +1188,310 @@ class ValidationLookupServiceTest {
     }
 
     @Nested
-    @DisplayName("Each resource judged against an independent parse of itself, so membership is exhaustive "
-            + "rather than sampled")
-    class ResourceOracle {
+    @DisplayName("The golden fixtures extracted from the legacy condition lists are intact, so they can be "
+            + "trusted as the expectation")
+    class GoldenFixtureIntegrity {
 
         @Test
-        @DisplayName("the area-code resource declares exactly the two subset arrays and no third array for "
-                + "the derived union")
-        void theAreaCodeResourceDeclaresExactlyTwoArrays() throws IOException {
+        @DisplayName("the general-purpose fixture carries its pinned digest, so its 410 values are the ones "
+                + "extracted from the legacy condition list")
+        void theGeneralPurposeFixtureCarriesItsPinnedDigest() throws IOException {
+            assertPinnedDigest(GOLDEN_GENERAL_PURPOSE_PATH, GOLDEN_GENERAL_PURPOSE_DIGEST);
+        }
+
+        @Test
+        @DisplayName("the easily-recognisable fixture carries its pinned digest")
+        void theEasilyRecognisableFixtureCarriesItsPinnedDigest() throws IOException {
+            assertPinnedDigest(GOLDEN_EASY_RECOGNITION_PATH, GOLDEN_EASY_RECOGNITION_DIGEST);
+        }
+
+        @Test
+        @DisplayName("the state-code fixture carries its pinned digest")
+        void theStateCodeFixtureCarriesItsPinnedDigest() throws IOException {
+            assertPinnedDigest(GOLDEN_US_STATE_PATH, GOLDEN_US_STATE_DIGEST);
+        }
+
+        @Test
+        @DisplayName("the state-plus-ZIP fixture carries its pinned digest")
+        void theStateZipFixtureCarriesItsPinnedDigest() throws IOException {
+            assertPinnedDigest(GOLDEN_STATE_ZIP_PATH, GOLDEN_STATE_ZIP_DIGEST);
+        }
+
+        @Test
+        @DisplayName("the general-purpose fixture holds 410 tokens, ascending, distinct, three bytes wide "
+                + "and none blank")
+        void theGeneralPurposeFixtureIsWellFormed() throws IOException {
+            assertWellFormedGolden(GOLDEN_GENERAL_PURPOSE_PATH,
+                    EXPECTED_GENERAL_PURPOSE_AREA_CODE_COUNT, EXPECTED_AREA_CODE_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the easily-recognisable fixture holds 80 tokens, ascending, distinct, three bytes wide "
+                + "and none blank")
+        void theEasilyRecognisableFixtureIsWellFormed() throws IOException {
+            assertWellFormedGolden(GOLDEN_EASY_RECOGNITION_PATH,
+                    EXPECTED_EASY_RECOGNITION_AREA_CODE_COUNT, EXPECTED_AREA_CODE_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the state-code fixture holds 56 tokens, ascending, distinct, two bytes wide and none "
+                + "blank")
+        void theStateCodeFixtureIsWellFormed() throws IOException {
+            assertWellFormedGolden(GOLDEN_US_STATE_PATH, EXPECTED_US_STATE_CODE_COUNT,
+                    EXPECTED_US_STATE_CODE_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the state-plus-ZIP fixture holds 240 tokens, ascending, distinct, four bytes wide and "
+                + "none blank")
+        void theStateZipFixtureIsWellFormed() throws IOException {
+            assertWellFormedGolden(GOLDEN_STATE_ZIP_PATH, EXPECTED_US_STATE_ZIP_COMBINATION_COUNT,
+                    EXPECTED_STATE_AND_FIRST_ZIP2_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the two golden area-code subsets are disjoint and union to 490, which is the partition "
+                + "the legacy copybook declares")
+        void theTwoGoldenSubsetsPartitionTheFourHundredAndNinety() throws IOException {
+            final List<String> generalPurpose = goldenTokens(GOLDEN_GENERAL_PURPOSE_PATH);
+            final List<String> easilyRecognisable = goldenTokens(GOLDEN_EASY_RECOGNITION_PATH);
+
+            assertThat(Collections.disjoint(generalPurpose, easilyRecognisable))
+                    .as("%s and %s must share no value", CONDITION_GENERAL_PURPOSE,
+                            CONDITION_EASY_RECOGNITION)
+                    .isTrue();
+            assertThat(goldenAreaCodeUnion())
+                    .as("the derived %s table", CONDITION_PHONE_AREA_CODE)
+                    .hasSize(EXPECTED_PHONE_AREA_CODE_COUNT);
+            assertThat(canonicalDigest(goldenAreaCodeUnion()))
+                    .as("pinned digest of the derived %s table", CONDITION_PHONE_AREA_CODE)
+                    .isEqualTo(GOLDEN_PHONE_AREA_CODE_UNION_DIGEST);
+        }
+
+        /**
+         * Asserts that a golden fixture's bytes still digest to the value pinned when the fixture was
+         * extracted, and that those bytes are in the canonical form the digest assumes.
+         *
+         * @param classpathPath  the fixture to check
+         * @param expectedDigest the digest literal declared in this class
+         * @throws IOException if the fixture cannot be read
+         */
+        private void assertPinnedDigest(final String classpathPath, final String expectedDigest)
+                throws IOException {
+            assertThat(sha256Hex(goldenBytes(classpathPath)))
+                    .as("SHA-256 of %s; a mismatch means the fixture was edited and no longer records the "
+                            + "legacy values", classpathPath)
+                    .isEqualTo(expectedDigest);
+            assertThat(canonicalDigest(goldenTokens(classpathPath)))
+                    .as("%s must already be in canonical form, so digesting its tokens reproduces the "
+                            + "digest of its bytes", classpathPath)
+                    .isEqualTo(expectedDigest);
+        }
+
+        /**
+         * Asserts the five properties every golden fixture has to satisfy: the entry count the copybook
+         * fixes, ascending order, freedom from duplicates, the declared encoded byte width on every entry,
+         * and no blank entry anywhere.
+         *
+         * @param classpathPath the fixture to check
+         * @param expectedCount the count this class declares as a literal
+         * @param expectedWidth the encoded byte width this class declares as a literal
+         * @throws IOException if the fixture cannot be read
+         */
+        private void assertWellFormedGolden(final String classpathPath, final int expectedCount,
+                final int expectedWidth) throws IOException {
+            final List<String> tokens = goldenTokens(classpathPath);
+
+            assertThat(tokens)
+                    .as("token count in %s", classpathPath)
+                    .hasSize(expectedCount);
+            assertThat(Set.copyOf(tokens))
+                    .as("distinct token count in %s, which must equal the declared count because the legacy "
+                            + "condition list carries no duplicate", classpathPath)
+                    .hasSize(expectedCount);
+            assertThat(tokens)
+                    .as("%s must be stored in ascending order, which is what makes its digest canonical",
+                            classpathPath)
+                    .isSortedAccordingTo(Comparator.naturalOrder());
+            assertThat(tokens).allSatisfy(token -> {
+                assertThat(token).as("no token may be blank").isNotBlank();
+                assertThat(token).as("no token may carry surrounding space").isEqualTo(token.strip());
+                assertThat(encodedWidth(token))
+                        .as("encoded width of token '%s'", token)
+                        .isEqualTo(expectedWidth);
+            });
+        }
+    }
+
+    @Nested
+    @DisplayName("Every published table judged against the legacy golden values, exhaustively and element "
+            + "for element")
+    class LegacyAnchoredMembership {
+
+        @Test
+        @DisplayName("the published general-purpose table is exactly the 410 legacy general-purpose values")
+        void thePublishedGeneralPurposeTableIsExactlyTheLegacyValues() throws IOException {
+            assertPublishedTableMatchesGolden(SERVICE.generalPurposeAreaCodes(), GOLDEN_GENERAL_PURPOSE_PATH,
+                    GOLDEN_GENERAL_PURPOSE_DIGEST, CONDITION_GENERAL_PURPOSE);
+        }
+
+        @Test
+        @DisplayName("the published easily-recognisable table is exactly the 80 legacy easily-recognisable "
+                + "values")
+        void thePublishedEasilyRecognisableTableIsExactlyTheLegacyValues() throws IOException {
+            assertPublishedTableMatchesGolden(SERVICE.easilyRecognisableAreaCodes(),
+                    GOLDEN_EASY_RECOGNITION_PATH, GOLDEN_EASY_RECOGNITION_DIGEST,
+                    CONDITION_EASY_RECOGNITION);
+        }
+
+        @Test
+        @DisplayName("the published state-code table is exactly the 56 legacy state, district and territory "
+                + "values")
+        void thePublishedStateCodeTableIsExactlyTheLegacyValues() throws IOException {
+            assertPublishedTableMatchesGolden(SERVICE.usStateCodes(), GOLDEN_US_STATE_PATH,
+                    GOLDEN_US_STATE_DIGEST, CONDITION_US_STATE_CODE);
+        }
+
+        @Test
+        @DisplayName("the published state-plus-ZIP table is exactly the 240 legacy combination values")
+        void thePublishedStateZipTableIsExactlyTheLegacyValues() throws IOException {
+            assertPublishedTableMatchesGolden(SERVICE.usStateZipCodeCombinations(), GOLDEN_STATE_ZIP_PATH,
+                    GOLDEN_STATE_ZIP_DIGEST, CONDITION_US_STATE_ZIP_COMBO);
+        }
+
+        @Test
+        @DisplayName("the published full area-code table is exactly the 490 legacy values, derived from the "
+                + "two golden subsets rather than read from a third copy")
+        void thePublishedFullAreaCodeTableIsExactlyTheLegacyUnion() throws IOException {
+            final Set<String> golden = goldenAreaCodeUnion();
+
+            assertThat(SERVICE.phoneAreaCodes())
+                    .as("the published %s table against the legacy values", CONDITION_PHONE_AREA_CODE)
+                    .containsExactlyInAnyOrderElementsOf(golden);
+            assertThat(canonicalDigest(SERVICE.phoneAreaCodes()))
+                    .as("canonical digest of the published %s table", CONDITION_PHONE_AREA_CODE)
+                    .isEqualTo(GOLDEN_PHONE_AREA_CODE_UNION_DIGEST);
+        }
+
+        @Test
+        @DisplayName("the area-code resource still stores only the two subsets, so the 490 remains derived "
+                + "and cannot fall out of step with them")
+        void theAreaCodeResourceStoresOnlyTheTwoSubsets() throws IOException {
             assertThat(parseAreaCodeArrays())
                     .containsOnlyKeys(ORACLE_KEY_GENERAL_PURPOSE, ORACLE_KEY_EASY_RECOGNITION);
         }
 
         @Test
-        @DisplayName("the general-purpose array holds 410 entries with no duplicate, each three bytes wide "
-                + "and none blank")
-        void theGeneralPurposeArrayIsWellFormed() throws IOException {
-            assertWellFormedTable(parseAreaCodeSubset(ORACLE_KEY_GENERAL_PURPOSE),
-                    EXPECTED_GENERAL_PURPOSE_AREA_CODE_COUNT, EXPECTED_AREA_CODE_WIDTH);
+        @DisplayName("every legacy general-purpose value is accepted by the general-purpose predicate, "
+                + "accepted by the full-table predicate and refused by the easily-recognisable predicate")
+        void everyLegacyGeneralPurposeValueAnswersAllThreePredicatesCorrectly() throws IOException {
+            for (final String areaCode : goldenTokens(GOLDEN_GENERAL_PURPOSE_PATH)) {
+                assertThat(SERVICE.isValidGeneralPurposeAreaCode(areaCode))
+                        .as("%s declares '%s'", CONDITION_GENERAL_PURPOSE, areaCode)
+                        .isTrue();
+                assertThat(SERVICE.isValidPhoneAreaCode(areaCode))
+                        .as("%s therefore also declares '%s'", CONDITION_PHONE_AREA_CODE, areaCode)
+                        .isTrue();
+                assertThat(SERVICE.isValidEasilyRecognisableAreaCode(areaCode))
+                        .as("%s must not declare '%s', because the two subsets are disjoint",
+                                CONDITION_EASY_RECOGNITION, areaCode)
+                        .isFalse();
+            }
         }
 
         @Test
-        @DisplayName("the easily-recognisable array holds 80 entries with no duplicate, each three bytes "
-                + "wide and none blank")
-        void theEasilyRecognisableArrayIsWellFormed() throws IOException {
-            assertWellFormedTable(parseAreaCodeSubset(ORACLE_KEY_EASY_RECOGNITION),
-                    EXPECTED_EASY_RECOGNITION_AREA_CODE_COUNT, EXPECTED_AREA_CODE_WIDTH);
+        @DisplayName("every legacy easily-recognisable value is accepted by the easily-recognisable "
+                + "predicate, accepted by the full-table predicate and refused by the general-purpose "
+                + "predicate")
+        void everyLegacyEasilyRecognisableValueAnswersAllThreePredicatesCorrectly() throws IOException {
+            for (final String areaCode : goldenTokens(GOLDEN_EASY_RECOGNITION_PATH)) {
+                assertThat(SERVICE.isValidEasilyRecognisableAreaCode(areaCode))
+                        .as("%s declares '%s'", CONDITION_EASY_RECOGNITION, areaCode)
+                        .isTrue();
+                assertThat(SERVICE.isValidPhoneAreaCode(areaCode))
+                        .as("%s therefore also declares '%s'", CONDITION_PHONE_AREA_CODE, areaCode)
+                        .isTrue();
+                assertThat(SERVICE.isValidGeneralPurposeAreaCode(areaCode))
+                        .as("%s must not declare '%s', which is the distinction the legacy telephone edit "
+                                + "depends on", CONDITION_GENERAL_PURPOSE, areaCode)
+                        .isFalse();
+            }
         }
 
         @Test
-        @DisplayName("the state-code resource holds 56 entries with no duplicate, each two bytes wide and "
-                + "none blank")
-        void theStateCodeResourceIsWellFormed() throws IOException {
-            assertWellFormedTable(parseTokenArray(US_STATE_RESOURCE_PATH), EXPECTED_US_STATE_CODE_COUNT,
-                    EXPECTED_US_STATE_CODE_WIDTH);
+        @DisplayName("every legacy state code is accepted by the state-code predicate")
+        void everyLegacyStateCodeIsAccepted() throws IOException {
+            for (final String stateCode : goldenTokens(GOLDEN_US_STATE_PATH)) {
+                assertThat(SERVICE.isValidUsStateCode(stateCode))
+                        .as("%s declares '%s'", CONDITION_US_STATE_CODE, stateCode)
+                        .isTrue();
+            }
         }
 
         @Test
-        @DisplayName("the state-plus-ZIP resource holds 240 entries with no duplicate, each four bytes wide "
-                + "and none blank")
-        void theStateZipResourceIsWellFormed() throws IOException {
-            assertWellFormedTable(parseTokenArray(STATE_ZIP_RESOURCE_PATH),
-                    EXPECTED_US_STATE_ZIP_COMBINATION_COUNT, EXPECTED_STATE_AND_FIRST_ZIP2_WIDTH);
+        @DisplayName("every legacy state-plus-ZIP combination is accepted by the combination predicate")
+        void everyLegacyCombinationIsAccepted() throws IOException {
+            for (final String combination : goldenTokens(GOLDEN_STATE_ZIP_PATH)) {
+                assertThat(SERVICE.isValidUsStateZipCodeCombination(combination))
+                        .as("%s declares '%s'", CONDITION_US_STATE_ZIP_COMBO, combination)
+                        .isTrue();
+            }
         }
 
         @Test
-        @DisplayName("the two arrays in the resource are themselves disjoint, so the partition holds in the "
-                + "file and not only in the loaded sets")
-        void theTwoArraysInTheResourceAreDisjoint() throws IOException {
-            final List<String> generalPurpose = parseAreaCodeSubset(ORACLE_KEY_GENERAL_PURPOSE);
-            final List<String> easilyRecognisable = parseAreaCodeSubset(ORACLE_KEY_EASY_RECOGNITION);
+        @DisplayName("a value the legacy area-code lists never declare is refused by all three area-code "
+                + "predicates, so the published tables are no wider than the legacy ones")
+        void aValueOutsideTheLegacyAreaCodeListsIsRefused() throws IOException {
+            final Set<String> golden = goldenAreaCodeUnion();
+            final List<String> absent = new ArrayList<>();
+            for (int candidate = 200; candidate <= 999 && absent.size() < 3; candidate++) {
+                final String token = Integer.toString(candidate);
+                if (!golden.contains(token)) {
+                    absent.add(token);
+                }
+            }
 
-            assertThat(Collections.disjoint(generalPurpose, easilyRecognisable))
-                    .as("the two arrays in %s must share no value", NANPA_RESOURCE_PATH)
-                    .isTrue();
-
-            final Set<String> union = new LinkedHashSet<>(generalPurpose);
-            union.addAll(easilyRecognisable);
-            assertThat(union).hasSize(EXPECTED_PHONE_AREA_CODE_COUNT);
-        }
-
-        @Test
-        @DisplayName("the published general-purpose table agrees with the independently parsed array element "
-                + "for element")
-        void thePublishedGeneralPurposeTableAgreesWithTheResource() throws IOException {
-            assertThat(SERVICE.generalPurposeAreaCodes())
-                    .containsExactlyInAnyOrderElementsOf(parseAreaCodeSubset(ORACLE_KEY_GENERAL_PURPOSE));
-        }
-
-        @Test
-        @DisplayName("the published easily-recognisable table agrees with the independently parsed array "
-                + "element for element")
-        void thePublishedEasilyRecognisableTableAgreesWithTheResource() throws IOException {
-            assertThat(SERVICE.easilyRecognisableAreaCodes())
-                    .containsExactlyInAnyOrderElementsOf(parseAreaCodeSubset(ORACLE_KEY_EASY_RECOGNITION));
-        }
-
-        @Test
-        @DisplayName("the published full area-code table agrees with the union of the two independently "
-                + "parsed arrays")
-        void thePublishedFullTableAgreesWithTheUnionOfTheResourceArrays() throws IOException {
-            final Set<String> union = new LinkedHashSet<>(parseAreaCodeSubset(ORACLE_KEY_GENERAL_PURPOSE));
-            union.addAll(parseAreaCodeSubset(ORACLE_KEY_EASY_RECOGNITION));
-
-            assertThat(SERVICE.phoneAreaCodes()).isEqualTo(union);
-        }
-
-        @Test
-        @DisplayName("the published state-code table agrees with the independently parsed resource element "
-                + "for element")
-        void thePublishedStateCodeTableAgreesWithTheResource() throws IOException {
-            assertThat(SERVICE.usStateCodes())
-                    .containsExactlyInAnyOrderElementsOf(parseTokenArray(US_STATE_RESOURCE_PATH));
-        }
-
-        @Test
-        @DisplayName("the published state-plus-ZIP table agrees with the independently parsed resource "
-                + "element for element")
-        void thePublishedStateZipTableAgreesWithTheResource() throws IOException {
-            assertThat(SERVICE.usStateZipCodeCombinations())
-                    .containsExactlyInAnyOrderElementsOf(parseTokenArray(STATE_ZIP_RESOURCE_PATH));
+            assertThat(absent)
+                    .as("the legacy union covers 490 of the 800 three-digit tokens, so absent tokens exist")
+                    .hasSize(3);
+            assertThat(absent).allSatisfy(token -> {
+                assertThat(SERVICE.isValidPhoneAreaCode(token))
+                        .as("%s does not declare '%s'", CONDITION_PHONE_AREA_CODE, token)
+                        .isFalse();
+                assertThat(SERVICE.isValidGeneralPurposeAreaCode(token)).isFalse();
+                assertThat(SERVICE.isValidEasilyRecognisableAreaCode(token)).isFalse();
+            });
         }
 
         /**
-         * Asserts the four properties every one of the three resources has to satisfy: the entry count the
-         * copybook fixes, freedom from duplicates, the declared encoded byte width on every entry, and no
-         * blank or null entry anywhere.
+         * Judges one published table against the golden values extracted from the legacy condition list that
+         * defines it.
          *
-         * @param table         the independently parsed entries, in declaration order
-         * @param expectedCount the count this class declares as a literal
-         * @param expectedWidth the encoded byte width this class declares as a literal
+         * <p>Three assertions rather than one, because they fail differently and all three are wanted. The
+         * digest pin on the fixture proves the expectation is still the legacy expectation. The
+         * element-for-element comparison names the specific values that drifted, in either direction. The
+         * canonical digest of the published table is the whole-table pin, and it is the assertion that
+         * cannot be satisfied by a table that is wrong in a way the element comparison happens not to
+         * reach.</p>
+         *
+         * @param published      the table the class under test publishes
+         * @param goldenPath     the golden fixture holding the legacy values
+         * @param goldenDigest   the digest literal pinning that fixture
+         * @param conditionName  the legacy condition name quoted in failure messages
+         * @throws IOException if the golden fixture cannot be read
          */
-        private void assertWellFormedTable(final List<String> table, final int expectedCount,
-                final int expectedWidth) {
-            assertThat(table)
-                    .as("declared entry count")
-                    .hasSize(expectedCount);
-            assertThat(Set.copyOf(table))
-                    .as("distinct entry count, which must equal the declared count because the copybook "
-                            + "list carries no duplicate")
-                    .hasSize(expectedCount);
-            assertThat(table).allSatisfy(entry -> {
-                assertThat(entry).as("no entry may be null or blank").isNotBlank();
-                assertThat(encodedWidth(entry))
-                        .as("encoded width of entry '%s'", entry)
-                        .isEqualTo(expectedWidth);
-            });
+        private void assertPublishedTableMatchesGolden(final Set<String> published, final String goldenPath,
+                final String goldenDigest, final String conditionName) throws IOException {
+            assertThat(sha256Hex(goldenBytes(goldenPath)))
+                    .as("the golden fixture for %s must be intact before it can judge anything",
+                            conditionName)
+                    .isEqualTo(goldenDigest);
+            assertThat(published)
+                    .as("the published %s table against the legacy values", conditionName)
+                    .containsExactlyInAnyOrderElementsOf(goldenTokens(goldenPath));
+            assertThat(canonicalDigest(published))
+                    .as("canonical digest of the published %s table", conditionName)
+                    .isEqualTo(goldenDigest);
         }
     }
 
@@ -1481,8 +1826,10 @@ class ValidationLookupServiceTest {
         /**
          * Returns a mutable copy of the real general-purpose array, ready to be doctored.
          *
-         * <p>The copy comes from an independent parse of the resource rather than from the class under
-         * test, so a doctored case never depends on the very loading path it is trying to break.</p>
+         * <p>The copy is read straight from the resource rather than from the class under test, so a
+         * doctored case never depends on the very loading path it is trying to break. It is an input to a
+         * rejection case, never an expected value; the expectations in this class come from literals and
+         * from the legacy-derived golden fixtures.</p>
          *
          * @return a mutable copy of the 410 general-purpose codes in declaration order
          * @throws IOException if the resource cannot be read

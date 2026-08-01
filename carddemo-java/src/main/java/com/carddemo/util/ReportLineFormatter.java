@@ -27,10 +27,10 @@ import java.util.Objects;
  * distinct fifteen-character numeric-edited amount masks that the legacy report uses.
  *
  * <h2>The record</h2>
- * <p>The report record is a single fixed-length alphanumeric item of 133 bytes,
- * {@code 01 FD-REPTFILE-REC PIC X(133).} [app/cbl/CBTRN03C.cbl:L85], and the output dataset
- * that receives it is declared {@code LRECL=133 RECFM=FB} [app/proc/TRANREPT.prc]. Every
- * record written to the report is therefore exactly 133 bytes.
+ * <p>The report record is a single fixed-length alphanumeric item named
+ * {@code FD-REPTFILE-REC}, 133 bytes wide, declared at [app/cbl/CBTRN03C.cbl:L85]; the output
+ * dataset that receives it is declared with a record length of 133 and fixed-blocked records
+ * [app/proc/TRANREPT.prc]. Every record written to the report is therefore exactly 133 bytes.
  *
  * <p>Layout authority is split across two members and both were read verbatim. The seven
  * report groups are declared in the report-formatting copybook [app/cpy/CVTRA07Y.cpy], which
@@ -38,16 +38,15 @@ import java.util.Objects;
  * the page size and the date-parameter structure are declared in the driver.
  *
  * <p><strong>Six of the seven groups are narrower than 133 bytes</strong> and are therefore
- * left-justified and space-padded on the right to 133, exactly as a COBOL move of a short
- * group into a {@code PIC X(133)} record does. Only the rule line is natively 133 bytes and
- * therefore the only group that needs no padding.
+ * left-justified and space-padded on the right to 133, exactly as a COBOL move of a short group into
+ * a {@code PIC X(133)} record does. Only the rule line is natively 133 bytes and therefore the only
+ * group needing no padding. The 133-byte image carries <strong>no line terminator</strong>: record
+ * separation is the writer's concern in the batch layer (decision D-30), so no carriage return, line
+ * feed or platform line separator is ever embedded here, and every text field is additionally
+ * rejected outright if it contains a control character, so a terminator cannot enter through caller
+ * data either.
  *
- * <p><strong>The 133-byte image carries no line terminator.</strong> Record separation is the
- * writer's concern in the batch layer. No carriage return, no line feed and no platform line
- * separator is ever embedded by this class; every text field is additionally rejected outright
- * if it contains a control character, so a terminator cannot enter through caller data either.
- *
- * <h2>Group 1 - report name header. Native width 115, padded with 18 spaces</h2>
+ * <p><strong>Group 1 - report name header. Native width 115, padded with 18 spaces.</strong>
  * <pre>
  * offset  width  content
  * ------  -----  ---------------------------------------------------------------
@@ -61,7 +60,7 @@ import java.util.Objects;
  * 38 + 41 + 12 + 10 + 4 + 10 = 115, then 115 + 18 = 133
  * </pre>
  *
- * <h2>Group 2 - transaction detail line. Native width 114, padded with 19 spaces</h2>
+ * <p><strong>Group 2 - transaction detail line. Native width 114, padded with 19 spaces.</strong>
  * <pre>
  * offset  width  content
  * ------  -----  ---------------------------------------------------------------
@@ -85,29 +84,27 @@ import java.util.Objects;
  * 16+1+11+1+2+1+15+1+4+1+29+1+10+4+15+2 = 114, then 114 + 19 = 133
  * </pre>
  *
- * <p><strong>The two hyphen separators at offsets 31 and 52 always survive.</strong> The
- * driver's detail-writing paragraph initialises the group before moving field values into it
- * [app/cbl/CBTRN03C.cbl:L361-L362], and an {@code INITIALIZE} does not touch {@code FILLER}
- * items. Both hyphens are declared as {@code FILLER} carrying a literal value
- * [app/cpy/CVTRA07Y.cpy:L21] and [app/cpy/CVTRA07Y.cpy:L25], so they persist across every
- * re-use of the group. They are emitted unconditionally by this class - they are fixed layout
- * bytes, not decoration.
+ * <p><strong>The two hyphen separators at offsets 31 and 52 always survive.</strong> The driver's
+ * detail-writing paragraph initialises the group before moving field values into it
+ * [app/cbl/CBTRN03C.cbl:L361-L362], and an {@code INITIALIZE} does not touch {@code FILLER} items.
+ * Both hyphens are declared as {@code FILLER} carrying a literal value [app/cpy/CVTRA07Y.cpy:L21] and
+ * [app/cpy/CVTRA07Y.cpy:L25], so they persist across every re-use of the group and are emitted
+ * unconditionally here: they are fixed layout bytes, not decoration.
  *
  * <p><strong>The category code is {@code PIC 9(04)}, not {@code X(04)}</strong>
- * [app/cpy/CVTRA07Y.cpy:L24]. It is the only numeric-display field in the seven groups and
- * therefore the only place where left zero-fill applies: category 1 renders as 0001, never as
- * three spaces followed by 1 and never as 1 followed by three spaces.
+ * [app/cpy/CVTRA07Y.cpy:L24]. It is the only numeric-display field in the seven groups and therefore
+ * the only place left zero-fill applies: category 1 renders as 0001, never as three spaces followed
+ * by 1 and never as 1 followed by three spaces.
  *
- * <p><strong>Two truncations, at two different widths, in one line.</strong> The type
- * description arrives from a {@code PIC X(50)} reference field
- * [app/cpy/CVTRA03Y.cpy] and is placed into {@code X(15)}; the category description arrives
- * from a {@code PIC X(50)} reference field [app/cpy/CVTRA04Y.cpy] and is placed into
- * {@code X(29)}. Both are silent right-hand truncations exactly as a COBOL move performs them:
- * no abbreviation, no ellipsis, no word wrap. The seeded category reference data contains a
- * description of exactly 29 characters, 'Sales draft credit adjustment', which sits precisely
- * on the boundary, so an off-by-one in the 29-byte field is immediately visible.
+ * <p><strong>Two truncations, at two different widths, in one line.</strong> The type description
+ * arrives from a {@code PIC X(50)} reference field [app/cpy/CVTRA03Y.cpy] into {@code X(15)}; the
+ * category description arrives from a {@code PIC X(50)} reference field [app/cpy/CVTRA04Y.cpy] into
+ * {@code X(29)}. Both are silent right-hand truncations exactly as a COBOL move performs them: no
+ * abbreviation, no ellipsis, no word wrap. The seeded category reference data contains a description
+ * of exactly 29 characters, 'Sales draft credit adjustment', which sits precisely on the boundary, so
+ * an off-by-one in the 29-byte field is immediately visible.
  *
- * <h2>Group 3 - column header line. Native width 114, padded with 19 spaces</h2>
+ * <p><strong>Group 3 - column header line. Native width 114, padded with 19 spaces.</strong>
  * <pre>
  * offset  width  content
  * ------  -----  ---------------------------------------------------------------
@@ -123,25 +120,22 @@ import java.util.Objects;
  * 17 + 12 + 19 + 35 + 14 + 1 + 16 = 114, then 114 + 19 = 133
  * </pre>
  *
- * <p><strong>The bare {@code PIC X} at offset 97 is one byte</strong>
- * [app/cpy/CVTRA07Y.cpy:L44], not the default width of some wider field. Widening it would
- * shift the whole Amount column by the error and break alignment with the detail line.
+ * <p><strong>The bare {@code PIC X} at offset 97 is one byte</strong> [app/cpy/CVTRA07Y.cpy:L44], not
+ * the default width of some wider field; widening it would shift the whole Amount column by the error
+ * and break alignment with the detail line. The eight leading spaces inside the Amount header literal
+ * are equally significant: they right-align the word Amount against the detail amount field, so the
+ * header's Amount occupies offsets 106 through 111 and the detail amount field ends at offset 111.
+ * That shared right edge is the visual contract of the report.
  *
- * <p><strong>The eight leading spaces inside the Amount header literal are significant.</strong>
- * They are what right-aligns the word Amount against the detail amount field: the header's
- * Amount occupies offsets 106 through 111 and the detail amount field ends at offset 111. That
- * shared right edge is the visual contract of the report.
+ * <p><strong>Group 4 - the rule line. Native width 133, padded with 0 spaces.</strong> A single
+ * elementary item of 133 hyphens [app/cpy/CVTRA07Y.cpy:L48], the only group already 133 bytes wide.
+ * It must not be confused with the statement rule lines: the text statement carries three rule lines
+ * of 80 hyphens each, held in the statement text templates, while the report carries one of 133
+ * hyphens. Four rule lines exist across the two output formats at two different widths and they are
+ * not interchangeable.
  *
- * <h2>Group 4 - the rule line. Native width 133, padded with 0 spaces</h2>
- * <p>A single elementary item of 133 hyphens [app/cpy/CVTRA07Y.cpy:L48]. This is the only
- * group that is already 133 bytes wide.
- *
- * <p>This must not be confused with the statement rule lines. The text statement carries
- * three rule lines of 80 hyphens each, held in the statement text templates. The report
- * carries one rule line of 133 hyphens. Four rule lines exist across the two output formats
- * at two different widths and they are not interchangeable.
- *
- * <h2>Groups 5, 6 and 7 - the three total lines. Native width 112 each, padded with 21 spaces</h2>
+ * <p><strong>Groups 5, 6 and 7 - the three total lines. Native width 112 each, padded with 21
+ * spaces.</strong>
  * <pre>
  * group           source                     label field          dot fill  amount field
  * --------------  -------------------------  -------------------  --------  ----------------------
@@ -152,24 +146,20 @@ import java.util.Objects;
  * 11 + 86 + 15 = 112,  13 + 84 + 15 = 112,  11 + 86 + 15 = 112, each then + 21 = 133
  * </pre>
  *
- * <p><strong>The dot-fill widths differ - 86, 84, 86 - and the difference is deliberate, not
- * arbitrary.</strong> The three label fields are 11, 13 and 11 bytes wide, and the dot fill
- * compensates so that all three amount fields begin at offset 97: 11 + 86 = 97,
- * 13 + 84 = 97 and 11 + 86 = 97. Offset 97 is the same offset as the detail line's amount
- * field, and the same right edge at offset 111 as the column header's Amount. That column
- * alignment across four different groups is the report's contract. Each dot-fill width is
- * therefore hardcoded from the copybook as its own named constant; none is computed from
- * another and none is shared.
+ * <p><strong>The dot-fill widths differ - 86, 84, 86 - and the difference is deliberate.</strong> The
+ * three label fields are 11, 13 and 11 bytes wide and the dot fill compensates so that all three
+ * amount fields begin at offset 97: 11 + 86 = 97, 13 + 84 = 97 and 11 + 86 = 97. Offset 97 is the
+ * detail line's amount offset, and offset 111 is the shared right edge with the column header's
+ * Amount. That column alignment across four different groups is the report's contract, so each
+ * dot-fill width is hardcoded from the copybook as its own named constant; none is computed from
+ * another and none is shared. The fill character is the ASCII full stop, not a hyphen, an underscore
+ * or a middle dot.
  *
- * <p>The fill character is the ASCII full stop, not a hyphen, not an underscore and not a
- * middle dot.
- *
- * <h2>The two fifteen-character masks - not interchangeable</h2>
- * <p>Both masks are exactly 15 characters wide. Both place the sign in a fixed leftmost
- * position, because a single plus or minus in a COBOL picture is a <em>fixed</em> insertion
- * character and not a floating one. Both suppress leading zeros, and the comma insertions
- * inside the suppressed region are suppressed along with the digits.
- *
+ * <p><strong>The two fifteen-character masks - not interchangeable.</strong> Both are exactly 15
+ * characters wide and both place the sign in a fixed leftmost position, because a single plus or minus
+ * in a COBOL picture is a <em>fixed</em> insertion character and not a floating one. Both suppress
+ * leading zeros, and the comma insertions inside the suppressed region are suppressed along with the
+ * digits.
  * <pre>
  * mask                  used by                                     sign behaviour
  * --------------------  ------------------------------------------  --------------------------
@@ -183,92 +173,75 @@ import java.util.Objects;
  *                       [app/cpy/CVTRA07Y.cpy:L66]                  ALWAYS SIGNED.
  * </pre>
  *
- * <p>Composition of each mask: 1 sign position, then nine zero-suppression digit positions
- * carrying two embedded commas for 11 positions, then the decimal point, then two more
- * zero-suppression digit positions. 1 + 11 + 1 + 2 = 15.
- *
+ * <p>Composition of each mask: 1 sign position, then nine zero-suppression digit positions carrying
+ * two embedded commas for 11 positions, then the decimal point, then two more zero-suppression digit
+ * positions. 1 + 11 + 1 + 2 = 15.
  * <pre>
  * position  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14
  * content   S  d1 d2 d3  ,  d4 d5 d6  ,  d7 d8 d9  .  f1 f2
  * </pre>
  *
- * <p><strong>Worked examples.</strong> A positive detail amount of 500.47 renders as a leading
- * space for the sign, then eight suppressed positions, then 500, then the decimal point, then
- * 47 - that is nine spaces followed by 500.47, fifteen characters in total. A negative detail
- * amount of 603.22 renders as a minus in position 1, then <em>eight</em> spaces, then 603.22.
- * The minus sign sits at the far left, separated from the digits by the suppressed positions;
- * <strong>it does not float up against the first digit</strong>. An implementation producing
- * seven spaces followed by a minus and then 603.22 is wrong. The same holds for the totals
- * mask with a plus in place of the space.
+ * <p><strong>Worked examples.</strong> A positive detail amount of 500.47 renders as nine spaces then
+ * 500.47, fifteen characters in all. A negative 603.22 renders as a minus in position 1, then
+ * <em>eight</em> spaces, then 603.22: the sign sits at the far left, separated from the digits by the
+ * suppressed positions, and <strong>does not float up against the first digit</strong>, so seven spaces
+ * followed by a minus and 603.22 is wrong. The totals mask behaves identically with a plus for the
+ * space.
  *
- * <p><strong>A value of exactly zero blanks the entire field.</strong> Every digit position in
- * both masks is a zero-suppression symbol, including the two decimal positions. Under the COBOL
- * zero-suppression rule, when every numeric position of an item is a suppression symbol and the
- * value is zero, the entire data item <em>including its editing characters</em> is set to
- * spaces. A value of exactly zero therefore renders as fifteen spaces in both masks: no plus,
- * no zero digit and no decimal point. This is counterintuitive and it is the required
- * behaviour.
- *
- * <p>For a value that is <em>not</em> zero, suppression affects only the leading zeros to the
- * left of the decimal point, so the two decimal digits always print. A comma prints only when
- * a digit to its left has printed; otherwise it too becomes a space. A value with a zero
- * integer part such as 0.47 therefore renders as twelve spaces followed by the decimal point
- * and 47.
+ * <p><strong>A value of exactly zero blanks the entire field.</strong> Every digit position in both
+ * masks is a zero-suppression symbol, including the two decimal positions, and under the COBOL
+ * zero-suppression rule an item whose every numeric position is a suppression symbol is set to spaces
+ * <em>including its editing characters</em> when the value is zero - fifteen spaces, no sign, no zero
+ * digit, no decimal point. Counterintuitive, and required. For a value that is <em>not</em> zero,
+ * suppression affects only the leading zeros left of the decimal point, so the two decimal digits
+ * always print and a comma prints only when a digit to its left has printed; 0.47 therefore renders as
+ * twelve spaces followed by the decimal point and 47.
  *
  * <p><strong>These are not the statement masks.</strong> The statement text templates hold two
- * <em>thirteen</em>-character <em>trailing-minus</em> masks, one zero-suppressed and one not.
- * This class holds two <em>fifteen</em>-character <em>leading-sign, comma-grouped</em> masks.
- * Four distinct numeric-edited masks exist across the two output formats. None is reusable
- * across formats and they must never be factored into a shared helper: the differences in
- * width, sign position, sign presence and grouping mean any shared abstraction would silently
- * corrupt one of the four. The two masks in this class are consequently rendered by two fully
- * independent methods with no shared mask helper, no sign parameter, no boolean flag and no
- * enum switch between them.
+ * <em>thirteen</em>-character <em>trailing-minus</em> masks, one zero-suppressed and one not; this
+ * class holds two <em>fifteen</em>-character <em>leading-sign, comma-grouped</em> masks. Four distinct
+ * masks therefore exist across the two output formats and none is reusable: the differences in width,
+ * sign position, sign presence and grouping mean any shared abstraction would silently corrupt one of
+ * the four. The two masks here are rendered by two fully independent methods with no shared mask
+ * helper, no sign parameter, no boolean flag and no enum switch between them.
  *
- * <h2>Numeric representation, and why the formatting library is not used</h2>
- * <p>{@code BigDecimal.toString()} is never called, and neither is anything in
- * {@code java.text} - no number format, no decimal format, no message format - nor
- * {@code String.format} with a locale-sensitive conversion. Each mask is assembled digit by
- * digit from an explicitly scaled {@code BigDecimal} so that no locale can substitute a decimal
- * comma for the decimal point, a non-breaking space or full stop for the group separator, or a
- * typographic minus glyph for the ASCII hyphen-minus. {@code BigDecimal.toString()} is further
- * unsuitable because it may emit scientific notation. Digits are obtained from the unscaled
- * value's absolute magnitude, whose radix-ten string form is specified to contain only ASCII
- * digits; every character of it is nevertheless validated before use.
+ * <p><strong>Numeric representation, and why the formatting library is not used.</strong>
+ * {@code BigDecimal.toString()} is never called, and neither is anything in {@code java.text} nor
+ * {@code String.format} with a locale-sensitive conversion (decision D-27). Each mask is assembled
+ * digit by digit from an explicitly scaled {@code BigDecimal} so that no locale can substitute a
+ * decimal comma for the decimal point, a non-breaking space for the group separator or a typographic
+ * minus glyph for the ASCII hyphen-minus; {@code BigDecimal.toString()} is further unsuitable because
+ * it may emit scientific notation. Digits come from the unscaled value's absolute magnitude, whose
+ * radix-ten string form contains only ASCII digits, and every character is nevertheless validated.
  *
  * <p><strong>Scale and magnitude contract.</strong> The detail amount arrives from a
- * {@code PIC S9(09)V99} transaction amount [app/cpy/CVTRA05Y.cpy] and the three totals
- * accumulate in {@code PIC S9(09)V99} work fields [app/cbl/CBTRN03C.cbl:L134-L136] - nine
- * integer digits and two decimals, exactly matching the mask. Values arrive already scaled to
- * two decimal places and already rounded down by the zoned-decimal codec and the services.
- * Consequently:
- * <ul>
- *   <li>a value whose scale is not exactly 2 is <strong>rejected</strong>, never re-scaled
- *       here, because re-scaling in a formatter would put a second rounding policy into the
- *       system - precisely the failure that the single-codec design exists to prevent. Note in
- *       particular that a zero must be supplied with a scale of 2; a scale-zero zero is
- *       rejected;</li>
- *   <li>a value whose integer part exceeds nine digits is <strong>rejected</strong> rather than
- *       left-truncated. COBOL would have silently dropped the high-order digits, and silently
- *       corrupting a money figure in a printed report is worse than a deterministic failure.</li>
- * </ul>
- * Both rejections are deliberate divergences from the legacy silent move.
+ * {@code PIC S9(09)V99} transaction amount [app/cpy/CVTRA05Y.cpy] and the three totals accumulate in
+ * {@code PIC S9(09)V99} work fields [app/cbl/CBTRN03C.cbl:L134-L136] - nine integer digits and two
+ * decimals, exactly matching the mask - so values arrive already scaled to two decimal places and
+ * already rounded down by the zoned-decimal codec and the services. Two rejections follow, and both
+ * are deliberate divergences from the legacy silent move recorded in the decision log rather than
+ * decided here. A value whose scale is not exactly 2 is rejected and never re-scaled, per decision
+ * D-05, because re-scaling in a formatter would put a second rounding policy into the system; note in
+ * particular that a zero must be supplied at scale 2, so a scale-zero zero is rejected. A value whose
+ * integer part exceeds nine digits is rejected rather than left-truncated, per decision D-06, because
+ * COBOL would silently drop the high-order digits and a silently corrupted money figure in a printed
+ * report is worse than a deterministic failure.
  *
- * <p>No arithmetic of any kind is performed on an amount by this class. The report driver
- * contains <strong>zero</strong> {@code COMPUTE} statements - verified by count over
- * [app/cbl/CBTRN03C.cbl] - so the report path introduces no arithmetic, and neither does this
- * formatter. There is no addition, no accumulation, no scale adjustment and no rounding mode.
- * No {@code double}, {@code float} or their wrappers appear anywhere in this class.
+ * <p>No arithmetic of any kind is performed on an amount by this class. The report driver contains
+ * <strong>zero</strong> {@code COMPUTE} statements - verified by count over [app/cbl/CBTRN03C.cbl] -
+ * so the report path introduces no arithmetic and neither does this formatter. There is no addition,
+ * no accumulation, no scale adjustment and no rounding mode, and no {@code double}, {@code float} or
+ * their wrappers appear anywhere in this class.
  *
- * <h2>The blank line and the 21-byte date-parameter record</h2>
- * <p>The blank line is 133 spaces [app/cbl/CBTRN03C.cbl:L133]. It is a real emitted record and
- * not padding, so it is exposed as a constant and takes its place in the header block.
+ * <p><strong>The blank line and the 21-byte date-parameter record.</strong> The blank line is 133
+ * spaces [app/cbl/CBTRN03C.cbl:L133]. It is a real emitted record and not padding, so it is exposed
+ * as a constant and takes its place in the header block.
  *
  * <p>The date-parameter input card is 133-unrelated: it is 80 bytes wide
  * [app/cbl/CBTRN03C.cbl:L88], but only its leading 21 bytes are structured
  * [app/cbl/CBTRN03C.cbl:L122-L125] - a 10-byte start date, a one-byte filler space, and a
- * 10-byte end date, so 10 + 1 + 10 = 21. The separator is one space, declared as a bare
- * {@code FILLER PIC X}: not two, not a tab and not a comma.
+ * 10-byte end date, so 10 + 1 + 10 = 21. The separator is one space, declared as an unnamed
+ * filler exactly one byte wide: not two, not a tab and not a comma.
  *
  * <p>Those 21 bytes are the leading 21 bytes of card 15 of the job-submission image built by
  * the JCL card-image builder - that card is a 10-byte start date, a single-byte space
@@ -284,124 +257,55 @@ import java.util.Objects;
  * moves the card into the structured record without validating the filler byte. Reading is
  * faithful; writing is canonical.
  *
- * <h2>Page breaks and the header block - supported here, owned elsewhere</h2>
- * <p>Accumulation, page counting and break decisions belong to the transaction report service.
- * This class is stateless and holds no line counter, no page number, no running page, account
- * or grand total, no first-pass flag and no card-number break tracker. It nevertheless exposes
- * everything the service needs, so that no 133-byte knowledge migrates out of the utility
- * layer:
- * <ul>
- *   <li>the page size is 20 [app/cbl/CBTRN03C.cbl:L131], exposed as a named constant. It is a
- *       factual layout constant read from the source, not a tuning figure;</li>
- *   <li>the break test is a modulo of the line counter against the page size
- *       [app/cbl/CBTRN03C.cbl:L282]. The counter and the test both live in the service; only
- *       the page size is published here;</li>
- *   <li>the header block is four records in one exact order - name header, blank line, column
- *       header, rule line - each incrementing the line counter by one
- *       [app/cbl/CBTRN03C.cbl:L324-L341]. It is exposed as an ordered, unmodifiable
- *       four-element list so the order cannot be got wrong at the call site.</li>
- * </ul>
+ * <p><strong>Page breaks and the header block - supported here, owned elsewhere.</strong> Accumulation,
+ * page counting and break decisions belong to the transaction report service; this class is stateless
+ * and holds no line counter, page number, running total, first-pass flag or card-number break tracker.
+ * It nevertheless exposes everything the service needs so that no 133-byte knowledge migrates out of
+ * the utility layer: the page size is 20 [app/cbl/CBTRN03C.cbl:L131], a factual layout figure and not a
+ * tuning parameter; the break test is a modulo of the line counter against it
+ * [app/cbl/CBTRN03C.cbl:L282], with counter and test both living in the service; and the header block
+ * is four records in one exact order - name header, blank line, column header, rule line - each
+ * incrementing the line counter by one [app/cbl/CBTRN03C.cbl:L324-L341], exposed as an ordered,
+ * unmodifiable four-element list so the order cannot be got wrong at the call site. The page size is
+ * declared as a packed-decimal work field, one of the estate's nine such sites, all transient
+ * working-storage and none a persisted layout, so no packed-decimal decoding is required anywhere in
+ * this module (decision D-01).
  *
- * <p>The page size is declared as a packed-decimal work field. It is one of the estate's nine
- * such sites, all of them transient working-storage work fields and none of them a persisted
- * layout, so <strong>no packed-decimal decoding is required anywhere in this module</strong>.
+ * <p><strong>Anomaly - duplicate paragraph-number prefixes in the report driver.</strong> The prefix
+ * 1110 appears twice, on the page-totals writer [app/cbl/CBTRN03C.cbl:L293] and the grand-totals
+ * writer [app/cbl/CBTRN03C.cbl:L318]; the prefix 1120 appears three times, on the account-totals
+ * writer [app/cbl/CBTRN03C.cbl:L306], the header writer [app/cbl/CBTRN03C.cbl:L324] and the detail
+ * writer [app/cbl/CBTRN03C.cbl:L361]. The Java methods here are distinctly named and the original
+ * paragraph names are carried as row 23 of the source anomaly register.
  *
- * <h2>Anomaly - duplicate paragraph-number prefixes in the report driver</h2>
- * <p>The driver reuses paragraph-number prefixes. The prefix 1110 appears twice, on the
- * page-totals writer [app/cbl/CBTRN03C.cbl:L293] and the grand-totals writer
- * [app/cbl/CBTRN03C.cbl:L318]; the prefix 1120 appears three times, on the account-totals
- * writer [app/cbl/CBTRN03C.cbl:L306], the header writer [app/cbl/CBTRN03C.cbl:L324] and the
- * detail writer [app/cbl/CBTRN03C.cbl:L361]. The Java methods here are distinctly named, and
- * the traceability rows cite the original paragraph names so the mapping stays findable.
+ * <p><strong>Failure contract.</strong> Every builder asserts its result at exactly 133 encoded bytes
+ * before returning; every mask renderer asserts 15; the date-parameter builder asserts 21. All widths
+ * are US-ASCII encoded bytes and never character counts. A {@code null} argument raises
+ * {@link NullPointerException} through {@link Objects#requireNonNull(Object, String)} with a message
+ * naming the field. A non-null caller-supplied value that cannot be rendered - a wrong scale, an
+ * integer part that is too large, a category code outside four unsigned digits, or text containing a
+ * character outside printable US-ASCII - raises {@link IllegalArgumentException}. An internal
+ * invariant breach, such as a constant that no longer measures its declared width or a field placed
+ * at an offset that does not fit its group, raises {@link IllegalStateException}.
  *
- * <h2>Failure contract</h2>
- * <p>Every builder asserts its result at exactly 133 encoded bytes before returning; every mask
- * renderer asserts its result at exactly 15 encoded bytes; the date-parameter builder asserts
- * 21. All widths are measured as US-ASCII encoded bytes and never as a character count.
- * <ul>
- *   <li>a {@code null} argument raises {@link NullPointerException} through
- *       {@link Objects#requireNonNull(Object, String)} with a message naming the field. This is
- *       the mechanism this class is required to use for null checks and is the JDK's canonical,
- *       deterministic null-argument signal;</li>
- *   <li>a non-null caller-supplied value that cannot be rendered - a wrong scale, an integer
- *       part that is too large, a category code outside four unsigned digits, or text
- *       containing a character outside printable US-ASCII - raises
- *       {@link IllegalArgumentException};</li>
- *   <li>an internal invariant breach - a constant that no longer measures its declared width,
- *       or a field placed at an offset that does not fit its group - raises
- *       {@link IllegalStateException}.</li>
- * </ul>
- * Nothing from the application's own exception package is imported. None of that package's
- * types models a fixed-width rendering violation - they model file status, record-not-found,
- * business-input validation, optimistic-lock conflict, job submission and abend - so the
- * platform's own exceptions are the honest and correctly-layered choice. Every message names
- * the field together with the expected and the actual width or scale, so a byte-parity failure
- * is diagnosable from the message alone.
+ * <p>Nothing from the application's own exception package is imported, per decision D-11: none of those
+ * types models a fixed-width rendering violation, since they model file status, record-not-found,
+ * business-input validation, optimistic-lock conflict, job submission and abend. Every message names
+ * the field together with the expected and actual width or scale, so a byte-parity failure is
+ * diagnosable from the message alone. Text fields are rejected rather than silently blanked when
+ * {@code null}, because a missing description in a printed report is a defect worth surfacing;
+ * characters outside printable US-ASCII are likewise rejected, which keeps one encoded byte per
+ * character and structurally prevents a control character or line terminator from entering the record.
  *
- * <p>Text fields are rejected rather than silently blanked when {@code null}: a missing
- * description in a printed report is a defect worth surfacing. Characters outside the printable
- * US-ASCII range are likewise rejected, which keeps one encoded byte per character and
- * structurally prevents a control character or a line terminator from entering the record.
- *
- * <h2>Decision-log entries raised by this class</h2>
- * <ol>
- *   <li>Two distinct fifteen-character masks, deliberately not unified. The detail amount
- *       renders a space for a non-negative value; all three totals render a plus. They differ
- *       in exactly one character position and a shared helper would silently corrupt one of
- *       them, so they are kept as two separate methods.</li>
- *   <li>Four distinct numeric-edited masks exist across the two output formats - two
- *       thirteen-character trailing-minus masks in the 80-byte statement stream and two
- *       fifteen-character leading-sign comma-grouped masks here. None is reusable across
- *       formats.</li>
- *   <li>The sign position is fixed, not floating. A single plus or minus in a COBOL picture is
- *       a fixed insertion character, so the sign sits in position 1 separated from the digits
- *       by the suppressed positions. Reproduced.</li>
- *   <li>A value of exactly zero blanks the entire fifteen-character field, editing characters
- *       included. Counterintuitive but faithful.</li>
- *   <li>A wrong scale is rejected rather than re-scaled, because a formatter that re-scales
- *       would introduce a second rounding policy. A deliberate divergence from the legacy
- *       silent move.</li>
- *   <li>An integer part exceeding nine digits is rejected rather than left-truncated. A
- *       deliberate divergence, for the same reason.</li>
- *   <li>The dot-fill widths 86, 84 and 86 are load-bearing, not cosmetic: they align all three
- *       total amounts and the detail amount at offset 97 and the column header's right edge at
- *       offset 111.</li>
- *   <li>The two hyphen separators at offsets 31 and 52 survive an initialise because it does
- *       not touch filler items, so they are emitted unconditionally.</li>
- *   <li>Two description truncations at two different widths in a single line - 15 and 29, both
- *       from 50-byte sources - reproduced silently as a move would; one seeded description is
- *       exactly 29 characters.</li>
- *   <li>The category code is {@code PIC 9(04)} and left zero-filled, unlike every other field
- *       in the layout.</li>
- *   <li>Anomaly: duplicate paragraph-number prefixes in the report driver, 1110 twice and 1120
- *       three times. The Java methods are distinctly named and the traceability rows cite the
- *       originals.</li>
- *   <li>The 21-byte date-parameter structure is shared with card 15 of the job-submission
- *       image; both classes must agree on those bytes, and both widths are named constants
- *       here.</li>
- *   <li>The report path introduces no arithmetic: the driver contains zero {@code COMPUTE}
- *       statements and this formatter performs none.</li>
- * </ol>
- *
- * <h2>Provenance</h2>
- * <p>Translated from the legacy CardDemo estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy tree is read-only
- * reference: no COBOL statement is transcribed here. The crossings that do appear are field
- * lengths, byte offsets, dataset attributes and the exact external-contract literals - the
- * report labels, the fill characters and the shapes of the numeric-edit masks.
- *
- * <p>This class is stateless, side-effect free and thread-safe. It performs no input or output,
- * reads no clock, no environment and no randomness, holds no mutable static state and exposes
- * no mutable array or collection.
+ * <p>This class is stateless, side-effect free and thread-safe. It performs no input or output, reads
+ * no clock, no environment and no randomness, holds no mutable static state and exposes no mutable
+ * array or collection.
  */
 public final class ReportLineFormatter {
 
-    // -----------------------------------------------------------------------------------------
     // Character constants. Several share an ASCII code point but carry distinct contractual
     // roles, and are therefore named separately so that a change to one cannot silently move
     // the other.
-    // -----------------------------------------------------------------------------------------
 
     /** ASCII space, the padding character for every alphanumeric field and every group pad. */
     private static final char SPACE = ' ';
@@ -436,10 +340,8 @@ public final class ReportLineFormatter {
     /** Highest character accepted in an alphanumeric field: ASCII tilde, 0x7E. */
     private static final char LAST_PRINTABLE_ASCII = '~';
 
-    // -----------------------------------------------------------------------------------------
     // Record and group widths. [app/cbl/CBTRN03C.cbl:L85], [app/proc/TRANREPT.prc],
     // [app/cpy/CVTRA07Y.cpy].
-    // -----------------------------------------------------------------------------------------
 
     /** Width in bytes of every record written to the report: {@code PIC X(133)}. */
     public static final int REPORT_RECORD_WIDTH = 133;
@@ -486,9 +388,7 @@ public final class ReportLineFormatter {
     /** Spaces appended to the grand-total line to reach the record width. */
     public static final int GRAND_TOTAL_LINE_PAD_WIDTH = 21;
 
-    // -----------------------------------------------------------------------------------------
     // Load-bearing offsets and field widths shared across groups.
-    // -----------------------------------------------------------------------------------------
 
     /** Width of both numeric-edited amount masks: {@code PIC -ZZZ,ZZZ,ZZZ.ZZ} is 15 bytes. */
     public static final int AMOUNT_MASK_WIDTH = 15;
@@ -547,10 +447,8 @@ public final class ReportLineFormatter {
     /** Width of the detail line's transaction source field. */
     public static final int SOURCE_WIDTH = 10;
 
-    // -----------------------------------------------------------------------------------------
     // Page break and date parameter contract. [app/cbl/CBTRN03C.cbl:L131],
     // [app/cbl/CBTRN03C.cbl:L88], [app/cbl/CBTRN03C.cbl:L122-L125].
-    // -----------------------------------------------------------------------------------------
 
     /**
      * Report page size, 20 detail-and-header lines [app/cbl/CBTRN03C.cbl:L131]. Published for
@@ -588,9 +486,7 @@ public final class ReportLineFormatter {
     /** Number of records in the header block: name header, blank line, column header, rule. */
     public static final int HEADER_BLOCK_RECORD_COUNT = 4;
 
-    // -----------------------------------------------------------------------------------------
     // Group 1 - report name header field widths and offsets [app/cpy/CVTRA07Y.cpy:L4-L13].
-    // -----------------------------------------------------------------------------------------
 
     private static final int NAME_HEADER_SHORT_NAME_OFFSET = 0;
     private static final int NAME_HEADER_SHORT_NAME_WIDTH = 38;
@@ -608,9 +504,7 @@ public final class ReportLineFormatter {
     private static final String NAME_HEADER_DATE_LABEL_TEXT = "Date Range: ";
     private static final String NAME_HEADER_TO_LITERAL_TEXT = " to ";
 
-    // -----------------------------------------------------------------------------------------
     // Group 2 - transaction detail field offsets [app/cpy/CVTRA07Y.cpy:L15-L31].
-    // -----------------------------------------------------------------------------------------
 
     private static final int DETAIL_TRANSACTION_ID_OFFSET = 0;
     private static final int DETAIL_FILLER_1_OFFSET = 16;
@@ -629,9 +523,7 @@ public final class ReportLineFormatter {
     private static final int DETAIL_FILLER_6_WIDTH = 2;
     private static final int SINGLE_BYTE_FILLER_WIDTH = 1;
 
-    // -----------------------------------------------------------------------------------------
     // Group 3 - column header field widths and offsets [app/cpy/CVTRA07Y.cpy:L33-L46].
-    // -----------------------------------------------------------------------------------------
 
     private static final int COLUMN_HEADER_TRANSACTION_ID_OFFSET = 0;
     private static final int COLUMN_HEADER_TRANSACTION_ID_WIDTH = 17;
@@ -661,10 +553,8 @@ public final class ReportLineFormatter {
      */
     private static final String COLUMN_HEADER_AMOUNT_TEXT = "        Amount";
 
-    // -----------------------------------------------------------------------------------------
     // Groups 5, 6 and 7 - total line label widths and offsets
     // [app/cpy/CVTRA07Y.cpy:L50-L66].
-    // -----------------------------------------------------------------------------------------
 
     private static final int TOTAL_LINE_LABEL_OFFSET = 0;
     private static final int PAGE_TOTAL_LABEL_WIDTH = 11;
@@ -678,10 +568,8 @@ public final class ReportLineFormatter {
     private static final String ACCOUNT_TOTAL_LABEL_TEXT = "Account Total";
     private static final String GRAND_TOTAL_LABEL_TEXT = "Grand Total";
 
-    // -----------------------------------------------------------------------------------------
     // Numeric-edit mask geometry. Both masks are PIC ?ZZZ,ZZZ,ZZZ.ZZ, differing only in the
     // sign character emitted for a non-negative value.
-    // -----------------------------------------------------------------------------------------
 
     /** The mask's sign position, a fixed insertion character that never floats. */
     private static final int MASK_SIGN_POSITION = 0;
@@ -725,10 +613,8 @@ public final class ReportLineFormatter {
     /** Largest value accepted in a {@code PIC 9(04)} category code field. */
     private static final int MAXIMUM_CATEGORY_CODE = 9999;
 
-    // -----------------------------------------------------------------------------------------
     // Emitted constants. Built through the validating fill helper so that a width regression
     // fails at class initialisation rather than at Gate 1.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * The blank report record: 133 spaces [app/cbl/CBTRN03C.cbl:L133]. This is a real emitted
@@ -747,9 +633,7 @@ public final class ReportLineFormatter {
         throw new AssertionError("ReportLineFormatter is a static utility and is not instantiable");
     }
 
-    // =========================================================================================
     // Group builders. One per report group, each returning exactly 133 encoded bytes.
-    // =========================================================================================
 
     /**
      * Builds the report name header, group 1 [app/cpy/CVTRA07Y.cpy:L4-L13]. Traces to the
@@ -1100,9 +984,7 @@ public final class ReportLineFormatter {
         return block;
     }
 
-    // =========================================================================================
     // Date parameter record. [app/cbl/CBTRN03C.cbl:L88], [app/cbl/CBTRN03C.cbl:L122-L125].
-    // =========================================================================================
 
     /**
      * Builds the structured date-parameter record: a 10-byte start date, a one-byte space
@@ -1180,7 +1062,6 @@ public final class ReportLineFormatter {
                 DATE_PARAMETER_END_DATE_OFFSET + DATE_WIDTH);
     }
 
-    // =========================================================================================
     // The two numeric-edited amount masks.
     //
     // These two methods are deliberately NOT factored together. They differ in exactly one
@@ -1190,7 +1071,6 @@ public final class ReportLineFormatter {
     // oversight: see decision-log entries 1 and 2 in the class documentation. Only genuinely
     // mask-agnostic primitives are shared, namely scale validation, magnitude extraction and
     // width assertion; none of them knows the sign character or the field geometry.
-    // =========================================================================================
 
     /**
      * Renders an amount with the <strong>detail</strong> mask, {@code PIC -ZZZ,ZZZ,ZZZ.ZZ}
@@ -1300,9 +1180,7 @@ public final class ReportLineFormatter {
         return rendered;
     }
 
-    // =========================================================================================
     // Private layout primitives. Every width is measured as US-ASCII encoded bytes.
-    // =========================================================================================
 
     /**
      * Assembles one of the three total lines: a label field, a dot fill, then the always-signed

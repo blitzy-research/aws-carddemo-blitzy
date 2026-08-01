@@ -17,42 +17,63 @@
 package com.carddemo.exception;
 
 /**
- * Signals that a record update could not be applied because the record changed after it was
- * read, because it could not be locked for update, or because the rewrite failed after the
- * lock had been taken.
+ * Signals that a record update could not be applied because the record changed after it was read,
+ * because it could not be locked for update, or because the rewrite failed after the lock had been
+ * taken.
  *
- * <p>This exception is the Java replacement for the legacy concurrency-safety mechanism of the
- * account-update transaction {@code CAUP}, implemented by {@code app/cbl/COACTUPC.cbl}. It is a
- * leaf type: it carries no framework annotation, performs no I/O, logs nothing, and depends on
- * nothing but {@code java.lang}. The layering contract of this module is that {@code util} and
- * {@code exception} depend on nothing above them, so this class deliberately declares zero
- * imports.</p>
+ * <p>The Java replacement for the concurrency-safety mechanism of the account-update transaction
+ * {@code CAUP}, implemented by {@code app/cbl/COACTUPC.cbl}. It is a leaf type: no framework
+ * annotation, no I/O, no logging, and no dependency but {@code java.lang}, so it declares zero
+ * imports in keeping with the rule that {@code util} and {@code exception} depend on nothing above
+ * them.
  *
- * <h2>What the legacy system did, and why the Java replacement is stronger</h2>
+ * <p><strong>The replacement is stronger than the legacy baseline, and that is intentional.</strong>
+ * Every application file in {@code app/csd/CARDDEMO.CSD} is defined with
+ * {@code READINTEG(UNCOMMITTED)}, {@code UPDATEMODEL(LOCKING)}, {@code JOURNAL(NO)} and
+ * {@code RECOVERY(NONE)}, so correctness rested entirely on the locking update model plus each
+ * program's own before-and-after image comparison; the data store offered no isolation guarantee
+ * and no rollback log. PostgreSQL READ COMMITTED combined with a JPA {@code @Version} column on the
+ * account and card entities is a strict isolation improvement over that, not a behavioural
+ * regression: the legacy design detected interference only in the fields it happened to compare,
+ * while the relational design detects any concurrent write to the row. Recorded as decision log
+ * entry D-15. The {@code @Version} annotation is applied on the entities in the {@code domain}
+ * package; it is named here in prose only, and this class applies no persistence annotation.
  *
- * <p>Every application file in {@code app/csd/CARDDEMO.CSD} is defined with uncommitted read
- * integrity, no recovery and no journaling. The account-data file definition at CSD L1-L12 and
- * the card alternate-index definition at CSD L13-L21 both carry, identically,
- * {@code READINTEG(UNCOMMITTED)}, {@code UPDATEMODEL(LOCKING)}, {@code JOURNAL(NO)},
- * {@code RECOVERY(NONE)}, {@code JNLSYNCWRITE(YES)}, {@code RECORDFORMAT(V)},
- * {@code OPENTIME(FIRSTREF)} and {@code DISPOSITION(SHARE)}. Correctness therefore rested
- * entirely on the locking update model plus each program's own before-and-after image
- * comparison; the data store itself offered no isolation guarantee and no rollback log.</p>
+ * <p><strong>The comparison this replaces.</strong> Paragraph {@code 9700-CHECK-CHANGE-IN-REC} of
+ * {@code app/cbl/COACTUPC.cbl} (L4109-L4192, exit label L4193) re-reads the record under lock and
+ * compares it against the snapshot taken when the screen was first presented. It is one long
+ * conjunction - every field must match - split into an account block whose mismatch exit is at
+ * L4143 and a customer block whose mismatch exit is at L4189; on either mismatch the program sets
+ * the "data was changed before update" state and jumps to the write-processing exit at L4105. The
+ * compared fields are the account active status, current balance, credit limit, cash credit limit,
+ * current-cycle credit, current-cycle debit and account group id - the group id compared
+ * case-insensitively (L4139-L4140) - plus the customer primary-card-holder indicator
+ * (L4183-L4185) and the FICO credit score (L4186). The comparison itself belongs to the
+ * account-update service, which is not delivered yet; this type only reports its outcome.
  *
- * <p><strong>The Java replacement - PostgreSQL READ COMMITTED isolation combined with the JPA
- * {@code @Version} column on the account and card entities - is a documented STRICT ISOLATION
- * IMPROVEMENT over that legacy baseline. It is not a behavioural regression.</strong> A reviewer
- * comparing the two must read the stronger isolation as an intentional, recorded upgrade: the
- * legacy design detected interference only for the specific fields it happened to compare, while
- * the relational design detects any concurrent write to the row. Nothing that succeeded on the
- * mainframe fails here for a new reason; conflicts that the legacy comparison would have missed
- * are now caught, which is strictly safer. This justification also belongs in
- * {@code docs/decision-log.md}; it is restated here so it travels with the code.</p>
+ * <p><strong>Three arms, deliberately not flattened.</strong> The legacy write path renders three
+ * different outcomes, dispatched by the {@code EVALUATE} at {@code app/cbl/COACTUPC.cbl}
+ * L2606-L2615, each with its own operator-facing text, and {@link ConflictKind} preserves that
+ * distinction: the before image no longer matches - the true optimistic-lock conflict, which the
+ * legacy program answers by re-displaying the details for review (L2611-L2612); the rewrite failed
+ * after the record had been locked (L2609-L2610); and the lock could not be acquired at all
+ * (L2607-L2608).
  *
- * <p>The {@code @Version} annotation itself is applied on the entities in the {@code domain}
- * package. It is referenced here in prose only - this class applies no persistence annotation.</p>
+ * <p><strong>Rollback belongs to the caller.</strong> {@code EXEC CICS SYNCPOINT ROLLBACK} occurs
+ * exactly once in the estate, at {@code app/cbl/COACTUPC.cbl} L4100, on the customer-rewrite
+ * failure arm. The account-rewrite arm at L4076-L4081 sets the same state but does <em>not</em> roll
+ * back, because the account write is the first of the two and there is as yet nothing to undo. That
+ * asymmetry is a fidelity detail for the account-update service to reproduce and is not modelled
+ * here. The Java equivalent of L4100 is a {@code @Transactional} rollback in the calling service,
+ * which raises this exception; this class neither declares {@code @Transactional} nor triggers a
+ * rollback, and holds no reference to any Spring or Jakarta Persistence type.
  *
- * <h2>The before-and-after image comparison this replaces</h2>
+ * <p><strong>Recoverable, never terminal.</strong> On a before-image mismatch the legacy program
+ * sets a "show details" state and re-displays the screen so the user can review the current values.
+ * It does not abend and does not call the abend routine, so the caller is expected to re-present the
+ * current state of the record rather than terminate. Accordingly this type extends
+ * {@link RuntimeException} directly, is deliberately unrelated to the module's terminal abend type,
+ * and publishes no accessor that would suggest a terminal outcome.
  *
  * <p>Paragraph {@code 9700-CHECK-CHANGE-IN-REC} of {@code app/cbl/COACTUPC.cbl} (L4109-L4192,
  * exit label at L4193) re-reads the record under lock and compares it against the snapshot taken
@@ -82,8 +103,8 @@ package com.carddemo.exception;
  *
  * <h2>Transaction rollback belongs to the caller</h2>
  *
- * <p>{@code EXEC CICS SYNCPOINT ROLLBACK} occurs exactly once in the entire legacy estate, at
- * {@code app/cbl/COACTUPC.cbl} <strong>L4100</strong>, on the customer-rewrite failure arm: when
+ * <p>An explicit transaction-manager rollback request occurs exactly once in the entire legacy
+ * estate, at {@code app/cbl/COACTUPC.cbl} <strong>L4100</strong>, on the customer-rewrite failure arm: when
  * the rewrite response is not normal the program sets the "locked but update failed" state, rolls
  * back, and jumps to the write-processing exit. The account-rewrite arm at L4076-L4081 sets the
  * same state but does <em>not</em> roll back, because the account write is the first of the two
@@ -183,29 +204,26 @@ public class OptimisticLockConflictException extends RuntimeException {
      * legacy lock-failure texts. Compared case-insensitively and after trimming, so a caller that
      * supplies {@code "customer"} or {@code " Customer "} still gets the customer text.
      *
-     * <p>The comparison is over this Java-side descriptive label only. It never touches COBOL
-     * record data, so the estate's case-folding rules for record fields - which require an
-     * ASCII-only character table rather than a locale-sensitive fold - do not apply to it.</p>
+     * <p>The comparison is over this Java-side descriptive label only. It never touches COBOL record
+     * data, so the estate's ASCII-only case-folding rule for record fields does not apply to it.</p>
      */
     private static final String CUSTOMER_ENTITY_NAME = "Customer";
 
     /**
-     * The three outcomes the legacy write path can render, as dispatched by the {@code EVALUATE}
-     * at {@code app/cbl/COACTUPC.cbl} L2606-L2615.
+     * The three outcomes the legacy write path can render, as dispatched by the {@code EVALUATE} at
+     * {@code app/cbl/COACTUPC.cbl} L2606-L2615.
      *
-     * <p>There are exactly three constants because the legacy program renders exactly three
-     * distinct states, each with its own operator text. They are kept distinct rather than
-     * flattened into one generic "conflict" so that the caller can reproduce the legacy response
-     * for each - re-display for review, report a failed update, or report a lock error - and so
-     * that the message text remains verifiable character for character.</p>
+     * <p>There are exactly three constants because the legacy program renders exactly three distinct
+     * states, each with its own operator text. They are kept distinct rather than flattened into one
+     * generic "conflict" so that the caller can reproduce the legacy response for each - re-display
+     * for review, report a failed update, or report a lock error - and so that the message text
+     * remains verifiable character for character.</p>
      *
-     * <p>Declaration order carries no behavioural meaning. The legacy states are three level-88
-     * condition names over one shared field, so exactly one can ever be set and the arms are
-     * mutually exclusive by construction. This is a set of states, not an ordered evaluation
-     * cascade: the top-down clause order of the legacy {@code EVALUATE} at L2606-L2615 - lock
-     * error, then failed update, then changed data - is a dispatch concern for
-     * {@code AccountUpdateService}, which reproduces it where it decides what to show the
-     * operator, and no ordering is encoded here.</p>
+     * <p>Declaration order carries no behavioural meaning: the legacy states are three level-88
+     * condition names over one shared field, so exactly one can ever be set. This is a set of
+     * states, not an ordered cascade, and the top-down clause order of the legacy {@code EVALUATE}
+     * - lock error, then failed update, then changed data - is a dispatch concern for whichever
+     * component decides what to show the operator, not something encoded here.</p>
      */
     public enum ConflictKind {
 

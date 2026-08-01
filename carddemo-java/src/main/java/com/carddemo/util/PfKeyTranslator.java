@@ -43,13 +43,11 @@ import com.carddemo.domain.enums.KeyAction;
  * ordered {@code WHEN} clauses filling {@code L22}&ndash;{@code L77} exactly, and the range exit
  * paragraph {@code YYYY-STORE-PFKEY-EXIT} is declared at {@code [app/cpy/CSSTRPFY.cpy:L80]}.
  *
- * <p>Those two paragraphs are traceability rows in their own right. They are 2 of the 16 paragraphs
- * contributed by the estate's two procedural copybooks, and therefore 2 of the 544 paragraph units
- * enumerated in the project traceability matrix. The legacy invocation range spans exactly one
- * intermediate label &mdash; the exit paragraph itself &mdash; so it is the trivial paired idiom
- * and collapses to a single Java method with a plain return. It is <em>not</em> one of the three
- * genuinely multi-paragraph ranges in the estate, none of which is reached from here.
- *
+ * <p>Both paragraphs are units in their own right: they are 2 of the 16 paragraphs contributed by the
+ * estate's two procedural copybooks. The legacy invocation range spans exactly one intermediate label -
+ * the exit paragraph itself - so it is the trivial paired idiom and collapses to a single Java method
+ * with a plain return. It is <em>not</em> one of the three genuinely multi-paragraph ranges in the
+ * estate, none of which is reached from here.
  * <p><strong>Five including programs, and twelve that do not include it.</strong> The copybook is
  * pulled in with quoted copy syntax by exactly five online programs:
  * {@code [app/cbl/COACTUPC.cbl]}, {@code [app/cbl/COACTVWC.cbl]}, {@code [app/cbl/COCRDLIC.cbl]},
@@ -59,16 +57,15 @@ import com.carddemo.domain.enums.KeyAction;
  * menu, transaction, report, bill-payment and user-administration programs &mdash; do not include
  * it and therefore have no attention-key mapping of their own. Each of the five includes performs
  * the range once, so five legacy call sites collapse into the one invocation of
- * {@link #translate(String)} offered here. That collapse is how construct-mapping row 3 of the
- * migration requirement is honoured for a <em>procedural</em> copybook: the inclusion becomes a
- * method call, never an import of a shared data type, because the member declares no data.
+ * {@link #translate(String)} offered here. That collapse is how construct-mapping row 3 of the migration
+ * requirement is honoured for a <em>procedural</em> copybook, and decision D-31 records it: the
+ * inclusion becomes a method call, never an import of a shared data type, because the member declares
+ * no data.
  *
- * <h2>The 28 clauses, in exact source order</h2>
- *
- * <p>COBOL evaluates the construct top down and stops at the first match, so clause order is part
- * of the contract and is reproduced literally below and in {@link #translate(String)}. This
- * discharges construct-mapping row 8 of the migration requirement &mdash; a conditional construct
- * becomes a switch with its condition evaluation order preserved.
+ * <p><strong>The 28 clauses, in exact source order.</strong> COBOL evaluates the construct top down and
+ * stops at the first match, so clause order is part of the contract and is reproduced literally below
+ * and in {@link #translate(String)}. This discharges construct-mapping row 8 of the migration
+ * requirement - a conditional construct becomes a switch with its condition evaluation order preserved.
  *
  * <pre>
  *    #   attention-key identifier   action value   note
@@ -109,14 +106,13 @@ import com.carddemo.domain.enums.KeyAction;
  * future edit that changes either figure without changing the other has broken the mapping. Both
  * figures are factual counts read out of the source, not tuning parameters.
  *
- * <h2>Program-function keys 13 through 24 are not distinct actions</h2>
- *
- * <p>Clauses 17 through 28 fold the high program-function keys back onto the same twelve flags the
- * low keys set. A caller pressing key 15 therefore receives precisely what key 3 delivers, and a
- * caller pressing key 24 receives precisely what key 12 delivers. This is deliberate legacy
- * behaviour and <em>not</em> a source defect: the fold is written out explicitly in the copybook,
- * once per high key, and the estate declares no condition name for keys 13 through 24 anywhere. It
- * is reproduced here rather than corrected, and the high keys are given no constants of their own.
+ * <p><strong>Program-function keys 13 through 24 are not distinct actions</strong> (decision D-20).
+ * Clauses 17 through 28 fold the high program-function keys back onto the same twelve flags the low
+ * keys set, so a caller pressing key 15 receives precisely what key 3 delivers and a caller pressing
+ * key 24 receives precisely what key 12 delivers. This is deliberate legacy behaviour and <em>not</em> a
+ * source defect: the fold is written out explicitly in the copybook, once per high key, and the estate
+ * declares no condition name for keys 13 through 24 anywhere. It is reproduced rather than corrected,
+ * and the high keys are given no constants of their own.
  *
  * <p><strong>The fold is written out as twelve explicit arms rather than computed.</strong> No
  * modulo, no numeric parse of the key number and no substring-derived key index appears in this
@@ -124,21 +120,17 @@ import com.carddemo.domain.enums.KeyAction;
  * additionally accept identifiers the legacy construct rejects &mdash; a hypothetical key 25, for
  * instance, has no clause in the source and must not resolve to anything here either.
  *
- * <h2>There is no fallback clause, so absence is modelled rather than invented</h2>
- *
- * <p>A mechanical count over the construct finds <strong>zero {@code WHEN OTHER} clauses</strong>.
- * The consequence in COBOL is precise and behavioural rather than cosmetic: when the incoming
+ * <p><strong>There is no fallback clause, so absence is modelled rather than invented</strong>
+ * (decision D-20). A mechanical count over the construct finds <strong>zero {@code WHEN OTHER}
+ * clauses</strong>, and the consequence in COBOL is behavioural rather than cosmetic: when the incoming
  * attention key matches none of the 28 clauses no assignment happens at all, and the fixed-width
- * work-area field simply retains whatever value it already held from the previous interaction.
- * There is no sentinel, no unknown value and no error condition.
- *
- * <p>{@link #translate(String)} therefore returns an empty {@link Optional} for an unrecognised
- * identifier. It does not return {@code null}, it does not raise for an unrecognised key, and it
- * does not log. Returning empty is what lets the caller retain its own prior value, which is the
- * faithful outcome: the conversation state belongs to the caller, so that is where the previously
- * held action legitimately lives. This class deliberately does not cache a previous result to
- * simulate the retention, because a cache would be mutable static state shared across every
- * conversation and would be wrong as well as forbidden.
+ * work-area field simply retains whatever value it already held from the previous interaction. There is
+ * no sentinel, no unknown value and no error condition. {@link #translate(String)} therefore returns an
+ * empty {@link Optional} for an unrecognised identifier: it does not return {@code null}, does not raise
+ * and does not log. Returning empty is what lets the caller retain its own prior value, which is the
+ * faithful outcome, because the conversation state belongs to the caller. This class deliberately does
+ * not cache a previous result to simulate the retention, because a cache would be mutable static state
+ * shared across every conversation.
  *
  * <p><strong>A {@code switch} {@code default} clause and a {@code DEFAULT} enum constant are not
  * the same thing, and the difference matters here.</strong> The {@code default} clause inside
@@ -151,14 +143,12 @@ import com.carddemo.domain.enums.KeyAction;
  * and is exhaustive by construction, so it carries no {@code default} clause at all: adding a
  * seventeenth constant would fail compilation rather than silently fall through to a wrong answer.
  *
- * <h2>The sixteen action values are five characters wide, and the padding is data</h2>
- *
- * <p>The values are the level-88 condition-name literals declared on the action field
+ * <p><strong>The sixteen action values are five characters wide, and the padding is data.</strong> The
+ * values are the level-88 condition-name literals declared on the action field
  * {@code [app/cpy/CVCRD01Y.cpy: CCARD-AID]}, which is {@code PIC X(5)} inside the
- * {@code CC-WORK-AREAS} structure. All sixteen are exactly five characters, and each is asserted
- * at exactly {@value #ACTION_VALUE_BYTE_WIDTH} <em>encoded bytes</em> measured through
+ * {@code CC-WORK-AREAS} structure. All sixteen are exactly five characters, and each is asserted at
+ * exactly {@value #ACTION_VALUE_BYTE_WIDTH} <em>encoded bytes</em> measured through
  * {@link StandardCharsets#US_ASCII} rather than through a character count:
- *
  * <pre>
  *   'ENTER'  'CLEAR'  'PA1  '  'PA2  '
  *   'PFK01'  'PFK02'  'PFK03'  'PFK04'  'PFK05'  'PFK06'
@@ -173,86 +163,42 @@ import com.carddemo.domain.enums.KeyAction;
  * two values. The remaining fourteen literals fill all five positions naturally, the twelve
  * program-function values because their numeric suffix is always zero-padded to two digits.
  *
- * <h2>Citation discipline for the work-area copybook, and anomaly 16</h2>
+ * <p><strong>Citation discipline for the work-area copybook.</strong>
+ * {@code [app/cpy/CVCRD01Y.cpy]} carries COBOL sequence numbers in columns 1 through 6, so the numbers
+ * visible in that member's left margin are sequence numbers and <em>not</em> line numbers. Every
+ * citation of it in this class is therefore by member and field name, for example
+ * {@code [app/cpy/CVCRD01Y.cpy: CCARD-AID]}, and never by a line number: a line number quoted from that
+ * file would really be a sequence number and would send a reader to the wrong place. Row 16 of the
+ * source anomaly register records the related duplication - the sequence number {@code 004800} appears
+ * twice, at physical lines 40 and 42 - which is documented, is not propagated, and has no effect on the
+ * field layout this class depends on.
  *
- * <p>{@code [app/cpy/CVCRD01Y.cpy]} carries COBOL sequence numbers in columns 1 through 6, so the
- * numbers visible in that member's left margin are sequence numbers and <em>not</em> line numbers.
- * Every citation of it in this class is therefore by member and field name, for example
- * {@code [app/cpy/CVCRD01Y.cpy: CCARD-AID]}, and never by a line number: a line number quoted from
- * that file would really be a sequence number and would send a reader to the wrong place.
+ * <p><strong>Ownership boundary.</strong> This class answers one question - which action, if any, an
+ * attention-key identifier denotes - and answers nothing else. The onward consequences of an action
+ * belong elsewhere and must not migrate here: the exit key eventually produces a thank-you message and
+ * an unmapped key eventually produces an invalid-key message, but both of those literals, and every
+ * other screen message, are owned by the service-layer message catalogue and not one of them appears in
+ * this file. Routing likewise belongs to the service-layer navigation component, which owns the route
+ * constants that replaced the estate's transfer-control dispatches and pseudo-conversational re-arms.
+ * This class returns an action or nothing; it never returns a route, a message or a screen decision,
+ * and it holds no dependency on the service, repository, api, batch or config layers.
  *
- * <p>Recorded as <strong>anomaly 16</strong> of the source anomaly register: the sequence number
- * {@code 004800} appears twice in that member, at its physical lines 40 and 42. The duplication is
- * documented and is not propagated; it has no effect on the field layout this class depends on.
+ * <p>By the same division of labour {@link KeyAction} defines the sixteen constants and nothing more,
+ * while the padded five-character value contract and the keys-13-through-24 fold are owned here. This
+ * is also the only class in {@code com.carddemo.util} that imports from
+ * {@code com.carddemo.domain.enums}; the rest of the package is deliberately enum-free, so this single
+ * crossing is the one place where a utility depends on a domain enumeration.
  *
- * <h2>Ownership boundary</h2>
- *
- * <p>This class answers one question &mdash; which action, if any, an attention-key identifier
- * denotes &mdash; and answers nothing else. The onward consequences of an action belong elsewhere
- * and must not migrate here. The exit key eventually produces a thank-you message and an unmapped
- * key eventually produces an invalid-key message, but both of those literals, and every other
- * screen message, are owned by the service-layer message catalogue; they are external-contract
- * items verified by the interface-contract gate and not one of them appears in this file. Routing
- * likewise belongs to the service-layer navigation component, which owns the route constants that
- * replaced the estate's transfer-control dispatches and pseudo-conversational re-arms. This class
- * returns an action or nothing; it never returns a route, a message or a screen decision, and it
- * holds no dependency on the service, repository, api, batch or config layers.
- *
- * <p>By the same division of labour {@link KeyAction} defines the sixteen constants and nothing
- * more, while the padded five-character value contract and the keys-13-through-24 fold are owned
- * here. This is also the only class in {@code com.carddemo.util} that imports from
- * {@code com.carddemo.domain.enums}; the rest of the package is deliberately enum-free, so this
- * single crossing is the one place where a utility depends on a domain enumeration.
- *
- * <h2>Shape and guarantees</h2>
- *
- * <p>The class is final, cannot be instantiated, holds only static members and has no mutable
- * static state: the two published collections are unmodifiable and their backing instances are
- * unreachable. Every method is pure and side-effect free &mdash; no input or output, no clock, no
- * environment access, no randomness and no logging &mdash; so results depend on nothing but the
- * argument. Matching is exact throughout: no case folding, no trimming, no stripping, no
- * normalisation and no acceptance of abbreviations, numeric aliases or alternative spellings,
- * because the legacy comparison was against fixed compiler-supplied constants and accepting
- * variants would widen the contract. A {@code null} reference is a caller defect rather than a
- * legitimate legacy outcome and raises {@link NullPointerException} deterministically, which keeps
- * it distinguishable from the empty result that models a genuinely unrecognised key.
- *
- * <p>No project rule governs this file: the repository's rules document records that no
- * user-specified rules were provided, so the work is held instead to the enterprise standards the
- * migration plan substitutes &mdash; among them zero-warning compilation, strict layering,
- * immutability without code generation, a testable side-effect-free shape, and full auditability
- * of every translation decision.
- *
- * <h2>Decision-log entries raised by this file</h2>
- *
- * <ol>
- *   <li>Program-function keys 13 through 24 fold onto keys 1 through 12, so 28 recognised inputs
- *       yield only 16 distinct actions. Deliberate legacy behaviour, reproduced rather than
- *       corrected; the high keys receive no constants of their own.</li>
- *   <li>The legacy construct has no fallback clause, so an unrecognised attention key left the
- *       action field unchanged. That is modelled as an empty {@link Optional}: no synthetic default
- *       constant is introduced, no {@code null} is returned and no exception is raised. A
- *       {@code switch} {@code default} clause is permitted; a {@code DEFAULT} enum constant is
- *       not.</li>
- *   <li>The sixteen action values are five characters, space padded, and the PA1 and PA2 values
- *       carry two trailing spaces that are never trimmed.</li>
- *   <li>Anomaly 16 &mdash; {@code [app/cpy/CVCRD01Y.cpy]} carries sequence numbers in columns 1
- *       through 6 and the sequence number {@code 004800} appears twice, at its physical lines 40
- *       and 42. Consequently every citation of that member is by field name and never by line
- *       number; any earlier line-number citation of it was reading a sequence number.</li>
- *   <li>The fold is written out as twelve explicit arms rather than computed arithmetically, so it
- *       is auditable by eye and cannot silently accept a key the source does not recognise.</li>
- *   <li>This is the only class in {@code com.carddemo.util} importing from
- *       {@code com.carddemo.domain.enums}; the remainder of the package is deliberately
- *       enum-free.</li>
- *   <li>The procedural copybook's inclusion becomes a method call rather than an import: five
- *       quoted copy sites collapse into one invocation, honouring construct-mapping row 3 for a
- *       procedural copybook.</li>
- * </ol>
- *
- * <p>Traceability &mdash; source checkout commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}; upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated {@code 2022-07-19}.
+ * <p><strong>Shape and guarantees.</strong> The class is final, cannot be instantiated, holds only
+ * static members and has no mutable static state: the two published collections are unmodifiable and
+ * their backing instances are unreachable. Every method is pure and side-effect free - no input or
+ * output, no clock, no environment access, no randomness and no logging - so results depend on nothing
+ * but the argument. Matching is exact throughout: no case folding, no trimming, no stripping, no
+ * normalisation and no acceptance of abbreviations, numeric aliases or alternative spellings, because
+ * the legacy comparison was against fixed compiler-supplied constants and accepting variants would
+ * widen the contract. A {@code null} reference is a caller defect rather than a legitimate legacy
+ * outcome and raises {@link NullPointerException} deterministically, which keeps it distinguishable
+ * from the empty result that models a genuinely unrecognised key.
  */
 public final class PfKeyTranslator {
 

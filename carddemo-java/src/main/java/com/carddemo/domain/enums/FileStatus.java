@@ -20,109 +20,70 @@ import java.util.Arrays;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
-
 /**
- * Raw two-byte COBOL {@code FILE STATUS} codes as they occur in the AWS CardDemo mainframe
- * estate.
+ * Raw two-byte COBOL {@code FILE STATUS} codes as they occur in the AWS CardDemo estate.
  *
- * <p>This enum is the "status enums" half of the migration requirement <em>"FILE STATUS codes
- * to exception handling plus status enums; every file status code mapped to equivalent error
- * handling"</em>. It is a pure value type. It carries the raw code and nothing else: no
- * framework dependency, no persistence mapping, no logging, and deliberately no logic that
- * classifies a code into a coarser outcome, because the legacy programs do that classification
- * one layer up. See <em>Why this enum stops at raw codes</em> below, which is the single most
- * important thing to understand before extending this type.</p>
+ * <p>This enum is the "status enums" half of the migration requirement <em>"FILE STATUS codes to
+ * exception handling plus status enums; every file status code mapped to equivalent error
+ * handling"</em>. It is a pure value type carrying the raw code and nothing else: no framework
+ * dependency, no persistence mapping, no logging, and deliberately no logic that classifies a code
+ * into a coarser outcome, because the legacy programs do that classification one layer up. The
+ * paragraph headed <em>Why this enum stops at raw codes</em> is the single most important thing to
+ * understand before extending this type.
  *
- * <p><strong>Provenance.</strong> Derived from the COBOL estate at source checkout commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated {@code 2022-07-19}. No COBOL source text is
- * reproduced anywhere in this file; the legacy tree is cited by member name, paragraph name,
- * field name, line number and code value only, and is never copied into this module.</p>
+ * <p><strong>Representation.</strong> A COBOL {@code FILE STATUS} data item is two characters wide:
+ * status-key-1 carries the outcome class and status-key-2 qualifies it, and the estate splits it into
+ * two one-character subfields. Each constant therefore carries its code as a two-character
+ * {@code String} with the leading zero preserved - the success code is {@code "00"}, never the number
+ * zero. Treating a status as a number would lose that leading zero and would also misrepresent the
+ * implementor-defined {@code 9x} class, in which status-key-2 is a binary value rather than a digit.
  *
- * <p><strong>Representation.</strong> A COBOL {@code FILE STATUS} data item is two characters
- * wide: status-key-1 carries the outcome class and status-key-2 qualifies it. The estate splits
- * it into two one-character subfields, for example {@code ACCTFILE-STAT1} and
- * {@code ACCTFILE-STAT2} under {@code ACCTFILE-STATUS} in {@code app/cbl/CBACT01C.cbl}
- * (L46-L48). Each constant below therefore carries its code as a two-character {@code String}
- * with the leading zero preserved: the success code is {@code "00"}, never the number zero.
- * Treating a status as a number would lose the leading zero, and would also misrepresent the
- * implementor-defined {@code 9x} class in which status-key-2 is a binary value rather than a
- * digit.</p>
+ * <p><strong>Code vocabulary, and how it was established.</strong> A census over the estate's 28
+ * programs enumerated the distinct two-digit quoted literals present, yielding exactly nine values, all
+ * declared here: {@code 00}, {@code 01}, {@code 02}, {@code 04}, {@code 05}, {@code 10}, {@code 12},
+ * {@code 23} and {@code 31}. Only four of the nine are genuinely compared against a status-bearing
+ * field; the other five occur in unrelated roles such as transaction type and category codes and
+ * calendar bounds, and are declared so that the enum spans the whole observed vocabulary and a value a
+ * real dataset can legitimately return is nameable rather than anonymous. Each constant carries its own
+ * measured evidence and its standard COBOL meaning, so that census is not repeated here. Decision log
+ * entry D-22 records the two codes that prior documentation cites but the source never compares.
  *
- * <p><strong>Code vocabulary, and how it was established.</strong> A census over
- * {@code app/cbl} enumerated the distinct two-digit quoted literals present in the estate's 28
- * COBOL programs. That census yields exactly nine values, and all nine are declared here:
- * {@code 00}, {@code 01}, {@code 02}, {@code 04}, {@code 05}, {@code 10}, {@code 12},
- * {@code 23} and {@code 31}. Four of the nine are genuinely compared against a status-bearing
- * field:</p>
- * <ul>
- *   <li>{@code 00} is compared on 73 lines that name a {@code *-STATUS} field. It is the
- *       dominant success test of the estate.</li>
- *   <li>{@code 10} is compared on 7 such lines. It is how every batch read loop terminates
- *       normally.</li>
- *   <li>{@code 04} is compared at 9 sites in {@code app/cbl/CBSTM03A.CBL}, always as an
- *       accepted alternative to {@code 00}. It reaches those sites through the subprogram call
- *       linkage: {@code app/cbl/CBSTM03B.CBL} copies each of its four file statuses into
- *       {@code LK-M03B-RC}, a {@code PIC X(02)} field (L109), which the caller receives as
- *       {@code WS-M03B-RC}, also {@code PIC X(02)} (L80).</li>
- *   <li>{@code 23} appears at three comparison sites, of which exactly one branches on it
- *       alone: {@code app/cbl/CBACT04C.cbl} L436, inside paragraph
- *       {@code 1200-GET-INTEREST-RATE}, which is the trigger for the DEFAULT disclosure-group
- *       fallback. The other two sites, {@code app/cbl/CBACT04C.cbl} L422 and
- *       {@code app/cbl/CBTRN02C.cbl} L481, accept {@code 23} alongside {@code 00} rather than
- *       branching on it. That single standalone comparison is load bearing: without it the
- *       interest run has no rate to apply to an account whose disclosure group is absent.</li>
- * </ul>
- * <p>The other five values in the vocabulary, {@code 01}, {@code 02}, {@code 05}, {@code 12}
- * and {@code 31}, are never compared against a status field in the estate; they occur in
- * unrelated roles such as transaction type and category codes and calendar bounds. They are
- * declared here so the enum spans the whole observed vocabulary and so a value that a real
- * data set can legitimately return is nameable rather than anonymous. Their standard COBOL
- * meaning is documented on each constant, and no behaviour in this module branches on any of
- * them.</p>
+ * <p><strong>Unrecognised codes never throw.</strong> {@link #fromCode(String)} returns an empty
+ * {@link Optional} for any value outside the declared set, and for {@code null}. The declared set is
+ * the vocabulary the estate exercises, not the vocabulary the runtime can produce: the access methods
+ * can return codes these programs never test, and the estate itself proves the point, because its
+ * status-display paragraph has a dedicated path for a status that is not numeric or whose
+ * status-key-1 is {@code 9}. A lookup that threw would turn a diagnosable I/O condition into an
+ * unrelated failure at exactly the moment the diagnostics matter most. There is deliberately no
+ * synthetic {@code UNKNOWN} constant either: absence is modelled as absence, because the legacy code
+ * has no default status value to be faithful to.
  *
- * <p><strong>Unrecognised codes never throw.</strong> {@link #fromCode(String)} returns an
- * empty {@link Optional} for any value outside the declared set, and for {@code null}. The
- * declared set is the vocabulary the estate exercises, not the vocabulary the runtime can
- * produce: VSAM and QSAM can return codes these programs never test, and the estate itself
- * proves the point, because paragraph {@code 9910-DISPLAY-IO-STATUS} in
- * {@code app/cbl/CBACT01C.cbl} (L176-L189) has a dedicated path for a status that is not
- * numeric or whose status-key-1 is {@code 9}. A lookup that threw would turn a diagnosable I/O
- * condition into an unrelated failure at exactly the moment the diagnostics matter most. There
- * is deliberately no synthetic {@code UNKNOWN} constant either: absence is modelled as absence,
- * because the legacy code has no default status value to be faithful to.</p>
+ * <p><strong>Why this enum stops at raw codes.</strong> The COBOL programs do not branch on the raw
+ * two-byte status. They normalize it first and then branch on the coarser result: a raw status of
+ * {@code 00} sets an application-result item to 0, {@code 10} sets it to 16, and anything else sets it
+ * to 12, after which the code tests the level-88 condition names for OK and end-of-file. The
+ * end-of-file branch sets a flag and is a normal loop terminator; the remaining branch displays an
+ * error, moves the raw status into a display field and abends. That application-result item is
+ * referenced on 223 lines across the estate, so it, and not the raw code, is what the programs
+ * actually test.
  *
- * <p><strong>Why this enum stops at raw codes.</strong> The COBOL programs do not branch on the
- * raw two-byte status. They normalise it first and then branch on the coarser result. Paragraph
- * {@code 1000-ACCTFILE-GET-NEXT} in {@code app/cbl/CBACT01C.cbl} (L92-L116) is the exemplar
- * that each of the eight batch programs declaring an {@code APPL-RESULT} item repeats: a raw
- * status of {@code 00} sets {@code APPL-RESULT} to 0, a raw status of {@code 10} sets it to 16,
- * and anything else sets it to 12. The code then
- * tests the level-88 condition names {@code APPL-AOK} (declared {@code VALUE 0} at L62) and
- * {@code APPL-EOF} (declared {@code VALUE 16} at L63). The {@code APPL-EOF} branch sets an
- * end-of-file flag and is a normal loop terminator; the remaining branch displays an error,
- * moves the raw status into a display field and abends. {@code APPL-RESULT} is referenced on
- * 223 lines across {@code app/cbl}, so it, and not the raw code, is what the programs actually
- * test.</p>
+ * <p>That coarse OK / EOF / ERROR tri-state therefore belongs one layer up, as a nested type or as
+ * behavior inside the batch step template, and it must never be declared in this package. A top-level
+ * outcome type or status-normalizer type is forbidden anywhere under {@code src/main/java} for two
+ * reasons. First, normalizing here would put translation logic inside the domain layer, which may
+ * depend on nothing above it. Second, and decisively, collapsing the raw codes into a tri-state at
+ * this level risks folding end-of-file into error, and end-of-file is how a sequential read loop
+ * terminates normally - {@code 10} is tested in nine of the ten batch programs, so erasing the
+ * distinction would turn successful jobs into abends. This enum keeps the raw codes, unclassified,
+ * precisely so that the distinction survives to the layer entitled to make it. Decision log entry
+ * D-21 records the two-level model.
  *
- * <p>That coarse OK / EOF / ERROR tri-state therefore belongs one layer up, as a nested type or
- * as behaviour inside the batch step template or the file maintenance service, and it must
- * never be declared in this package. A top-level {@code IoOutcome} type and a
- * {@code FileStatusNormalizer} type are both forbidden anywhere under {@code src/main/java},
- * for two reasons. First, normalising here would put translation logic inside the domain layer,
- * which may depend on nothing above it. Second, and decisively, collapsing the raw codes into a
- * tri-state at this level risks folding end-of-file into error, and end-of-file is how a
- * sequential read loop terminates normally: {@code 10} is tested in nine of the ten batch
- * programs, so erasing the distinction would turn successful jobs into abends. This enum keeps
- * the raw codes, unclassified, precisely so that the distinction survives to the layer entitled
- * to make it.</p>
- *
- * <p><strong>Not a persistent type.</strong> This enum carries no persistence annotation, is
- * never mapped to a column, and drives no schema. String-valued enum persistence would store
- * the constant name rather than the two-character code and would not fit the narrow column the
- * legacy layout implies; ordinal persistence would store a position that carries no meaning in
- * the estate. Translation between a raw code and a constant is a service-layer concern and is
- * performed through {@link #fromCode(String)}.</p>
+ * <p><strong>Not a persistent type.</strong> This enum carries no persistence annotation, is never
+ * mapped to a column and drives no schema. String-valued enum persistence would store the constant
+ * name rather than the two-character code and would not fit the narrow column the legacy layout
+ * implies; ordinal persistence would store a position that carries no meaning in the estate.
+ * Translation between a raw code and a constant is a service-layer concern performed through
+ * {@link #fromCode(String)}.
  *
  * @see #fromCode(String)
  */
@@ -212,7 +173,7 @@ public enum FileStatus {
      * occurrences of the literal: it is compared nowhere in the legacy source. It is declared
      * so the documented vocabulary stays discoverable, and no behaviour in this module depends
      * on, branches on, or special-cases it. The discrepancy between the prior specification and
-     * the source is recorded in {@code docs/decision-log.md}.</p>
+     * the source is recorded as decision D-22.</p>
      */
     DUPLICATE_KEY("22"),
 
@@ -247,7 +208,7 @@ public enum FileStatus {
      * occurrences of the literal: it is compared nowhere in the legacy source. It is declared
      * so the documented vocabulary stays discoverable, and no behaviour in this module depends
      * on, branches on, or special-cases it. The discrepancy between the prior specification and
-     * the source is recorded in {@code docs/decision-log.md}.</p>
+     * the source is recorded as decision D-22.</p>
      */
     FILE_NOT_FOUND("35");
 

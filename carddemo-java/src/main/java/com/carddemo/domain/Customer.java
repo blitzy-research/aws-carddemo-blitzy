@@ -16,6 +16,7 @@
  */
 package com.carddemo.domain;
 
+import java.util.Base64;
 import java.util.Objects;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -23,15 +24,14 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
 /**
- * Customer master entity - the Java translation of the {@code CUSTOMER-RECORD} structure declared
- * in the copybook {@code CVCUS01Y}, whose own header states a record length of 500 bytes.
+ * Customer master entity - the Java translation of the {@code CUSTOMER-RECORD} structure declared in
+ * copybook {@code CVCUS01Y}, whose header states a record length of 500 bytes.
  *
  * <p><strong>Legacy provenance.</strong> The record was held in the indexed VSAM cluster
- * {@code CUSTDATA}, registered to the online region under the file name {@code CUSTDAT}. Its
- * cluster definition in {@code CUSTFILE.jcl} specifies {@code KEYS(9 0)} and
- * {@code RECORDSIZE(500 500)} on an {@code INDEXED} cluster, which corroborates both the 9-byte
- * key and the 500-byte fixed record width independently of the copybook. The copybook is included
- * by six programs: {@code CBCUS01C}, {@code CBTRN01C}, {@code COACTUPC}, {@code COACTVWC},
+ * {@code CUSTDATA}, registered online as {@code CUSTDAT}. Its cluster definition in
+ * {@code CUSTFILE.jcl} specifies {@code KEYS(9 0)} and {@code RECORDSIZE(500 500)}, corroborating
+ * both the 9-byte key and the 500-byte fixed width independently of the copybook. Six programs
+ * include it: {@code CBCUS01C}, {@code CBTRN01C}, {@code COACTUPC}, {@code COACTVWC},
  * {@code COCRDSLC} and {@code COCRDUPC}.
  *
  * <p><strong>Eighteen persisted fields, in contractual record order.</strong> The order below is
@@ -55,7 +55,8 @@ import jakarta.persistence.Table;
  *   <li>{@code phoneNum2} - offset 264, width 15 - column {@code phone_num_2}</li>
  *   <li>{@code custSsn} - offset 279, width 9 in the record - column {@code cust_ssn}, widened to
  *       hold ciphertext; see the security note below</li>
- *   <li>{@code govtIssuedId} - offset 288, width 20 - column {@code govt_issued_id}</li>
+ *   <li>{@code govtIssuedId} - offset 288, width 20 in the record - column
+ *       {@code govt_issued_id}, widened to hold ciphertext; see the security note below</li>
  *   <li>{@code custDob} - offset 308, width 10 - column {@code cust_dob}</li>
  *   <li>{@code eftAccountId} - offset 318, width 10 - column {@code eft_account_id}</li>
  *   <li>{@code priCardHolderInd} - offset 328, width 1 - column {@code pri_card_holder_ind}</li>
@@ -70,52 +71,59 @@ import jakarta.persistence.Table;
  *
  * <p><strong>The alternate copybook view is the same entity, not a second one.</strong> The estate
  * contains a second 500-byte customer copybook, {@code CUSTREC}, which the statement-generation
- * program {@code CBSTM03A} includes in place of {@code CVCUS01Y}. The two members were compared
- * field by field: they declare the same record name, the same eighteen fields with the same
- * picture clauses in the same order, and the same 168-byte trailing filler. They differ in exactly
- * one respect - the date-of-birth field is spelled {@code CUST-DOB-YYYYMMDD} in {@code CUSTREC}
- * and {@code CUST-DOB-YYYY-MM-DD} in {@code CVCUS01Y} - and both spellings denote the same 10
- * bytes at the same offset 308. Two COBOL spellings of one field are therefore mapped to the
- * single column {@code cust_dob}. No second entity, no second table, no secondary-table mapping
- * and no alternate class exists for {@code CUSTREC}; the alternate spelling is handled by the
- * mapper, not by the model.
+ * program {@code CBSTM03A} includes instead. Compared field by field the two declare the same record
+ * name, the same eighteen fields with the same picture clauses in the same order and the same
+ * 168-byte filler, differing only in the spelling of the date-of-birth field - both spellings denote
+ * the same 10 bytes at offset 308. One attribute and one column therefore serve both, and no second
+ * entity, table, secondary-table mapping or alternate class exists.
  *
- * <p><strong>The identifier is the legacy business key, never a surrogate.</strong> Batch file
- * records in this estate are declared as a key substring followed by a data remainder - the
- * account reader {@code CBACT01C} declares an 11-byte identifier followed by a 289-byte data
- * area - and {@code KEYS(9 0)} places the customer key at offset 0 as the leading substring of the
- * record image. The persistent identity of a customer row therefore <em>is</em> its 9-character
- * identifier. No generated value, sequence or table generator is declared here, because a
- * surrogate key would sever the record-image-to-row correspondence that byte-level output parity
- * depends on.
+ * <p><strong>The identifier is the legacy business key, never a surrogate.</strong> {@code KEYS(9 0)}
+ * places the key at offset 0 as the leading substring of the record image, so a customer's
+ * persistent identity <em>is</em> its 9-character identifier. No generated value, sequence or table
+ * generator is declared: a surrogate would sever the record-image-to-row correspondence that
+ * byte-level output parity depends on.
  *
  * <p><strong>Every attribute is a {@link String}, including the digit-only ones.</strong> Three
- * fields are external decimal in the copybook - the identifier, the national identifier and the
- * credit score - yet all three map to bounded character columns, because external representation
- * is part of the contract. Seeded identifiers are zero-filled to their full nine characters, so
- * a value must stay {@code "000000001"} rather than collapsing to {@code 1}; a numeric attribute
- * would strip exactly the leading zeros that fixed-width output parity depends on, and mapping a
- * numeric type onto a character column is precisely the mismatch that schema validation exists to
- * reject. No decimal, integral or wrapper type appears in this class, which holds no monetary
- * field of any kind.
+ * fields are external decimal in the copybook, yet all three map to bounded character columns
+ * because the external representation is part of the contract: an identifier must stay
+ * {@code "000000001"} rather than collapsing to {@code 1}. Nothing here is trimmed, padded,
+ * case-folded, normalized, validated or encrypted, in a constructor or a mutator, because that
+ * padding and those leading zeros are the stored value rather than incidental formatting.
  *
- * <p><strong>Date of birth is a bounded string, not a date type.</strong> The field is alphanumeric
- * and 10 bytes wide in the record, and the seeded values are hyphenated text. It is stored and
- * returned verbatim; interpreting or reformatting it is the responsibility of the date-validation
- * service and the fixed-width mapper, not of this entity.
+ * <p><strong>Column names are not uniformly prefixed, and must not be regularized.</strong> Only
+ * {@code cust_id}, {@code cust_ssn} and {@code cust_dob} carry a {@code cust_} prefix. The names are
+ * transcribed from the schema migration that owns this table; Hibernate validates against that
+ * schema rather than generating it, so renaming a column here to look consistent aborts start-up.
  *
- * <p><strong>Column names are not uniformly prefixed, and that is intentional.</strong> Only
- * {@code cust_id}, {@code cust_ssn} and {@code cust_dob} carry a {@code cust_}-style prefix; the
- * remaining fifteen columns do not. The names below are transcribed from the schema migration that
- * owns this table and must not be regularized: the schema is authoritative, Hibernate validates
- * against it rather than generating it, and renaming a column here to look more consistent would
- * abort application startup.
+ * <p><strong>No version attribute, no associations and no Bean Validation.</strong> Only the account
+ * and card tables carry a version column, so declaring one here would name a column the schema does
+ * not have. The card cross-reference table's foreign key targets {@code customer.cust_id} and that
+ * relationship is enforced by the database rather than modelled as an object graph, because scalar
+ * keys mirror the record image and an association would change the column name the provider expects.
+ * Validation constraints are absent for the measured reason given on the credit-score attribute, and
+ * the two attributes the legacy update path decorates without ever editing - the middle name and the
+ * second address line - are likewise unconstrained so that input the legacy system accepts is not
+ * rejected here.
  *
  * <p><strong>Values are stored verbatim; nothing is trimmed, padded or folded.</strong> Every
  * attribute originates in a fixed-width field where padding is part of the value rather than
  * incidental whitespace. Neither the constructors nor the mutators trim, strip, pad, case-fold,
- * normalize, validate or encrypt anything, because any such transformation would break byte-level
- * parity with the legacy output.
+ * normalize or reformat anything, because any such transformation would break byte-level parity
+ * with the legacy output.
+ *
+ * <p><strong>Two attributes are the exception, and the exception is a guard rather than a
+ * transformation.</strong> The two regulated identifiers - the national identifier and the
+ * government-issued identifier - are stored as authenticated ciphertext rather than as the cleartext
+ * the legacy record carried, so that a database connection, a backup file or an operational query
+ * cannot read them. This entity still transforms nothing: it neither encrypts nor decrypts, because
+ * that would require the utility and service layers this layer does not depend on. What it does
+ * instead is refuse. Both the constructor and the two mutators verify that the value handed to them
+ * already carries the structural shape of the module's protected-value envelope, and reject anything
+ * else, so cleartext cannot reach the persistence boundary through application code even by mistake.
+ * Producing and reading those envelopes is the responsibility of the field-encryption service, whose
+ * key is resolved from the environment with no fallback. This is a deliberate divergence from
+ * at-rest faithfulness, it changes no record image and no output byte, and it is recorded in
+ * {@code docs/decision-log.md}.
  *
  * <p><strong>No optimistic-locking attribute.</strong> Only the account and card tables carry a
  * version column in this schema; the customer table has none, so no version attribute is declared
@@ -145,6 +153,27 @@ import jakarta.persistence.Table;
 @Entity
 @Table(name = "customer")
 public class Customer {
+
+    /**
+     * Structural marker that opens every protected value this entity will accept.
+     *
+     * <p><strong>This literal is deliberately duplicated.</strong> It is declared authoritatively by
+     * the module's protected-value codec in the utility layer, and is repeated here rather than
+     * imported, because the domain layer is not permitted to depend on the utility layer. The
+     * duplication is held in step behaviourally rather than by inspection: a unit test seals a value
+     * with the codec and requires this entity to accept it, and seals another under a different marker
+     * and requires this entity to refuse it. Editing either side alone therefore fails the build. A
+     * five-character literal repeated once, pinned by a test, was judged a smaller cost than either a
+     * layer violation or an unguarded column.
+     */
+    private static final String PROTECTED_VALUE_PREFIX = "ENC1:";
+
+    /**
+     * Smallest number of decoded bytes a protected value can carry: a 96-bit initialisation vector
+     * plus a 128-bit authentication tag, with no ciphertext between them. Anything shorter cannot
+     * have been produced by the codec and is refused without a key being consulted.
+     */
+    private static final int PROTECTED_VALUE_MINIMUM_BYTES = 28;
 
     /**
      * Customer identifier - 9 bytes at offset 0 of the record image, and the primary key.
@@ -240,50 +269,59 @@ public class Customer {
     private String phoneNum2;
 
     /**
-     * National identifier, held as application-produced ciphertext - 9 bytes at offset 279 of the
-     * record image, mapped to a 255-character column.
+     * National identifier - 9 bytes at offset 279 of the record image, mapped to a 255-character
+     * nullable column.
      *
-     * <p><strong>This is the only nullable column in the entire schema.</strong> The reference-data
-     * seed migration leaves it null for every seeded row rather than embedding personal
-     * identifiers in a checked-in artifact, so {@code null} is a legitimate, expected value. It
-     * must round-trip as {@code null} and must never be rewritten to an empty string or to the
-     * literal text {@code "null"}.
+     * <p><strong>This is the only nullable column in the schema, and the only attribute that may be
+     * absent.</strong> A {@code null} must round-trip as {@code null} and must never be rewritten to
+     * an empty string or to the literal text {@code "null"}.
      *
-     * <p><strong>This entity performs no encryption or decryption.</strong> The column is far wider
-     * than the legacy field because it stores ciphertext rather than the cleartext value, but the
-     * transformation happens outside this package: the domain layer may not depend on the utility
-     * or service layers, so no attribute converter is declared here. An automatically applied
-     * converter was considered and rejected outright, because auto-application on a string
-     * attribute type would silently capture every string attribute in the module rather than this
-     * one field. Encryption, decryption and null tolerance are therefore implemented in the
-     * utility and service layers, keyed from configuration resolved at run time. No key, salt,
-     * algorithm name or cleartext value appears anywhere in this class.
+     * <p><strong>This entity performs no encryption or decryption, and it will not accept
+     * cleartext.</strong> The column is far wider than the legacy field because it stores ciphertext
+     * rather than the cleartext value. The transformation itself happens outside this package: the
+     * domain layer may not depend on the utility or service layers, so no attribute converter is
+     * declared here. An automatically applied converter was considered and rejected outright, because
+     * auto-application on a string attribute type would silently capture every string attribute in
+     * the module rather than this one field. Encryption, decryption and null tolerance are therefore
+     * implemented in the utility and service layers, keyed from configuration resolved at run time.
+     * No key, salt, algorithm name or cleartext value appears anywhere in this class.
      *
-     * <p>This attribute is a plain carrier: whatever the caller supplies is stored, and whatever is
-     * stored is returned.
+     * <p>What this class does contribute is the fail-closed half of that arrangement. Every write
+     * path - the eighteen-argument constructor and the mutator - passes through
+     * {@link #requireProtectedValue(String, String, boolean)}, which admits only {@code null} or a
+     * value carrying the module's protected-value envelope shape. A nine-digit cleartext identifier
+     * cannot satisfy that shape, so it is rejected rather than stored. The check is written in terms
+     * of the platform library alone, which is why it can live here without the domain layer acquiring
+     * a dependency it is not permitted to have.
      */
     @Column(name = "cust_ssn", length = 255, nullable = true)
     private String custSsn;
 
     /**
-     * Government-issued identifier - 20 bytes at offset 288 of the record image. Stored verbatim.
+     * Government-issued identifier, held as application-produced ciphertext - 20 bytes at offset 288
+     * of the record image, mapped to a 255-character column.
+     *
+     * <p>The legacy record carries this as twenty cleartext characters. It is a national identity
+     * document number and is regulated in the same way as the national identifier above, so it is
+     * protected in the same way and by the same service, and the column is widened for the same
+     * reason. The two fields differ in exactly one respect: this column is {@code NOT NULL}, so a
+     * value is always required and {@code null} is rejected as well as cleartext.
+     *
+     * <p>As with the national identifier, this entity neither encrypts nor decrypts. It refuses:
+     * every write path passes through {@link #requireProtectedValue(String, String, boolean)}, so
+     * only a well-formed protected value can be stored.
      */
-    @Column(name = "govt_issued_id", length = 20, nullable = false)
+    @Column(name = "govt_issued_id", length = 255, nullable = false)
     private String govtIssuedId;
 
     /**
      * Date of birth as text - 10 bytes at offset 308 of the record image.
      *
-     * <p>The field is alphanumeric rather than a date type in the legacy record, and the seeded
-     * values are hyphenated text, so it is mapped to a bounded character column and returned
-     * exactly as stored. Parsing, reformatting and calendar validation belong to the
-     * date-validation service.
-     *
-     * <p>This single column carries both legacy spellings of the field: the copybook
-     * {@code CVCUS01Y} names it {@code CUST-DOB-YYYY-MM-DD} while the alternate copybook
-     * {@code CUSTREC}, used by the statement-generation program {@code CBSTM03A}, names it
-     * {@code CUST-DOB-YYYYMMDD}. Both denote the same 10 bytes at the same offset 308, so one
-     * attribute and one column serve both.
+     * <p>The field is alphanumeric rather than a date type in the legacy record, so it is mapped to a
+     * bounded character column and returned exactly as stored; parsing, reformatting and calendar
+     * validation belong to the date-validation service. This single column carries both legacy
+     * spellings of the field - {@code CVCUS01Y} hyphenates it and {@code CUSTREC} does not - because
+     * both denote the same 10 bytes at the same offset.
      */
     @Column(name = "cust_dob", length = 10, nullable = false)
     private String custDob;
@@ -303,19 +341,15 @@ public class Customer {
     private String priCardHolderInd;
 
     /**
-     * Credit score - 3 bytes at offset 329 of the record image, held as text so that leading zeros
-     * survive the round trip.
+     * Credit score - 3 bytes at offset 329 of the record image, held as text so leading zeros survive
+     * the round trip.
      *
-     * <p><strong>No numeric range constraint is declared on this attribute, deliberately.</strong>
-     * The 300-to-850 range that appears in the requirements is screen-level edit validation
-     * belonging to the account-update service, not a property of the stored record, and it is
-     * enforced at the service and request-object layer instead.
-     *
-     * <p>The reason is measured rather than stylistic. In the seeded customer reference data,
-     * 21 of the 50 rows carry a score below 300, the lowest being {@code "001"}. A minimum,
-     * maximum, digit or pattern constraint here - or a check constraint in the schema - would
-     * reject 21 of 50 rows and would fail both the reference-data seed load and every fixture
-     * round trip. Do not add one.
+     * <p><strong>No numeric range constraint is declared here, and none may be added.</strong> The
+     * 300-to-850 range is screen-level edit validation belonging to the account-update path, not a
+     * property of the stored record. The reason is measured: 21 of the 50 rows in the customer
+     * reference data carry a score below 300, the lowest being {@code "001"}, so a minimum, maximum,
+     * digit or pattern constraint - here or as a check constraint - would reject 21 of 50 rows and
+     * fail both the seed load and every fixture round trip.
      */
     @Column(name = "fico_credit_score", length = 3, nullable = false)
     private String ficoCreditScore;
@@ -332,21 +366,24 @@ public class Customer {
     }
 
     /**
-     * Creates a fully populated customer from the eighteen persisted attributes, in the
-     * contractual order in which they appear in the 500-byte record image.
+     * Creates a fully populated customer from the eighteen persisted attributes, in the contractual
+     * order in which they appear in the 500-byte record image.
      *
-     * <p>Arguments are stored exactly as supplied. Nothing is trimmed, stripped, padded,
-     * case-folded, normalized, validated or encrypted, because the fixed-width padding and the
-     * leading zeros carried by these values are part of the stored record rather than incidental
-     * formatting. In particular the national identifier is stored as received - ciphertext when the
-     * caller has encrypted it, and {@code null} where no value is held - and the credit score is
-     * accepted at any three-character value the legacy data contains, including values below the
-     * range the update screen enforces.
+     * <p>Arguments are stored exactly as supplied. Nothing is trimmed, stripped, padded, case-folded,
+     * normalized or reformatted, because the fixed-width padding and the leading zeros carried by
+     * these values are part of the stored record rather than incidental formatting. The credit score
+     * in particular is accepted at any three-character value the legacy data contains, including
+     * values below the range the update screen enforces.
      *
-     * <p>The parameter list is long by design. A builder, a parameter object or a generated
-     * constructor was not introduced, because the module admits no code generation and no
-     * annotation processor, and because the eighteen-attribute shape is exactly the record
-     * contract.
+     * <p>The two regulated identifiers are the exception: they are checked, not transformed. Each must
+     * already carry the module's protected-value envelope, produced by the field-encryption service.
+     * The national identifier may also be {@code null}, which records that no value is held and is
+     * stored as a genuine null. Any other value - a cleartext identifier above all - is refused with
+     * an exception that names the attribute and never the value.
+     *
+     * <p>The parameter list is long by design. No builder, parameter object or generated constructor
+     * is introduced, because the module admits no code generation and the eighteen-attribute shape is
+     * exactly the record contract.
      *
      * @param custId           customer identifier, 9 characters, the primary key
      * @param firstName        given name, 25 characters
@@ -360,12 +397,16 @@ public class Customer {
      * @param addrZip          postal code, 10 characters
      * @param phoneNum1        primary telephone number, 15 characters
      * @param phoneNum2        secondary telephone number, 15 characters
-     * @param custSsn          national identifier as ciphertext, or {@code null} when none is held
-     * @param govtIssuedId     government-issued identifier, 20 characters
+     * @param custSsn          national identifier as a protected value, or {@code null} when none is
+     *                         held
+     * @param govtIssuedId     government-issued identifier as a protected value, never {@code null}
      * @param custDob          date of birth as text, 10 characters
      * @param eftAccountId     electronic-funds-transfer account identifier, 10 characters
      * @param priCardHolderInd primary-cardholder indicator, 1 character
      * @param ficoCreditScore  credit score as text, 3 characters, leading zeros preserved
+     * @throws IllegalArgumentException when either regulated identifier is supplied in a form other
+     *                                  than a well-formed protected value, or when the
+     *                                  government-issued identifier is {@code null}
      */
     public Customer(String custId,
                     String firstName,
@@ -397,8 +438,8 @@ public class Customer {
         this.addrZip = addrZip;
         this.phoneNum1 = phoneNum1;
         this.phoneNum2 = phoneNum2;
-        this.custSsn = custSsn;
-        this.govtIssuedId = govtIssuedId;
+        this.custSsn = requireProtectedValue(custSsn, "custSsn", true);
+        this.govtIssuedId = requireProtectedValue(govtIssuedId, "govtIssuedId", false);
         this.custDob = custDob;
         this.eftAccountId = eftAccountId;
         this.priCardHolderInd = priCardHolderInd;
@@ -630,13 +671,12 @@ public class Customer {
     }
 
     /**
-     * Returns the stored national identifier exactly as held, or {@code null} when no value is
-     * held.
+     * Returns the stored national identifier exactly as held, or {@code null} when none is held.
      *
-     * <p>The returned value is ciphertext when the caller stored ciphertext. This accessor performs
-     * no decryption: that is the responsibility of the utility and service layers, which the domain
-     * layer does not depend on. A {@code null} result is a legitimate, expected outcome and is
-     * returned as {@code null} rather than as an empty string.
+     * <p>The returned value is the protected form, because that is the only form this entity accepts.
+     * This accessor performs no decryption: reading the cleartext is the field-encryption service's
+     * responsibility, and the domain layer does not depend on it. A {@code null} result is a
+     * legitimate, expected outcome and is returned as {@code null} rather than as an empty string.
      *
      * @return the stored national identifier as held, or {@code null} when none is held
      */
@@ -645,35 +685,47 @@ public class Customer {
     }
 
     /**
-     * Replaces the stored national identifier. The value is assigned verbatim.
+     * Replaces the stored national identifier with a protected value.
      *
-     * <p>No encryption, decryption, padding or null substitution is performed here. Callers pass
-     * ciphertext, or {@code null} to record that no value is held; a {@code null} argument is
-     * stored as a genuine null and is never converted to an empty string or to the literal text
-     * {@code "null"}.
+     * <p>No encryption, decryption, padding or null substitution is performed here, and none is
+     * accepted in cleartext either. Callers pass a value already carrying the module's
+     * protected-value envelope, or {@code null} to record that no value is held; a {@code null}
+     * argument is stored as a genuine null and is never converted to an empty string or to the literal
+     * text {@code "null"}. Anything else - in particular a nine-digit cleartext identifier - is
+     * refused.
      *
-     * @param custSsn the national identifier as ciphertext, or {@code null} when none is held
+     * @param custSsn the national identifier as a protected value, or {@code null} when none is held
+     * @throws IllegalArgumentException when the value is neither {@code null} nor a well-formed
+     *                                  protected value
      */
     public void setCustSsn(String custSsn) {
-        this.custSsn = custSsn;
+        this.custSsn = requireProtectedValue(custSsn, "custSsn", true);
     }
 
     /**
-     * Returns the government-issued identifier exactly as stored.
+     * Returns the stored government-issued identifier exactly as held.
      *
-     * @return the 20-character government-issued identifier, unmodified
+     * <p>The returned value is the protected form. This accessor performs no decryption: reading the
+     * cleartext is the field-encryption service's responsibility, and the domain layer does not depend
+     * on it.
+     *
+     * @return the stored government-issued identifier as held, unmodified
      */
     public String getGovtIssuedId() {
         return govtIssuedId;
     }
 
     /**
-     * Replaces the government-issued identifier. The value is assigned verbatim.
+     * Replaces the government-issued identifier with a protected value.
      *
-     * @param govtIssuedId the 20-character government-issued identifier, stored verbatim
+     * <p>The column is not nullable, so {@code null} is refused as well as cleartext.
+     *
+     * @param govtIssuedId the government-issued identifier as a protected value
+     * @throws IllegalArgumentException when the value is {@code null} or is not a well-formed
+     *                                  protected value
      */
     public void setGovtIssuedId(String govtIssuedId) {
-        this.govtIssuedId = govtIssuedId;
+        this.govtIssuedId = requireProtectedValue(govtIssuedId, "govtIssuedId", false);
     }
 
     /**
@@ -758,11 +810,10 @@ public class Customer {
      * Compares two customers by their identifier alone, which is the primary key and therefore the
      * entity's persistent identity.
      *
-     * <p>No other attribute participates. Every remaining attribute is mutable, and including one
-     * would change an instance's equality and hash after a flush that updates it, which would
-     * corrupt hash-based collections and the persistence identity map. The identifier is compared
-     * verbatim, without trimming or case folding, so two differently padded identifiers are
-     * deliberately not equal - they are distinct keys in the database as well.
+     * <p>No other attribute participates: every one of them is mutable, and including one would
+     * change an instance's equality and hash after a flush that updates it. The identifier is
+     * compared verbatim, so two differently padded identifiers are deliberately not equal - they are
+     * distinct keys in the database too.
      *
      * @param o the object to compare against
      * @return {@code true} only if {@code o} is a {@code Customer} whose identifier equals this
@@ -788,5 +839,59 @@ public class Customer {
     @Override
     public int hashCode() {
         return Objects.hash(custId);
+    }
+
+    /**
+     * Rejects any value that is not a well-formed protected value, so that regulated cleartext cannot
+     * reach the persistence boundary through this entity.
+     *
+     * <p>The test is structural and needs no key: the value must open with the scheme marker, the
+     * remainder must decode as basic Base64, and the decoded body must be long enough to hold an
+     * initialisation vector and an authentication tag. Nine cleartext digits, twenty cleartext
+     * characters, an empty string, a whitespace-only string and the literal text {@code "null"} all
+     * fail it; a correctly produced envelope passes it. The check is written against the platform
+     * library alone, which is why it can live in this layer at all.
+     *
+     * <p><strong>The rejection message never contains the offending value.</strong> That value is by
+     * definition regulated data, and an exception message is one of the surfaces most likely to be
+     * logged, wrapped into a response body, or attached to a monitoring event. Only the attribute name
+     * and the failing condition are named.
+     *
+     * @param value         the candidate value
+     * @param attributeName the attribute being written, named in the failure message
+     * @param nullPermitted whether {@code null} is a legitimate stored state for this attribute
+     * @return the value, unchanged, when it is acceptable
+     * @throws IllegalArgumentException when the value is {@code null} for a non-nullable attribute, or
+     *                                  is not a well-formed protected value
+     */
+    private static String requireProtectedValue(final String value,
+                                                final String attributeName,
+                                                final boolean nullPermitted) {
+        if (value == null) {
+            if (nullPermitted) {
+                return null;
+            }
+            throw new IllegalArgumentException(attributeName
+                    + " is a protected attribute and must not be null");
+        }
+        if (!value.startsWith(PROTECTED_VALUE_PREFIX)) {
+            throw new IllegalArgumentException(attributeName
+                    + " must be an encrypted value carrying the " + PROTECTED_VALUE_PREFIX
+                    + " envelope; storing cleartext in this attribute is not permitted");
+        }
+        final byte[] body;
+        try {
+            body = Base64.getDecoder().decode(value.substring(PROTECTED_VALUE_PREFIX.length()));
+        } catch (IllegalArgumentException notBase64) {
+            throw new IllegalArgumentException(attributeName + " carries the "
+                    + PROTECTED_VALUE_PREFIX + " envelope marker but its body is not valid Base64",
+                    notBase64);
+        }
+        if (body.length < PROTECTED_VALUE_MINIMUM_BYTES) {
+            throw new IllegalArgumentException(attributeName + " carries the "
+                    + PROTECTED_VALUE_PREFIX
+                    + " envelope marker but is too short to be an authenticated ciphertext");
+        }
+        return value;
     }
 }

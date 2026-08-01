@@ -19,97 +19,64 @@ package com.carddemo.exception;
 /**
  * Terminal, unrecoverable failure raised wherever the legacy CardDemo estate abended.
  *
- * <h2>Legacy antecedent</h2>
+ * <p>The estate has exactly two abend paths and this single type replaces both. On the batch tier there
+ * are <strong>9</strong> static calls to the Language Environment abort routine {@code CEE3ABD}, one in
+ * each of {@code CBACT01C}, {@code CBACT02C}, {@code CBACT03C}, {@code CBACT04C}, {@code CBCUS01C},
+ * {@code CBTRN01C}, {@code CBTRN02C}, {@code CBTRN03C} and {@code CBSTM03A}. On the online tier there
+ * are <strong>4</strong> CICS {@code ABEND} commands, in {@code COACTUPC} (line 4222),
+ * {@code COACTVWC} (line 934), {@code COCRDSLC} (line 875) and {@code COCRDUPC} (line 1550). Nine plus
+ * four is the entire abend surface, so there is no third path and no third exception type for one. The
+ * {@code CANCEL} token sitting immediately above each of the four online sites is the CICS
+ * {@code HANDLE ABEND} command's {@code CANCEL} option, which deregisters the program's own abend
+ * handler just before the abend is issued; it is <em>not</em> the COBOL {@code CANCEL} statement, which
+ * does not occur anywhere in the estate, so no cancel-a-load-module equivalent is required here.
  *
- * <p>The estate has exactly two abend paths and this single type replaces both. On the batch
- * tier there are <strong>9</strong> static calls to the Language Environment abort routine
- * {@code CEE3ABD}, one in each of {@code CBACT01C}, {@code CBACT02C}, {@code CBACT03C},
- * {@code CBACT04C}, {@code CBCUS01C}, {@code CBTRN01C}, {@code CBTRN02C}, {@code CBTRN03C}
- * and {@code CBSTM03A}. On the online tier there are <strong>4</strong> CICS {@code ABEND}
- * commands, in {@code COACTUPC} (line 4222), {@code COACTVWC} (line 934), {@code COCRDSLC}
- * (line 875) and {@code COCRDUPC} (line 1550). Nine plus four is the entire abend surface of
- * the estate; there is no third path, so there is no third exception type for it.
- *
- * <p>The {@code CANCEL} token that sits immediately above each of the four online abend sites
- * is the CICS {@code HANDLE ABEND} command's {@code CANCEL} option, which deregisters the
- * program's own abend handler just before the abend is issued. It is a CICS command option and
- * <em>not</em> the COBOL {@code CANCEL} statement; the COBOL {@code CANCEL} verb does not occur
- * anywhere in the estate. A reader comparing this class against the legacy source should
- * therefore not expect a cancel-a-load-module equivalent here, because none is required.
- *
- * <h2>The 134-byte abend context</h2>
- *
- * <p>The copybook {@code app/cpy/CSMSG02Y.cpy} declares the group item {@code ABEND-DATA} with
- * exactly four subordinate character fields, every one of them initialised to spaces. Those
- * four pieces of context are carried here as distinct, bounded, immutable values rather than as
- * one flattened string:
- *
+ * <p><strong>The 134-byte abend context.</strong> {@code app/cpy/CSMSG02Y.cpy} declares the group item
+ * {@code ABEND-DATA} with exactly four subordinate character fields, every one initialised to spaces.
+ * Those four are carried here as distinct, bounded, immutable values rather than as one flattened
+ * string:
  * <ul>
  *   <li>{@code ABEND-CODE}, {@code PIC X(4)}, exposed by {@link #code()}</li>
  *   <li>{@code ABEND-CULPRIT}, {@code PIC X(8)}, exposed by {@link #culprit()}</li>
  *   <li>{@code ABEND-REASON}, {@code PIC X(50)}, exposed by {@link #reason()}</li>
  *   <li>{@code ABEND-MSG}, {@code PIC X(72)}, exposed by the inherited {@link #getMessage()}</li>
  * </ul>
+ * 4 + 8 + 50 + 72 = 134, which is why {@link #CONTEXT_LENGTH} is declared as the sum of the four width
+ * constants rather than as a literal: the arithmetic identity is expressed in code and cannot drift.
+ * {@link #toFixedWidthContext()} renders the four values back into that exact 134-character image,
+ * mirroring the online routine's transmission of the whole area to the terminal. Only three fields are
+ * declared on this class; the operator message is not duplicated into a redundant field because it is
+ * carried by the inherited {@code Throwable} message. All four pieces are present, three here and one
+ * in the superclass.
  *
- * <p>4 + 8 + 50 + 72 = 134 bytes, which is why {@link #CONTEXT_LENGTH} is declared as the sum of
- * the four individual width constants rather than as a literal: the arithmetic identity is
- * expressed in code and cannot drift. {@link #toFixedWidthContext()} renders the four values
- * back into that exact 134-character image, mirroring the online routine's transmission of the
- * whole {@code ABEND-DATA} area to the terminal.
+ * <p><strong>Null handling and width enforcement.</strong> A {@code null} {@link #code()},
+ * {@link #culprit()} or {@link #reason()} is permitted and normalised to the empty string, recorded as
+ * decision log entry <strong>D-07</strong>. A {@code null} or blank message is instead replaced by
+ * {@link #DEFAULT_MESSAGE}, faithful to the online abend routine in {@code app/cbl/COACTUPC.cbl} (lines
+ * 4205 to 4207), which substitutes that literal when {@code ABEND-MSG} carries no supplied value; the
+ * copybook initialises that field to spaces while the routine tests it against low values, so blank and
+ * absent are treated alike rather than leaving an operator staring at an empty terminal-abend message.
+ * A value longer than its legacy field is <strong>rejected</strong> with an
+ * {@link IllegalArgumentException} naming the field, its picture width and the offending length, rather
+ * than truncated on the right the way legacy {@code MOVE} would: recorded as decision log entry
+ * <strong>D-06</strong>.
  *
- * <p>Only three fields are declared on this class. The fourth piece of context, the operator
- * message, is deliberately <em>not</em> duplicated into a redundant field: it is carried by the
- * inherited {@code Throwable} message and is read back through {@link #getMessage()}. All four
- * pieces are present; three live here and one lives in the superclass.
+ * <p><strong>Emit-then-abend is the caller's contract.</strong> This class performs <strong>no logging
+ * of its own</strong> and holds no logger. The legacy always emitted the diagnostic <em>before</em>
+ * abending: on the batch tier {@code app/cbl/CBACT01C.cbl} does so at three structurally identical
+ * sites &mdash; the read path (lines 110 to 113), the open path (lines 144 to 147) and the close path
+ * (lines 162 to 165) &mdash; each displaying the diagnostic, moving the raw two-byte file status into a
+ * display field, displaying that status, and only then abending; on the online tier the abend routine in
+ * {@code app/cbl/COACTUPC.cbl} sends the whole 134-byte context to the terminal, deregisters the abend
+ * handler, and only then abends. Every caller must therefore log the diagnostic through SLF4J,
+ * including the raw two-byte file status wherever one exists, <em>before</em> raising this exception.
+ * Never rely on a {@code catch} block that has already unwound past the status, and never let the
+ * exception message be the only record of it: an operator reading a Java log must see the same
+ * diagnostic ordering they saw on the mainframe.
  *
- * <h2>Null handling and width enforcement</h2>
- *
- * <p>A {@code null} {@link #code()}, {@link #culprit()} or {@link #reason()} is permitted and is
- * normalised to the empty string, because the legacy fields are initialised to spaces and are
- * therefore never absent. A {@code null} or blank message is instead replaced by
- * {@link #DEFAULT_MESSAGE}, faithful to the online abend routine in {@code app/cbl/COACTUPC.cbl}
- * (lines 4205 to 4207), which substitutes that literal when {@code ABEND-MSG} carries no
- * supplied value. The copybook initialises {@code ABEND-MSG} to spaces while the routine tests
- * it against low values, so blank and absent are treated alike here; the alternative would leave
- * an operator staring at an empty terminal-abend message, which the legacy never does.
- *
- * <p>Widths are enforced <strong>loudly</strong>. A value longer than its legacy field raises
- * {@link IllegalArgumentException} naming the field, its legacy picture width and the offending
- * length. Nothing is silently truncated and nothing is silently padded away: the legacy field
- * simply could not hold an over-length value, so accepting one would hide a defect rather than
- * report it.
- *
- * <h2>Emit-then-abend is the caller's contract</h2>
- *
- * <p>This class performs <strong>no logging of its own</strong> and holds no logger. The legacy
- * always emitted the diagnostic <em>before</em> abending, and callers must reproduce that
- * ordering. On the batch tier {@code app/cbl/CBACT01C.cbl} does so at three structurally
- * identical sites -- the read path (lines 110 to 113), the open path (lines 144 to 147) and the
- * close path (lines 162 to 165) -- each of which displays the diagnostic, moves the raw
- * two-byte file status into a display field, displays that status, and only then abends. On the
- * online tier the abend routine in {@code app/cbl/COACTUPC.cbl} sends the whole 134-byte context
- * to the terminal, deregisters the abend handler, and only then abends.
- *
- * <p>Every caller must therefore log the diagnostic through SLF4J, including the raw two-byte
- * file status wherever one exists, <em>before</em> raising this exception. Never rely on a
- * {@code catch} block that has already unwound past the status, and never let the exception
- * message be the only record of it. An operator reading a Java log must see the same diagnostic
- * ordering they saw on the mainframe.
- *
- * <h2>Documented source anomaly</h2>
- *
- * <p>The copybook that defines this context carries a header comment naming the file
- * {@code CABENDD.CPY}, which disagrees with the member name that actually exists,
- * {@code CSMSG02Y.cpy}. The discrepancy is recorded here and in the project decision log; it is
- * deliberately <em>not</em> corrected, because the legacy tree is the parity baseline and must
- * remain byte-identical.
- *
- * <h2>Provenance</h2>
- *
- * <p>Translated from the CardDemo mainframe estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL, JCL, BMS, copybook or CICS
- * resource text is reproduced in this module; the legacy source is cited, never transcribed.
+ * <p>The copybook that defines this context names itself inconsistently in its own header comment. That
+ * is anomaly 17 of the source anomaly register and is deliberately not corrected, because the legacy
+ * tree is the parity baseline and must remain byte-identical.
  */
 public class AbendException extends RuntimeException {
 
@@ -344,10 +311,12 @@ public class AbendException extends RuntimeException {
     /**
      * The single place where a context value is bounded to its legacy field width.
      *
-     * <p>A {@code null} value becomes the empty string, because the legacy fields are initialised
-     * to spaces and are therefore never absent. An over-length value is rejected loudly rather
-     * than truncated: the legacy field could not have held it, so truncating would hide a defect
-     * instead of reporting it.
+     * <p>Two departures from legacy {@code MOVE} semantics apply here, and neither is decided
+     * locally: a {@code null} value becomes the empty string rather than raising, recorded as
+     * decision log entry <strong>D-07</strong>, and an over-length value is <strong>rejected</strong>
+     * rather than truncated on the right the way {@code MOVE} would, recorded as decision log entry
+     * <strong>D-06</strong>. The rejection carries the legacy field name, its width and the length
+     * supplied.
      *
      * @param value          the caller-supplied value, possibly {@code null}
      * @param legacyWidth    the width of the legacy field, in characters

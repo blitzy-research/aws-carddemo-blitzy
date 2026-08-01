@@ -35,36 +35,56 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Unit tests for {@link JobSubmissionException}, the failure type of the single online-to-batch
  * bridge in the CardDemo estate.
  *
- * <h2>What this test class is for</h2>
+ * <p>The legacy bridge is the transient-data-queue write in {@code app/cbl/CORPT00C.cbl}, paragraph
+ * {@code WIRTE-JOBSUB-TDQ} at line 515, reached from the transaction-report request screen; the
+ * queue it writes to is declared in {@code app/csd/CARDDEMO.CSD} at lines 499 to 505. Between them
+ * those two definitions fix a contract that the migrated code must not drift from, and every test
+ * below pins one clause of it.
  *
- * <p>The legacy bridge is the transient-data-queue write in {@code app/cbl/CORPT00C.cbl},
- * paragraph {@code WIRTE-JOBSUB-TDQ} at line 515, reached from the transaction-report request
- * screen. The queue it writes to is declared in {@code app/csd/CARDDEMO.CSD} at lines 499 to 505.
- * Between them those two definitions fix a contract that the migrated code must not drift from,
- * and every test below exists to pin one clause of it.
+ * <p><strong>The decisive clause: the failure is non-fatal.</strong> The queue is defined with
+ * {@code ERROROPTION(IGNORE)}, so a write error against it raises no condition and terminates no
+ * transaction, and the calling paragraph behaves exactly as that implies: on a non-normal response
+ * it writes the response and reason codes to its diagnostic channel, raises its own error flag,
+ * moves the failure text into the screen message field, repositions the cursor and re-sends the
+ * screen - then falls out of its evaluation and ends. There is no abend, no rollback and no
+ * re-raise anywhere on that path. Three consequences follow, and the non-fatal group asserts all
+ * three: the failure is <strong>logged</strong>, the <strong>cards after the failing one are not
+ * sent</strong> because the emitter's loop also tests that error flag, and <strong>control returns
+ * normally</strong>. Recorded as decision log entry D-36.
  *
- * <h2>The decisive clause: the failure is NON-FATAL</h2>
+ * <p>The class under test is therefore an unchecked value carrier that a catch-and-continue handler
+ * can build and inspect on the failure path. It is deliberately unrelated to the abend type in this
+ * package and exposes no fatality flag, abend code, graded seriousness value or instruction to
+ * abort. Those absences are asserted structurally - by proving the type is not assignable to the
+ * abend type, and by the fact that this class compiles without ever naming such a member, a
+ * compile-time proof that needs no reflection. A change that made the failure fatal would make the
+ * report request fail where the legacy system succeeds: a silent, high-impact regression.
  *
- * <p>The queue is defined with {@code ERROROPTION(IGNORE)}. A write error against that queue is
- * <em>ignored</em>: it raises no condition and terminates no transaction. The calling paragraph
- * behaves exactly as that attribute implies. On a non-normal response it writes the response and
- * reason codes to its diagnostic channel, raises its own error flag, moves the failure text into
- * the screen message field, repositions the cursor and re-sends the screen - and then simply falls
- * out of its evaluation and ends. There is no abend, no rollback and no re-raise anywhere on that
- * path; control returns to the operator normally and the request completes.
+ * <p><strong>The frozen message literal.</strong>
+ * {@link JobSubmissionException#DEFAULT_MESSAGE} reproduces the screen literal character for
+ * character, and its final three characters are three separate ASCII full stops rather than the
+ * single ellipsis character at U+2026. An editor or formatter can substitute that code point
+ * silently and no compiler will notice, so the constants group guards the literal three independent
+ * ways: exact equality, an explicit check that the code point is absent, and a count of the full
+ * stops in the whole string.
  *
- * <p>Three consequences follow, and the tests in the non-fatal group assert all three: the failure
- * is <strong>logged</strong>, the <strong>cards after the failing one are not sent</strong> because
- * the emitter's loop also tests that error flag, and <strong>control returns normally</strong>.
+ * <p><strong>Fixed-width payload and the meaning of a card ordinal.</strong> {@code RECORDSIZE(80)}
+ * with {@code RECORDFORMAT(FIXED)} makes every queue record an 80-character fixed-width image;
+ * {@code BLOCKFORMAT(UNBLOCKED)} means each card is published individually rather than
+ * concatenated; {@code DISPOSITION(MOD)} makes writes append, so card order is significant and
+ * becomes message-group ordering on the replacement queue. The submitted job image is 17 cards
+ * wide, carries four ten-character date substitution slots, and ends with an end-of-file sentinel
+ * card that is itself transmitted before the emitting loop stops. The legacy card index is
+ * one-based and the array holds up to 1000 entries, which is why a failing ordinal is meaningful
+ * context and why {@link JobSubmissionException#ORDINAL_NOT_APPLICABLE} is a negative sentinel
+ * rather than zero: zero could not distinguish "the publish failed before any card went out" from
+ * "card N failed".
  *
- * <p>The class under test is therefore an unchecked value carrier that a catch-and-continue
- * handler can build and inspect on the failure path. It is deliberately <em>not</em> related to
- * the abend type in this package, and it exposes no fatality flag, no abend code, no graded
- * seriousness value and no instruction to abort. Those absences are asserted structurally, by
- * proving the type is not assignable to the abend type, and by the fact that this test class
- * compiles without ever naming such a member - a compile-time proof that needs no reflection.
- * If a future change made the failure fatal, the report request would begin failing where the
- * legacy system succeeds, which is a silent, high-impact behavioural regression.
+ * <p><strong>Scope.</strong> A plain unit test: no application context, no container, no messaging
+ * client, and no dependency beyond the JDK, the test framework and the assertion library. Proving
+ * the queue contract end to end - publishing the ordered card sequence with its four substituted
+ * date slots and its terminal sentinel to a real ordered queue and draining it back - belongs to the
+ * integration and end-to-end tiers.
  *
  * <h2>The frozen message literal</h2>
  *
@@ -91,11 +111,19 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <h2>Scope of this test class</h2>
  *
- * <p>This is a plain unit test. It starts no application context, no container and no messaging
- * client, and it adds no dependency: the only collaborators are the JDK, the test framework and
- * the assertion library. Proving the queue contract end to end - publishing the ordered card
- * sequence with its four substituted date slots and its terminal sentinel to a real ordered queue
- * and draining it back - belongs to the integration and end-to-end tiers, not here.
+ * <p>This class tests the failure <em>carrier</em> and nothing else: what the value holds, how it is
+ * constructed, what it is not assignable to, and how it survives serialization. It is a plain unit
+ * test that starts no application context, no container and no messaging client, and it adds no
+ * dependency: the only collaborators are the JDK, the test framework and the assertion library.
+ *
+ * <p>The <em>behaviour</em> of the emitting loop - seventeen ordered publishes, the sentinel
+ * transmitted, and a publish failure that stops the stream without propagating - is asserted against
+ * the real service in {@code com.carddemo.service.JobSubmissionServiceTest}, by making the real
+ * messaging contract fail. It is deliberately not asserted here. A loop written inside this class
+ * could only demonstrate what that loop does, which is a statement about the test rather than about
+ * the production code, and it could pass while the production loop behaved differently. Proving the
+ * queue contract against a real ordered queue - publishing the card sequence and draining it back -
+ * belongs to the integration and end-to-end tiers.
  *
  * <h2>Documented source anomaly</h2>
  *
@@ -115,15 +143,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class JobSubmissionExceptionTest {
 
     /**
-     * The number of cards in the submitted job image. Factual layout evidence taken from the card
-     * table the legacy program declares, not a capacity or performance figure.
+     * The one-based ordinal of the terminating end-of-file sentinel card in the submitted job image.
+     * Factual layout evidence taken from the card table the legacy program declares, not a capacity
+     * or performance figure.
      */
-    private static final int JOB_IMAGE_CARD_COUNT = 17;
-
-    /** The one-based ordinal of the terminating end-of-file sentinel card in that image. */
     private static final int SENTINEL_CARD_ORDINAL = 17;
 
-    /** A one-based ordinal in the middle of the image, used as the simulated point of failure. */
+    /** A one-based ordinal in the middle of the image, used as a carried point of failure. */
     private static final int FAILING_CARD_ORDINAL = 9;
 
     /** The first one-based ordinal in the image. */
@@ -157,9 +183,7 @@ class JobSubmissionExceptionTest {
     /** The message of the stand-in cause used throughout, so assertions can identify it. */
     private static final String CAUSE_MESSAGE = "publish failed";
 
-    // ------------------------------------------------------------------------------------------
     // Frozen contract constants
-    // ------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("frozen contract constants")
@@ -244,7 +268,13 @@ class JobSubmissionExceptionTest {
     }
 
     // ------------------------------------------------------------------------------------------
-    // The non-fatal contract - the reason this test class exists
+    // The non-fatal contract - the reason this test class exists.
+    //
+    // What is asserted here is that the carrier makes catch-and-continue possible: every overload
+    // is constructible on the failure path, the type is unchecked so no signature has to change to
+    // absorb it, and a caught instance carries the diagnostic context a handler must log. Whether
+    // the service actually catches and continues is a property of the service, and it is asserted
+    // against the real service in com.carddemo.service.JobSubmissionServiceTest.
     // ------------------------------------------------------------------------------------------
 
     @Nested
@@ -294,85 +324,6 @@ class JobSubmissionExceptionTest {
         }
 
         @Test
-        @DisplayName("a publish failure is caught and the caller continues - ERROROPTION(IGNORE) semantics")
-        void aPublishFailureIsCaughtAndTheCallerContinues() {
-            final EmitterOutcome[] captured = new EmitterOutcome[1];
-
-            // The entire simulation is wrapped. If the exception escaped the handler, or if the
-            // fixed-width guard inside the simulated publish tripped, this assertion fails.
-            assertThatCode(() -> captured[0] =
-                    emitEveryCardIgnoringFailure(JOB_IMAGE_CARD_COUNT, FAILING_CARD_ORDINAL))
-                    .as("nothing may escape a catch-and-continue handler: the queue definition "
-                            + "ignores the error and the legacy paragraph returned normally")
-                    .doesNotThrowAnyException();
-
-            final EmitterOutcome outcome = captured[0];
-            assertThat(outcome)
-                    .as("the simulation must have produced an outcome, which it can only do by "
-                            + "reaching its own final statement")
-                    .isNotNull();
-            assertThat(outcome.cardsAttempted())
-                    .as("the loop ran to completion: every one of the %d cards was attempted even "
-                            + "though card %d failed", JOB_IMAGE_CARD_COUNT, FAILING_CARD_ORDINAL)
-                    .isEqualTo(JOB_IMAGE_CARD_COUNT);
-            assertThat(outcome.cardsPublished())
-                    .as("exactly one card failed, so exactly one fewer than the whole image was "
-                            + "published")
-                    .isEqualTo(JOB_IMAGE_CARD_COUNT - 1);
-            assertThat(outcome.failuresCaught())
-                    .as("the failure was observed rather than swallowed silently")
-                    .isEqualTo(1);
-            assertThat(outcome.lastCaught())
-                    .as("the caught value is the failure type under test")
-                    .isNotNull()
-                    .isInstanceOf(JobSubmissionException.class);
-            assertThat(outcome.lastCaught().failedCardOrdinal())
-                    .as("the caught failure names the card the publish stopped on")
-                    .isEqualTo(FAILING_CARD_ORDINAL);
-            assertThat(outcome.lastCaught().queueName())
-                    .isEqualTo(JobSubmissionException.DEFAULT_QUEUE_NAME);
-            assertThat(outcome.lastCaught().responseCode()).isEqualTo(RESPONSE_CODE);
-            assertThat(outcome.lastCaught().reasonCode()).isEqualTo(REASON_CODE);
-            assertThat(outcome.lastCaught().getCause())
-                    .as("the underlying publish failure is chained, not swallowed, so the caller "
-                            + "still has the original detail to log")
-                    .isInstanceOf(IOException.class)
-                    .hasMessage(CAUSE_MESSAGE);
-        }
-
-        @Test
-        @DisplayName("a publish failure stops the remaining cards yet the emitter still returns normally")
-        void aPublishFailureStopsTheRemainingCardsYetStillReturnsNormally() {
-            final EmitterOutcome[] captured = new EmitterOutcome[1];
-
-            assertThatCode(() -> captured[0] =
-                    emitCardsStoppingOnFailure(JOB_IMAGE_CARD_COUNT, FAILING_CARD_ORDINAL))
-                    .as("the legacy emitter tested its own error flag, so it stopped emitting - "
-                            + "but it still fell out of its loop and returned to the operator")
-                    .doesNotThrowAnyException();
-
-            final EmitterOutcome outcome = captured[0];
-            assertThat(outcome).isNotNull();
-            assertThat(outcome.cardsAttempted())
-                    .as("emission stopped at the failing card rather than continuing through the "
-                            + "rest of the image")
-                    .isEqualTo(FAILING_CARD_ORDINAL);
-            assertThat(outcome.cardsPublished())
-                    .as("the cards after the failing one were not sent")
-                    .isEqualTo(FAILING_CARD_ORDINAL - 1);
-            assertThat(outcome.cardsPublished())
-                    .as("and the sentinel card at ordinal %d was therefore never reached",
-                            SENTINEL_CARD_ORDINAL)
-                    .isLessThan(SENTINEL_CARD_ORDINAL);
-            assertThat(outcome.failuresCaught()).isEqualTo(1);
-            assertThat(outcome.lastCaught()).isNotNull();
-            assertThat(outcome.lastCaught().failedCardOrdinal())
-                    .as("the ordinal identifies the point from which the remaining cards were "
-                            + "not sent")
-                    .isEqualTo(FAILING_CARD_ORDINAL);
-        }
-
-        @Test
         @DisplayName("thrown and caught, the failure carries the diagnostic context a caller must log")
         void thrownAndCaughtTheFailureCarriesTheDiagnosticContext() {
             final Throwable cause = new IOException(CAUSE_MESSAGE);
@@ -392,9 +343,7 @@ class JobSubmissionExceptionTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
     // Failure context round trips
-    // ------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("failure context")
@@ -528,9 +477,7 @@ class JobSubmissionExceptionTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
     // The failing card ordinal and its sentinel
-    // ------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("failing card ordinal")
@@ -606,9 +553,7 @@ class JobSubmissionExceptionTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
     // The cause-only and message-and-cause constructors
-    // ------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("cause-only and message-and-cause constructors")
@@ -693,9 +638,7 @@ class JobSubmissionExceptionTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
     // The composed message
-    // ------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("composed message")
@@ -777,9 +720,7 @@ class JobSubmissionExceptionTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
     // Type identity and non-assignability
-    // ------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("type identity")
@@ -826,9 +767,7 @@ class JobSubmissionExceptionTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
     // Serialization identity
-    // ------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("serialization identity")
@@ -877,130 +816,8 @@ class JobSubmissionExceptionTest {
     }
 
     // ------------------------------------------------------------------------------------------
-    // Test support: the emitter-loop simulation and the serialization plumbing
+    // Test support: the serialization plumbing
     // ------------------------------------------------------------------------------------------
-
-    /**
-     * The observable result of one simulated pass over the job image.
-     *
-     * @param cardsAttempted  how many cards the loop reached, which is what proves whether it ran
-     *                        to completion
-     * @param cardsPublished  how many cards were accepted by the simulated queue
-     * @param failuresCaught  how many failures the handler caught and absorbed
-     * @param lastCaught      the last failure the handler caught, or {@code null} if none occurred
-     */
-    private record EmitterOutcome(int cardsAttempted,
-                                  int cardsPublished,
-                                  int failuresCaught,
-                                  JobSubmissionException lastCaught) {
-    }
-
-    /**
-     * Simulates a publish of one card. Guards the fixed-width contract, then fails for exactly one
-     * designated ordinal.
-     *
-     * <p>The width guard throws a different, deliberately uncaught type, so that a card of the
-     * wrong width would escape the emitter simulation and fail the wrapping assertion instead of
-     * being silently absorbed by the handler under test.
-     *
-     * @param cardImage      the fixed-width card payload
-     * @param ordinal        the one-based ordinal of this card
-     * @param failingOrdinal the one-based ordinal that must fail
-     */
-    private static void publishCard(final String cardImage,
-                                    final int ordinal,
-                                    final int failingOrdinal) {
-        if (cardImage.length() != JobSubmissionException.RECORD_SIZE) {
-            throw new IllegalStateException("a card payload must be exactly "
-                    + JobSubmissionException.RECORD_SIZE + " characters wide, but ordinal "
-                    + ordinal + " was " + cardImage.length());
-        }
-        if (ordinal == failingOrdinal) {
-            throw new JobSubmissionException(JobSubmissionException.DEFAULT_QUEUE_NAME,
-                    RESPONSE_CODE, REASON_CODE, ordinal, new IOException(CAUSE_MESSAGE));
-        }
-    }
-
-    /**
-     * Emits every card, catching a failure and continuing to the end of the image.
-     *
-     * <p>This is the executable statement of the non-aborting contract: the handler catches,
-     * records and carries on, and the method returns a value that can only exist if the loop
-     * reached its final iteration.
-     *
-     * @param cardCount      how many cards the image holds
-     * @param failingOrdinal the one-based ordinal that fails
-     * @return what the pass observed
-     */
-    private static EmitterOutcome emitEveryCardIgnoringFailure(final int cardCount,
-                                                               final int failingOrdinal) {
-        int attempted = 0;
-        int published = 0;
-        int failures = 0;
-        JobSubmissionException lastCaught = null;
-        for (int ordinal = FIRST_CARD_ORDINAL; ordinal <= cardCount; ordinal++) {
-            attempted++;
-            try {
-                publishCard(cardImage(ordinal), ordinal, failingOrdinal);
-                published++;
-            } catch (JobSubmissionException failure) {
-                // The queue definition ignores the error, so the handler absorbs it. A real caller
-                // logs the response and reason codes here; nothing is re-thrown either way.
-                failures++;
-                lastCaught = failure;
-            }
-        }
-        return new EmitterOutcome(attempted, published, failures, lastCaught);
-    }
-
-    /**
-     * Emits cards until one fails, mirroring the legacy loop's own error flag, and still returns
-     * normally afterwards.
-     *
-     * <p>The legacy emitting loop tested that flag as one of its termination conditions, so a
-     * failed write stopped further emission - and yet the transaction still completed. Both halves
-     * of that statement matter, and this pass is what proves the second half is not lost when the
-     * first half is honoured.
-     *
-     * @param cardCount      how many cards the image holds
-     * @param failingOrdinal the one-based ordinal that fails
-     * @return what the pass observed
-     */
-    private static EmitterOutcome emitCardsStoppingOnFailure(final int cardCount,
-                                                             final int failingOrdinal) {
-        int attempted = 0;
-        int published = 0;
-        int failures = 0;
-        JobSubmissionException lastCaught = null;
-        boolean errorFlag = false;
-        for (int ordinal = FIRST_CARD_ORDINAL; ordinal <= cardCount && !errorFlag; ordinal++) {
-            attempted++;
-            try {
-                publishCard(cardImage(ordinal), ordinal, failingOrdinal);
-                published++;
-            } catch (JobSubmissionException failure) {
-                failures++;
-                lastCaught = failure;
-                errorFlag = true;
-            }
-        }
-        return new EmitterOutcome(attempted, published, failures, lastCaught);
-    }
-
-    /**
-     * Builds a synthetic fixed-width card payload of exactly the contractual record size.
-     *
-     * <p>The content is synthetic on purpose: no legacy card text is reproduced anywhere in this
-     * module. Only the width is contractual, and the space padding is what reproduces the fixed
-     * record format rather than a trimmed string.
-     *
-     * @param ordinal the one-based ordinal of the card
-     * @return a payload of exactly {@link JobSubmissionException#RECORD_SIZE} characters
-     */
-    private static String cardImage(final int ordinal) {
-        final String body = "SUBMISSION-CARD-" + ordinal;
-        return body + " ".repeat(JobSubmissionException.RECORD_SIZE - body.length());
-    }
 
     /**
      * Writes the failure to a byte array using the platform serialization mechanism.

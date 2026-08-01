@@ -36,90 +36,54 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 /**
  * Unit tests for {@link MenuOptionCatalog}, the migrated form of the two CardDemo menu-option copybooks.
  *
- * <h2>What is under test</h2>
- * {@link MenuOptionCatalog} publishes two catalogs, and this class is their sole owner in the test estate.
- * The legacy authorities, cited as metadata only, are:
- * <ul>
- *   <li>{@code app/cpy/COMEN02Y.cpy} &mdash; the <strong>user</strong> menu. Group item
- *       {@code CARDDEMO-MAIN-MENU-OPTIONS} on line 19, declared population
- *       {@code CDEMO-MENU-OPT-COUNT} on line 21, and ten entries written out on lines 25 to 84. Each entry
- *       carries four components: {@code CDEMO-MENU-OPT-NUM}, {@code CDEMO-MENU-OPT-NAME},
- *       {@code CDEMO-MENU-OPT-PGMNAME} and {@code CDEMO-MENU-OPT-USRTYPE}.</li>
- *   <li>{@code app/cpy/COADM02Y.cpy} &mdash; the <strong>administrator</strong> menu. Group item
- *       {@code CARDDEMO-ADMIN-MENU-OPTIONS} on line 19, declared population
- *       {@code CDEMO-ADMIN-OPT-COUNT} on line 20, and four entries written out on lines 24 to 42. Each
- *       entry carries only three components: {@code CDEMO-ADMIN-OPT-NUM}, {@code CDEMO-ADMIN-OPT-NAME} and
- *       {@code CDEMO-ADMIN-OPT-PGMNAME}. There is no user-type component anywhere in that member.</li>
- *   <li>{@code app/cpy/COCOM01Y.cpy} &mdash; the shared communication area, whose
- *       {@code CDEMO-USER-TYPE} item on line 26 carries the two condition names that give the user-type
- *       codes their meaning: an administrator code on line 27 and a standard-user code on line 28.</li>
- * </ul>
- * No copybook is read at run time and no COBOL statement is reproduced here. Only member names, field
- * names, declared widths, line numbers and the menu label text cross over, and the label text crosses over
- * because it is the external screen contract rather than implementation detail.
+ * <p>The legacy authorities, cited as metadata only, are {@code app/cpy/COMEN02Y.cpy} for the
+ * <strong>user</strong> menu &mdash; group item {@code CARDDEMO-MAIN-MENU-OPTIONS} on line 19, declared
+ * population on line 21, ten entries on lines 25 to 84, four components each &mdash;
+ * {@code app/cpy/COADM02Y.cpy} for the <strong>administrator</strong> menu &mdash; group item on line 19,
+ * declared population on line 20, four entries on lines 24 to 42, only three components each, no
+ * user-type component anywhere in that member &mdash; and {@code app/cpy/COCOM01Y.cpy}, whose
+ * {@code CDEMO-USER-TYPE} item on line 26 carries the two condition names that give the user-type codes
+ * their meaning. Only member names, field names, declared widths, line numbers and the menu label text
+ * cross over; the label text crosses over because it is the external screen contract.
  *
- * <h2>This class also owns the admin-gate assertions</h2>
- * The administrator gate is asserted here rather than in a class of its own, because it is a property of
+ * <p><strong>This class also owns the admin-gate assertions</strong>, because the gate is a property of
  * these two catalogs and of nothing else: every user entry carries the standard-user code and no
  * administrator entry carries a user-type code at all. A second test class for the gate would duplicate
  * ownership of the same production class. What the gate is <em>not</em> is a routing decision: because the
  * administrator rows publish no code, who may reach them cannot be derived from a row and must come from
- * the authenticated principal, which {@code com.carddemo.config.SecurityConfig} owns.
+ * the authenticated principal &mdash; which is the concern of an HTTP security configuration that is
+ * <strong>not delivered yet</strong>, so nothing asserted here constitutes route protection.
  *
- * <h2>The surplus table slots, and why they must stay unrepresented</h2>
- * Both copybooks declare a redefining table larger than the group it redefines. A user entry occupies
- * {@value #EXPECTED_USER_ENTRY_LENGTH} bytes, so the ten written entries occupy
- * {@value #EXPECTED_USER_DATA_GROUP_LENGTH} bytes, while the redefining table spans
- * {@value #EXPECTED_USER_TABLE_SPAN} bytes &mdash; {@value #EXPECTED_USER_TABLE_SURPLUS_BYTES} bytes more
- * than the group it overlays. An administrator entry occupies {@value #EXPECTED_ADMIN_ENTRY_LENGTH} bytes,
- * so its four entries occupy {@value #EXPECTED_ADMIN_DATA_GROUP_LENGTH} bytes against a table span of
- * {@value #EXPECTED_ADMIN_TABLE_SPAN} bytes, a surplus of
- * {@value #EXPECTED_ADMIN_TABLE_SURPLUS_BYTES} bytes.
+ * <p><strong>The surplus table slots must stay unrepresented.</strong> Both copybooks declare a redefining
+ * table larger than the group it redefines: ten user entries of {@value #EXPECTED_USER_ENTRY_LENGTH} bytes
+ * occupy {@value #EXPECTED_USER_DATA_GROUP_LENGTH} bytes against a table span of
+ * {@value #EXPECTED_USER_TABLE_SPAN}, a surplus of {@value #EXPECTED_USER_TABLE_SURPLUS_BYTES}; four
+ * administrator entries of {@value #EXPECTED_ADMIN_ENTRY_LENGTH} bytes occupy
+ * {@value #EXPECTED_ADMIN_DATA_GROUP_LENGTH} against a span of {@value #EXPECTED_ADMIN_TABLE_SPAN}, a
+ * surplus of {@value #EXPECTED_ADMIN_TABLE_SURPLUS_BYTES}. The surplus positions are not blank storage
+ * inside the declared group; they overlay whatever happens to follow it, so reading them in the legacy
+ * program is undefined. That is why the catalog publishes the declared populations and never the table
+ * capacities, and why a lookup for a surplus position must report an absent option rather than a blank
+ * placeholder. Both capacities appear here only as the bound of the surplus range and as the subject of
+ * negative assertions; neither is ever an expected count.
  *
- * <p>The surplus positions are therefore not blank storage inside the declared group: they overlay
- * whatever happens to follow it, so reading them in the legacy program is undefined. That is why the
- * catalog publishes the declared populations and never the table capacities, and why a lookup for a
- * surplus position must report an absent option rather than a blank placeholder. Both capacities appear in
- * this class only as the bound of the surplus range and as the subject of negative assertions; neither is
- * ever an expected count.</p>
+ * <p><strong>The inactive alternative label for user option 8 must stay inactive</strong> (anomaly 24 of
+ * the source anomaly register). Activating it would be feature expansion and would change the
+ * administrator gate for an option the user menu genuinely offers to standard users. The inactive text is
+ * named here only inside negative assertions, which is a contract assertion rather than transcribed
+ * source. Two further anomalies change nothing: the mislabelled title comment on line 2 of the user
+ * copybook (anomaly 25) is never the source of any name, display name or claim here, and the divergent
+ * release stamp on the administrator copybook (anomaly 26) is referenced by no assertion at all.
  *
- * <h2>The inactive alternative label for user option 8</h2>
- * In {@code app/cpy/COMEN02Y.cpy} the line above option 8's live label is a COBOL comment carrying a
- * different label for that same option, one that would describe it as restricted to administrators. It is
- * inactive in the legacy source and must stay inactive: activating it would be feature expansion, it would
- * change the administrator gate for an option the user menu genuinely offers to standard users, and the
- * migration mandate forbids adding behaviour the source does not have. The inactive text is named in this
- * class only inside negative assertions, which is a contract assertion rather than transcribed source.
- *
- * <h2>Source anomalies recorded, not propagated</h2>
- * <ol>
- *   <li>Line 2 of {@code app/cpy/COMEN02Y.cpy} carries an administrator-menu title comment even though
- *       that member declares the main-menu group item and holds the ten user options. The data item is
- *       correct and the comment is a copy-and-paste defect. Nothing in this class takes its wording from
- *       that comment, and no name, display name or claim here describes the user catalog as an
- *       administrator catalog.</li>
- *   <li>The trailer of {@code app/cpy/COADM02Y.cpy} on line 50 records a later upstream release stamp than
- *       the rest of the estate carries. A release stamp is a traceability-matrix header string and is not
- *       universal across the estate, so no assertion in this class references a stamp on any member, and
- *       the divergence is left exactly as found.</li>
- * </ol>
- *
- * <h2>How these tests are written</h2>
- * <ul>
- *   <li>Every expected value is a literal declared in this class, so the oracle is independent of the code
- *       it judges. No expected label, program name, code or count is obtained by calling
- *       {@link MenuOptionCatalog} or any other production type.</li>
- *   <li>The two record shapes are proved to differ by record deconstruction rather than by reflection: a
- *       record pattern must name every component of its record, so
- *       {@link #describeShape(Object)} stops compiling the moment either shape gains or loses a component.
- *       No reflective lookup, no accessibility override and no dynamic class loading appears anywhere in
- *       this class, so it adds nothing to the module's low-level-code audit.</li>
- *   <li>This is a plain unit test. It starts no container, opens no connection, binds no port, loads no
- *       application context and reads no file, because the class under test has no collaborators.</li>
- * </ul>
- *
- * <h2>Provenance</h2>
- * Legacy authorities read at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}.
+ * <p><strong>How these tests are written.</strong> Every expected value is a literal declared in this
+ * class, so the oracle is independent of the code it judges: no expected label, program name, code or
+ * count is obtained by calling {@link MenuOptionCatalog} or any other production type. The two record
+ * shapes are proved to differ by record deconstruction rather than by reflection &mdash; a record pattern
+ * must name every component, so {@link #describeShape(Object)} stops compiling the moment either shape
+ * gains or loses one &mdash; and no reflective lookup, accessibility override or dynamic class loading
+ * appears anywhere here, so the class adds nothing to the module's low-level-code audit. It is a plain
+ * unit test: no container, no connection, no bound port, no application context and no file, because the
+ * class under test has no collaborators.
  */
 @DisplayName("Menu option catalog: ten user options, four administrator options, and no surplus slots")
 class MenuOptionCatalogTest {

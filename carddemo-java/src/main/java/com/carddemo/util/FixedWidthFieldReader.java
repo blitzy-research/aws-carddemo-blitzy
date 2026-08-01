@@ -23,198 +23,139 @@ import java.util.Objects;
  * Offset-slicing primitive for the fixed-width record images that back every CardDemo data set,
  * and the exact inverse operation that reassembles such an image byte for byte.
  *
- * <h2>Legacy antecedent</h2>
+ * <p><strong>Legacy antecedent.</strong> The legacy estate declares each record as a fixed-length
+ * image and splits it positionally rather than by delimiter. The account file's {@code FD} record is
+ * a leading 11-digit identifier plus a 289-byte remainder, and 11 + 289 = 300 is the account record
+ * width {@code [app/cbl/CBACT01C.cbl:L42-L43]}; the transaction file splits three ways into a
+ * 304-byte prefix, a 26-byte processing timestamp and a 20-byte filler, and 304 + 26 + 20 = 350
+ * {@code [app/cbl/CBTRN03C.cbl:L83-L86]}. Those two splits are the whole justification for this
+ * class: the legacy programs address record content by byte position, so the migrated code must be
+ * able to do the same, in exactly one place. Both citations use the locator form, which differs from
+ * the physical line by a small offset for the reason recorded as decision D-42.
  *
- * <p>The legacy estate declares each record as a fixed-length image and then splits it
- * positionally rather than by delimiter. The canonical example is the account file, whose
- * {@code FD} record is a leading 11-digit account identifier followed by a 289-byte data
- * remainder: 11 + 289 = 300, the full account record width
- * {@code [app/cbl/CBACT01C.cbl:L42-L43]}. The transaction file corroborates the same idiom with a
- * three-way split of a 304-byte data prefix, a 26-byte processing timestamp and a 20-byte filler:
- * 304 + 26 + 20 = 350, the full transaction record width {@code [app/cbl/CBTRN03C.cbl:L83-L86]}.
- * Those two splits are the whole justification for this class: the legacy programs address record
- * content by byte position, so the migrated code must be able to do the same, in exactly one place.
- *
- * <p>Both citations use the locator form carried by the traceability matrix. At the analysed
- * checkout the declarations sit at physical lines L39-L40 and L62-L65 respectively; the small
- * offset between the matrix locator and the physical line is recorded in the decision log rather
- * than silently reconciled, because the matrix locator is the module-wide cross-reference key.
- *
- * <h2>Keys are leading substrings, so identifiers are never surrogates</h2>
- *
- * <p>Every {@code DEFINE CLUSTER} in the estate declares its key as {@code KEYS(length 0)} - key
- * length at offset zero - so a record's key is always the <em>leading substring</em> of the record
- * image, exactly as the account {@code FD} split shows. The direct consequence for the persistence
- * layer is that the JPA {@code @Id} is always the natural business key and <strong>never</strong> a
- * generated surrogate: a surrogate would break the correspondence between the record image and the
- * table row on which byte-level output parity depends. {@link #key(int)} and {@link #data(int)}
- * express that two-part split, and both are defined in terms of the same
+ * <p><strong>Base-record keys are leading substrings, so identifiers are never surrogates.</strong>
+ * Every {@code DEFINE CLUSTER} in the estate declares its key as {@code KEYS(length 0)} - key length
+ * at offset zero - so a <em>base</em> record's primary key is always the leading substring of the
+ * record image, exactly as the account {@code FD} split shows. That statement is about base clusters
+ * and {@code FD} splits only, and not about keyed access in general: the three
+ * {@code DEFINE ALTERNATEINDEX} definitions key at non-zero offsets - the card file's account
+ * identifier at offset 16, the cross-reference file's account identifier at offset 25 and the
+ * transaction file's processing timestamp at offset 304 - and each of those is an ordinary interior
+ * field reached through {@link #field(int, int)}, never through {@link #key(int)}. The consequence
+ * for the persistence layer is that the JPA {@code @Id} is always the natural business key and
+ * <strong>never</strong> a generated surrogate: a surrogate would break the correspondence between
+ * the record image and the table row on which byte-level output parity depends. {@link #key(int)}
+ * and {@link #data(int)} express the two-part base split, and both are defined in terms of the same
  * {@link #field(int, int)} primitive so there is only one implementation of the arithmetic.
  *
- * <h2>Sole locus of byte offsets</h2>
+ * <p><strong>Sole locus of byte offsets.</strong> This class and {@code ZonedDecimalCodec} are the
+ * only two places in the module where a byte offset or a {@code PIC}-derived width may be
+ * <em>interpreted</em>. The eleven record mappers declare their own offsets as constants - each
+ * mapper owns its own layout - and hand them here; no {@code substring} call, byte offset,
+ * {@code PIC}-derived width, overpunch decode or fixed-width template may appear anywhere in
+ * {@code service}, {@code api}, {@code repository}, {@code batch} or {@code config}. The layouts
+ * served are the eleven verified record widths: account 300, card 150, card cross-reference 50 (36
+ * data bytes plus 14 filler), customer 500, transaction 350, daily transaction 350, transaction
+ * category balance 50, disclosure group 50, transaction type 60, transaction category 60 and user
+ * security 80. None of those widths is hard-coded here, because this class is the generic primitive
+ * and each mapper is the authority for its own layout.
  *
- * <p>This class and {@code ZonedDecimalCodec} are the only two places in the module where a byte
- * offset or a {@code PIC}-derived width may be <em>interpreted</em>. The eleven record mappers
- * declare their own offsets as constants - each mapper owns its own layout - and hand them to this
- * class; no {@code substring} call, byte offset, {@code PIC}-derived width, overpunch decode or
- * fixed-width template may appear anywhere in {@code service}, {@code api}, {@code repository},
- * {@code batch} or {@code config}. The layouts served are the eleven verified record widths:
- * account 300, card 150, card cross-reference 50 (36 data bytes plus 14 filler), customer 500,
- * transaction 350, daily transaction 350, transaction category balance 50, disclosure group 50,
- * transaction type 60, transaction category 60 and user security 80. None of those widths is
- * hard-coded here, because this class is the generic primitive and each mapper is the authority for
- * its own layout.
+ * <p><strong>Widths are measured in encoded bytes, never in characters.</strong> Every width check,
+ * range check and padding computation uses encoded bytes from {@link StandardCharsets#US_ASCII}; a
+ * character count is never a width authority. The record data is 7-bit ASCII, so one character is
+ * one byte - but that is <em>enforced</em>, not assumed, because
+ * {@link String#getBytes(java.nio.charset.Charset)} silently substitutes {@code '?'} for an
+ * unrepresentable character. Non-representable input is therefore rejected rather than transcoded,
+ * so a stray character can never shift a record's byte geometry by pretending to be a question mark.
+ * The charset is named at every conversion; no platform-default conversion exists in this file.
  *
- * <h2>Widths are measured in encoded bytes, never in characters</h2>
+ * <p><strong>The line feed is a terminator, never record content.</strong> The nine ASCII sample
+ * files are newline-terminated fixed-width files whose stride is {@code recordWidth + 1}, the extra
+ * byte being {@code 0x0A}, and every byte count factors exactly on that stride: {@code acctdata.txt}
+ * 15,050 = 50 x 301; {@code carddata.txt} 7,550 = 50 x 151; {@code cardxref.txt} 1,850 = 50 x 37;
+ * {@code custdata.txt} 25,050 = 50 x 501; {@code dailytran.txt} 105,300 = 300 x 351;
+ * {@code discgrp.txt} 2,601 = 51 x 51; {@code tcatbal.txt} 2,550 = 50 x 51; {@code trancatg.txt}
+ * 1,098 = 18 x 61; {@code trantype.txt} 427 = 7 x 61. The terminator is never part of the record, so
+ * a caller must exclude it, and a caller that forgets receives the intended diagnostic rather than
+ * corrupt data: presenting 301 bytes for a 300-byte record raises {@link IllegalArgumentException}
+ * naming both widths, and the message points at the unstripped terminator whenever the overshoot is
+ * exactly one byte. {@link #of(String, byte[], int, int)} exists so that a caller holding a whole
+ * file in one buffer can address record <em>i</em> without this class knowing anything about strides
+ * or files.
  *
- * <p>Every width check, every range check and every padding computation in this class is measured
- * in <strong>encoded bytes</strong> obtained from {@link StandardCharsets#US_ASCII}. A character
- * count is never used as a width authority. The record data is 7-bit ASCII, so under US-ASCII one
- * character occupies exactly one byte - but that is a property to be <em>enforced</em>, not
- * assumed, because {@link String#getBytes(java.nio.charset.Charset)} silently substitutes
- * {@code '?'} for any character US-ASCII cannot represent. This class therefore rejects
- * non-representable input rather than transcoding it, so a stray non-ASCII character can never
- * shift the byte geometry of a record by pretending to be a question mark. The charset is named
- * explicitly at every conversion; no platform-default conversion exists anywhere in this file.
+ * <p><strong>Values are never trimmed.</strong> Trailing and interior spaces are contractual in this
+ * estate, so no slice returned here is trimmed, stripped, case-folded or normalised. Two verified
+ * proofs make the rule load-bearing. Disclosure-group keys are exactly ten characters wide and
+ * include {@code DEFAULT} and {@code ZEROAPR} each followed by three spaces, and the interest
+ * calculation's not-found fallback looks up the <em>padded</em> ten-character default value, so a
+ * trimmed key would never match and the fallback would silently stop working. All 300
+ * daily-transaction processing timestamps in {@code app/data/ASCII/dailytran.txt} are 26 spaces, and
+ * each must round-trip as 26 spaces - never {@code null}, never the empty string and never trimmed.
+ * No trimming convenience is offered here, not even a clearly named one, because the safest design
+ * for a rule this easy to violate is to make the violation unavailable.
  *
- * <h2>The line feed is a terminator, never record content</h2>
+ * <p><strong>Leading zeros are significant.</strong> Unsigned numeric fields are right-justified,
+ * zero-filled character data, not integers. Verified examples: a customer identifier is
+ * {@code 000000001}, a card account identifier is {@code 00000000050} and a transaction category
+ * code is {@code 0001}. A card verification value is three characters wide and the sample data does
+ * contain such a value with a leading zero, so a single-digit value must survive as three characters
+ * rather than one. A numeric field must therefore never be parsed to {@code int} or {@code long} and
+ * re-formatted; it is carried as a {@link String} end to end, and {@link Builder#putNumeric} pads it
+ * rather than converting it.
  *
- * <p>The nine ASCII fixtures are newline-terminated fixed-width files whose stride is
- * {@code recordWidth + 1}, the extra byte being {@code 0x0A}. The byte counts factor exactly:
- * {@code acctdata.txt} 15,050 = 50 x 301 for a 300-byte record; {@code carddata.txt} 7,550 =
- * 50 x 151 for 150; {@code cardxref.txt} 1,850 = 50 x 37 for 36; {@code custdata.txt} 25,050 =
- * 50 x 501 for 500; {@code dailytran.txt} 105,300 = 300 x 351 for 350; {@code discgrp.txt} 2,601 =
- * 51 x 51 for 50; {@code tcatbal.txt} 2,550 = 50 x 51 for 50; {@code trancatg.txt} 1,098 =
- * 18 x 61 for 60; {@code trantype.txt} 427 = 7 x 61 for 60. The line feed is a line terminator and
- * is <strong>never</strong> part of the record, so a caller must exclude it. A caller that forgets
- * receives the intended diagnostic rather than corrupt data: presenting 301 bytes for a 300-byte
- * record raises {@link IllegalArgumentException} naming both widths, and the message points at the
- * unstripped terminator whenever the overshoot is exactly one byte.
- * {@link #of(String, byte[], int, int)} exists so that a caller reading a whole file into one
- * buffer can address record <em>i</em> as {@code of(name, buffer, i * stride, width)} without this
- * class needing to know anything about strides or files.
+ * <p><strong>Filler bytes are not uniform in the sample data.</strong> COBOL {@code FILLER X(n)}
+ * with no {@code VALUE} clause is uninitialised, and the sample files show exactly that divergence:
+ * the four master files carry space filler - 178 bytes per account record, 59 per card record, 168
+ * per customer record, 20 per daily-transaction record - while the four reference-table files carry
+ * ASCII-zero filler - 28 bytes per disclosure-group row, 22 per category-balance row, 8 per
+ * transaction-type row, 4 per transaction-category row. The cross-reference file carries none,
+ * because its text stride is 36 rather than the 50-byte cluster record length. Neither byte value is
+ * canonical and neither is silently corrected: decision D-10 records the resolution and anomaly 20
+ * the source divergence. Space is the module-wide <em>default</em>, so a {@link Builder} buffer is
+ * space-initialised and every byte a mapper does not write emerges as a space, while
+ * {@link Builder#putFiller(int, int, char)} lets a mapper reproduce the byte its own record carries
+ * and {@link Builder#putSpaceFiller(int, int)} is the shorthand for the common case.
  *
- * <h2>Values are never trimmed</h2>
+ * <p><strong>Failure contract.</strong> Malformed input raises {@link IllegalArgumentException}
+ * naming the artefact and, as applicable, the expected and actual encoded widths or the offset,
+ * length and record width; {@code null} arguments raise {@link NullPointerException} by way of
+ * {@link Objects#requireNonNull(Object, String)}. Input is never silently padded, never silently
+ * truncated, never partially returned and never returned as {@code null}. No exception type from the
+ * module's own package is used, deliberately: decision D-11 records that none of them models "the
+ * caller handed me 297 bytes instead of 300", because a short record has no legacy antecedent at all
+ * - VSAM and QSAM records are fixed length by construction - so the condition is a caller defect.
  *
- * <p>Trailing and interior spaces are contractual in this estate, so no slice returned by this
- * class is trimmed, stripped, case-folded or normalised in any way; the bytes are returned as
- * characters, exactly as they appear. Two verified proofs make the rule load-bearing:
+ * <p><strong>Shape and thread safety.</strong> An instance is an immutable value object: the class is
+ * final, both data fields are final, the record image is defensively copied on the way in and on the
+ * way out, and the record width is validated once by the constructor so no subsequent slice
+ * re-validates or re-encodes it. Instances are therefore safe to share across threads. The encode
+ * direction needs a mutable buffer, so it lives in {@link Builder}, which is scoped to a single
+ * record, is not thread safe and is not shared; this class holds no mutable static state.
  *
- * <ul>
- *   <li>Disclosure-group keys are exactly ten characters wide and include the value
- *       {@code DEFAULT} followed by three spaces and the value {@code ZEROAPR} followed by three
- *       spaces. The interest calculation's not-found fallback looks up the <em>padded</em>
- *       ten-character default value, so a trimmed key would never match and the fallback would
- *       silently stop working.</li>
- *   <li>All 300 daily-transaction processing timestamps in {@code app/data/ASCII/dailytran.txt}
- *       are 26 spaces. Each must round-trip as 26 spaces - never {@code null}, never the empty
- *       string and never trimmed.</li>
- * </ul>
- *
- * <p>No trimming convenience is offered here, not even a clearly named one, because the safest
- * possible design for a rule this easy to violate is to make the violation unavailable. A caller
- * that genuinely wants a trimmed view trims the value it received, at its own call site, where the
- * decision is visible in review.
- *
- * <h2>Leading zeros are significant</h2>
- *
- * <p>Unsigned numeric fields are right-justified and zero-filled character data, not integers.
- * Verified examples: a customer identifier is {@code 000000001}, a card account identifier is
- * {@code 00000000050} and a transaction category code is {@code 0001}. A card verification value
- * is three characters wide, so the value seven must survive as the three characters {@code 007} -
- * and the fixture itself contains {@code 028}, which proves the leading zero occurs in real data.
- * A numeric field must therefore never be parsed to {@code int} or {@code long} and re-formatted;
- * it is carried as a {@link String} end to end, and {@link Builder#putNumeric} pads it rather than
- * converting it.
- *
- * <h2>Filler bytes are not uniform in the fixtures (anomaly #20)</h2>
- *
- * <p>COBOL {@code FILLER X(n)} with no {@code VALUE} clause is uninitialised, and the fixtures show
- * exactly the divergence that implies. The four master fixtures carry space filler - 178 bytes per
- * account record, 59 per card record, 168 per customer record and 20 per daily-transaction record -
- * while the four reference-table fixtures carry ASCII-zero filler: 28 bytes per disclosure-group
- * row, 22 per category-balance row, 8 per transaction-type row and 4 per transaction-category row.
- * The cross-reference fixture carries no filler at all, because its ASCII stride is 36 rather than
- * the 50-byte cluster record length. Neither byte value is canonical, so the module-wide resolution
- * is to <strong>emit space filler uniformly</strong> and to compare only the mapped data prefix in
- * round-trip assertions. This class supports that directly: a {@link Builder} buffer is
- * space-initialised before any placement, so every byte a mapper does not explicitly write emerges
- * as a space, and {@link Builder#putSpaceFiller(int, int)} lets a mapper state the intent
- * explicitly at the call site where the filler run belongs. The divergence is recorded in the
- * decision log as anomaly #20 - an anomaly of the source data, preserved and documented rather
- * than corrected in either direction.
- *
- * <h2>Failure contract</h2>
- *
- * <p>Malformed input raises {@link IllegalArgumentException} with a message naming the artefact
- * and, as applicable, the expected encoded width and the actual encoded byte length, or the
- * offset, the length and the record width. {@code null} arguments raise
- * {@link NullPointerException} by way of {@link Objects#requireNonNull(Object, String)}. Input is
- * never silently padded, never silently truncated, never partially returned and never returned as
- * {@code null}.
- *
- * <p>No exception type from the module's own exception package is used, deliberately. None of those
- * types models the condition "the caller handed me 297 bytes instead of 300": the abend exception
- * is the terminal abend path, the file-status exception carries a raw legacy two-byte status, the
- * record-not-found exception is the legacy not-found status, the validation exception is business
- * field validation carrying screen field identifiers, the optimistic-lock exception is the
- * image-comparison conflict and the job-submission exception is the queue-write failure. A short
- * record has no legacy antecedent at all, because VSAM and QSAM records are fixed length by
- * construction, so the condition is a programming defect in the caller and
- * {@link IllegalArgumentException} is its idiomatic signal. The decision is recorded in the
- * decision log.
- *
- * <h2>Shape and thread safety</h2>
- *
- * <p>An instance is an immutable value object: the class is final, both of its data fields are
- * final, the record image is defensively copied on the way in and on the way out, and the record
- * width is validated once by the constructor so no subsequent slice re-validates or re-encodes it.
- * Instances are therefore safe to share across threads. The encode direction needs a mutable
- * buffer, so it lives in {@link Builder}, which is scoped to a single record, is not thread safe
- * and is not shared; this class holds no mutable static state of any kind.
- *
- * <p>Every figure quoted above is evidence about the data, not a service level: record widths, byte
- * offsets, field lengths, code frequencies and seeded-row counts are factual layout evidence, not
- * SLA figures. Nothing in this class is a performance target, a tuning parameter or a capacity
- * assumption: every allocation size that appears is a record width or a field length the layout
- * dictates, and no buffer is pre-sized by guesswork.
- *
- * <h2>Usage</h2>
- *
- * <p>Decoding one field of an account record image, and recovering the key and data halves of the
- * {@code FD} split:
+ * <p><strong>Usage.</strong> Decoding recovers the key and data halves of the {@code FD} split;
+ * encoding is its exact inverse. The card number below is a synthetic, width-preserving placeholder
+ * and not a value drawn from any data set.
  *
  * <pre>{@code
  * FixedWidthFieldReader record = FixedWidthFieldReader.of("ACCOUNT", image, 300);
- * String accountId = record.field("ACCT-ID", 0, 11); // "00000000001"
- * String key       = record.key(11);                 // the leading 11 bytes
- * String data      = record.data(11);                // the remaining 289 bytes
- * }</pre>
+ * String accountId = record.field("ACCT-ID", 0, 11); // "00000000001", untrimmed
+ * String key       = record.key(11);                 // leading 11 bytes
+ * String data      = record.data(11);                // remaining 289 bytes
  *
- * <p>Encoding the cross-reference record image, whose 36 mapped bytes are followed by 14 filler
- * bytes that emerge as spaces:
- *
- * <pre>{@code
- * String image = FixedWidthFieldReader.builder("CARD-XREF", 50)
- *         .putAlphanumeric("XREF-CARD-NUM", 0, 16, "0500024453765740")
+ * String xref = FixedWidthFieldReader.builder("CARD-XREF", 50)
+ *         .putAlphanumeric("XREF-CARD-NUM", 0, 16, "0000000000000000")
  *         .putNumeric("XREF-CUST-ID", 16, 9, "50")
  *         .putNumeric("XREF-ACCT-ID", 25, 11, "50")
  *         .putSpaceFiller(36, 14)
  *         .build()
  *         .image();
  * }</pre>
- *
- * <p>Provenance: translated from the CardDemo mainframe estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Legacy sources are cited, never
- * transcribed.
  */
 public final class FixedWidthFieldReader {
 
     /**
-     * The single byte used for every pad byte and every filler byte this class emits, {@code 0x20}.
-     * Space is the pad for alphanumeric fields and the uniform filler byte chosen to resolve the
-     * non-uniform filler anomaly described in the class documentation.
+     * The single byte used for every alphanumeric pad byte this class emits and for the default
+     * filler byte, {@code 0x20}.
      */
     private static final byte ASCII_SPACE = 0x20;
 
@@ -366,11 +307,10 @@ public final class FixedWidthFieldReader {
     }
 
     /**
-     * Starts building a record image of a fixed width.
-     *
      * <p>The builder's buffer is space-initialised, so every byte the caller does not explicitly
-     * place emerges as a space. That is what makes the uniform space-filler resolution of the
-     * filler anomaly the default outcome rather than something each mapper has to remember.
+     * place emerges as a space. That is what makes the module's default filler byte the default
+     * outcome rather than something each mapper has to remember; a mapper whose record carries a
+     * different filler byte states it through {@link Builder#putFiller(int, int, char)}.
      *
      * @param artefact    name of the record layout, used in diagnostics
      * @param recordWidth the layout's record width in encoded bytes; must be at least 1
@@ -388,11 +328,13 @@ public final class FixedWidthFieldReader {
     /**
      * Returns the number of bytes {@code value} occupies when encoded as US-ASCII.
      *
-     * <p>This is the module's canonical answer to "how wide is this value?", and the reason it
-     * exists as a named operation is that a character count must never be used as a width
-     * authority. A value containing a character US-ASCII cannot represent has no valid encoded
-     * length and is rejected rather than measured, because encoding it would substitute
-     * {@code '?'} and report a plausible but wrong width.
+     * <p>This class's public answer to "how wide is this value?", and the reason it exists as a
+     * named operation is that a character count must never be used as a width authority. Other
+     * utilities in this package keep their own width helpers for their own output formats; this one
+     * is not a module-wide singleton for width and does not claim to be. A value containing a
+     * character US-ASCII cannot represent has no valid encoded length and is rejected rather than
+     * measured, because encoding it would substitute {@code '?'} and report a plausible but wrong
+     * width.
      *
      * @param value the value to measure
      * @return the encoded byte length, zero for an empty value
@@ -427,12 +369,10 @@ public final class FixedWidthFieldReader {
      * Slices a character field out of the record image by zero-based byte offset and byte length.
      *
      * <p>The value is returned exactly as it appears in the record: untrimmed, unstripped, not
-     * case-folded and not normalised. A field of 26 spaces returns 26 spaces; a ten-byte key
-     * holding {@code DEFAULT} followed by three spaces returns all ten characters.
-     *
-     * <p>Diagnostics from this overload name the artefact, the offset and the length but not the
-     * field, because none was supplied. Prefer {@link #field(String, int, int)} in a record mapper,
-     * where the field name is always known and turns a range error into a self-explaining one.
+     * case-folded and not normalised. A field of 26 spaces returns 26 spaces; a ten-byte key holding
+     * {@code DEFAULT} followed by three spaces returns all ten characters. Diagnostics from this
+     * overload cannot name the field, because none was supplied, so a record mapper should prefer
+     * {@link #field(String, int, int)}, where a mis-declared offset identifies itself.
      *
      * @param offset zero-based byte offset of the field within the record image; must not be
      *               negative
@@ -511,10 +451,15 @@ public final class FixedWidthFieldReader {
     /**
      * Returns the leading key substring of the record image.
      *
-     * <p>This is the first half of the {@code FD} record split: because every cluster in the estate
-     * declares its key at offset zero, a record's key is always its leading substring. For the
-     * account layout {@code key(11)} yields the 11-digit account identifier
-     * {@code [app/cbl/CBACT01C.cbl:L42-L43]}.
+     * <p>This is the first half of the {@code FD} record split, and it applies to a <em>base</em>
+     * record's primary key: every {@code DEFINE CLUSTER} in the estate declares its key at offset
+     * zero, so a base record's primary key is always its leading substring. For the account layout
+     * {@code key(11)} yields the 11-digit account identifier {@code [app/cbl/CBACT01C.cbl:L42-L43]}.
+     * Alternate-index keys are a different matter and are <strong>not</strong> reached through this
+     * method: the three {@code DEFINE ALTERNATEINDEX} definitions key at non-zero offsets - the card
+     * file's account identifier at offset 16, the cross-reference file's account identifier at
+     * offset 25 and the transaction file's processing timestamp at offset 304 - so each is an
+     * ordinary interior field addressed through {@link #field(int, int)}.
      *
      * @param keyLength byte length of the key; must be at least 1 and must not exceed the record
      *                  width
@@ -831,9 +776,11 @@ public final class FixedWidthFieldReader {
      *
      * <p>The buffer is allocated at the declared record width and filled with spaces before any
      * field is placed, so a mapper that leaves a filler run untouched still produces space filler -
-     * the uniform resolution of the non-uniform filler anomaly described on the enclosing class.
-     * Placement is positional and absolute: a field goes exactly where its offset says, so fields
-     * may be placed in any order and a mapper need not mirror the copybook's declaration order.
+     * the module-wide <em>default</em> recorded as decision D-10. A mapper whose own record carries a
+     * different filler byte names that byte through {@link #putFiller(int, int, char)}, so the
+     * default is a default and not a normalisation the mapper cannot escape. Placement is positional
+     * and absolute: a field goes exactly where its offset says, so fields may be placed in any order
+     * and a mapper need not mirror the copybook's declaration order.
      *
      * <p>Two placement modes cover the estate's two field kinds. Alphanumeric placement is
      * left-justified and space-padded, matching {@code PIC X(n)}. Numeric placement is
@@ -841,9 +788,9 @@ public final class FixedWidthFieldReader {
      * significant, and equally matching a zoned-decimal image, which is right-justified and
      * zero-filled with its sign overpunched into the final byte.
      *
-     * <p>A value wider than its field is rejected rather than truncated, because a truncated field
-     * would shift nothing and corrupt everything: the record would remain exactly the right width
-     * while carrying a wrong value, which is the one failure mode a width check can never catch
+     * <p>A value wider than its field is rejected rather than truncated, as decision D-06 records:
+     * a truncated field would shift nothing and corrupt everything, leaving the record exactly the
+     * right width while carrying a wrong value - the one failure mode a width check can never catch
      * downstream.
      *
      * <p>An instance is mutable and scoped to a single record image. It is not thread safe and is
@@ -877,8 +824,8 @@ public final class FixedWidthFieldReader {
             this.artefact = artefact;
             this.recordWidth = recordWidth;
             this.buffer = new byte[recordWidth];
-            // Space-initialised before any placement, so every byte the caller never writes -
-            // every filler run included - emerges as a space rather than as a zero byte.
+            // Space-initialised before any placement, so every byte the caller never writes - every
+            // filler run included - emerges as the module's default filler byte (decision D-10).
             for (int i = 0; i < recordWidth; i++) {
                 this.buffer[i] = ASCII_SPACE;
             }
@@ -941,15 +888,14 @@ public final class FixedWidthFieldReader {
          * Places an unsigned numeric value right-justified and zero-padded, matching
          * {@code PIC 9(n)}.
          *
-         * <p>The value is carried as a {@link String} from end to end and is never parsed to a
-         * numeric type, because leading zeros are significant: a three-byte card verification field
-         * holding the value {@code 7} must emerge as the three characters {@code 007}, and the
-         * fixture itself contains {@code 028}. Parsing and re-formatting would work only as long as
-         * every field happened to be numeric, and it does not: a zoned-decimal image such as an
-         * account balance carries an overpunched sign in its final byte, which is a letter or a
-         * brace rather than a digit. This method therefore performs no digit check at all - it is
-         * purely justification and padding - so both an unsigned numeric field and a zoned-decimal
-         * image produced by the codec are placed correctly.
+         * <p>The value is carried as a {@link String} end to end and is never parsed to a numeric
+         * type, because leading zeros are significant: a three-byte card verification field holding
+         * the value {@code 7} must emerge as three characters and not as one, and the sample data
+         * does contain such a leading-zero value. Parsing would also assume every field is numeric,
+         * and one is not: a zoned-decimal image carries an overpunched sign in its final byte, which
+         * is a letter or a brace. This method therefore performs no digit check at all - it is purely
+         * justification and padding - so an unsigned numeric field and a zoned-decimal image
+         * produced by the codec are both placed correctly.
          *
          * @param fieldName name of the field for diagnostics, conventionally the legacy field name;
          *                  must not be {@code null}
@@ -976,14 +922,45 @@ public final class FixedWidthFieldReader {
         }
 
         /**
-         * Declares a filler run and writes it as spaces.
+         * Declares a filler run and writes it with an explicit fill byte.
          *
-         * <p>Functionally this restates the buffer's initial state, and that is the point: a mapper
-         * that names its filler run makes the module's uniform space-filler decision visible at the
-         * call site instead of leaving it implicit in a buffer initialisation several classes away.
-         * It also keeps a mapper's placements adding up to the full record width, which is how a
-         * missing field is noticed during review. The method additionally re-establishes spaces if a
-         * caller has already written over part of the run.
+         * <p>The filler byte is not uniform in the estate, so a mapper that must reproduce the byte
+         * its own record actually carries states that byte here rather than inheriting the module's
+         * space default. Decision D-10 records the resolution and anomaly 20 records the source
+         * divergence: the four reference-table layouts carry ASCII-zero filler while the four master
+         * layouts carry space filler, and neither value is canonical. Naming the run also keeps a
+         * mapper's placements adding up to the full record width, which is how a missing field is
+         * noticed during review, and it re-establishes the fill byte if a caller has already written
+         * over part of the run.
+         *
+         * @param offset        zero-based byte offset at which the filler run starts; must not be
+         *                      negative
+         * @param length        byte width of the filler run; must be at least 1
+         * @param fillCharacter the character repeated across the run, typically {@code ' '} for a
+         *                      master layout or {@code '0'} for a reference table; must be
+         *                      representable in US-ASCII
+         * @return this builder, for chaining
+         * @throws IllegalArgumentException if the run lies outside the record, or if
+         *                                  {@code fillCharacter} is not representable in US-ASCII
+         */
+        public Builder putFiller(int offset, int length, char fillCharacter) {
+            requireSliceWithin(artefact, "FILLER", offset, length, recordWidth);
+            byte fillByte = encodeAscii(artefact, "FILLER", String.valueOf(fillCharacter))[0];
+            for (int i = 0; i < length; i++) {
+                buffer[offset + i] = fillByte;
+            }
+            return this;
+        }
+
+        /**
+         * Declares a filler run and writes it as spaces, the module's default filler byte.
+         *
+         * <p>Named shorthand for {@link #putFiller(int, int, char)} with a space. Space is the
+         * module-wide default recorded as decision D-10, and the buffer is space-initialised at
+         * allocation, so this restates the default rather than changing it - which is the point:
+         * naming the run makes the default visible at the call site instead of leaving it implicit in
+         * a buffer initialisation several classes away, and keeps a mapper's placements adding up to
+         * the full record width.
          *
          * @param offset zero-based byte offset at which the filler run starts; must not be negative
          * @param length byte width of the filler run; must be at least 1
@@ -991,11 +968,7 @@ public final class FixedWidthFieldReader {
          * @throws IllegalArgumentException if the run lies outside the record
          */
         public Builder putSpaceFiller(int offset, int length) {
-            requireSliceWithin(artefact, "FILLER", offset, length, recordWidth);
-            for (int i = 0; i < length; i++) {
-                buffer[offset + i] = ASCII_SPACE;
-            }
-            return this;
+            return putFiller(offset, length, ' ');
         }
 
         /**

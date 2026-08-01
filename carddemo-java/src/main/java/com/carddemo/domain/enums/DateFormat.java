@@ -69,12 +69,6 @@ import java.util.Optional;
  * validate a date against the wrong mask and produce a wrong verdict, which is strictly worse
  * than reporting absence and letting the caller decide.
  *
- * <p><strong>Provenance.</strong> Translated from the CardDemo mainframe estate read at commit
- * SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated {@code 2022-07-19}. No COBOL source text is
- * reproduced in this file; only member names, field names, field widths and the two selector
- * data values are cited.
- *
  * <p>Instances are immutable and this type is therefore thread-safe.
  */
 public enum DateFormat {

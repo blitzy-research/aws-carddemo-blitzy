@@ -35,76 +35,66 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Unit tests for {@link RecordNotFoundException}.
  *
- * <p>A plain JUnit 5 test: no application context, no container, no mock. The
- * subject is a value-carrying exception, so everything it promises can be
- * proved by construction, accessor round-tripping, message inspection and one
- * serialisation round-trip.</p>
+ * <p>A plain JUnit 5 test: no application context, no container, no mock. The subject is a
+ * value-carrying exception, so everything it promises can be proved by construction, accessor
+ * round-tripping, message inspection and one serialisation round-trip.</p>
  *
- * <p><strong>What the legacy estate actually does with status 23</strong></p>
+ * <p><strong>What the estate actually does with status 23.</strong> The record-not-found status is
+ * the two-character value {@code "23"}, and it occurs at six sites across three batch programs that
+ * do <em>not</em> agree on whether a miss is a failure - three carry on and three abend - which is
+ * why this exception type is deliberately not the universal answer to a not-found.</p>
  *
- * <p>The record-not-found status is the two-character value {@code "23"}. It
- * occurs at <strong>six</strong> sites across three batch programs, and the
- * single most important fact about those six is that they do <em>not</em> agree
- * on whether a miss is a failure. Three continue and three abend, so this
- * exception type is deliberately <em>not</em> the universal answer to a
- * not-found.</p>
+ * <p><em>Three sites fold the miss in as a non-error.</em> {@code CBACT04C} paragraph
+ * {@code 1200-GET-INTEREST-RATE} (lines 415 to 440) emits a missing-record diagnostic and a
+ * retry-with-default diagnostic from its invalid-key handler, then line 422 folds {@code "23"} in
+ * <em>with</em> {@code "00"} as the non-error outcome giving the coarse result 0, and only afterwards
+ * does line 436 test for {@code "23"} specifically, substitute the default group key and perform the
+ * default-rate lookup. {@code CBTRN02C} paragraph {@code 2700-UPDATE-TCATBAL} (lines 470 to 501)
+ * initialises a create flag to no, emits a not-found-and-creating diagnostic and raises the flag from
+ * its invalid-key handler, folds {@code "23"} in with {@code "00"} at line 481, and lets the flag
+ * select create-the-row over update-the-row: a missing category-balance row is <strong>not an error
+ * and not a reject</strong>, the row is <strong>created</strong>. The retry in the first program
+ * happens <strong>exactly once</strong> and there is <strong>no third fallback</strong>, because its
+ * paragraph {@code 1200-A-GET-DEFAULT-INT-RATE} (from line 443) accepts only {@code "00"}, so a
+ * second consecutive miss becomes the coarse error value 12, produces an error diagnostic and
+ * abends.</p>
  *
- * <p><em>Three sites treat the miss as a non-error and carry on.</em></p>
+ * <p><em>Three sites treat the miss as terminal.</em> {@code CBTRN03C} paragraphs
+ * {@code 1500-A-LOOKUP-XREF} (line 484), {@code 1500-B-LOOKUP-TRANTYPE} (line 494) and
+ * {@code 1500-C-LOOKUP-TRANCATG} (line 504) each assign 23 to the display status - at lines 488, 498
+ * and 508 - format it, and then abend. That program assigns the value as an unquoted numeric literal
+ * while the two above compare the quoted two-character literal, which is one reason the Java
+ * constant is declared as text: both renderings normalise onto a single value.</p>
  *
- * <ol>
- *   <li>{@code CBACT04C} paragraph {@code 1200-GET-INTEREST-RATE}, lines 415 to
- *       440. Its invalid-key handler emits a missing-record diagnostic and a
- *       retry-with-default diagnostic, and then line 422 folds {@code "23"} in
- *       <em>with</em> {@code "00"} as the non-error outcome, giving the coarse
- *       result 0. Only afterwards does line 436 test for {@code "23"}
- *       specifically, substitute the default group key and perform the
- *       default-rate lookup.</li>
- *   <li>The same program's paragraph {@code 1200-A-GET-DEFAULT-INT-RATE},
- *       beginning at line 443, accepts <strong>only</strong> {@code "00"}: a
- *       second consecutive miss becomes the coarse error value 12, produces an
- *       error diagnostic and abends. The lookup is therefore retried
- *       <strong>exactly once</strong> and <strong>there is no third
- *       fallback</strong>.</li>
- *   <li>{@code CBTRN02C} paragraph {@code 2700-UPDATE-TCATBAL}, lines 470 to
- *       501. A create flag is initialised to no, the invalid-key handler emits a
- *       not-found-and-creating diagnostic and raises the flag to yes, line 481
- *       folds {@code "23"} in with {@code "00"} as the non-error outcome, and
- *       the flag then selects create-the-row over update-the-row. A missing
- *       category-balance row is <strong>not an error and not a reject</strong>:
- *       the row is <strong>created</strong>.</li>
- * </ol>
+ * <p><strong>The coarse outcome.</strong> Every batch program normalises a raw two-byte file status
+ * into a coarse outcome before it branches - {@code "00"} becomes 0, {@code "10"} becomes 16 and
+ * anything else becomes 12, the error arm - the canonical expression being {@code CBACT01C} lines 94
+ * to 103 followed by the all-clear test at line 104. That coarse variable is referenced on 223
+ * source lines in the program tree, which is why the target keeps a raw status and a tri-state
+ * outcome rather than collapsing both into one enumeration. Recorded as decision log entry D-21.</p>
  *
- * <p><em>Three sites treat the miss as terminal.</em> {@code CBTRN03C}
- * paragraphs {@code 1500-A-LOOKUP-XREF} (line 484), {@code
- * 1500-B-LOOKUP-TRANTYPE} (line 494) and {@code 1500-C-LOOKUP-TRANCATG} (line
- * 504) each assign 23 to the display status - at lines 488, 498 and 508
- * respectively - format it, and then abend. Note that this program assigns the
- * value as an unquoted numeric literal while the two programs above compare the
- * quoted two-character literal, which is one reason the Java constant is
- * declared as text: both renderings normalise onto a single value.</p>
- *
- * <p><strong>The coarse outcome</strong></p>
- *
- * <p>Every batch program normalises a raw two-byte file status into a coarse
- * outcome before it branches: {@code "00"} becomes 0, {@code "10"} becomes 16
- * and anything else becomes 12, which is the error arm. The canonical
- * expression of that cascade is {@code CBACT01C} lines 94 to 103, immediately
- * followed by the all-clear test at line 104. The coarse variable is load
- * bearing across the whole estate - 223 source lines in the program tree
- * reference it - which is why the target keeps a raw status and a tri-state
- * outcome rather than collapsing both into one enumeration.</p>
- *
- * <p><strong>The boundary this test file exists to pin down</strong></p>
- *
- * <p>{@code RecordNotFoundException} is raised <strong>only where the legacy
- * code treats a miss as a genuine failure</strong>. Where the legacy code folds
- * {@code "23"} in with {@code "00"} and continues - the disclosure-group default
- * fallback and the category-balance create-on-missing path - the Java service
- * returns an empty {@link Optional} or raises a create flag and throws
- * <strong>nothing at all</strong>. The fallback and create-on-missing
- * <em>logic</em> is not tested here; it belongs to the interest-calculation and
- * transaction-posting service tests. This file records the boundary so that no
+ * <p><strong>The boundary this file exists to pin down.</strong>
+ * {@code RecordNotFoundException} is raised <strong>only where the legacy code treats a miss as a
+ * genuine failure</strong>. Where the legacy code folds {@code "23"} in with {@code "00"} and
+ * continues - the disclosure-group default fallback and the category-balance create-on-missing path -
+ * the Java service returns an empty {@link Optional} or raises a create flag and throws nothing at
+ * all. That fallback and create-on-missing <em>logic</em> is not tested here; it belongs to the
+ * interest-calculation and transaction-posting tests. This file records the boundary so that no
  * downstream service throws where the source continued.</p>
+ *
+ * <p><strong>The key is withheld from the detail message</strong></p>
+ *
+ * <p>The subject carries the searched key for its accessor and deliberately
+ * keeps it out of the detail message, rendering a fixed placeholder in the key
+ * position instead. That is not a cosmetic choice: because the module uses
+ * natural keys throughout, a key can be a sixteen-digit primary account number
+ * or a customer identifier, and a detail message is the single most widely
+ * copied string on a throwable - the default logging of anything uncaught writes
+ * it, test reports echo it and stack-trace aggregation captures it. Every
+ * message assertion in this file therefore has two halves: the message must
+ * <em>not</em> contain the key, and {@link RecordNotFoundException#key()} must
+ * still return it byte-identically. The placeholder is fixed rather than derived
+ * from the key, so neither the key's value nor its length is disclosed.</p>
  *
  * <p><strong>Credential handling</strong></p>
  *
@@ -112,7 +102,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * nothing else. The legacy user record holds an eight-character cleartext
  * credential, and no credential value may ever be passed as a key, appear in a
  * message, or appear anywhere in this file. The test below proves the message is
- * composed from the supplied context alone.</p>
+ * composed from the record type, the resource name and the fixed placeholder
+ * alone - not even the supplied identifier reaches it.</p>
  *
  * <p>Provenance: the legacy estate at commit
  * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
@@ -130,6 +121,18 @@ class RecordNotFoundExceptionTest {
      * empty string.
      */
     private static final String ABSENT_VALUE_RENDERING = "null";
+
+    /**
+     * The stand-in the detail message carries in the key position.
+     *
+     * <p>The production constant is private, and it is restated here rather than
+     * relaxed to package-private and imported, so that changing the rendering
+     * has to be a deliberate edit in both places instead of a silent one that
+     * the assertions follow automatically. The value is a placeholder and not a
+     * transcribed secret; it is named without the word it stands in for so a
+     * credential scan of this module cannot mistake it for one.</p>
+     */
+    private static final String KEY_PLACEHOLDER = "***REDACTED***";
 
     /** Account record type name. */
     private static final String ACCOUNT_RECORD_TYPE = "ACCOUNT";
@@ -297,6 +300,12 @@ class RecordNotFoundExceptionTest {
             assertThat(thrown.resourceName()).isNotNull().isNotEqualTo(ABSENT_VALUE_RENDERING).isEmpty();
             assertThat(thrown.getMessage()).isNotNull().doesNotContain(ABSENT_VALUE_RENDERING);
             assertThat(thrown).hasNoCause();
+
+            // The placeholder occupies the key position whether or not a key was
+            // supplied, so an empty key and a populated one render identically
+            // and the message never betrays which of the two occurred.
+            assertThat(thrown.getMessage())
+                    .isEqualTo("RecordNotFound[recordType=, key=" + KEY_PLACEHOLDER + "]");
         }
     }
 
@@ -305,7 +314,8 @@ class RecordNotFoundExceptionTest {
     class ContextCarryingConstructors {
 
         @Test
-        @DisplayName("(recordType, key) round-trips both values, leaves the resource name empty and chains no cause")
+        @DisplayName("(recordType, key) round-trips both values through the accessors, leaves the resource "
+                + "name empty, chains no cause, and keeps the key out of the message")
         void twoArgumentConstructorRoundTripsRecordTypeAndKey() {
             RecordNotFoundException thrown = new RecordNotFoundException(ACCOUNT_RECORD_TYPE, ACCOUNT_KEY);
 
@@ -313,11 +323,15 @@ class RecordNotFoundExceptionTest {
             assertThat(thrown.key()).isEqualTo(ACCOUNT_KEY);
             assertThat(thrown.resourceName()).isNotNull().isEmpty();
             assertThat(thrown).hasNoCause();
-            assertThat(thrown.getMessage()).contains(ACCOUNT_RECORD_TYPE, ACCOUNT_KEY);
+            assertThat(thrown.getMessage())
+                    .contains(ACCOUNT_RECORD_TYPE)
+                    .contains(KEY_PLACEHOLDER)
+                    .doesNotContain(ACCOUNT_KEY);
         }
 
         @Test
-        @DisplayName("(recordType, key, resourceName) round-trips all three values and chains no cause")
+        @DisplayName("(recordType, key, resourceName) round-trips all three values through the accessors, "
+                + "chains no cause, and keeps the key out of the message")
         void threeArgumentConstructorRoundTripsTheResourceNameToo() {
             RecordNotFoundException thrown =
                     new RecordNotFoundException(CARD_RECORD_TYPE, SYNTHETIC_CARD_KEY, CARD_RESOURCE);
@@ -326,7 +340,14 @@ class RecordNotFoundExceptionTest {
             assertThat(thrown.key()).isEqualTo(SYNTHETIC_CARD_KEY);
             assertThat(thrown.resourceName()).isEqualTo(CARD_RESOURCE);
             assertThat(thrown).hasNoCause();
-            assertThat(thrown.getMessage()).contains(CARD_RECORD_TYPE, SYNTHETIC_CARD_KEY, CARD_RESOURCE);
+
+            // The card key is the worst case for a rendered message: at this
+            // width a card key is a primary account number, so it is named here
+            // as the value that must be absent rather than merely not asserted.
+            assertThat(thrown.getMessage())
+                    .contains(CARD_RECORD_TYPE, CARD_RESOURCE)
+                    .contains(KEY_PLACEHOLDER)
+                    .doesNotContain(SYNTHETIC_CARD_KEY);
         }
 
         @Test
@@ -367,7 +388,7 @@ class RecordNotFoundExceptionTest {
 
             assertThat(thrown.recordType()).isNotNull().isNotEqualTo(ABSENT_VALUE_RENDERING).isEmpty();
             assertThat(thrown.key()).isEqualTo(ACCOUNT_KEY);
-            assertThat(thrown.getMessage()).doesNotContain(ABSENT_VALUE_RENDERING);
+            assertThat(thrown.getMessage()).doesNotContain(ABSENT_VALUE_RENDERING).doesNotContain(ACCOUNT_KEY);
         }
 
         @Test
@@ -377,7 +398,7 @@ class RecordNotFoundExceptionTest {
 
             assertThat(thrown.recordType()).isEqualTo(ACCOUNT_RECORD_TYPE);
             assertThat(thrown.key()).isNotNull().isNotEqualTo(ABSENT_VALUE_RENDERING).isEmpty();
-            assertThat(thrown.getMessage()).doesNotContain(ABSENT_VALUE_RENDERING);
+            assertThat(thrown.getMessage()).doesNotContain(ABSENT_VALUE_RENDERING).contains(KEY_PLACEHOLDER);
         }
 
         @Test
@@ -413,9 +434,19 @@ class RecordNotFoundExceptionTest {
             assertThat(absentResource.key()).isEqualTo(DISCLOSURE_GROUP_KEY);
             assertThat(absentResource.resourceName()).isNotNull().isNotEqualTo(ABSENT_VALUE_RENDERING).isEmpty();
 
-            assertThat(absentRecordType.getMessage()).doesNotContain(ABSENT_VALUE_RENDERING);
+            assertThat(absentRecordType.getMessage())
+                    .doesNotContain(ABSENT_VALUE_RENDERING)
+                    .doesNotContain(DISCLOSURE_GROUP_KEY);
             assertThat(absentKey.getMessage()).doesNotContain(ABSENT_VALUE_RENDERING);
-            assertThat(absentResource.getMessage()).doesNotContain(ABSENT_VALUE_RENDERING);
+            assertThat(absentResource.getMessage())
+                    .doesNotContain(ABSENT_VALUE_RENDERING)
+                    .doesNotContain(DISCLOSURE_GROUP_KEY);
+
+            // Normalising one position never re-opens another: whichever of the
+            // three is absent, the key position still holds the placeholder.
+            assertThat(absentRecordType.getMessage()).contains(KEY_PLACEHOLDER);
+            assertThat(absentKey.getMessage()).contains(KEY_PLACEHOLDER);
+            assertThat(absentResource.getMessage()).contains(KEY_PLACEHOLDER);
         }
 
         @Test
@@ -458,31 +489,98 @@ class RecordNotFoundExceptionTest {
     class DetailMessage {
 
         @Test
-        @DisplayName("names the record type and the key that were searched for")
-        void namesTheRecordTypeAndTheKey() {
+        @DisplayName("names the record type and the resource that were searched, and carries the placeholder "
+                + "where the key would be")
+        void namesTheRecordTypeAndTheResourceButNotTheKey() {
             RecordNotFoundException thrown = new RecordNotFoundException(
                     CATEGORY_BALANCE_RECORD_TYPE, CATEGORY_BALANCE_KEY, CATEGORY_BALANCE_RESOURCE);
 
-            // Containment rather than equality: production owns the phrasing,
-            // this test owns the content that must be present in it.
-            assertThat(thrown.getMessage())
-                    .contains(CATEGORY_BALANCE_RECORD_TYPE)
-                    .contains(CATEGORY_BALANCE_KEY)
-                    .contains(CATEGORY_BALANCE_RESOURCE);
+            // Equality rather than containment for the whole rendering: a
+            // non-disclosure claim is only as strong as the set of things the
+            // message is allowed to contain, and pinning the exact text is what
+            // makes that set closed. The record type and the resource name are
+            // both fixed vocabulary - a layout name and a legacy data-definition
+            // name - so neither is sensitive; the key is the value that is.
+            assertThat(thrown.getMessage()).isEqualTo("RecordNotFound[recordType=" + CATEGORY_BALANCE_RECORD_TYPE
+                    + ", key=" + KEY_PLACEHOLDER
+                    + ", resourceName=" + CATEGORY_BALANCE_RESOURCE + "]");
+            assertThat(thrown.getMessage()).doesNotContain(CATEGORY_BALANCE_KEY);
+
+            // The value is still reachable, deliberately, through the accessor.
+            assertThat(thrown.key()).isEqualTo(CATEGORY_BALANCE_KEY);
         }
 
         @Test
-        @DisplayName("names the resource only when a resource was supplied")
+        @DisplayName("names the resource only when a resource was supplied, and withholds the key either way")
         void namesTheResourceOnlyWhenOneWasSupplied() {
             RecordNotFoundException withResource =
                     new RecordNotFoundException(ACCOUNT_RECORD_TYPE, ACCOUNT_KEY, ACCOUNT_RESOURCE);
             RecordNotFoundException withoutResource =
                     new RecordNotFoundException(ACCOUNT_RECORD_TYPE, ACCOUNT_KEY);
 
-            assertThat(withResource.getMessage()).contains(ACCOUNT_RESOURCE);
+            assertThat(withResource.getMessage()).contains(ACCOUNT_RESOURCE).doesNotContain(ACCOUNT_KEY);
             assertThat(withoutResource.getMessage())
-                    .contains(ACCOUNT_RECORD_TYPE, ACCOUNT_KEY)
-                    .doesNotContain(ACCOUNT_RESOURCE);
+                    .contains(ACCOUNT_RECORD_TYPE)
+                    .contains(KEY_PLACEHOLDER)
+                    .doesNotContain(ACCOUNT_RESOURCE)
+                    .doesNotContain(ACCOUNT_KEY);
+        }
+
+        @Test
+        @DisplayName("withholds every key the estate can produce, whatever its width or shape")
+        void withholdsEveryKeyShapeTheEstateCanProduce() {
+            // One case per key shape the eleven legacy layouts actually yield: a
+            // zero-padded eleven-character account identifier, a sixteen-digit
+            // card number, a space-padded sixteen-character composite, a
+            // seventeen-character composite, a two-character type code, a
+            // six-character category composite, an eight-character user
+            // identifier and a key that is nothing but a code and its padding.
+            record Case(String recordType, String key, String resourceName) { }
+            Case[] cases = {
+                new Case(ACCOUNT_RECORD_TYPE, ACCOUNT_KEY, ACCOUNT_RESOURCE),
+                new Case(CARD_RECORD_TYPE, SYNTHETIC_CARD_KEY, CARD_RESOURCE),
+                new Case(DISCLOSURE_GROUP_RECORD_TYPE, DISCLOSURE_GROUP_KEY, DISCLOSURE_GROUP_RESOURCE),
+                new Case(CATEGORY_BALANCE_RECORD_TYPE, CATEGORY_BALANCE_KEY, CATEGORY_BALANCE_RESOURCE),
+                new Case(TRANSACTION_TYPE_RECORD_TYPE, TRANSACTION_TYPE_KEY, TRANSACTION_TYPE_RESOURCE),
+                new Case(TRANSACTION_CATEGORY_RECORD_TYPE, TRANSACTION_CATEGORY_KEY,
+                        TRANSACTION_CATEGORY_RESOURCE),
+                new Case(USER_SECURITY_RECORD_TYPE, USER_SECURITY_IDENTIFIER, USER_SECURITY_RESOURCE),
+                new Case(DISCLOSURE_GROUP_RECORD_TYPE, PADDED_GROUP_CODE, DISCLOSURE_GROUP_RESOURCE),
+                new Case(CARD_XREF_RECORD_TYPE, SYNTHETIC_CARD_KEY, CARD_XREF_RESOURCE),
+            };
+
+            for (Case scenario : cases) {
+                RecordNotFoundException thrown =
+                        new RecordNotFoundException(scenario.recordType(), scenario.key(),
+                                scenario.resourceName());
+
+                assertThat(thrown.getMessage())
+                        .as("the searched key must not reach the message for %s", scenario.recordType())
+                        .doesNotContain(scenario.key())
+                        .contains(KEY_PLACEHOLDER);
+                assertThat(thrown.key())
+                        .as("the accessor must still return the key verbatim for %s", scenario.recordType())
+                        .isEqualTo(scenario.key());
+            }
+        }
+
+        @Test
+        @DisplayName("carries a fixed placeholder, so neither the value nor the length of the key is disclosed")
+        void thePlaceholderIsFixedAndDisclosesNothingAboutTheKey() {
+            RecordNotFoundException shortKey =
+                    new RecordNotFoundException(TRANSACTION_TYPE_RECORD_TYPE, TRANSACTION_TYPE_KEY);
+            RecordNotFoundException longKey =
+                    new RecordNotFoundException(TRANSACTION_TYPE_RECORD_TYPE, CATEGORY_BALANCE_KEY);
+            RecordNotFoundException emptyKey =
+                    new RecordNotFoundException(TRANSACTION_TYPE_RECORD_TYPE, "");
+
+            // A two-character key, a seventeen-character key and no key at all
+            // render byte-identically under the same record type. A derived
+            // stand-in - masking all but the last four characters, say - would
+            // leak the width and, for a short key, most of the value; a constant
+            // leaks neither.
+            assertThat(shortKey.getMessage()).isEqualTo(longKey.getMessage()).isEqualTo(emptyKey.getMessage());
+            assertThat(shortKey.getMessage()).containsOnlyOnce(KEY_PLACEHOLDER);
         }
 
         @Test
@@ -545,7 +643,7 @@ class RecordNotFoundExceptionTest {
             // Three of the eleven legacy record layouts carry composite keys, so
             // a composite key is the ordinary case rather than an edge case.
             assertThat(thrown.key()).isEqualTo(DISCLOSURE_GROUP_KEY).hasSize(16);
-            assertThat(thrown.getMessage()).contains(DISCLOSURE_GROUP_KEY);
+            assertThat(thrown.getMessage()).doesNotContain(DISCLOSURE_GROUP_KEY);
         }
 
         @Test
@@ -555,7 +653,7 @@ class RecordNotFoundExceptionTest {
                     CATEGORY_BALANCE_RECORD_TYPE, CATEGORY_BALANCE_KEY, CATEGORY_BALANCE_RESOURCE);
 
             assertThat(thrown.key()).isEqualTo(CATEGORY_BALANCE_KEY).hasSize(17);
-            assertThat(thrown.getMessage()).contains(CATEGORY_BALANCE_KEY);
+            assertThat(thrown.getMessage()).doesNotContain(CATEGORY_BALANCE_KEY);
         }
 
         @Test
@@ -566,7 +664,7 @@ class RecordNotFoundExceptionTest {
                     new RecordNotFoundException(ACCOUNT_RECORD_TYPE, ACCOUNT_KEY, ACCOUNT_RESOURCE);
 
             assertThat(thrown.key()).isEqualTo(ACCOUNT_KEY).hasSize(11).startsWith("0");
-            assertThat(thrown.getMessage()).contains(ACCOUNT_KEY);
+            assertThat(thrown.getMessage()).doesNotContain(ACCOUNT_KEY);
         }
 
         @Test
@@ -576,6 +674,7 @@ class RecordNotFoundExceptionTest {
                     DISCLOSURE_GROUP_RECORD_TYPE, PADDED_GROUP_CODE, DISCLOSURE_GROUP_RESOURCE);
 
             assertThat(thrown.key()).isEqualTo(PADDED_GROUP_CODE).hasSize(10).endsWith(" ");
+            assertThat(thrown.getMessage()).doesNotContain(PADDED_GROUP_CODE);
         }
 
         @Test
@@ -594,24 +693,26 @@ class RecordNotFoundExceptionTest {
     class UserSecurityMiss {
 
         @Test
-        @DisplayName("carries the eight-character user identifier and nothing else")
+        @DisplayName("carries the eight-character user identifier on its accessor alone, never in the message")
         void carriesTheUserIdentifierOnly() {
             RecordNotFoundException thrown = new RecordNotFoundException(
                     USER_SECURITY_RECORD_TYPE, USER_SECURITY_IDENTIFIER, USER_SECURITY_RESOURCE);
 
             assertThat(thrown.key()).isEqualTo(USER_SECURITY_IDENTIFIER).hasSize(8);
-            assertThat(thrown.getMessage()).contains(USER_SECURITY_IDENTIFIER);
+            assertThat(thrown.getMessage()).doesNotContain(USER_SECURITY_IDENTIFIER);
 
-            // Exact equality against a message composed solely from the three
-            // supplied context values is the strongest available proof that the
-            // diagnostic carries nothing beyond them. The legacy user record
-            // holds an eight-character cleartext credential in a field adjacent
-            // to the identifier; a credential is never a valid key, so it can
-            // never reach this message.
-            String composedFromSuppliedContextOnly = "RecordNotFound[recordType=" + USER_SECURITY_RECORD_TYPE
-                    + ", key=" + USER_SECURITY_IDENTIFIER
+            // Exact equality against a message composed solely from the record
+            // type, the resource name and the fixed placeholder is the strongest
+            // available proof that the diagnostic carries nothing beyond them.
+            // The legacy user record holds an eight-character cleartext
+            // credential in a field adjacent to the identifier; a credential is
+            // never a valid key, and now not even the identifier is rendered, so
+            // an operator reading a log finds the record type and the dataset and
+            // must ask the exception for the rest.
+            String composedWithoutTheKey = "RecordNotFound[recordType=" + USER_SECURITY_RECORD_TYPE
+                    + ", key=" + KEY_PLACEHOLDER
                     + ", resourceName=" + USER_SECURITY_RESOURCE + "]";
-            assertThat(thrown.getMessage()).isEqualTo(composedFromSuppliedContextOnly);
+            assertThat(thrown.getMessage()).isEqualTo(composedWithoutTheKey);
             assertThat(thrown.getMessage())
                     .doesNotContainIgnoringCase("secret", "credential", "pwd", "token", "hash");
         }
@@ -752,8 +853,16 @@ class RecordNotFoundExceptionTest {
             assertThat(restored.recordType()).isEqualTo(CATEGORY_BALANCE_RECORD_TYPE);
             assertThat(restored.key()).isEqualTo(CATEGORY_BALANCE_KEY);
             assertThat(restored.resourceName()).isEqualTo(CATEGORY_BALANCE_RESOURCE);
-            assertThat(restored.getMessage()).isEqualTo(original.getMessage());
             assertThat(restored.getCause()).isInstanceOf(IOException.class).hasMessage(CAUSE_DETAIL);
+
+            // The message is serialised as a field of Throwable, so redaction has
+            // to hold on the far side of the stream as well: the restored message
+            // is the original message, and neither carries the key even though
+            // the restored accessor still returns it.
+            assertThat(restored.getMessage())
+                    .isEqualTo(original.getMessage())
+                    .doesNotContain(CATEGORY_BALANCE_KEY)
+                    .contains(KEY_PLACEHOLDER);
         }
 
         @Test
@@ -778,7 +887,10 @@ class RecordNotFoundExceptionTest {
             assertThat(restored.recordType()).isNotNull().isEmpty();
             assertThat(restored.key()).isNotNull().isEmpty();
             assertThat(restored.resourceName()).isNotNull().isEmpty();
-            assertThat(restored.getMessage()).isEqualTo(original.getMessage()).doesNotContain(ABSENT_VALUE_RENDERING);
+            assertThat(restored.getMessage())
+                    .isEqualTo(original.getMessage())
+                    .doesNotContain(ABSENT_VALUE_RENDERING)
+                    .contains(KEY_PLACEHOLDER);
             assertThat(restored).hasNoCause();
         }
     }

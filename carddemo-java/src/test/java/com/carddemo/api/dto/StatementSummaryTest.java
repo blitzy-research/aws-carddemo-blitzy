@@ -50,60 +50,46 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Unit test for {@link StatementSummary}, the statement work area consumed by the statement
  * generator.
  *
- * <h2>What this test is for</h2>
- *
  * <p>{@link StatementSummary} is the decoded value object for the reporting-altered transaction
- * record declared at lines 20 to 36 of {@code app/cpy/COSTM01.CPY}. It is a pure carrier: it holds
- * thirteen live fields, performs no arithmetic, applies no scale, folds no case, trims nothing and
- * pads nothing. Every assertion below therefore checks a <em>carriage</em> property rather than a
- * computation, because the whole value of this type is that what a producer supplies is exactly what
- * a consumer observes.</p>
+ * record declared at lines 20 to 36 of {@code app/cpy/COSTM01.CPY}. It is a pure carrier: thirteen
+ * live fields, no arithmetic, no scale, no case fold, no trim and no pad. Every assertion below
+ * therefore checks a <em>carriage</em> property rather than a computation, because the whole value of
+ * this type is that what a producer supplies is exactly what a consumer observes. The statement
+ * generator {@code app/cbl/CBSTM03A.CBL} writes two fixed-width output records, one 80 bytes wide and
+ * one 100 bytes wide, and both are compared byte for byte against golden fixtures in the end-to-end
+ * pipeline test, never here. What lives here is the reason that comparison can succeed at all: a
+ * field this type silently dropped, re-padded, re-scaled or case-folded would corrupt both records
+ * long before the writers ever saw them.</p>
  *
- * <p>The statement generator {@code app/cbl/CBSTM03A.CBL} writes two fixed-width output records, one
- * 80 bytes wide and one 100 bytes wide, and both are compared byte for byte against golden fixtures.
- * That comparison lives in the end-to-end pipeline test, never here. What lives here is the reason
- * that comparison can succeed at all: a field this type silently dropped, re-padded, re-scaled or
- * case-folded would corrupt both records long before the writers ever saw them. This class pins the
- * carriage contract so a plausible-looking tidy-up cannot quietly break parity.</p>
+ * <p><strong>Two acceptance assertions this class owns.</strong> First, the 20-byte record tail is
+ * absent: the copybook closes with an unnamed 20-byte slack area at line 36 that carries no data name
+ * and exists only to round the record image out to 350 bytes, and it must have no component, accessor
+ * or serialised property here - proved positively by serialising a fully populated instance and
+ * pinning the resulting property set to exactly the thirteen live names. Second, a 26-blank stamp
+ * round-trips byte for byte: both stamp fields are 26 characters of opaque text, the seeded processing
+ * stamps in the estate are precisely 26 blanks, and such a value must survive construction and a JSON
+ * round trip unchanged - never collapsed to an empty value, never replaced by {@code null}, never
+ * trimmed and never normalised.</p>
  *
- * <h2>The two mandated acceptance assertions this class owns</h2>
+ * <p><strong>Byte accounting.</strong> The thirteen live fields account for 330 of the record's 350
+ * bytes: 16 for the card number, 16 for the transaction identifier, 2 for the type code, 4 for the
+ * category code, 10 for the source channel, 100 for the description, 11 for the amount, 9 for the
+ * merchant identifier, 50 for the merchant name, 50 for the merchant city, 10 for the merchant postal
+ * code, 26 for the origination stamp and 26 for the processing stamp. The amount contributes 11 rather
+ * than 12 because it is a signed zoned decimal of nine digits plus two whose sign is overpunched into
+ * its final byte rather than occupying a byte of its own. Adding the 20-byte unnamed tail gives
+ * 330 + 20 = 350, so the accounting balances exactly even though this type models only the 330 bytes
+ * that carry data.</p>
  *
- * <ol>
- *   <li><strong>The 20-byte record tail is absent.</strong> The copybook closes with an unnamed
- *       20-byte slack area at line 36 which carries no data name and exists only to round the record
- *       image out to 350 bytes. It must have no component, no accessor and no serialised property
- *       here. This is proved positively, by serialising a fully populated instance and pinning the
- *       resulting property set to exactly the thirteen live names.</li>
- *   <li><strong>A 26-blank stamp round-trips byte for byte.</strong> Both stamp fields are 26
- *       characters of opaque text, and the seeded processing stamps in the estate are precisely 26
- *       blanks. A 26-blank value must survive construction and a JSON round trip unchanged: never
- *       collapsed to an empty value, never replaced by {@code null}, never trimmed and never
- *       normalised.</li>
- * </ol>
+ * <p><strong>These expectations are an independent oracle.</strong> Every expected value is
+ * hand-written from the measured copybook widths and from literals the estate is known to write. No
+ * expectation is produced by calling a codec, a record mapper, a statement template holder or any
+ * statement service, and no assertion compares a value to itself. The JSON shape is checked against a
+ * plain {@link ObjectMapper} configured locally in this file to match
+ * {@code carddemo-java/src/main/resources/application.yml}; no framework context is started, no
+ * container is launched and no database is touched.</p>
  *
- * <h2>Byte accounting, and why omitting the tail still balances</h2>
- *
- * <p>The thirteen live fields account for 330 of the record's 350 bytes: 16 for the card number, 16
- * for the transaction identifier, 2 for the type code, 4 for the category code, 10 for the source
- * channel, 100 for the description, 11 for the amount, 9 for the merchant identifier, 50 for the
- * merchant name, 50 for the merchant city, 10 for the merchant postal code, 26 for the origination
- * stamp and 26 for the processing stamp. The amount contributes 11 rather than 12 because it is a
- * signed zoned decimal of nine digits plus two, whose sign is overpunched into its final byte rather
- * than occupying a byte of its own. Adding the 20-byte unnamed tail gives 330 + 20 = 350, so the
- * accounting balances exactly even though this type deliberately models only the 330 bytes that
- * carry data.</p>
- *
- * <h2>These expectations are an independent oracle</h2>
- *
- * <p>Every expected value in this class is hand-written from the measured copybook widths and from
- * literals the estate is known to write. No expectation is produced by calling a codec, a record
- * mapper, a statement template holder or any statement service, and no assertion compares a value to
- * itself. The JSON shape is checked against a plain {@link ObjectMapper} configured locally in this
- * file to match {@code carddemo-java/src/main/resources/application.yml}; no framework context is
- * started, no container is launched and no database is touched.</p>
- *
- * <h2>The traps this class exists to pin down</h2>
- *
+ * <p><strong>The traps this class exists to pin down.</strong></p>
  * <ol>
  *   <li><strong>The field order is reversed relative to the base transaction layout.</strong> In
  *       {@code app/cpy/CVTRA05Y.cpy} the transaction identifier is the leading field and the card
@@ -111,15 +97,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       identifier second, which is exactly what the statement job's reprojection does. The property
  *       order is asserted, so the reversal cannot be quietly "corrected" back.</li>
  *   <li><strong>Three widths are wider than the online view map, deliberately.</strong> The
- *       description is 100 here against 60 in {@code app/cpy-bms/COTRN01.CPY}, the merchant name is
- *       50 against 30, and the merchant city is 50 against 25. Both are real external contracts that
- *       merely describe overlapping concepts. The wider widths are asserted and the narrower ones are
- *       asserted to be strictly smaller, so no future refactor can unify them and truncate statement
- *       output.</li>
+ *       description is 100 here against 60 in {@code app/cpy-bms/COTRN01.CPY}, the merchant name 50
+ *       against 30, and the merchant city 50 against 25. Both are real external contracts that
+ *       merely describe overlapping concepts, so the wider widths are asserted and the narrower ones
+ *       asserted to be strictly smaller, and no future refactor can unify them and truncate
+ *       statement output.</li>
  *   <li><strong>Numeric pictures are text.</strong> A category code of {@code "0002"} and a
  *       transaction identifier of {@code "0000000000000001"} lose their meaning the instant they are
- *       parsed as numbers. The static types are pinned by assignment, which makes a numeric type a
- *       compile error rather than a silent data defect.</li>
+ *       parsed as numbers, so the static types are pinned by assignment, which makes a numeric type
+ *       a compile error rather than a silent data defect.</li>
  *   <li><strong>Money is exact and is never rescaled here.</strong> The type carries the decimal it
  *       is handed, at whatever scale it arrives, and the wire form is always plain rather than
  *       scientific. The single place that applies the contractual scale of two, truncating towards
@@ -131,11 +117,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       all-blank instance are both asserted to produce no violation at all.</li>
  * </ol>
  *
- * <h2>Provenance</h2>
- *
  * <p>Behaviour is verified by citation and never by transcription, so no legacy source text appears
- * in this file. Source checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}; upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
+ * in this file.</p>
  */
 @DisplayName("StatementSummary: the 350-byte reporting statement work area, carried verbatim")
 final class StatementSummaryTest {
@@ -180,6 +163,16 @@ final class StatementSummaryTest {
     private static final String SOURCE_OPERATOR = "OPERATOR  ";
     private static final String SOURCE_SYSTEM = "System    ";
 
+    /**
+     * The literal the row emits in place of the withheld card, description, amount and merchant
+     * components. The two stamps and the source channel are retained rather than withheld; the
+     * rendering test records why.
+     *
+     * <p>Restated here rather than read from the production type, so that a change to that constant
+     * has to be made deliberately in both places and cannot silently weaken these assertions.
+     */
+    private static final String REDACTION_PLACEHOLDER_TEXT = "***REDACTED***";
+
     private static ValidatorFactory validatorFactory;
     private static Validator validator;
 
@@ -189,9 +182,18 @@ final class StatementSummaryTest {
         validator = validatorFactory.getValidator();
     }
 
+    /**
+     * Releases the validator factory, tolerating the case where it was never opened.
+     *
+     * <p>The guard is not decoration. This method runs even when {@link #openValidator()} threw - a
+     * missing provider on the classpath is the realistic cause - and an unguarded call would then
+     * raise a second failure that hides the first. Reporting the real cause is worth one null test.
+     */
     @AfterAll
     static void closeValidator() {
-        validatorFactory.close();
+        if (validatorFactory != null) {
+            validatorFactory.close();
+        }
     }
 
     /**
@@ -202,6 +204,12 @@ final class StatementSummaryTest {
      * <p>The mapper is built here rather than injected because this is a pure unit test: no
      * framework context is started, so the four settings are applied directly and stay visible at
      * the point of use.</p>
+     *
+     * <p>Because it is hand built, it evidences the settings this file believes are in force rather
+     * than the settings a deployed instance has. {@link ApplicationJsonContractTest} supplies the
+     * missing half: it takes the mapper from a real context that has read the module's own
+     * {@code application.yml} and compares its output byte for byte with a mapper built exactly as
+     * this one is, so a change to that file fails there rather than passing unnoticed here.</p>
      *
      * @return a mapper whose behaviour matches the deployed serialisation contract
      */
@@ -1351,21 +1359,199 @@ final class StatementSummaryTest {
         }
 
         @Test
-        @DisplayName("the text rendering names every component it carries")
-        void theTextRenderingNamesEveryComponent() {
-            String rendered = populated().toString();
+        @DisplayName("the text rendering names every component but redacts the cardholder-bearing values")
+        void theTextRenderingRedactsTheCardholderBearingValues() {
+            StatementSummary summary = populated();
+
+            String rendered = summary.toString();
 
             assertThat(rendered)
-                    .as("the rendering is the canonical one for a value type, so it names each "
-                            + "component; this keeps a failure diagnostic readable")
+                    .as("every component name is still present, so a failure diagnostic stays readable")
                     .contains("cardNumber")
                     .contains("transactionId")
                     .contains("amount")
                     .contains("originationTimestamp")
                     .contains("processingTimestamp");
             assertThat(rendered)
+                    .as("the retained components identify the line: which transaction, how classified, "
+                            + "where it entered and when it was originated and processed")
+                    .contains("transactionId=" + summary.transactionId())
+                    .contains("typeCode=" + summary.typeCode())
+                    .contains("categoryCode=" + summary.categoryCode())
+                    .contains("source=" + summary.source())
+                    .contains("originationTimestamp=" + summary.originationTimestamp())
+                    .contains("processingTimestamp=" + summary.processingTimestamp());
+            assertThat(rendered)
                     .as("and it mentions no record tail, because there is none to mention")
                     .doesNotContain("filler");
+        }
+
+        /**
+         * The primary account number must not reach a rendering surface, and neither must the values
+         * that reconstruct a cardholder's spending alongside it.
+         *
+         * <p>This assertion is negative on purpose and is the security half of the rendering contract.
+         * The card number is a primary account number; the amount, the description and the four
+         * merchant components combine with the retained transaction identifier to describe what a
+         * specific cardholder spent and where. None of them appears in the rendered text, in whole or
+         * in part - a truncated primary account number is still cardholder data, so no partial mask is
+         * accepted either.</p>
+         */
+        @Test
+        @DisplayName("the text rendering discloses no primary account number and no spending detail")
+        void theTextRenderingDisclosesNoPrimaryAccountNumberOrSpendingDetail() {
+            StatementSummary summary = populated();
+
+            String rendered = summary.toString();
+
+            assertThat(rendered)
+                    .as("the primary account number must appear nowhere, whole or partial")
+                    .doesNotContain(summary.cardNumber())
+                    .doesNotContain(summary.cardNumber().substring(8));
+            assertThat(rendered)
+                    .as("nor the spending detail that would reconstruct the statement line")
+                    .doesNotContain(summary.description())
+                    .doesNotContain(summary.amount().toPlainString())
+                    .doesNotContain(summary.merchantId())
+                    .doesNotContain(summary.merchantName())
+                    .doesNotContain(summary.merchantCity())
+                    .doesNotContain(summary.merchantZip());
+            assertThat(rendered)
+                    .as("each withheld component renders as the fixed placeholder instead")
+                    .contains("cardNumber=***REDACTED***")
+                    .contains("amount=***REDACTED***");
+        }
+
+        /**
+         * Pins the boundary between what the rendering withholds and what it retains, in both
+         * directions, because a one-directional assertion cannot detect the boundary moving.
+         *
+         * <p><strong>Where the boundary sits, and why it sits there.</strong> Withheld: the card
+         * number, the amount, the description and the four merchant components. Retained: the
+         * transaction identifier, the type and category codes, the source channel and the two
+         * 26-character stamps.
+         *
+         * <p>The withheld set is the set that reconstructs a statement line - what was spent, on what,
+         * and where. The retained set identifies and classifies the line without describing it. The
+         * source channel is {@code TRAN-SOURCE PIC X(10)} [{@code app/cpy/CVTRA05Y.cpy}:L8], a channel
+         * literal such as {@code POS TERM} or {@code System}, which is a property of how the record
+         * entered the estate and not an attribute of any person - the same category as the account
+         * status that DL-011 retains for exactly that reason. The stamps are
+         * {@code TRAN-ORIG-TS} and {@code TRAN-PROC-TS PIC X(26)} at record offsets 278 and 304
+         * [{@code app/cpy/CVTRA05Y.cpy}:L16-L17], and they are what the batch tier keys and filters on:
+         * the reporting procedure's {@code INCLUDE COND} selects rows by {@code TRAN-PROC-DT} at offset
+         * 305, so a diagnostic that omitted them could not answer whether a line fell inside the
+         * requested window, which is the most common batch-parity question there is.
+         *
+         * <p>The marginal disclosure from retaining them is nil, and that is the decisive point rather
+         * than a convenience: {@code transactionId} is retained by any reading of this contract, and it
+         * is the primary key of the row, so anything withheld is one keyed read away for a reader who
+         * has database access and unavailable to a reader who does not. Withholding a stamp while
+         * publishing the key that resolves it buys no privacy and costs the diagnostic its usefulness.
+         *
+         * <p>What the security half continues to guarantee is unchanged and is asserted first: no
+         * primary account number, no monetary amount, no description and no merchant component, whole
+         * or partial.
+         */
+        @Test
+        @DisplayName("neither the card number nor the amount nor any merchant value is rendered, while "
+                + "the line's own identity, classification, channel and stamps are retained")
+        void neitherTheCardNumberNorTheAmountNorAnyMerchantValueIsRendered() {
+            String rendered = populated().toString();
+
+            assertThat(rendered)
+                    .as("a primary account number must never be rendered")
+                    .doesNotContain("0000000000000001")
+                    .as("financial data must never be rendered")
+                    .doesNotContain("-1234.56")
+                    .as("where a cardholder spent money must never be rendered")
+                    .doesNotContain("999999999")
+                    .doesNotContain("Some Merchant Name")
+                    .doesNotContain("Some Merchant City")
+                    .doesNotContain("12345")
+                    .as("nor the description")
+                    .doesNotContain("Int. for a/c");
+
+            assertThat(rendered)
+                    .as("each withheld component renders as the same fixed placeholder, so neither the "
+                            + "value nor its length survives")
+                    .contains("cardNumber=" + REDACTION_PLACEHOLDER_TEXT)
+                    .contains("description=" + REDACTION_PLACEHOLDER_TEXT)
+                    .contains("amount=" + REDACTION_PLACEHOLDER_TEXT)
+                    .contains("merchantId=" + REDACTION_PLACEHOLDER_TEXT)
+                    .contains("merchantName=" + REDACTION_PLACEHOLDER_TEXT)
+                    .contains("merchantCity=" + REDACTION_PLACEHOLDER_TEXT)
+                    .contains("merchantZip=" + REDACTION_PLACEHOLDER_TEXT);
+
+            assertThat(rendered)
+                    .as("and the identifying, classifying and locating components are retained, because "
+                            + "a diagnostic that named none of them could not find the line again")
+                    .contains("transactionId=0000000000000002")
+                    .contains("typeCode=01")
+                    .contains("categoryCode=0002")
+                    .contains("source=" + SOURCE_SYSTEM)
+                    .contains("originationTimestamp=" + ONLINE_STAMP)
+                    .contains("processingTimestamp=" + BLANK_STAMP);
+        }
+
+        @Test
+        @DisplayName("two rows differing only in withheld components render identically, and a row "
+                + "differing in a retained component does not")
+        void twoRowsDifferingOnlyInWithheldComponentsRenderIdentically() {
+            // Differs from populated() in every withheld component and in none of the retained ones.
+            StatementSummary sameIdentityDifferentDetail = new StatementSummary(
+                    "9999999999999999",
+                    "0000000000000002",
+                    "01",
+                    "0002",
+                    SOURCE_SYSTEM,
+                    "A different description",
+                    new BigDecimal("98765.43"),
+                    "111111111",
+                    "Other Merchant",
+                    "Other City",
+                    "99999     ",
+                    ONLINE_STAMP,
+                    BLANK_STAMP);
+
+            assertThat(sameIdentityDifferentDetail.toString()).isEqualTo(populated().toString());
+            assertThat(sameIdentityDifferentDetail)
+                    .as("so a rendering can never be used as an equality proxy: these two are unequal "
+                            + "and render identically")
+                    .isNotEqualTo(populated());
+
+            // The converse half, which the identical-rendering assertion alone cannot give: a change in
+            // a retained component must be visible, or the retained set is not really retained.
+            StatementSummary differentIdentitySameDetail = new StatementSummary(
+                    "0000000000000001",
+                    "0000000000000003",
+                    "01",
+                    "0002",
+                    SOURCE_POS_TERMINAL,
+                    "Int. for a/c 00000000011  ",
+                    new BigDecimal("-1234.56"),
+                    "999999999",
+                    "Some Merchant Name  ",
+                    "Some Merchant City  ",
+                    "12345     ",
+                    BATCH_STAMP,
+                    BLANK_STAMP);
+
+            assertThat(differentIdentitySameDetail.toString())
+                    .as("a different line must be distinguishable from this one")
+                    .isNotEqualTo(populated().toString());
+        }
+
+        @Test
+        @DisplayName("the accessors still return every withheld value, so redaction is presentational only")
+        void theAccessorsStillReturnEveryWithheldValue() {
+            StatementSummary row = populated();
+
+            assertThat(row.cardNumber()).isEqualTo("0000000000000001");
+            assertThat(row.amount()).isEqualTo(new BigDecimal("-1234.56"));
+            assertThat(row.merchantName()).isEqualTo("Some Merchant Name  ");
+            assertThat(row.originationTimestamp()).isEqualTo(ONLINE_STAMP);
+            assertThat(row.processingTimestamp()).isEqualTo(BLANK_STAMP);
         }
 
         @Test

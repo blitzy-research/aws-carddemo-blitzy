@@ -32,60 +32,48 @@ import org.junit.jupiter.params.provider.CsvSource;
  * Unit tests for {@link FixedWidthFieldReader}, the offset-slicing primitive on which all eleven
  * CardDemo record mappers are built and the exact inverse operation that reassembles a record image.
  *
- * <h2>Why this test exists</h2>
+ * <p><strong>Why this test exists.</strong> Fixed-width layout knowledge lives exclusively in the
+ * production utility layer, so this class is the only proof that offsets are read and written
+ * correctly, that nothing is ever trimmed, and that a slice cannot silently walk off the end of a
+ * record. The reflection budget for the production tree is zero, which is precisely why the eleven
+ * mappers are hand-written over explicit offsets rather than driven by an annotation-based mapping
+ * framework; nothing here uses reflection either, so the test cannot undermine the constraint it
+ * exists to protect.
  *
- * <p>Fixed-width layout knowledge lives exclusively in the production utility layer, so this class
- * is the only proof that offsets are read and written correctly, that nothing is ever trimmed, and
- * that a slice cannot silently walk off the end of a record. The reflection budget for the
- * production tree is zero, which is precisely why the eleven mappers are hand-written over explicit
- * offsets rather than driven by an annotation-based mapping framework; nothing here uses reflection
- * either, so the test cannot undermine the constraint it exists to protect.
+ * <p><strong>Every expectation is an independent oracle.</strong> No expected value in this class is
+ * produced by calling the class under test. Field offsets and widths were derived from the verified
+ * copybook and file-section declarations, and every literal record image below was hand-assembled
+ * field by field from the measured contents of the ASCII sample data. The only helpers used to build
+ * an expectation are the JDK's own {@link String#repeat(int)} and
+ * {@link String#substring(int, int)}, which generate literal pad runs and literal sub-ranges rather
+ * than compute anything. A round trip is never the sole assertion: where a built image is compared
+ * with a fixture image, both sides are independently known.
  *
- * <h2>Every expectation is an independent oracle</h2>
+ * <p><strong>Byte-exact, never trimmed.</strong> Trailing and interior spaces are contractual data in
+ * this estate, so every comparison here is byte-exact. Nothing is trimmed, stripped, case-folded,
+ * whitespace-collapsed or normalised on either side of an assertion, and every width assertion
+ * measures encoded bytes through {@link StandardCharsets#US_ASCII} rather than counting characters.
  *
- * <p>No expected value in this class is produced by calling the class under test. Field offsets and
- * widths were derived from the verified copybook and file-section declarations, and every literal
- * record image below was hand-assembled field by field from the measured contents of the ASCII
- * sample data. The only helpers used to build an expectation are the JDK's own
- * {@link String#repeat(int)} and {@link String#substring(int, int)}, which generate literal pad runs
- * and literal sub-ranges rather than compute anything. A round trip is never the sole assertion:
- * where a built image is compared with a fixture image, both sides are independently known.
+ * <p><strong>Divergences this class pins down.</strong> Each is recorded in the module's decision log
+ * and is exercised here rather than merely described. A malformed record image surfaces as
+ * {@link IllegalArgumentException} rather than as any domain exception, per decision D-11, and a
+ * short or long record is rejected rather than padded, per decision D-08, because a short record has
+ * no legacy antecedent at all - the legacy records are fixed length by construction. The sample
+ * data's filler bytes are non-uniform, and decision D-10 resolves that by making space the write
+ * default while letting a mapper name the byte its own record carries through
+ * {@link FixedWidthFieldReader.Builder#putFiller(int, int, char)}; reads compare only the mapped data
+ * prefix. Slices are never trimmed, and US-ASCII is named explicitly at every boundary between
+ * characters and bytes.
  *
- * <h2>Byte-exact, never trimmed</h2>
- *
- * <p>Trailing and interior spaces are contractual data in this estate, so every comparison here is
- * byte-exact. Nothing is trimmed, stripped, case-folded, whitespace-collapsed or normalised on
- * either side of an assertion, and every width assertion measures encoded bytes through
- * {@link StandardCharsets#US_ASCII} rather than counting characters.
- *
- * <h2>Divergences this class pins down</h2>
- *
- * <p>Four deliberate divergences between faithful legacy behaviour and idiomatic Java are recorded
- * in the module's decision log and are exercised here rather than merely described: a malformed
- * record image surfaces as {@link IllegalArgumentException} rather than as any domain exception,
- * because a short record has no legacy antecedent at all - the legacy records are fixed length by
- * construction; the sample data's non-uniform filler bytes are resolved by emitting space filler
- * uniformly on write while comparing only the mapped data prefix on read; slices are never trimmed;
- * and US-ASCII is named explicitly at every boundary between characters and bytes.
- *
- * <h2>Scope</h2>
- *
- * <p>This is a pure in-process unit test. It starts no application context, opens no database, no
- * queue, no network connection and no file: every record image it uses is a literal in this file, so
- * the test is hermetic and its oracle is visible in review.
- *
- * <p>Provenance: the legacy estate was read at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Legacy sources are cited by member and
- * field name, never transcribed.
+ * <p><strong>Scope.</strong> This is a pure in-process unit test. It starts no application context,
+ * opens no database, no queue, no network connection and no file: every record image it uses is a
+ * literal in this file, so the test is hermetic and its oracle is visible in review.
  */
 @DisplayName("FixedWidthFieldReader")
 class FixedWidthFieldReaderTest {
 
-    // =================================================================================
     // Layout names. Only diagnostics consume these, so they are free-form labels rather
     // than legacy identifiers with meaning.
-    // =================================================================================
 
     private static final String ACCOUNT = "ACCOUNT";
     private static final String TRANSACTION = "TRANSACTION";
@@ -94,11 +82,9 @@ class FixedWidthFieldReaderTest {
     private static final String DISCLOSURE_GROUP = "DISCLOSURE-GROUP";
     private static final String CATEGORY_BALANCE = "TRAN-CAT-BALANCE";
 
-    // =================================================================================
     // Record widths in encoded bytes, each the sum of its own layout's field widths.
     // Only the layouts a test below actually slices are named here; a mapper is the
     // authority for its own layout and declares its own constants.
-    // =================================================================================
 
     /** 11 + 1 + 12 + 12 + 12 + 10 + 10 + 10 + 12 + 12 + 10 + 10 + 178 = 300. */
     private static final int ACCOUNT_WIDTH = 300;
@@ -159,12 +145,10 @@ class FixedWidthFieldReaderTest {
      */
     private static final String LINE_TERMINATOR = "\n";
 
-    // =================================================================================
     // Hand-assembled record images. Each is built field by field from the measured
     // contents of the named sample file, with the offset and length of every field
     // stated beside it, so the oracle is auditable without leaving this file. The
     // repeat calls generate literal pad runs; they compute nothing.
-    // =================================================================================
 
     /**
      * Row 0 of the account sample data, 300 bytes.
@@ -306,10 +290,8 @@ class FixedWidthFieldReaderTest {
         return value.getBytes(StandardCharsets.US_ASCII).length;
     }
 
-    // =================================================================================
     // Subjects under test. These build the object being exercised; they never produce an
     // expected value.
-    // =================================================================================
 
     /**
      * Builds a reader over account row 0.
@@ -898,9 +880,11 @@ class FixedWidthFieldReaderTest {
         @Test
         @DisplayName("every key starts at offset zero, so no cluster needs a key offset")
         void everyKeyStartsAtOffsetZero() {
-            // Every cluster in the estate declares its key at offset zero without exception, so the
-            // key convenience needs no offset argument at all - and there is nowhere for a surrogate
-            // identifier to live.
+            // Every base cluster in the estate declares its key at offset zero, so the key convenience
+            // needs no offset argument for a base record - and there is nowhere for a surrogate
+            // identifier to live. Alternate-index keys are the separate case and are not reached
+            // through key(int): the three DEFINE ALTERNATEINDEX definitions key at offsets 16, 25 and
+            // 304, so each is an ordinary interior field addressed through field(int, int).
             assertThat(accountRow0().key(11)).isEqualTo("00000000001");
             assertThat(cardXrefRow0().key(16)).isEqualTo("0500024453765740");
             assertThat(disclosureGroupDefault().key(10)).isEqualTo("DEFAULT   ");
@@ -1323,9 +1307,10 @@ class FixedWidthFieldReaderTest {
         void aZeroFilledRowIsNotByteEqualToItsSpaceFilledCounterpart() {
             // The sample data does not pad filler consistently: the master files carry space filler
             // and the reference tables carry ASCII-zero filler, because uninitialised filler has no
-            // canonical value. The module resolves this by emitting space filler uniformly on write
-            // and comparing only the mapped data prefix on read, so the whole-record comparison below
-            // is expected to differ and that difference is asserted rather than glossed over.
+            // canonical value. Decision D-10 makes space the module's default and anomaly 20 records
+            // the source divergence, so building this reference row with the default instead of with
+            // its own filler byte is expected to differ from the sample image, and that difference is
+            // asserted rather than glossed over.
             FixedWidthFieldReader spaceFilled =
                     FixedWidthFieldReader.builder(DISCLOSURE_GROUP, DISCLOSURE_GROUP_WIDTH)
                             .putAlphanumeric("DIS-ACCT-GROUP-ID", 0, 10, "DEFAULT   ")
@@ -1401,6 +1386,102 @@ class FixedWidthFieldReaderTest {
 
             assertThat(built.image()).isEqualTo(ACCOUNT_IMAGE_ROW_0);
             assertThat(encodedBytes(built.image())).isEqualTo(300);
+        }
+
+        @Test
+        @DisplayName("an explicit fill byte reproduces a reference row's own filler, whole-record")
+        void anExplicitFillByteReproducesAReferenceRowsOwnFiller() {
+            // Decision D-10 makes space the module's default, not a normalisation a mapper cannot
+            // escape: a reference-table mapper names its own filler byte and the whole record then
+            // matches the sample image byte for byte, filler included.
+            FixedWidthFieldReader built =
+                    FixedWidthFieldReader.builder(DISCLOSURE_GROUP, DISCLOSURE_GROUP_WIDTH)
+                            .putAlphanumeric("DIS-ACCT-GROUP-ID", 0, 10, "DEFAULT   ")
+                            .putAlphanumeric("DIS-TRAN-TYPE-CD", 10, 2, "01")
+                            .putNumeric("DIS-TRAN-CAT-CD", 12, 4, "1")
+                            .putNumeric("DIS-INT-RATE", 16, 6, "150{")
+                            .putFiller(DISCLOSURE_GROUP_DATA_LENGTH,
+                                    DISCLOSURE_GROUP_FILLER_LENGTH, '0')
+                            .build();
+
+            // Compared with the hand-written sample image, not with a builder-produced counterpart.
+            assertThat(built.image()).isEqualTo(DISCLOSURE_GROUP_DEFAULT_IMAGE);
+            assertThat(built.toByteArray())
+                    .isEqualTo(DISCLOSURE_GROUP_DEFAULT_IMAGE.getBytes(StandardCharsets.US_ASCII));
+            assertThat(built.field("FILLER", DISCLOSURE_GROUP_DATA_LENGTH,
+                    DISCLOSURE_GROUP_FILLER_LENGTH)).isEqualTo(zeros(28));
+        }
+
+        @Test
+        @DisplayName("the space shorthand and an explicit space fill byte produce the same image")
+        void theSpaceShorthandAndAnExplicitSpaceFillByteAgree() {
+            String viaShorthand = FixedWidthFieldReader
+                    .builder(DISCLOSURE_GROUP, DISCLOSURE_GROUP_WIDTH)
+                    .putAlphanumeric("DIS-ACCT-GROUP-ID", 0, 10, "ZEROAPR   ")
+                    .putSpaceFiller(DISCLOSURE_GROUP_DATA_LENGTH, DISCLOSURE_GROUP_FILLER_LENGTH)
+                    .build()
+                    .image();
+            String viaExplicit = FixedWidthFieldReader
+                    .builder(DISCLOSURE_GROUP, DISCLOSURE_GROUP_WIDTH)
+                    .putAlphanumeric("DIS-ACCT-GROUP-ID", 0, 10, "ZEROAPR   ")
+                    .putFiller(DISCLOSURE_GROUP_DATA_LENGTH, DISCLOSURE_GROUP_FILLER_LENGTH, ' ')
+                    .build()
+                    .image();
+
+            // Each side carries its own hand-written expectation, so neither is the other's only
+            // oracle; the third assertion then states the shorthand relationship directly.
+            assertThat(viaShorthand).isEqualTo("ZEROAPR   " + spaces(40));
+            assertThat(viaExplicit).isEqualTo("ZEROAPR   " + spaces(40));
+            assertThat(viaExplicit).isEqualTo(viaShorthand);
+        }
+
+        @Test
+        @DisplayName("an explicit fill run re-establishes its byte over an earlier placement")
+        void anExplicitFillRunReEstablishesItsByteOverAnEarlierPlacement() {
+            FixedWidthFieldReader built = FixedWidthFieldReader
+                    .builder(DISCLOSURE_GROUP, DISCLOSURE_GROUP_WIDTH)
+                    .putAlphanumeric("STRAY", DISCLOSURE_GROUP_DATA_LENGTH, 4, "XXXX")
+                    .putFiller(DISCLOSURE_GROUP_DATA_LENGTH, DISCLOSURE_GROUP_FILLER_LENGTH, '0')
+                    .build();
+
+            assertThat(built.field(DISCLOSURE_GROUP_DATA_LENGTH, DISCLOSURE_GROUP_FILLER_LENGTH))
+                    .isEqualTo(zeros(28));
+            assertThat(built.image()).isEqualTo(spaces(22) + zeros(28));
+        }
+
+        @Test
+        @DisplayName("an explicit fill run outside the record is rejected, naming the geometry")
+        void anExplicitFillRunOutsideTheRecordIsRejected() {
+            FixedWidthFieldReader.Builder builder =
+                    FixedWidthFieldReader.builder(DISCLOSURE_GROUP, DISCLOSURE_GROUP_WIDTH);
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> builder.putFiller(DISCLOSURE_GROUP_DATA_LENGTH, 29, '0'))
+                    .withMessageContaining("slice out of range")
+                    .withMessageContaining(DISCLOSURE_GROUP)
+                    .withMessageContaining("field 'FILLER'")
+                    .withMessageContaining("offset=22")
+                    .withMessageContaining("length=29")
+                    .withMessageContaining("recordWidth=50");
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> builder.putFiller(0, 0, '0'))
+                    .withMessageContaining("length must be at least 1");
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> builder.putFiller(-1, 4, '0'))
+                    .withMessageContaining("offset must not be negative");
+        }
+
+        @Test
+        @DisplayName("a fill character US-ASCII cannot represent is rejected, never transcoded")
+        void aFillCharacterUsAsciiCannotRepresentIsRejected() {
+            FixedWidthFieldReader.Builder builder =
+                    FixedWidthFieldReader.builder(DISCLOSURE_GROUP, DISCLOSURE_GROUP_WIDTH);
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> builder.putFiller(0, 4, '\u00A0'))
+                    .withMessageContaining("US-ASCII cannot represent")
+                    .withMessageContaining("field 'FILLER'")
+                    .withMessageContaining("0xA0");
         }
     }
 

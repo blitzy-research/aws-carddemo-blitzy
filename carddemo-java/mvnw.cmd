@@ -87,12 +87,17 @@
 @REM whose mvnw.cmd member has SHA-256
 @REM   46eedb8419bd14fe70d5bb2916d7b6f51806e51b39d5b76a42610384ca929c1c
 @REM so the resolution, download, checksum and dispatch logic can be
-@REM re-verified against upstream at any time. The CardDemo additions are
-@REM confined to the licence header, these comment blocks, the ENV vars
-@REM documented above, and the wrapperVersion lookup with its verbose logging;
-@REM none of them alters control flow. Using the canonical script rather than a
-@REM bespoke downloader is deliberate: a developer's existing expectations of
-@REM mvnw.cmd are part of the contract.
+@REM re-verified against upstream at any time. Using the canonical script rather
+@REM than a bespoke downloader is deliberate: a developer's existing
+@REM expectations of mvnw.cmd are part of the contract.
+@REM
+@REM Divergence from upstream, stated so a diff against 3.3.4 is explainable.
+@REM Four changes are presentational - the licence header, these comment blocks,
+@REM the ENV vars documented above, and the wrapperVersion lookup with its
+@REM verbose logging - and none of them alters control flow. One change is
+@REM substantive and is a defect fix, described under "Paths are passed, never
+@REM pasted" below. The edited lines are marked inline with "CardDemo
+@REM modification".
 @REM
 @REM No committed jar. This module uses the wrapper's only-script distribution
 @REM type, declared in .mvn\wrapper\maven-wrapper.properties. In that mode the
@@ -113,6 +118,30 @@
 @REM workflow - so upgrading Maven is a one-line change that cannot leave a
 @REM stale second copy behind. Set MVNW_VERBOSE=true to have the launcher report
 @REM the wrapper version, the resolved URL and the cache directory it uses.
+@REM
+@REM Paths are passed, never pasted. cmd.exe cannot hand arguments to the
+@REM PowerShell half of this polyglot, so the two paths that half needs - the
+@REM directory this script lives in and this script's own full path - have to
+@REM cross the boundary somehow. Upstream 3.3.4 crosses it by pasting %~dp0 and
+@REM %~f0 into single-quoted PowerShell string literals inside the dispatch
+@REM line. An apostrophe is a legal character in a Windows path, and one
+@REM appearing in a checkout path closes the literal early: at best the launcher
+@REM dies on a parse error in a valid working directory, at worst a crafted path
+@REM closes the literal and the remainder of that path is parsed as PowerShell
+@REM and executed inside the generated script block. Both paths are therefore
+@REM published as environment variables instead and read back on the PowerShell
+@REM side through $env:, so no path text is ever parsed as source and no
+@REM escaping scheme has to be maintained. The quoted SET form is used so that a
+@REM path containing a command-parsing character - an ampersand, a pipe, a
+@REM redirection - is assigned literally rather than reinterpreted by cmd.exe,
+@REM and every Get-Content that resolves a caller-supplied path is given
+@REM -LiteralPath so that a path containing a bracket is read literally rather
+@REM than expanded as a wildcard - which covers this script's own path and the
+@REM three reads of the properties file beneath it, all four being derived from
+@REM %~dp0 or %~f0. The two variables are cleared immediately after the
+@REM dispatch, with the other temporaries. The values themselves are unchanged,
+@REM trailing separator included, so the PowerShell half sees exactly what it
+@REM saw before.
 @REM
 @REM Echo suppression and variable hygiene. This script deliberately uses
 @REM neither ECHO OFF nor SETLOCAL, because it is a polyglot: cmd.exe runs the
@@ -138,16 +167,23 @@
 @REM ----------------------------------------------------------------------------
 @REM
 
-@IF "%__MVNW_ARG0_NAME__%"=="" (SET __MVNW_ARG0_NAME__=%~nx0)
+@IF "%__MVNW_ARG0_NAME__%"=="" (SET "__MVNW_ARG0_NAME__=%~nx0")
 @SET __MVNW_CMD__=
 @SET __MVNW_ERROR__=
+@REM CardDemo modification :: the two paths the PowerShell half needs are published
+@REM as environment values and read back through $env: below, never pasted into
+@REM PowerShell source. See "Paths are passed, never pasted" above.
+@SET "__MVNW_SCRIPTDIR__=%~dp0"
+@SET "__MVNW_SCRIPTPATH__=%~f0"
 @SET __MVNW_PSMODULEP_SAVE=%PSModulePath%
 @SET PSModulePath=
-@FOR /F "usebackq tokens=1* delims==" %%A IN (`powershell -noprofile "& {$scriptDir='%~dp0'; $script='%__MVNW_ARG0_NAME__%'; icm -ScriptBlock ([Scriptblock]::Create((Get-Content -Raw '%~f0'))) -NoNewScope}"`) DO @(
+@FOR /F "usebackq tokens=1* delims==" %%A IN (`powershell -noprofile "& {$scriptDir=$env:__MVNW_SCRIPTDIR__; $script=$env:__MVNW_ARG0_NAME__; icm -ScriptBlock ([Scriptblock]::Create((Get-Content -Raw -LiteralPath $env:__MVNW_SCRIPTPATH__))) -NoNewScope}"`) DO @(
   IF "%%A"=="MVN_CMD" (set __MVNW_CMD__=%%B) ELSE IF "%%B"=="" (echo %%A) ELSE (echo %%A=%%B)
 )
 @SET PSModulePath=%__MVNW_PSMODULEP_SAVE%
 @SET __MVNW_PSMODULEP_SAVE=
+@SET __MVNW_SCRIPTDIR__=
+@SET __MVNW_SCRIPTPATH__=
 @SET __MVNW_ARG0_NAME__=
 @SET MVNW_USERNAME=
 @SET MVNW_PASSWORD=
@@ -162,7 +198,7 @@ if ($env:MVNW_VERBOSE -eq "true") {
 }
 
 # calculate distributionUrl, requires .mvn/wrapper/maven-wrapper.properties
-$distributionUrl = (Get-Content -Raw "$scriptDir/.mvn/wrapper/maven-wrapper.properties" | ConvertFrom-StringData).distributionUrl
+$distributionUrl = (Get-Content -Raw -LiteralPath "$scriptDir/.mvn/wrapper/maven-wrapper.properties" | ConvertFrom-StringData).distributionUrl
 if (!$distributionUrl) {
   Write-Error "cannot read distributionUrl property in $scriptDir/.mvn/wrapper/maven-wrapper.properties"
 }
@@ -177,7 +213,7 @@ if (!$distributionUrl) {
 # Every diagnostic below goes to the verbose stream and never to standard
 # output. The batch portion parses this script's standard output to pick up
 # MVN_CMD, so writing diagnostics there would corrupt the dispatch.
-$wrapperVersion = (Get-Content -Raw "$scriptDir/.mvn/wrapper/maven-wrapper.properties" | ConvertFrom-StringData).wrapperVersion
+$wrapperVersion = (Get-Content -Raw -LiteralPath "$scriptDir/.mvn/wrapper/maven-wrapper.properties" | ConvertFrom-StringData).wrapperVersion
 if (!$wrapperVersion) {
   $wrapperVersion = "unknown"
 }
@@ -265,7 +301,7 @@ if ($env:MVNW_USERNAME -and $env:MVNW_PASSWORD) {
 $webclient.DownloadFile($distributionUrl, "$TMP_DOWNLOAD_DIR/$distributionUrlName") | Out-Null
 
 # If specified, validate the SHA-256 sum of the Maven distribution zip file
-$distributionSha256Sum = (Get-Content -Raw "$scriptDir/.mvn/wrapper/maven-wrapper.properties" | ConvertFrom-StringData).distributionSha256Sum
+$distributionSha256Sum = (Get-Content -Raw -LiteralPath "$scriptDir/.mvn/wrapper/maven-wrapper.properties" | ConvertFrom-StringData).distributionSha256Sum
 if ($distributionSha256Sum) {
   Write-Verbose "verifying the download against distributionSha256Sum from the properties file"
 } else {

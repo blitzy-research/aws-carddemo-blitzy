@@ -24,83 +24,57 @@ import java.util.Optional;
 /**
  * The CardDemo 3270 attention-key identifier.
  *
- * <p>This enum is the Java realisation of the {@code CCARD-AID} field declared
- * {@code PIC X(5)} inside the {@code CC-WORK-AREAS} structure of copybook member
- * {@code CVCRD01Y}. That copybook is included by five online programs:
- * {@code COACTUPC}, {@code COACTVWC}, {@code COCRDLIC}, {@code COCRDSLC} and
- * {@code COCRDUPC}. Immediately beneath the field the copybook declares
- * <strong>16 level-88 condition names</strong>, one per attention key, and this
- * enum therefore declares exactly 16 constants - one per condition name, in the
- * same declaration order.</p>
+ * <p>The Java realisation of the {@code CCARD-AID} field declared {@code PIC X(5)} inside the
+ * {@code CC-WORK-AREAS} structure of copybook {@code CVCRD01Y}, which five online programs include.
+ * Immediately beneath the field the copybook declares <strong>16 level-88 condition names</strong>, one
+ * per attention key, so this enum declares exactly 16 constants - one per condition name, in the same
+ * declaration order.
  *
- * <h2>Values are five characters wide, and the padding is part of the value</h2>
+ * <p><strong>Values are five characters wide, and the padding is part of the value.</strong> Because
+ * the underlying field is a fixed-width {@code PIC X(5)} work area, every condition-name literal is
+ * exactly five characters long, and two of them are shorter than the field and therefore <em>space
+ * padded in the source literal itself</em>: the two program-attention identifiers are three characters
+ * followed by two spaces. The remaining fourteen - the ENTER and CLEAR identifiers and the twelve
+ * program-function identifiers, whose numeric suffix is always zero-padded to two digits - naturally
+ * occupy all five positions.
  *
- * <p>Because the underlying field is a fixed-width {@code PIC X(5)} work area,
- * every condition-name literal is exactly five characters long. Two of them are
- * shorter than the field and are therefore <em>space padded in the source
- * literal itself</em>: the PA1 identifier is {@code PA1} followed by two spaces
- * and the PA2 identifier is {@code PA2} followed by two spaces. The remaining
- * fourteen literals - the ENTER and CLEAR identifiers and the twelve
- * program-function identifiers, whose numeric suffix is always zero-padded to
- * two digits - naturally occupy all five positions.</p>
+ * <p>The padded five-character form is what this enum stores and what {@link #getAid()} returns, and it
+ * must be preserved verbatim with no white-space normalization and no case folding.
+ * {@link #fromAid(String)} likewise keys on the exact padded form, because the value it is given
+ * originates in a fixed-width work area where trailing spaces are real data rather than incidental
+ * formatting; a lookup keyed on a shortened form would silently fail to resolve the two
+ * program-attention identifiers.
  *
- * <p>The padded five-character form is what this enum stores and what
- * {@link #getAid()} returns. It must be preserved verbatim: no white-space
- * normalisation and no case folding of any kind. {@link #fromAid(String)}
- * likewise keys on the exact padded form, because the value it is given
- * originates in a fixed-width work area where the trailing spaces are real
- * data rather than incidental formatting. A lookup keyed on a shortened form
- * would silently fail to resolve the two PA identifiers.</p>
+ * <p><strong>There is deliberately no default constant.</strong> The legacy mapping from a terminal
+ * attention-key identifier to one of these values lives in the procedural copybook {@code CSSTRPFY},
+ * whose store-function-key paragraph and matching exit paragraph are the member's only two. Between
+ * them sits a single evaluation construct with <strong>28 ordered clauses</strong> and, as verified by a
+ * mechanical count, <strong>zero catch-all clauses</strong>. That absence is behaviorally significant
+ * rather than cosmetic: when the incoming identifier matches none of the 28 clauses, no assignment
+ * happens at all and the work-area field <em>retains the value it already held</em> from the prior
+ * interaction. Consequently this enum must not, and does not, define a synthetic unknown, none, other,
+ * invalid, unmapped or default constant - such a constant would manufacture a state the legacy system
+ * cannot produce and would discard the retained value the legacy system relies on. Absence is modelled
+ * explicitly by the empty {@link Optional} returned from {@link #fromAid(String)}, which leaves the
+ * caller free to keep whatever value it was already holding. Decision log entry D-20 records this.
  *
- * <h2>There is deliberately no default constant</h2>
+ * <p><strong>Program-function keys 13 through 24 are not distinct actions.</strong> The same 28-clause
+ * construct folds them back onto the same twelve flags as keys 1 through 12 - key 13 sets the flag key
+ * 1 sets, and so on through key 24, which sets the twelfth. No condition name exists for them anywhere
+ * in the estate, and no constant for them is declared here.
  *
- * <p>The legacy mapping from a terminal attention-key identifier to one of
- * these values lives in the procedural copybook member {@code CSSTRPFY}, whose
- * {@code YYYY-STORE-PFKEY} paragraph and its matching exit paragraph are the
- * member's only two paragraphs. Between them sits a single {@code EVALUATE TRUE}
- * construct with <strong>28 ordered {@code WHEN} clauses</strong> and, as
- * verified by a mechanical count, <strong>zero {@code WHEN OTHER} clauses</strong>.</p>
+ * <p><strong>Ownership boundary.</strong> This enum defines the constants and nothing more.
+ * Translating a raw terminal attention-key identifier into one of them - including performing the
+ * keys-13-through-24 fold - is owned by the utility-layer key translator. This enum performs no such
+ * translation and holds no dependency on the utility layer.
  *
- * <p>The absence of a default clause is behaviourally significant rather than
- * cosmetic. When the incoming attention-key identifier matches none of the 28
- * clauses, no assignment happens at all and the work-area field <em>retains the
- * value it already held</em> from the prior interaction. Consequently this enum
- * must not, and does not, define a synthetic {@code UNKNOWN}, {@code NONE},
- * {@code OTHER}, {@code INVALID}, {@code UNMAPPED} or {@code DEFAULT} constant.
- * Such a constant would manufacture a state the legacy system cannot produce
- * and would discard the retained value the legacy system relies on. Absence is
- * instead modelled explicitly by the empty {@link Optional} returned from
- * {@link #fromAid(String)}, which leaves the caller free to keep whatever value
- * it was already holding. This finding is recorded as a decision-log item.</p>
- *
- * <h2>Program-function keys 13 through 24 are not distinct actions</h2>
- *
- * <p>The same 28-clause construct folds program-function keys 13 through 24 back
- * onto the same twelve flags as keys 1 through 12 - key 13 sets the flag that
- * key 1 sets, key 14 the flag that key 2 sets, and so on through key 24, which
- * sets the twelfth flag. Keys 13 through 24 are therefore not distinct actions,
- * no condition name exists for them anywhere in the legacy estate, and no
- * {@code PFK13} through {@code PFK24} constant is declared here.</p>
- *
- * <p><strong>Ownership boundary.</strong> This enum defines the constants and
- * nothing more. Translating a raw terminal attention-key identifier into one of
- * these constants - including performing the keys-13-through-24 fold - is owned
- * by the utility-layer key translator, not by this type. This enum performs no
- * such translation and holds no dependency on the utility layer.</p>
- *
- * <p><strong>Scope.</strong> The originating copybook declares considerably more
- * than the attention-key identifier: screen-flow fields for the next program,
- * next mapset and next map, error- and return-message fields with their own
- * condition name, and paired numeric redefinitions of the account identifier,
- * card number and customer identifier. None of that belongs here; those fields
- * are modelled by the screen work-area transfer object in the API layer. This
- * enum models the attention-key identifier alone. It is a pure value type: it
- * carries no framework annotation, is not mapped to any database column, and
- * represents transient screen-interaction state rather than persisted data.</p>
- *
- * <p>Traceability - source checkout commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}; upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated {@code 2022-07-19}.</p>
+ * <p><strong>Scope.</strong> The originating copybook declares considerably more than the
+ * attention-key identifier: screen-flow fields for the next program, mapset and map, error- and
+ * return-message fields with their own condition name, and paired numeric redefinitions of the account
+ * identifier, card number and customer identifier. None of that belongs here - those fields are
+ * modelled by the screen work-area transfer object in the API layer. This enum models the attention-key
+ * identifier alone, and is a pure value type: no framework annotation, no database column, and
+ * transient screen-interaction state rather than persisted data.
  */
 public enum KeyAction {
 

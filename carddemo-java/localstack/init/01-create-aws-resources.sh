@@ -18,9 +18,13 @@
 
 set -euo pipefail
 
+# The canonical resource names. These defaults are byte-identical to the ones bound in
+# src/main/resources/application.yml, src/main/resources/application-local.yml,
+# src/test/resources/application-test.yml and docker-compose.yml. A disagreement produces a stack
+# that starts cleanly and then fails on the first publish, with no start-up error to point at it.
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 BUCKET="${CARDDEMO_S3_BUCKET:-carddemo-batch-staging}"
-QUEUE="${CARDDEMO_SQS_QUEUE:-JOBS.fifo}"
+QUEUE="${CARDDEMO_SQS_QUEUE:-carddemo-jobs.fifo}"
 TOPIC="${CARDDEMO_SNS_TOPIC:-carddemo-job-notifications}"
 
 log() { printf '[carddemo-init] %s\n' "$*"; }
@@ -51,11 +55,17 @@ log "seeded staging prefixes: statements/ statements-html/ reports/ rejects/ bac
 if awslocal sqs get-queue-url --queue-name "${QUEUE}" >/dev/null 2>&1; then
   log "SQS queue ${QUEUE} already exists"
 else
+  # Content-based deduplication is deliberately OFF. The seventeen cards of one job image are not
+  # all distinct: two pairs of cards carry identical eighty-character bodies. With content-based
+  # deduplication the second card of each pair would be accepted and silently discarded, and the
+  # submitted job would arrive short. The publisher therefore supplies an explicit deduplication
+  # identifier on every message, derived from the submission identity plus the card ordinal, which
+  # keeps duplicate bodies distinct while still suppressing a genuine retry of the same card.
   awslocal sqs create-queue \
     --queue-name "${QUEUE}" \
-    --attributes FifoQueue=true,ContentBasedDeduplication=true,VisibilityTimeout=60,MessageRetentionPeriod=345600 \
+    --attributes FifoQueue=true,ContentBasedDeduplication=false,VisibilityTimeout=60,MessageRetentionPeriod=345600 \
     >/dev/null
-  log "created SQS FIFO queue ${QUEUE} (content-based deduplication enabled)"
+  log "created SQS FIFO queue ${QUEUE} (explicit per-message deduplication ids)"
 fi
 QUEUE_URL="$(awslocal sqs get-queue-url --queue-name "${QUEUE}" --output text)"
 log "queue url ${QUEUE_URL}"

@@ -66,13 +66,6 @@ import java.util.Optional;
  * image, silently destroying the very padding this type exists to protect; an ordinal
  * mapping would require an integer column and fail schema validation; and an attribute
  * converter would place translation logic inside the domain layer.</p>
- *
- * <p><strong>Provenance.</strong> Behaviour migrated from the COBOL CardDemo estate,
- * which is cited by member, field, length and offset and never transcribed:</p>
- * <ul>
- *   <li>source checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}</li>
- *   <li>upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68}, dated 2022-07-19</li>
- * </ul>
  */
 public enum TransactionSourceType {
 

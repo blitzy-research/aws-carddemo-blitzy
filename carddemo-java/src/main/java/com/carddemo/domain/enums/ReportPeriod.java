@@ -26,9 +26,6 @@ import java.util.Optional;
  * {@code WS-REPORT-NAME} according to which report type the operator selected, and the selected
  * literal then appears in the text the operator reads back.
  *
- * <p>Legacy provenance: checkout commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
  * <p><strong>Why these literals are bare rather than space padded.</strong> The legacy receiving
  * field is declared {@code PIC X(10)} and initialised to spaces (member {@code CORPT00C}, line
  * 58). On its own that would argue for padding every value out to ten characters, and three

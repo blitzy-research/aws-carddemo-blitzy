@@ -32,96 +32,75 @@ import org.springframework.context.annotation.Configuration;
  * Publishes the OpenAPI document that <em>is</em> the machine-readable interface description of this
  * module's REST surface.
  *
- * <h2>Why the document is the artefact</h2>
- * The legacy presentation layer was a CICS 3270 terminal contract, and the faithful translation of a
+ * <p>The legacy presentation layer was a CICS 3270 terminal contract, and the faithful translation of a
  * terminal contract is another machine contract rather than a new visual design. No browser interface
  * and no single-page application is built by this migration, so the generated document is the only
- * published description of the interface. There is no separate hand-maintained contract file anywhere in
- * this repository that could fall out of step with the code, and none may be introduced. The
+ * published description of the interface. There is no separate hand-maintained contract file in this
+ * repository that could fall out of step with the code, and none may be introduced. The
  * interface-contract acceptance criterion refuses self-certification and requires a local test to
- * exercise the real contract, which is exactly what a served, parseable document lets a reviewer and a
- * test do against the same bytes.
+ * exercise the real contract, which is what a served, parseable document lets a reviewer and a test do
+ * against the same bytes. The legacy authority for the endpoint inventory is
+ * {@code app/csd/CARDDEMO.CSD}, which defines eighteen transactions bound to eighteen programs and
+ * seventeen screen field maps; the one transaction with no map drives the shared date-validation
+ * subprogram rather than a screen, so seventeen transactions become the REST endpoint groups this
+ * document describes.
  *
- * <h2>Provenance and legacy grounding</h2>
- * Translated from the AWS CardDemo z/OS mainframe application at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
- * <p>The legacy authority for the endpoint inventory this document describes is
- * {@code app/csd/CARDDEMO.CSD}, the CICS resource definition of the estate. Across its 505 lines it
- * defines <strong>18</strong> transactions bound to <strong>18</strong> programs, and
- * <strong>17</strong> screen field maps. The single transaction with no map drives the shared
- * date-validation subprogram rather than a screen, so <strong>17</strong> of the 18 transactions are
- * screen transactions, and it is those 17 that become the REST endpoint groups described here. Only
- * those counts cross over. No resource-definition statement, no COBOL statement and no screen-map
- * definition is reproduced in this class or in the document it produces, and nothing under
- * {@code app/} is read at run time.</p>
- *
- * <h2>What this class contributes, and what it deliberately leaves alone</h2>
- * This class contributes <em>document metadata only</em>: title, description, version, licence and the
- * bearer security scheme. Everything else in the document is produced by the interface-documentation
- * library's own auto-configuration from the controllers and the request and response types it scans.
- *
+ * <p><strong>This class contributes document metadata only</strong> &mdash; title, description,
+ * version, licence and the bearer security scheme. Everything else is produced by the
+ * interface-documentation library's auto-configuration from the controllers and the request and
+ * response types it scans. Five things are deliberately left alone:
  * <ul>
- *   <li><strong>No path literal.</strong> The address the document is served from and the address the
- *       rendered viewer is served from are declared once, in
- *       {@code carddemo-java/src/main/resources/application.yml} under the {@code springdoc} key,
- *       together with the pinned viewer bundle version that the build file substitutes into it. Neither
- *       address is restated here. Restating one would give a value that must have exactly one home a
- *       second home, and the two would drift.</li>
+ *   <li><strong>No path literal.</strong> The addresses the document and the rendered viewer are served
+ *       from are declared once, in {@code application.yml} under the {@code springdoc} key, together
+ *       with the pinned viewer bundle version the build file substitutes into it. Restating either here
+ *       would give a value that must have exactly one home a second home, and the two would drift.</li>
  *   <li><strong>No second bean of a library-managed type.</strong> A single
  *       {@link io.swagger.v3.oas.models.OpenAPI} bean is the sanctioned extension point: the library's
- *       document builder consumes it as a {@link java.util.Optional} and declares no such bean of its
- *       own. This class therefore registers exactly one bean and does not define, replace or wrap the
- *       document service, the grouped-API scanning or the JSON mapper. A competing bean of a
- *       library-managed type risks a definition-override failure or an ambiguous-bean failure at
- *       start-up.</li>
- *   <li><strong>No document-definition annotation on the application entry point.</strong> That entry
- *       point carries its Spring Boot application annotation and nothing else. Declaring the same
- *       metadata both there and here would produce two competing descriptions of one document.</li>
- *   <li><strong>No specification-version override.</strong> The specification version of the served
- *       document is the library's own configured concern, so neither the version field nor the
- *       specification-version selector is touched here. A value set in this class would silently
- *       contradict the configured one.</li>
+ *       document builder consumes it as a {@link java.util.Optional} and declares none of its own. This
+ *       class registers exactly one bean and does not define, replace or wrap the document service, the
+ *       grouped-API scanning or the JSON mapper, because a competing bean of a library-managed type
+ *       risks a definition-override or ambiguous-bean failure at start-up.</li>
+ *   <li><strong>No document-definition annotation on the application entry point</strong>, which would
+ *       produce two competing descriptions of one document.</li>
+ *   <li><strong>No specification-version override.</strong> A value set here would silently contradict
+ *       the configured one.</li>
  *   <li><strong>No server list.</strong> The library derives the served base address from the request,
  *       which keeps the document correct behind a published container port and behind a test harness on
- *       an ephemeral port alike. A literal address here would be wrong in at least one of those.</li>
+ *       an ephemeral port alike; a literal address would be wrong in at least one of those.</li>
  * </ul>
  *
- * <h2>The bearer scheme describes; it never grants</h2>
- * {@link #BEARER_SCHEME_NAME} is registered as an HTTP {@code bearer} scheme whose token format is
- * {@link #BEARER_TOKEN_FORMAT}, and it is applied as a document-wide security requirement so that a
- * reader and a generated client both see that a protected operation expects a token. That is the whole
- * of its effect. It mirrors the filter chain in {@code com.carddemo.config.SecurityConfig}; it does not
- * configure that chain, does not replace it, and cannot widen it.
+ * <p><strong>The bearer scheme describes; it never grants.</strong> {@link #BEARER_SCHEME_NAME} is
+ * registered as an HTTP {@code bearer} scheme whose token format is {@link #BEARER_TOKEN_FORMAT}, and it
+ * is applied as a document-wide security requirement so that a reader and a generated client both see
+ * that a protected operation expects a token. That is the whole of its effect: publishing metadata
+ * neither configures a filter chain nor widens one, and nothing in this class makes the document address
+ * or the viewer address reachable without authentication.
  *
- * <p>In particular, nothing in this class makes the document address or the viewer address reachable
- * without authentication. If either has to be reachable, that is an explicit, reviewed permit rule in
- * the filter chain, never an implicit side effect of publishing metadata. An address that became
- * reachable because someone permitted it by accident is precisely the kind of undocumented deviation
- * the low-level-code audit exists to catch.</p>
+ * <p>Which routes are actually reachable, and by whom, is decided entirely by the module's HTTP security
+ * configuration &mdash; <strong>which is not delivered yet</strong>. Until it exists no route is
+ * protected by anything, and this document's security requirement must not be read as evidence that one
+ * is. When that component arrives, any address it has to permit anonymously is an explicit, reviewed
+ * permit rule verified by that component's own tests, not an implicit side effect of publishing
+ * metadata. The low-level-code audit does not cover authorisation rules; its scope is raw SQL assembly,
+ * process execution, reflection, unchecked casts and suppressed warnings, so it cannot catch an
+ * accidental permit and is not relied on to.
  *
- * <h2>Nothing secret is ever published</h2>
- * No credential, token, signing value, authorisation header value or example password appears in this
- * class or in the document it produces: not as a description, not as an example, not as a default and
- * not as a schema attribute. The legacy sign-on records carried a single shared cleartext password
- * literal in their provisioning job stream. That literal is not restated anywhere in this module, and
- * this document publishes no stand-in for it either. No pre-filled authorisation value and no
- * credential-submitting viewer default is enabled.
+ * <p><strong>Nothing secret is ever published.</strong> No credential, token, signing value,
+ * authorisation header value or example password appears in this class or in the document it produces:
+ * not as a description, not as an example, not as a default and not as a schema attribute. The legacy
+ * sign-on records carried a single shared cleartext password literal in their provisioning job stream;
+ * that literal is not restated anywhere in this module and this document publishes no stand-in for it.
+ * No pre-filled authorisation value and no credential-submitting viewer default is enabled.
  *
- * <h2>Bean semantics</h2>
- * A lite-mode configuration class. It declares one factory method, and since no factory method here
- * calls another, interception is not needed. Stating {@code proxyBeanMethods = false} explicitly rather
- * than relying on a default keeps the class free of a runtime subclass, which both permits it to be
- * {@code final} and leaves the module's proxy and reflection surface untouched. That surface is measured
- * by the low-level-code audit and held at zero.
- *
- * <p>The version carried by the document is resolved once, in the constructor, by
- * {@linkplain ObjectProvider#getIfAvailable() optionally} consulting the build-information bean, so the
- * published version tracks the built artefact whenever the build publishes its build information. When
- * it does not, {@link #MODULE_VERSION} is published instead; that constant holds this module's own
- * coordinate version for {@code com.carddemo:carddemo-java}. The literal has exactly one home in this
- * module either way.</p>
+ * <p><strong>Bean semantics.</strong> A lite-mode configuration class declaring one factory method; no
+ * factory method here calls another, so interception is not needed. Stating
+ * {@code proxyBeanMethods = false} explicitly keeps the class free of a runtime subclass, which both
+ * permits it to be {@code final} and leaves the module's proxy and reflection surface untouched &mdash;
+ * a surface the low-level-code audit measures and holds at zero. The published version is resolved once,
+ * in the constructor, by {@linkplain ObjectProvider#getIfAvailable() optionally} consulting the
+ * build-information bean, so it tracks the built artefact whenever the build publishes that information
+ * and falls back to {@link #MODULE_VERSION} when it does not. The literal has exactly one home either
+ * way.
  */
 @Configuration(proxyBeanMethods = false)
 public final class OpenApiConfig {
@@ -283,4 +262,3 @@ public final class OpenApiConfig {
                 .addSecurityItem(new SecurityRequirement().addList(BEARER_SCHEME_NAME));
     }
 }
-

@@ -88,10 +88,6 @@ import java.util.Objects;
  * exposed. The no-argument constructor exists solely because the persistence provider
  * instantiates an {@code @IdClass} reflectively, which is also why this type is a plain class
  * rather than a record.
- *
- * <p><strong>Provenance.</strong> Translated from the read-only legacy estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 public class DisclosureGroupId implements Serializable {
 

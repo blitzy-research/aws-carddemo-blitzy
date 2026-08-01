@@ -17,58 +17,82 @@
 package com.carddemo.util;
 
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.util.List;
 import java.util.Objects;
 
 /**
  * Builds the seventeen fixed eighty-byte job-submission card images that the legacy transaction
- * report screen wrote, card by card, to the CICS transient data queue in order to trigger the
- * daily transaction report batch job.
+ * report screen wrote, card by card, to the CICS transient data queue in order to trigger the daily
+ * transaction report batch job.
  *
- * <p>This is an <strong>external interface contract</strong>, not an internal helper. Every card,
- * its byte width, its position in the sequence, the four date substitution slots and the
- * terminating sentinel are contractual, and they are verified end to end by draining a real
- * queue. The card images are the batch-trigger half of that contract; nothing here may be
- * "modernised away".
+ * <p>This is an <strong>external interface contract</strong>, not an internal helper. Every card, its
+ * byte width, its position in the sequence, the four date substitution slots and the terminating
+ * sentinel are contractual, and they are verified end to end by draining a real queue. Nothing here
+ * may be "modernised away".
  *
- * <p>Source of truth: transaction {@code CR00}, program {@code CORPT00C}. The card group is
- * declared as {@code JOB-DATA-1} and its seventeen eighty-byte entries occupy
+ * <p>Source of truth: transaction {@code CR00}, program {@code CORPT00C}. The card group is declared
+ * as {@code JOB-DATA-1} and its seventeen eighty-byte entries occupy
  * {@code [app/cbl/CORPT00C.cbl:L82-L127]}; the submission driver and its loop occupy
  * {@code [app/cbl/CORPT00C.cbl:L462-L510]}; the queue-write paragraph is at
- * {@code [app/cbl/CORPT00C.cbl:L515]}. The single-card write buffer is a {@code PIC X(80)} field
- * at {@code [app/cbl/CORPT00C.cbl:L79]}, which is why one message carries exactly one card.
+ * {@code [app/cbl/CORPT00C.cbl:L515]}. The single-card write buffer is a {@code PIC X(80)} field at
+ * {@code [app/cbl/CORPT00C.cbl:L79]}, which is why one message carries exactly one card.
  *
  * <h2>The seventeen cards, in order</h2>
  *
- * <p>Each row shows the card image before space padding, the declaring source lines, and the
- * composition of the card. Cards 11, 12 and 15 are the only composed cards; the other fourteen
- * are fixed literals.
+ * <p>Each row names the card's role, the constant that holds its image, the declaring source
+ * lines, and the composition of the card. Cards 11, 12 and 15 are the only composed cards; the
+ * other fourteen are fixed literals.
  *
- * <pre>{@code
- *  #   Card image (before space padding)                  Source      Composition
- * ---  ------------------------------------------------   ---------   ----------------------------
- *   1  //TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,   L83-L84     literal + padding = 80
- *   2  // NOTIFY=&SYSUID                                  L85-L86     literal + padding = 80
- *   3  //*                                                L87-L88     comment card
- *   4  //JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')     L89-L90     procedure-library card
- *   5  //*                                                L91-L92     comment card
- *   6  //STEP10 EXEC PROC=TRANREPT                        L93-L94     invokes the cataloged proc
- *   7  //*                                                L95-L96     comment card
- *   8  //STEP05R.SYMNAMES DD *                            L97-L98     in-stream SYMNAMES override
- *   9  TRAN-CARD-NUM,263,16,ZD                            L99-L100    symbol: at 263, len 16, ZD
- *  10  TRAN-PROC-DT,305,10,CH                             L101-L102   symbol: at 305, len 10, CH
- *  11  PARM-START-DATE,C'<startDate>'                     L103-L107   18 + 10 + 52 = 80
- *  12  PARM-END-DATE,C'<endDate>'                         L108-L112   16 + 10 + 54 = 80
- *  13  /*                                                 L113-L114   in-stream data terminator
- *  14  //STEP10R.DATEPARM DD *                            L115-L116   in-stream DATEPARM override
- *  15  <startDate> <endDate>                              L117-L121   10 + 1 + 10 + 59 = 80
- *  16  /*                                                 L122-L123   in-stream data terminator
- *  17  /*EOF                                              L124-L125   sentinel - IS transmitted
- * }</pre>
+ * <p>The card images themselves are <strong>not repeated here</strong>. Each one is published
+ * exactly once, as the named constant in the row below, and that constant is the single
+ * authoritative copy: an image duplicated in prose is an image that can drift out of step with
+ * the bytes actually emitted, which for a Gate 5 contract is the one failure mode that must be
+ * impossible. Read the constant for the content; read this table for the order, the provenance
+ * and the arithmetic.
  *
- * <p>Every card is emitted at exactly eighty <em>encoded bytes</em>, left justified and padded
- * with the ASCII space. Padding is never a zero, never a null and never a tab. Seventeen cards of
- * eighty bytes give a total image width of {@code 17 x 80 = 1360} bytes.
+ * <pre>
+ *  #   Role                              Image constant                 Source      Composition
+ * ---  --------------------------------  -----------------------------  ---------   -----------------
+ *   1  job card                          JOB_CARD                       L83-L84     literal + pad = 80
+ *   2  notify card                       NOTIFY_CARD                    L85-L86     literal + pad = 80
+ *   3  comment card                      COMMENT_CARD                   L87-L88     literal + pad = 80
+ *   4  procedure-library card            JOBLIB_CARD                    L89-L90     literal + pad = 80
+ *   5  comment card                      COMMENT_CARD                   L91-L92     literal + pad = 80
+ *   6  cataloged-procedure invocation    EXEC_PROC_CARD                 L93-L94     literal + pad = 80
+ *   7  comment card                      COMMENT_CARD                   L95-L96     literal + pad = 80
+ *   8  in-stream sort-symbol override    SYMNAMES_DD_CARD               L97-L98     literal + pad = 80
+ *   9  sort symbol: at 263, len 16, ZD   SORT_SYMBOL_CARD_NUM_CARD      L99-L100    literal + pad = 80
+ *  10  sort symbol: at 305, len 10, CH   SORT_SYMBOL_PROC_DT_CARD       L101-L102   literal + pad = 80
+ *  11  start-date sort filter            SORT_SYMBOL_START_DATE_LEAD    L103-L107   18 + 10 + 52 = 80
+ *  12  end-date sort filter              SORT_SYMBOL_END_DATE_LEAD      L108-L112   16 + 10 + 54 = 80
+ *  13  in-stream data terminator         IN_STREAM_TERMINATOR_CARD      L113-L114   literal + pad = 80
+ *  14  in-stream date-parameter override DATEPARM_DD_CARD               L115-L116   literal + pad = 80
+ *  15  the two date parameters           (composed from both slots)     L117-L121   10 + 1 + 10 + 59 = 80
+ *  16  in-stream data terminator         IN_STREAM_TERMINATOR_CARD      L122-L123   literal + pad = 80
+ *  17  end-of-file sentinel              EOF_SENTINEL_CARD              L124-L125   literal + pad = 80
+ * </pre>
+ *
+ * <p>Card 15 is the only card with no leading literal at all: it is the start-date slot, one
+ * space byte, the end-date slot, and padding. Card 17, the sentinel, <strong>is transmitted</strong>
+ * &mdash; see the loop trace below.
+ *
+ * <p>Every card is emitted at exactly eighty <em>encoded bytes</em>, left justified and padded with
+ * the ASCII space - never a zero, a null or a tab - so seventeen cards give a total image width of
+ * {@code 17 x 80 = 1360} bytes. The composition arithmetic of the three composed cards is taken from
+ * the declared component widths rather than inferred from the finished string. Card 11 is an
+ * eighteen-byte leading literal, the ten-byte start-date slot, then a fifty-two-byte trailing field
+ * whose first byte is a literal apostrophe and whose remaining fifty-one bytes are spaces. Card 12 is
+ * a sixteen-byte leading literal, the ten-byte end-date slot, then a fifty-four-byte trailing field
+ * beginning with the same apostrophe. Card 15 is the ten-byte start-date slot, a separator declared
+ * as a bare {@code PIC X} and therefore <strong>exactly one byte</strong> rather than a defaulted
+ * width, the ten-byte end-date slot, then fifty-nine spaces; it is the only card built entirely from
+ * substituted values plus padding, with no leading literal. The apostrophes on cards 11 and 12 are
+ * real output characters, not quoting artefacts: they close the character constants the sort step
+ * compares against, so they may not be moved, omitted or repositioned.
  *
  * <p>The composition arithmetic of the three composed cards is taken from the declared component
  * widths rather than inferred from the finished string:
@@ -80,9 +104,9 @@ import java.util.Objects;
  *   <li>Card 12 is a sixteen-byte leading literal, then the ten-byte end-date slot, then a
  *       fifty-four-byte trailing field whose first byte is a literal apostrophe and whose
  *       remaining fifty-three bytes are spaces. {@code 16 + 10 + 54 = 80}.</li>
- *   <li>Card 15 is the ten-byte start-date slot, then a separator declared as a bare
- *       {@code PIC X} and therefore <strong>exactly one byte</strong> rather than a defaulted
- *       width, then the ten-byte end-date slot, then fifty-nine spaces.
+ *   <li>Card 15 is the ten-byte start-date slot, then a separator declared as an unnamed filler of
+ *       unqualified alphanumeric type and therefore <strong>exactly one byte</strong> rather than a
+ *       defaulted width, then the ten-byte end-date slot, then fifty-nine spaces.
  *       {@code 10 + 1 + 10 + 59 = 80}. Card 15 is the only card built entirely from substituted
  *       values plus padding, with no leading literal at all.</li>
  * </ul>
@@ -111,25 +135,62 @@ import java.util.Objects;
  *
  * <p>Each date is exactly ten characters. The format the legacy screen used is the literal
  * {@code YYYY-MM-DD} held in a {@code PIC X(10)} work field at
- * {@code [app/cbl/CORPT00C.cbl:L72]}. Because the surrounding frame is a fixed eighty columns, a
- * date of any other encoded byte length would shift the closing apostrophe on cards 11 and 12 or
- * overflow the card, so each slot argument is validated as exactly ten encoded bytes. That check
- * is a <strong>frame-integrity</strong> check, not a calendar check: calendar validity, leap-year
+ * {@code [app/cbl/CORPT00C.cbl:L72]}. Because the frame is a fixed eighty columns, a date of any
+ * other encoded byte length would shift the closing apostrophe on cards 11 and 12 or overflow the
+ * card, so each slot argument is validated as exactly ten encoded bytes. That is a
+ * <strong>frame-integrity</strong> check and not a calendar check: calendar validity, leap-year
  * handling, range ordering and the multi-paragraph date-edit cascade all belong to the date
  * validation service, and this class neither parses nor reformats a date.
  *
+ * <h2>The slot shape is part of the frame, not a calendar rule</h2>
+ *
+ * <p>Ten bytes on its own is not the whole of the frame. The legacy work fields the slots are
+ * filled from are declared at {@code [app/cbl/CORPT00C.cbl:L60-L71]} as a four-byte year component,
+ * a one-byte {@code FILLER} whose value is a literal hyphen, a two-byte month component, a second
+ * one-byte hyphen {@code FILLER}, and a two-byte day component. The two hyphens are
+ * <strong>constants of the group</strong>, not data: nothing is ever moved into them. Only the
+ * three numeric components are moved into, from screen fields that the terminal restricts to
+ * numeric entry, and the assembled ten-byte value is then handed to the date-validation subprogram
+ * before it is substituted into the slots at {@code [app/cbl/CORPT00C.cbl:L429-L432]}. So
+ * {@code YYYY-MM-DD} with digits in the eight numeric positions and a hyphen in the fifth and
+ * eighth is the shape the legacy field could physically hold, and it is published here as
+ * {@link #DATE_SLOT_FORMAT}.
+ *
+ * <p>Enforcing that shape is frame integrity for the same reason the width is. Cards 11 and 12
+ * place the slot <em>inside</em> a character constant that the sort step parses, opened by the
+ * leading literal and closed by the apostrophe in the trailing field, and card 15 places it in a
+ * position-significant in-stream parameter record. A slot of the right width but the wrong shape
+ * therefore still breaks the frame: an apostrophe inside the slot closes the constant early and
+ * turns the remainder of the card into something the sort step reads as further specification, a
+ * comma introduces a fresh operand, and a carriage return, line feed, tab, null or other control
+ * byte splits or truncates a record that the queue definition declares as fixed and unblocked.
+ * None of those values can arise from a legacy screen field, so admitting them would let a caller
+ * inject job-control and sort-control text into a contract this class exists to hold invariant.
+ *
+ * <p>The shape check is deliberately <strong>structural only</strong>. It asks where digits and
+ * hyphens sit and nothing else: it does not range check the month or the day, does not consider
+ * leap years, does not compare the two dates, and does not reject an impossible calendar date such
+ * as a ninety-ninth day of a ninety-ninth month. Those are semantic questions and they remain
+ * entirely with the date-validation service, exactly as before. No date or time API is imported
+ * here, nothing is parsed into a temporal value, and nothing is reformatted.
+ *
  * <h2>There is no report-name substitution slot</h2>
  *
- * <p>A {@code PIC X(10)} report-name work field exists in the program at
+ * <p>A ten-byte report-name work field exists in the program at
  * {@code [app/cbl/CORPT00C.cbl:L58]}, but it is used only to compose screen messages. No card
  * contains a report-name placeholder, and the job name on card 1 is a fixed literal. The job name
  * is therefore never derived, never parameterised and never templatised.
  *
- * <h2>The sentinel card is transmitted, not merely held</h2>
+ * <p><strong>Card details that are easy to "correct" by mistake.</strong> On card 1 the message class
+ * is the digit <strong>zero</strong>, not the letter O, and the card ends with a
+ * <strong>trailing comma</strong> that is a JCL continuation marker joining the job card to the
+ * notify card, so it is content and is retained. Card 2 spells the system-user symbol correctly; a
+ * different member of the estate carries a transposed spelling of that symbol, and that typo belongs
+ * to the other member and must never be imported here.
  *
  * <p>This is the single most likely defect in a naive translation, so the submission loop at
  * {@code [app/cbl/CORPT00C.cbl:L496-L508]} was traced statement by statement. The driver clears
- * its end-of-loop flag, then enters a {@code PERFORM VARYING ... UNTIL} loop whose terminating
+ * its end-of-loop flag, then enters a subscript-varying loop whose terminating
  * condition is evaluated at the <em>top</em> of each iteration. Inside the body the current card
  * is moved to the write buffer and, when that card is the sentinel, the terminating flag is set.
  * The queue write is then performed at {@code [app/cbl/CORPT00C.cbl:L507]}, which is
@@ -137,99 +198,46 @@ import java.util.Objects;
  * before it iterates rather than after, the flag set during the seventeenth iteration cannot
  * suppress the write that follows it in that same iteration.
  *
- * <p>Therefore the seventeenth card reaches the queue. This builder always emits all seventeen
- * cards with the sentinel seventeenth and last. It is never dropped, never filtered, never
- * treated as a loop terminator and never conditional or optional.
+ * <p><strong>The onward queue contract, implemented elsewhere.</strong> The target queue is defined at
+ * {@code [app/csd/CARDDEMO.CSD]} as an extra-partition, output-only, initially-opened queue with four
+ * attributes that bind the transport, all four implemented by
+ * {@code com.carddemo.service.JobSubmissionService} and never here: a fixed record size of eighty
+ * becomes an eighty-character fixed-width payload per message, so exactly one card per message; a
+ * fixed record format becomes the invariant that no message is trimmed, wrapped or
+ * newline-terminated; a modify disposition becomes append semantics, one message per card in the
+ * order this builder returns them, preserved by message-group ordering; and an ignore error option
+ * becomes a non-blocking publish whose failure path logs and continues rather than aborting the
+ * caller (decision D-36). Accordingly this class has no queue client, no messaging or cloud
+ * dependency, no publish method, no retry, no failure-message text, no confirmation gate and no
+ * reporting-period logic. It receives two dates and asks no questions.
  *
- * <p>The same loop is bounded by the literal one thousand, which is the identical bound discussed
- * under the oversized redefine below.
+ * <p><strong>Cross references.</strong> Cards 9 and 10 restate the sort-symbol specification that the
+ * cataloged procedure declares at {@code [app/proc/TRANREPT.prc]}; cards 8 through 12 override that
+ * procedure's symbol-names input and cards 14 and 15 override its date-parameter input, so the step
+ * names on cards 8 and 14 must match the procedure's step names exactly. The same sixteen bytes at
+ * one-based offset 263 are typed as zoned decimal here and as character data by the statement job at
+ * {@code [app/jcl/CREASTMT.JCL]}, so the typing is per job, which is why the batch tier carries one
+ * comparator per job rather than one shared comparator. The submitting job stream at
+ * {@code [app/jcl/TRANREPT.jcl]} contains a duplicate step name, a recorded source anomaly; the card
+ * images reference the step by name and are unaffected, and the target generates distinct step names.
+ * The queue-write paragraph is spelled {@code WIRTE-JOBSUB-TDQ} at
+ * {@code [app/cbl/CORPT00C.cbl:L515]}, a transposition of "write" carried as row 6 of the source
+ * anomaly register; the Java naming is corrected wherever that behaviour is implemented and the
+ * legacy spelling is cited here so the mapping back to the COBOL paragraph stays findable by search.
  *
- * <h2>Card details that are easy to "correct" by mistake</h2>
+ * <p><strong>Why there is no templating engine here.</strong> Byte-identical output requires the same
+ * literals at the same offsets, and a templating engine or general-purpose format-string abstraction
+ * introduces whitespace, ordering and locale variability that a byte-level comparison immediately
+ * fails, while also making the eighty-column frame implicit rather than asserted (decision D-27).
+ * Every card is assembled from an explicit literal plus explicit padding computed from declared
+ * component widths, and every finished card is asserted at eighty encoded bytes so a mistake in
+ * either the literal or the padding is caught rather than shipped. All widths are measured as encoded
+ * bytes in {@link StandardCharsets#US_ASCII}, never as {@code char} counts, so a multi-byte character
+ * cannot silently break the frame.
  *
- * <ul>
- *   <li>On card 1 the message class is the digit <strong>zero</strong>, not the letter O.</li>
- *   <li>Card 1 ends with a <strong>trailing comma</strong>. That comma is a JCL continuation
- *       marker joining the job card to the notify card, so it is content and is retained.</li>
- *   <li>Card 2 spells the system-user symbol correctly. A different member of the estate carries a
- *       transposed spelling of that symbol; that typo belongs to the other member and must never
- *       be imported here.</li>
- * </ul>
- *
- * <h2>The oversized redefine</h2>
- *
- * <p>The card group is redefined as a table of one thousand eighty-byte lines at
- * {@code [app/cbl/CORPT00C.cbl:L126-L127]}. One thousand entries of eighty bytes claim eighty
- * thousand bytes over a group that is only one thousand three hundred and sixty bytes long, which
- * makes the redefine oversized by a factor of roughly fifty-nine. It is a recorded source
- * anomaly, and the submission loop genuinely iterates against that same bound.
- *
- * <p>The bound is honoured rather than propagated: it is published as the named constant
- * {@link #OVERSIZED_REDEFINE_CARD_BOUND} and the produced card count is asserted not to exceed
- * it. Nothing is allocated to one thousand entries, no output is padded to one thousand cards,
- * and no API is offered that would let a caller add cards up to the bound.
- *
- * <h2>The onward queue contract, implemented elsewhere</h2>
- *
- * <p>The target queue is defined at {@code [app/csd/CARDDEMO.CSD]} as an extra-partition,
- * output-only, initially-opened queue with four attributes that bind the transport. Those four
- * attributes map onto the target as follows, and all four are implemented by
- * {@code com.carddemo.service.JobSubmissionService}, never here:
- *
- * <ul>
- *   <li>A fixed record size of eighty becomes an eighty-character fixed-width payload per
- *       message, which is exactly one card per message.</li>
- *   <li>A fixed record format becomes the invariant that no message is trimmed, wrapped or
- *       newline-terminated.</li>
- *   <li>A modify disposition becomes append semantics, published as one message per card in the
- *       order this builder returns them, preserved by message-group ordering.</li>
- *   <li>An ignore error option becomes a non-blocking publish whose failure path logs and
- *       continues rather than aborting the caller.</li>
- * </ul>
- *
- * <p>Accordingly this class has no queue client, no messaging or cloud dependency, no publish
- * method, no retry, no failure-message text, no confirmation gate and no reporting-period logic.
- * It receives two dates and asks no questions.
- *
- * <h2>Cross references</h2>
- *
- * <ul>
- *   <li>Cards 9 and 10 restate the sort-symbol specification that the cataloged procedure
- *       declares at {@code [app/proc/TRANREPT.prc]}; cards 8 through 12 override that
- *       procedure's symbol-names input and cards 14 and 15 override its date-parameter input, so
- *       the step names on cards 8 and 14 must match the procedure's step names exactly.</li>
- *   <li>The same sixteen bytes at one-based offset 263 are typed as zoned decimal here and as
- *       character data by the statement job at {@code [app/jcl/CREASTMT.JCL]}. The typing is
- *       therefore per job, which is why the batch tier carries one comparator per job rather than
- *       one shared comparator.</li>
- *   <li>The submitting job stream at {@code [app/jcl/TRANREPT.jcl]} contains a duplicate step
- *       name, a recorded source anomaly. The card images reference the step by name and are
- *       unaffected by the duplication; the target generates distinct step names.</li>
- *   <li>The queue-write paragraph of the legacy program is spelled {@code WIRTE-JOBSUB-TDQ} at
- *       {@code [app/cbl/CORPT00C.cbl:L515]}, a transposition of "write". The Java naming is
- *       corrected wherever that behaviour is implemented, and the legacy spelling is cited here
- *       and in the traceability matrix so the mapping from Java back to the COBOL paragraph stays
- *       findable by search.</li>
- * </ul>
- *
- * <h2>Why there is no templating engine here</h2>
- *
- * <p>Byte-identical output requires the same literals at the same offsets. A templating engine or
- * a general-purpose format-string abstraction introduces whitespace, ordering and locale
- * variability that a byte-level comparison immediately fails, and it also makes the eighty-column
- * frame implicit rather than asserted. Every card is therefore assembled from an explicit literal
- * plus explicit padding computed from declared component widths, and every finished card is
- * asserted at eighty encoded bytes so a mistake in either the literal or the padding is caught
- * rather than shipped.
- *
- * <p>All widths are measured as encoded bytes in {@link StandardCharsets#US_ASCII}, never as
- * {@code char} counts, so a multi-byte character cannot silently break the eighty-column frame.
- *
- * <p>This class is stateless, pure and side-effect free. It performs no input or output, consults
- * no clock, environment or random source, holds no mutable state, logs nothing and is safe for
+ * <p>This class is stateless, pure and side-effect free. It performs no input or output, consults no
+ * clock, environment or random source, holds no mutable state, logs nothing and is safe for
  * concurrent use.
- *
- * <p>Provenance: legacy checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 public final class JclCardImageBuilder {
 
@@ -253,6 +261,18 @@ public final class JclCardImageBuilder {
      * {@code [app/cbl/CORPT00C.cbl:L72]}.
      */
     public static final int DATE_SLOT_WIDTH = 10;
+
+    /**
+     * The date-slot format literal, held in a {@code PIC X(10)} work field at
+     * {@code [app/cbl/CORPT00C.cbl:L72]} and passed to the date-validation subprogram alongside
+     * each assembled date. It records the shape every slot argument must take: four digits, a
+     * hyphen, two digits, a hyphen, two digits, being {@value #DATE_SLOT_WIDTH} bytes in total.
+     *
+     * <p>The two hyphens are {@code FILLER} constants of the legacy group rather than data, so the
+     * shape is fixed by the field declaration itself and is checked here as frame integrity. It is
+     * not a calendar rule, and nothing in this class parses or reformats a date.
+     */
+    public static final String DATE_SLOT_FORMAT = "YYYY-MM-DD";
 
     /**
      * The one-thousand-entry bound of the oversized redefine at
@@ -378,6 +398,35 @@ public final class JclCardImageBuilder {
     /** The single ASCII space that is the only padding character any card may use. */
     private static final String PAD_CHARACTER = " ";
 
+    /**
+     * The lowest printable US-ASCII code point, the space. Everything below it is a C0 control
+     * character and may not appear in a card image, because the image is a job-control stream whose
+     * record framing a control character would break.
+     */
+    private static final char FIRST_PRINTABLE_US_ASCII = 0x20;
+
+    /**
+     * The highest printable US-ASCII code point, the tilde. The delete control sits immediately above
+     * it and is rejected for the same reason as the C0 range below the space.
+     */
+    private static final char LAST_PRINTABLE_US_ASCII = 0x7E;
+
+    /**
+     * The separator character of the ten-column date slot, from the {@code YYYY-MM-DD} format
+     * literal the legacy screen declares.
+     *
+     * <p>The same hyphen is carried by the legacy date group as a {@code FILLER} constant
+     * between its numeric components at {@code [app/cbl/CORPT00C.cbl:L62]} and
+     * {@code [app/cbl/CORPT00C.cbl:L64]}.</p>
+     */
+    private static final char DATE_SLOT_SEPARATOR = '-';
+
+    /** Zero-based index of the first separator in a ten-column date slot. */
+    private static final int DATE_SLOT_FIRST_SEPARATOR_INDEX = 4;
+
+    /** Zero-based index of the second separator in a ten-column date slot. */
+    private static final int DATE_SLOT_SECOND_SEPARATOR_INDEX = 7;
+
     /** The literal apostrophe that closes the character constants on cards 11 and 12. */
     private static final String CLOSING_APOSTROPHE = "'";
 
@@ -405,6 +454,73 @@ public final class JclCardImageBuilder {
     /** Declared width of the card 15 trailing field, from its {@code PIC X(59)} field. */
     private static final int DATE_PARAMETER_TRAILER_WIDTH = 59;
 
+    /** Declared width of the year component of a date slot, from its {@code PIC X(04)} field. */
+    private static final int DATE_SLOT_YEAR_WIDTH = 4;
+
+    /** Declared width of the month component of a date slot, from its {@code PIC X(02)} field. */
+    private static final int DATE_SLOT_MONTH_WIDTH = 2;
+
+    /**
+     * Declared width of each hyphen {@code FILLER} between the components of a date slot. The
+     * field is a bare {@code PIC X(01)}, so it is exactly one byte.
+     */
+    private static final int DATE_SLOT_SEPARATOR_WIDTH = 1;
+
+    /**
+     * Zero-based offset of the first hyphen within a date slot, which is where the year component
+     * ends. The day component's declared {@code PIC X(02)} width completes the arithmetic
+     * {@code 4 + 1 + 2 + 1 + 2 = 10}, so the component widths account for the whole
+     * {@value #DATE_SLOT_WIDTH}-byte slot with nothing unexplained.
+     */
+    private static final int DATE_SLOT_FIRST_SEPARATOR_OFFSET = DATE_SLOT_YEAR_WIDTH;
+
+    /**
+     * Zero-based offset of the second hyphen within a date slot, which is where the month
+     * component ends.
+     */
+    private static final int DATE_SLOT_SECOND_SEPARATOR_OFFSET =
+            DATE_SLOT_FIRST_SEPARATOR_OFFSET + DATE_SLOT_SEPARATOR_WIDTH + DATE_SLOT_MONTH_WIDTH;
+
+    /** Lowest digit a numeric component of a date slot may hold. */
+    private static final char LOWEST_DIGIT = '0';
+
+    /** Highest digit a numeric component of a date slot may hold. */
+    private static final char HIGHEST_DIGIT = '9';
+
+    /** Offset-to-position adjustment, so a diagnostic names a one-based column of the slot. */
+    private static final int FIRST_SLOT_POSITION = 1;
+
+    /**
+     * The one shape a date slot may take, written positionally: {@code N} marks a position that
+     * must hold an ASCII digit and the two hyphens mark the two {@code FILLER} offsets. It is the
+     * same shape {@link #DATE_SLOT_FORMAT} records in the legacy field's own notation, restated
+     * here as an allowlist rather than as a date picture.
+     *
+     * <p>Published because it is part of the contract a caller must satisfy, and because it is the
+     * boundary that keeps caller-supplied text out of the surrounding control language. Cards 11 and
+     * 12 wrap the slot in a DFSORT character constant, {@code PARM-START-DATE,C'} … {@code '}, so a
+     * single apostrophe inside the slot would close that constant early and the remainder of the
+     * eighty-column card would be read by the sort utility as further control statements. An
+     * allowlist of exactly ten positions, each restricted to one digit or one hyphen, forecloses that
+     * by construction rather than by enumerating the characters that would be dangerous.
+     */
+    public static final String DATE_SLOT_PATTERN = "NNNN-NN-NN";
+
+    /**
+     * The strict formatter used to establish that a slot names a real day.
+     *
+     * <p>{@code uuuu} rather than {@code yyyy} because {@link ResolverStyle#STRICT} requires a
+     * proleptic year: {@code yyyy} is the year-of-era and would demand an era field the slot does not
+     * carry. Strict resolution is what makes {@code 2023-02-29} and {@code 9999-99-99} failures
+     * rather than values that {@code SMART} resolution would quietly move to the nearest real day.
+     * {@link DateTimeFormatter} is immutable and thread safe, so one instance is shared.
+     *
+     * <p>The parsed value is discarded. This formatter exists to reject, never to convert, so an
+     * accepted slot reaches its card byte for byte as the caller supplied it.
+     */
+    private static final DateTimeFormatter CALENDAR_DAY_FORMAT =
+            DateTimeFormatter.ofPattern("uuuu-MM-dd").withResolverStyle(ResolverStyle.STRICT);
+
     /** Not instantiable: every member of this contract is static. */
     private JclCardImageBuilder() {
         throw new AssertionError("JclCardImageBuilder is a static contract and is not instantiable");
@@ -427,9 +543,16 @@ public final class JclCardImageBuilder {
      * legacy submission loop writes it before it stops, so dropping it would break the
      * batch-trigger contract.
      *
-     * <p>Each argument is a raw ten-character date slot, conventionally formatted
-     * {@code YYYY-MM-DD}. It is validated for encoded byte width only, because the eighty-column
-     * frame depends on that width; it is not parsed, reformatted or checked for calendar validity.
+     * <p>Each argument is a raw ten-character date slot in the fixed {@value #DATE_SLOT_FORMAT}
+     * shape, which {@value #DATE_SLOT_PATTERN} restates offset by offset as a positional allowlist.
+     * Cards 11 and 12 embed the slot inside a DFSORT character constant and card 15 places it on a
+     * {@code PARM} card, so the slot is caller-supplied text interpolated into a foreign control
+     * language. It is therefore admitted only when it is representable in single-byte US-ASCII, is
+     * exactly {@value #DATE_SLOT_WIDTH} encoded bytes, carries nothing but digits and the two
+     * hyphens at their declared offsets, and names a day that actually exists; anything else is
+     * refused rather than embedded. The accepted value is placed on the cards unchanged, byte for
+     * byte, so nothing is reformatted and the eighty-column frame is preserved. Validation happens
+     * before any card is composed, so a malformed slot never reaches a card image.
      *
      * @param startDate the ten-byte value for the {@code PARM-START-DATE-1} slot on card 11 and
      *                  the {@code PARM-START-DATE-2} slot on card 15; must not be {@code null}
@@ -439,9 +562,11 @@ public final class JclCardImageBuilder {
      *         exactly {@value #CARD_IMAGE_WIDTH} encoded bytes
      * @throws NullPointerException     if either argument is {@code null}
      * @throws IllegalArgumentException if either argument is not exactly
-     *                                  {@value #DATE_SLOT_WIDTH} encoded bytes, or contains a
-     *                                  character that is not representable as a single
-     *                                  US-ASCII byte
+     *                                  {@value #DATE_SLOT_WIDTH} encoded bytes, contains a
+     *                                  character that is not representable as a single US-ASCII
+     *                                  byte, does not take the {@value #DATE_SLOT_FORMAT} shape of
+     *                                  eight digits separated by hyphens at the fifth and eighth
+     *                                  positions, or does not name a day that exists
      */
     public static List<String> build(final String startDate, final String endDate) {
         final String start = requireDateSlot(startDate, SLOT_PARM_START_DATE);
@@ -486,9 +611,11 @@ public final class JclCardImageBuilder {
      * @return the concatenated image, exactly {@value #TOTAL_IMAGE_WIDTH} encoded bytes
      * @throws NullPointerException     if either argument is {@code null}
      * @throws IllegalArgumentException if either argument is not exactly
-     *                                  {@value #DATE_SLOT_WIDTH} encoded bytes, or contains a
-     *                                  character that is not representable as a single
-     *                                  US-ASCII byte
+     *                                  {@value #DATE_SLOT_WIDTH} encoded bytes, contains a
+     *                                  character that is not representable as a single US-ASCII
+     *                                  byte, does not take the {@value #DATE_SLOT_FORMAT} shape of
+     *                                  eight digits separated by hyphens at the fifth and eighth
+     *                                  positions, or does not name a day that exists
      */
     public static String buildConcatenatedImage(final String startDate, final String endDate) {
         final List<String> cardImages = build(startDate, endDate);
@@ -646,25 +773,72 @@ public final class JclCardImageBuilder {
     }
 
     /**
-     * Validates one date substitution slot for frame integrity.
+     * Validates one date substitution slot for frame integrity and for control-language safety.
      *
-     * <p>The slot must be exactly {@value #DATE_SLOT_WIDTH} encoded bytes and must be
-     * representable in single-byte US-ASCII, because the surrounding frame is a fixed
-     * {@value #CARD_IMAGE_WIDTH} columns: a wider value would overflow the card and a narrower
-     * one would shift the closing apostrophe on cards 11 and 12.
+     * <p>Four properties are required, and they are checked in this order so that each failure is
+     * reported against the narrowest cause.
      *
-     * <p>This guard is a deliberate divergence from the legacy behaviour. A COBOL move into a
-     * ten-byte field pads or truncates silently, so the legacy program had no equivalent check and
-     * relied on the screen field being exactly ten characters wide. Reproducing a silent
-     * corruption would defeat the byte-level contract, so a malformed slot raises here instead.
-     * Nothing is ever silently padded or truncated, no malformed card is emitted, and no
-     * {@code null} is returned. The failure is an unchecked argument failure rather than a domain
-     * exception, because "the caller handed me the wrong number of bytes" is a frame-integrity
-     * violation and not a business outcome.
+     * <ol>
+     *   <li><strong>Single-byte representable.</strong> A multi-byte character would occupy more
+     *       columns than it appears to and would be published as a substitution byte rather than as
+     *       the caller's byte.</li>
+     *   <li><strong>Exactly {@value #DATE_SLOT_WIDTH} encoded bytes.</strong> A wider value would
+     *       overflow the card; a narrower one would shift the closing apostrophe on cards 11 and
+     *       12.</li>
+     *   <li><strong>The fixed {@value #DATE_SLOT_FORMAT} shape, stated positionally as
+     *       {@value #DATE_SLOT_PATTERN}.</strong> A positive allowlist: each of the ten positions
+     *       must hold an ASCII digit, except the fifth and the eighth which must hold the hyphen the
+     *       legacy group carries as a {@code FILLER} constant. Nothing else is admitted.</li>
+     *   <li><strong>A real calendar day.</strong> Resolved strictly, so an impossible day is refused
+     *       rather than silently moved to a neighbouring one.</li>
+     * </ol>
+     *
+     * <p>The first two properties hold the card at {@value #CARD_IMAGE_WIDTH} columns. The third
+     * holds the <em>content</em> of the frame, and it is load bearing rather than cosmetic: cards 11
+     * and 12 carry the slot inside a character constant that the sort step parses, and card 15
+     * carries it in a position-significant in-stream parameter record. Width alone does not make that
+     * safe. A right-width, right-encoding value such as {@code 2026-01-1} followed by an apostrophe
+     * closes the character constant eight bytes early and hands the remaining columns to the sort
+     * utility as further specification; a comma introduces a fresh operand; and a carriage return,
+     * line feed, tab, null, escape, delete or any other control byte splits or truncates a record the
+     * queue definition declares fixed and unblocked. Enumerating those characters as a denylist would
+     * be an invitation to miss one, so the guard admits only the ten positions the contract actually
+     * needs and refuses everything else, which makes the whole class of control-language injection
+     * unreachable rather than merely unlikely.
+     *
+     * <p>The legacy field could hold none of those characters, because its two hyphens are
+     * {@code FILLER} constants and only its three numeric components are moved into, from screen
+     * fields the terminal restricts to numeric entry {@code [app/cbl/CORPT00C.cbl:L60-L71]}.
+     * Requiring digits in the eight numeric positions and a hyphen in the fifth and eighth is
+     * therefore reproducing the legacy field's own structure, not adding a new restriction.
+     *
+     * <p>The fourth property is why a shape check alone is not sufficient. A value such as
+     * {@code 9999-99-99} passes the allowlist, cannot inject anything, and is still wrong: it would
+     * be embedded in the sort include-condition and in the report parameter, producing a job whose
+     * date window is meaningless. The legacy screen validated the calendar upstream through
+     * {@code CSUTLDTC} before it ever built a card, so checking it here reproduces the legacy
+     * pipeline's guarantee at the point where it can no longer be bypassed. Range ordering of the two
+     * dates and the multi-paragraph date-edit cascade both stay with the date-validation service. The
+     * value is validated and returned unchanged; it is never parsed for its value, reformatted or
+     * normalised, so the ten bytes that reach the card are byte-identical to the ten the caller
+     * supplied.
+     *
+     * <p>This guard is a deliberate divergence from the legacy assembly behaviour. A COBOL move into
+     * a ten-byte field pads or truncates silently, so the legacy program had no equivalent check at
+     * the point of assembly and relied on the screen field being exactly ten characters wide and
+     * numerically shifted. Reproducing a silent corruption would defeat the byte-level contract, so a
+     * malformed slot raises here instead. Nothing is ever silently padded, truncated, escaped, quoted
+     * or sanitised, no malformed card is emitted, and no {@code null} is returned. The failure is an
+     * unchecked argument failure rather than a domain exception, because a caller handing over bytes
+     * the frame cannot hold is a frame-integrity violation and not a business outcome.
+     *
+     * <p>The diagnostics name the slot, the expected width or shape and the offending one-based
+     * position, and they never echo the rejected value or the character found there, so a rejected
+     * slot cannot carry its own text onward into a log record or a message.
      *
      * @param slotValue the caller-supplied slot value
      * @param slotName  the legacy sort-symbol name of the slot, used in the failure message
-     * @return the same value, once verified
+     * @return the same value, byte for byte, once verified
      */
     private static String requireDateSlot(final String slotValue, final String slotName) {
         Objects.requireNonNull(slotValue, "date slot " + slotName + " must not be null");
@@ -682,7 +856,87 @@ public final class JclCardImageBuilder {
             throw new IllegalArgumentException("date slot " + slotName + " must be exactly "
                     + DATE_SLOT_WIDTH + " encoded bytes but was " + actualWidth);
         }
+
+        requireDateSlotShape(slotValue, slotName);
+        requireRealCalendarDay(slotValue, slotName);
         return slotValue;
+    }
+
+    /**
+     * Requires that an already width-checked slot takes the fixed {@value #DATE_SLOT_FORMAT} shape,
+     * stated positionally as {@value #DATE_SLOT_PATTERN}.
+     *
+     * <p>The walk is driven by the declared component widths of the legacy group rather than by a
+     * pattern object, so the two hyphen positions in the check are the two {@code FILLER} offsets of
+     * that group and the remaining eight positions are its three numeric components. Every position
+     * is examined; none is sampled. That is why no character outside the digits and the two hyphens
+     * can pass: the apostrophe that would close a sort character constant early, the comma that would
+     * introduce a fresh operand, and every control byte and the delete byte are all rejected here
+     * without being enumerated, because none of them is a digit and none sits at a hyphen offset.
+     *
+     * <p>The failure message names the slot, the required shape and the offending one-based position,
+     * and deliberately does <em>not</em> echo the offending character, because a rejected value may
+     * be reflected back to a caller or written to a log and an echoed apostrophe or control byte would
+     * carry the same problem into that channel. For the same reason the message describes the
+     * separator by name rather than quoting it: quoting anything here, even this class's own literal,
+     * would put an apostrophe into a diagnostic and turn the guarantee &mdash; that no rejection
+     * message this class raises can carry an injectable character &mdash; into a matter of reading
+     * each message rather than a structural property a test can assert once and for all.
+     *
+     * @param slotValue the slot value, already known to be {@value #DATE_SLOT_WIDTH} single-byte
+     *                  US-ASCII characters
+     * @param slotName  the legacy sort-symbol name of the slot, used in the failure message
+     * @throws IllegalArgumentException if any position holds a character the shape does not permit
+     */
+    private static void requireDateSlotShape(final String slotValue, final String slotName) {
+        for (int offset = 0; offset < slotValue.length(); offset++) {
+            final char character = slotValue.charAt(offset);
+            final int position = offset + FIRST_SLOT_POSITION;
+            if (offset == DATE_SLOT_FIRST_SEPARATOR_OFFSET
+                    || offset == DATE_SLOT_SECOND_SEPARATOR_OFFSET) {
+                if (character != DATE_SLOT_SEPARATOR) {
+                    throw new IllegalArgumentException("date slot " + slotName + " must take the "
+                            + DATE_SLOT_FORMAT + " shape the legacy work field fixes with its"
+                            + " hyphen FILLER constants, so position " + position + " must be an"
+                            + " ASCII hyphen-minus separator; the rejected value is not reproduced"
+                            + " here");
+                }
+            } else if (character < LOWEST_DIGIT || character > HIGHEST_DIGIT) {
+                throw new IllegalArgumentException("date slot " + slotName + " must take the "
+                        + DATE_SLOT_FORMAT + " shape the legacy work field fixes with its hyphen"
+                        + " FILLER constants, so position " + position + " must be a digit;"
+                        + " the rejected value is not reproduced here");
+            }
+        }
+    }
+
+    /**
+     * Requires that an already shape-checked slot names a day that actually exists.
+     *
+     * <p>The shape allowlist cannot see the calendar: {@code 9999-99-99}, {@code 2022-13-01} and
+     * {@code 2023-02-29} all satisfy it. Each would nonetheless be embedded in the sort
+     * include-condition on cards 11 and 12 and in the report parameter on card 15, producing a job
+     * whose date window names no real interval. Strict resolution is what turns those into failures
+     * rather than into values a lenient resolver would quietly move to a neighbouring real day.
+     *
+     * <p>The parsed value is discarded. This check exists to reject, never to convert, so an accepted
+     * slot reaches its card byte for byte as the caller supplied it. The message names the slot and
+     * the required shape and never echoes the rejected value.
+     *
+     * @param slotValue the slot value, already known to be shaped {@value #DATE_SLOT_PATTERN}
+     * @param slotName  the legacy sort-symbol name of the slot, used in the failure message
+     * @throws IllegalArgumentException if the value does not name a day that exists
+     */
+    private static void requireRealCalendarDay(final String slotValue, final String slotName) {
+        try {
+            LocalDate.parse(slotValue, CALENDAR_DAY_FORMAT);
+        } catch (DateTimeParseException notARealDay) {
+            throw new IllegalArgumentException("date slot " + slotName + " takes the "
+                    + DATE_SLOT_FORMAT + " shape but does not name a day that exists; the report"
+                    + " window and the sort include-condition are both built from it, so an"
+                    + " impossible day is refused rather than embedded; the rejected value is not"
+                    + " reproduced here", notARealDay);
+        }
     }
 
     /**

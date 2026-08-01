@@ -26,116 +26,85 @@ import java.util.stream.Stream;
  * per-field error entries, grown one entry at a time by the one operation this type exposes,
  * {@link #mark(String, String, FlagState)}.
  *
- * <h2>Why this type exists</h2>
+ * <p>{@code CSSETATY} is not a data structure and does not become one. It is a 31-line macro
+ * whose executable body is lines 18 to 27 and whose descriptive line 17 is corrupted, trailing
+ * off into an unrelated screen field name; the body was translated and the commentary ignored.
+ * The macro takes three substitution tokens - the validation flag to test, the screen field to
+ * decorate and the map to decorate it on - and because expansion is textual, its 39 sites in
+ * {@code app/cbl/COACTUPC.cbl} (lines 3208 to 3432) generate roughly 234 lines of
+ * near-identical logic. Collapsing those into 39 invocations of one helper is the largest
+ * single de-duplication in this migration, and this type is that helper. The third token is
+ * dropped deliberately rather than by omission: all 39 sites substitute the same map, so the
+ * token carries no information to preserve, which is why {@code mark} takes two identifiers and
+ * a state rather than three identifiers and a state.
  *
- * <p>{@code app/cpy/CSSETATY.cpy} is not a data structure and does not become one. It is a
- * 31-line macro whose executable body is lines 18 to 27 and whose descriptive line 17 is
- * corrupted - that line trails off into a screen field name unrelated to the macro, so the
- * body was translated and the commentary was ignored. The macro takes three substitution
- * tokens: the validation flag to test, the screen field to decorate, and the map to decorate
- * it on. Because a macro expansion is textual, its 39 expansion sites in
- * {@code app/cbl/COACTUPC.cbl} generate roughly 234 lines of near-identical logic. Collapsing
- * those into 39 invocations of one small helper is the largest single de-duplication in this
- * migration, and this type is that helper.
+ * <p><strong>Two error states, never one boolean.</strong> The macro fires when the field's
+ * validation flag is either not-OK (lines 18 to 19) or blank, and the two are different
+ * operator mistakes needing different remedies. In both states the macro wrote an error
+ * highlight into the field's indicator sub-field, which becomes
+ * {@link ErrorResponse.FieldState#INVALID}; in the blank state it <em>additionally</em> wrote a
+ * marker character over the displayed value, which becomes
+ * {@link ErrorResponse.FieldState#MISSING}. Both edits were 3270 rendering mechanisms with no
+ * REST counterpart, so only the two states they signified survive: {@link FlagState} carries
+ * exactly those two and nothing else, because a field that passed its edit is never marked at
+ * all. The mapping is total and one-way and is expressed as a switch with no default clause, so
+ * adding a constant to either enum becomes a compile error rather than a silently mishandled
+ * case. Nothing here holds, names or emits a highlight value, an indicator sub-field, a marker
+ * character, a control byte, a map coordinate, a field length or any other terminal
+ * presentation detail; a client receives two named states and decides its own presentation.
+ * Decision log entry D-33 records the two-state contract.
  *
- * <p>The third token is dropped deliberately, not by omission. All 39 sites substitute the
- * same map, so the map token carries no information to preserve: a single REST resource
- * replaces the single map that all 39 expansions decorated. That is why
- * {@link #mark(String, String, FlagState)} takes two identifiers and a state rather than
- * three identifiers and a state.
+ * <p>The output states are {@link ErrorResponse}'s own, so entries assembled here are handed
+ * straight on with no further translation, which keeps the two types one contract instead of
+ * two. The structurally identical state type declared by the validation-failure carrier in
+ * {@code com.carddemo.exception} is a deliberate duplicate that this package must not
+ * reference, because doing so would invert the module's layer direction; the global failure
+ * handler in {@code com.carddemo.api} owns that translation.
  *
- * <h2>What the macro body did, and what survives here</h2>
+ * <p><strong>The re-entry gate belongs to the caller.</strong> Macro line 20 conjoined the
+ * whole decoration with the program-context re-enter condition, so field-level errors were
+ * absent on a first submission and appeared only once the operator had re-submitted. That gate
+ * is reproduced by <em>invocation</em>, not by a parameter: {@code mark} marks unconditionally
+ * whenever it is called, and the caller decides whether to call it at all. A first submission
+ * is represented by {@link #none()} with nothing marked. Accepting a re-entry flag here would
+ * put a presentation-lifecycle decision inside a value type and give all 39 call sites a fourth
+ * argument to pass identically.
  *
- * <p>The body has exactly four semantic properties, and each one is resolved explicitly:
+ * <p><strong>Purity.</strong> {@code mark} is a pure function: it returns a new instance and
+ * mutates nothing - not its receiver, not its arguments, not any shared state. This type
+ * declares no field other than its single component, holds no static state and is deeply
+ * immutable, so instances are freely shareable across threads and two instances built from the
+ * same calls in the same sequence are equal. An accumulation is therefore <em>threaded</em>
+ * rather than collected: each call yields the value the next proceeds from, and
+ * {@link #fieldErrors()} is the terminal operation. There is deliberately no accumulator,
+ * collector, cache, thread-local, singleton holder or registry of marked fields, because any of
+ * them would reinstate the shared mutable state an immutable value type exists to avoid and
+ * would let one request's errors leak into another's.
  *
- * <ol>
- *   <li><b>Two error states, never one boolean</b> (lines 18 to 19). The macro fires when the
- *       field's validation flag is either <em>not-OK</em> or <em>blank</em>. Those are two
- *       different operator mistakes needing two different remedies, and the legacy screen told
- *       them apart. {@link FlagState} carries exactly those two and nothing else: a field that
- *       passed its edit is never marked at all, so there is no third state for a client to
- *       handle.</li>
- *   <li><b>A gate this type does not evaluate</b> (line 20). The whole decoration was
- *       conjoined with the program-context re-enter condition. That condition is the caller's
- *       to test - see the section below - and it appears nowhere in this type.</li>
- *   <li><b>An edit applied in both states</b> (lines 21 to 22). The macro wrote an error
- *       highlight value into the field's indicator sub-field on the map's output group. That
- *       is the {@link ErrorResponse.FieldState#INVALID} case.</li>
- *   <li><b>A second edit applied in the blank state only</b> (lines 23 to 26). In the blank
- *       state the macro <em>additionally</em> wrote a single-character flag into the field's
- *       displayed-value position, overwriting whatever the operator could see there. That is
- *       the {@link ErrorResponse.FieldState#MISSING} case, and it is why blank and not-OK are
- *       two states rather than one.</li>
- * </ol>
- *
- * <p>Both edits were 3270 rendering mechanisms with no REST counterpart, so only the two
- * states they signified survive the translation. Nothing in this type holds, names or emits a
- * highlight value, an indicator sub-field, a marker character, a control byte, a map
- * coordinate, a field length, a screen mask or any other terminal presentation detail. A
- * client receives two named states and decides its own presentation.
- *
- * <h2>The two translations</h2>
- *
- * <p>Blank becomes {@link ErrorResponse.FieldState#MISSING}; not-OK becomes
- * {@link ErrorResponse.FieldState#INVALID}. The mapping is total, exhaustive and one-way, and
- * it is expressed as a switch with no default clause, so adding a constant to either enum
- * becomes a compile error rather than a silently mishandled case.
- *
- * <p>The output states are {@link ErrorResponse}'s own, not this type's. There is deliberately
- * no second output enum: entries assembled here are handed straight to {@link ErrorResponse}
- * with no further translation, which is what keeps the two types one contract instead of two.
- * The structurally identical state type declared by the validation-failure carrier in the
- * {@code com.carddemo.exception} package is a separate, deliberate duplicate that this package
- * must not reference, because doing so would invert the module's layer direction; the global
- * failure handler one level up in {@code com.carddemo.api} owns that translation.
- *
- * <h2>The re-entry gate belongs to the caller</h2>
- *
- * <p>Macro line 20 conjoined the entire decoration with the program-context re-enter
- * condition, so field-level errors were <em>absent</em> on a first submission and appeared
- * only once the operator had re-submitted the screen. That gate is reproduced by
- * <em>invocation</em>, not by a parameter: {@link #mark(String, String, FlagState)} marks
- * unconditionally whenever it is called, and the caller decides whether to call it at all.
- * The re-enter state itself travels as client-echoed state on {@code NavigationContext}.
- *
- * <p>This is not an oversight to be corrected. Accepting a re-entry flag here would put a
- * presentation-lifecycle decision inside a value type, would give every one of the 39 call
- * sites a fourth argument to pass identically, and would make the first-submission case
- * depend on a flag rather than on the plain absence of calls. A first submission is
- * represented by {@link #none()} with nothing marked.
- *
- * <h2>Purity</h2>
- *
- * <p>{@link #mark(String, String, FlagState)} is a pure function. It returns a <em>new</em>
- * instance and mutates nothing: not its receiver, not its arguments, not any shared state.
- * This type declares no field other than its single component, holds no static state of any
- * kind, and is deeply immutable, so instances are freely shareable across threads and two
- * instances built from the same calls in the same sequence are equal.
- *
- * <p>An accumulation is therefore <em>threaded</em> rather than collected: each call yields
- * the value the next call proceeds from, and {@link #fieldErrors()} is the terminal operation
- * that hands the finished collection to {@link ErrorResponse}. There is no accumulator object,
- * no collector, no cache, no lookup table, no thread-local, no singleton holder and no
- * registry of marked fields. Providing one would reinstate exactly the shared mutable state
- * that an immutable value type exists to avoid, and it would let one request's errors leak
- * into another's.
- *
- * <h2>The 39 fields are the caller's, not this type's</h2>
- *
- * <p>This type is generic over a field name, a screen field identifier and a state. It holds
- * no table, map, array or enumeration of the 39 decorated fields, and none may be added. The
- * 39 pairings are call-site data and belong at the 39 call sites in the account-update
- * service, exactly as the 39 macro expansions belonged at 39 points in the legacy program.
- * Materialising them here would rebuild, in Java, the very duplication this type was created
- * to delete, and would do it as the shared registry immutability forbids.
+ * <p><strong>The 39 pairings are the caller's data, not this type's.</strong> This type is
+ * generic over a field name, a screen field identifier and a state, and holds no table, map,
+ * array or enumeration of the 39 decorated fields. The pairings belong at the 39 call sites,
+ * exactly as the 39 macro expansions belonged at 39 points in the legacy program; materialising
+ * them here would rebuild in Java the duplication this type was created to delete.
+ * {@code app/bms/COACTUP.bms} bounds the set: the map defines 43 unprotected input fields, all
+ * 39 decorated identifiers are among them, and the four unprotected but undecorated fields are
+ * {@code ACCTSID}, {@code AADDGRP}, {@code ACSTNUM} and {@code ACSGOVT}, for which no entry may
+ * ever be invented.
  *
  * <p>Entries are appended in call sequence, with no re-ordering and no de-duplication. That is
- * faithful: the legacy expansions executed in source sequence, and that sequence is itself
+ * faithful: the legacy expansions executed in source sequence and that sequence is itself
  * irregular - the state field is decorated between the two address lines and the postal code
- * is decorated ahead of city and country. Reproducing the caller's sequence rather than
- * imposing one preserves that without encoding it.
+ * ahead of city and country. Reproducing the caller's sequence rather than imposing one
+ * preserves the irregularity without encoding it. Two further source oddities in the same range
+ * are recorded as row 15 of the source anomaly register and must not be
+ * "corrected" here: the descriptive lines at 3426 and 3431 are transposed and line 3375 repeats
+ * the state label ahead of the postal-code expansion, so the substitution tokens govern in both
+ * cases. Lines 3345 and 3369 state that the middle name and the second address line have no
+ * edits coded; both are decorated by the macro, so this type must be able to mark them even
+ * though no caller ever will (decision log entry D-34).
  *
- * <h2>Usage</h2>
+ * <p>Illustrative call sequence - the response types it would feed are not part of this
+ * contract and the fragment is not compilable as written:
  *
  * <pre>{@code
  * FieldErrorDecorator errors = FieldErrorDecorator.none();
@@ -145,49 +114,8 @@ import java.util.stream.Stream;
  * if (flags.creditLimitNotOk()) {
  *     errors = errors.mark("creditLimit", "ACRDLIM", FieldErrorDecorator.FlagState.NOT_OK);
  * }
- * return errors.isEmpty()
- *         ? new AccountUpdateResponse(account)
- *         : new ErrorResponse(summaryMessage, errors.fieldErrors());
+ * List<ErrorResponse.FieldError> perField = errors.isEmpty() ? List.of() : errors.fieldErrors();
  * }</pre>
- *
- * <h2>Provenance</h2>
- *
- * <p>Translated from the macro body at {@code app/cpy/CSSETATY.cpy} lines 17 to 27. The macro
- * is expanded 39 times in {@code app/cbl/COACTUPC.cbl}, at lines 3208, 3214, 3220, 3226, 3232,
- * 3238, 3244, 3250, 3256, 3262, 3268, 3274, 3280, 3286, 3292, 3298, 3304, 3310, 3316, 3322,
- * 3328, 3334, 3340, 3346, 3352, 3358, 3364, 3370, 3376, 3382, 3388, 3394, 3400, 3405, 3411,
- * 3417, 3422, 3427 and 3432, with 39 distinct validation flags, 39 distinct screen field
- * identifiers and one single map token common to all 39.
- * {@code app/bms/COACTUP.bms} corroborates the expansion set: that map defines 43 unprotected
- * input fields, all 39 decorated identifiers are among them, and the four unprotected but
- * undecorated fields are {@code ACCTSID}, {@code AADDGRP}, {@code ACSTNUM} and
- * {@code ACSGOVT}, for which no entry may ever be invented.
- *
- * <p>Five source oddities in that range were verified and are recorded so that a later reader
- * does not "correct" this contract by trusting the wrong half of the source:
- *
- * <ul>
- *   <li>A hand-written equivalent of the macro sits commented out at lines 3198 to 3205,
- *       inside the banner opened at line 3196. It is inactive and stays inactive; the macro,
- *       not the hand-written copy, is the authority.</li>
- *   <li>Line 3375 repeats the descriptive line that correctly labels the state field at line
- *       3363, but the expansion it introduces is the postal code. The substitution tokens are
- *       authoritative.</li>
- *   <li>Lines 3426 and 3431 are a transposed descriptive pair. Following the tokens instead of
- *       the commentary gives the correct final two mappings: the primary-cardholder flag
- *       decorates {@code ACSPFLG} and the electronic-transfer account identifier decorates
- *       {@code ACSEFTC}.</li>
- *   <li>Line 3345 states that the middle name has no edits coded and line 3369 states the same
- *       of the second address line. Both fields are decorated by the macro, so this type must
- *       be able to mark them, but no caller ever will, and no validation constraint may be
- *       attached to either field anywhere in the request contract.</li>
- *   <li>The expansion sequence is irregular, as described above. It is reported as it is and
- *       not normalised.</li>
- * </ul>
- *
- * <p>Behaviour cited, never transcribed, from the CardDemo COBOL estate at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  *
  * @param fieldErrors the entries accumulated so far, in the sequence they were marked. Never
  *                    {@code null} and never mutable: a {@code null} argument is normalised to
@@ -261,7 +189,7 @@ public record FieldErrorDecorator(List<ErrorResponse.FieldError> fieldErrors) {
      *                    for example the record component of the account-update request that
      *                    failed. Mandatory.
      * @param bmsFieldId  the legacy screen field identifier, carried through as an opaque label
-     *                    so a response stays traceable to the map it derives from. It is a
+     *                    so a response can be correlated with the map it derives from. It is a
      *                    label and nothing more - not a byte, not a coordinate, not a
      *                    presentation value - and a client may ignore it entirely. Mandatory.
      * @param flagState   which of the two legacy error states the field's validation flag is
@@ -270,7 +198,7 @@ public record FieldErrorDecorator(List<ErrorResponse.FieldError> fieldErrors) {
      *         entry just marked
      * @throws NullPointerException if any argument is {@code null}. All three are load-bearing:
      *                              without the field name a client cannot locate the field,
-     *                              without the identifier the entry loses its traceability to
+     *                              without the identifier the entry cannot be correlated with
      *                              the legacy map, and without the state the client cannot tell
      *                              the operator whether to supply a value or correct one.
      */

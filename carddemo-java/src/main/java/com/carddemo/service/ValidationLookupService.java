@@ -38,91 +38,53 @@ import org.springframework.stereotype.Service;
  * level-88 condition-name literal lists, together with the startup verification that proves the
  * externalised resources still carry exactly the values the copybook declared.
  *
- * <h2>Provenance</h2>
- * Translated from the AWS CardDemo z/OS mainframe application at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
+ * <p>The legacy authority is {@code app/cpy/CSLKPCDY.cpy}, a copybook of 1318 lines. Its sole includer
+ * anywhere in the estate is {@code app/cbl/COACTUPC.cbl}, so the entire validation-lookup surface is
+ * reached through the account-update feature alone &mdash; which is why the covering tests for this class
+ * have to be comprehensive rather than representative. No COBOL source is read at runtime and no COBOL
+ * statement is reproduced here: only member names, condition-name identifiers, field names, declared
+ * widths and measured cardinalities cross the boundary. The lookup values themselves live exclusively in
+ * the three JSON resources named below, never in Java source and never in a SQL migration.
  *
- * <p>The legacy authority is {@code app/cpy/CSLKPCDY.cpy}, a copybook of <strong>1318</strong> lines. A
- * figure of 1,319 is sometimes quoted for this member; that count treats the newline terminating the last
- * line as introducing a further, empty line. The member has 1318 lines and this class cites 1318. The
- * copybook is also the estate's only member that places a descriptive banner (lines 1 to 7) <em>above</em>
- * its Apache licence header (lines 8 to 21) rather than below it; the generated Java nevertheless leads
- * with the licence header, as every other generated source does.</p>
+ * <p><strong>Three copybook items host five conditions.</strong>
+ * {@code 01 WS-US-PHONE-AREA-CODE-TO-EDIT PIC XXX} at line 24 hosts three over the same three bytes:
+ * {@code VALID-PHONE-AREA-CODE} at line 30, {@code VALID-GENERAL-PURP-CODE} at line 521 and
+ * {@code VALID-EASY-RECOG-AREA-CODE} at line 931. {@code 01 US-STATE-CODE-TO-EDIT PIC X(2)} at line 1012
+ * hosts {@code VALID-US-STATE-CODE} at line 1013. {@code 01 US-STATE-ZIPCODE-TO-EDIT} at line 1071 is a
+ * seven-byte group of {@code 02 US-STATE-AND-FIRST-ZIP2 PIC X(4)} at line 1072 followed by
+ * {@code 02 LAST-3-OF-ZIP PIC X(3)} at line 1314, and {@code VALID-US-STATE-ZIP-CD2-COMBO} at line 1073 is
+ * declared on the {@code PIC X(4)} sub-field only, so the last three ZIP digits take no part in the test.
  *
- * <p>{@code app/cbl/COACTUPC.cbl} is the <strong>sole</strong> includer of the copybook anywhere in the
- * estate. The entire validation-lookup surface is therefore reached through the account-update feature
- * alone, which is why the covering tests for this class have to be comprehensive rather than
- * representative: no other program exercises any part of it.</p>
+ * <p><strong>Cardinalities, every one obtained by parsing the copybook's code area and re-verified against
+ * the loaded resources on construction.</strong> {@code VALID-GENERAL-PURP-CODE} 410 codes;
+ * {@code VALID-EASY-RECOG-AREA-CODE} 80 codes; {@code VALID-PHONE-AREA-CODE} 490 codes, which is provably
+ * the <em>disjoint union</em> of those two &mdash; they share no element, 410 plus 80 is 490 exactly, and
+ * their union equals the 490-value list element for element, so this class <strong>derives</strong> the
+ * 490-member set and never stores it as a third array, because a third copy would create a three-way
+ * consistency hazard that nothing could detect. {@code VALID-US-STATE-CODE} 56 two-character codes, the
+ * last six being {@code DC}, {@code AS}, {@code GU}, {@code MP}, {@code PR} and {@code VI}.
+ * {@code VALID-US-STATE-ZIP-CD2-COMBO} 240 four-character combinations, {@code AA34} to {@code WY83}.
  *
- * <p>No COBOL source is read at runtime and no COBOL statement is reproduced here. Only member names,
- * condition-name identifiers, field names, declared widths and measured cardinalities cross the boundary.
- * The lookup values themselves live exclusively in the three JSON resources named below, never in Java
- * source and never in a SQL migration.</p>
- *
- * <h2>The three copybook items and the five conditions declared on them</h2>
- * <ul>
- *   <li>{@code 01 WS-US-PHONE-AREA-CODE-TO-EDIT PIC XXX} at line 24 hosts <em>three</em> conditions over
- *       the same three-byte item: {@code VALID-PHONE-AREA-CODE} at line 30, {@code VALID-GENERAL-PURP-CODE}
- *       at line 521 and {@code VALID-EASY-RECOG-AREA-CODE} at line 931.</li>
- *   <li>{@code 01 US-STATE-CODE-TO-EDIT PIC X(2)} at line 1012 hosts {@code VALID-US-STATE-CODE} at line
- *       1013.</li>
- *   <li>{@code 01 US-STATE-ZIPCODE-TO-EDIT} at line 1071 is a seven-byte group of
- *       {@code 02 US-STATE-AND-FIRST-ZIP2 PIC X(4)} at line 1072 followed by
- *       {@code 02 LAST-3-OF-ZIP PIC X(3)} at line 1314. {@code VALID-US-STATE-ZIP-CD2-COMBO} at line 1073
- *       is declared on the {@code PIC X(4)} sub-field only, so the last three ZIP digits take no part in
- *       the membership test.</li>
- * </ul>
- *
- * <h2>Cardinalities, and why one of the five is derived rather than stored</h2>
- * Every count below was obtained by parsing the copybook's code area rather than by reading prose, and
- * every one is re-verified against the loaded resources when this bean is constructed:
- * <ul>
- *   <li>{@code VALID-GENERAL-PURP-CODE} &mdash; 410 general-purpose area codes.</li>
- *   <li>{@code VALID-EASY-RECOG-AREA-CODE} &mdash; 80 easily-recognisable area codes.</li>
- *   <li>{@code VALID-PHONE-AREA-CODE} &mdash; 490 area codes, which is provably the <em>disjoint union</em>
- *       of the two sets above: the two subsets share no element, 410 plus 80 is 490 exactly, and their
- *       union equals the 490-value list element for element. This class therefore <strong>derives</strong>
- *       the 490-member set by unioning the other two and <strong>never stores it as a third array</strong>,
- *       because a third copy would create a three-way consistency hazard that nothing could detect.</li>
- *   <li>{@code VALID-US-STATE-CODE} &mdash; 56 two-character codes, the last six being the district and
- *       territory codes {@code DC}, {@code AS}, {@code GU}, {@code MP}, {@code PR} and {@code VI}.</li>
- *   <li>{@code VALID-US-STATE-ZIP-CD2-COMBO} &mdash; 240 four-character combinations, running from
- *       {@code AA34} to {@code WY83}.</li>
- * </ul>
- *
- * <h2>The two lists are deliberately never intersected</h2>
- * The 240 state-plus-ZIP combinations use 62 distinct two-character prefixes, and six of those prefixes
- * &mdash; {@code AA}, {@code AE}, {@code AP}, {@code FM}, {@code MH} and {@code PW} &mdash; do not appear
- * in the 56-code state list at all. They are the military and freely-associated-state prefixes. Any
- * attempt to intersect, cross-filter, sort or split the two lists against one another would reject
- * addresses that the legacy system accepts, so this class keeps the two tables strictly independent and
+ * <p><strong>The state and state-plus-ZIP lists are deliberately never intersected.</strong> The 240
+ * combinations use 62 distinct two-character prefixes, and six of them &mdash; {@code AA}, {@code AE},
+ * {@code AP}, {@code FM}, {@code MH} and {@code PW}, the military and freely-associated-state prefixes
+ * &mdash; do not appear in the 56-code state list at all. Any attempt to intersect, cross-filter, sort or
+ * split the two lists against one another would reject addresses the legacy system accepts, so this class
  * offers no operation that relates them.
  *
- * <h2>Values are alphanumeric tokens, never numbers</h2>
- * Every value in all three tables is an alphanumeric token drawn from a COBOL {@code PIC X} item. Nothing
- * here is parsed into {@code int}, {@code Integer} or {@code long}, and nothing loaded from a resource is
- * trimmed, case-folded, normalised, re-sorted or re-ordered. That is what keeps a leading zero, were one
- * ever added upstream, from being silently coerced away.
+ * <p><strong>Values are alphanumeric tokens, never numbers.</strong> Every value comes from a COBOL
+ * {@code PIC X} item. Nothing here is parsed into {@code int}, {@code Integer} or {@code long}, and
+ * nothing loaded from a resource is trimmed, case-folded, normalised, re-sorted or re-ordered, which is
+ * what keeps a leading zero from being silently coerced away.
  *
- * <h2>Division of labour with the account-update validator</h2>
- * This class answers membership questions and nothing else. Message composition, error-flag state and
- * field-level error decoration belong to the account-update service and to the presentation DTO layer, and
- * the blank, numeric and zero pre-checks that precede the area-code membership test belong to the caller
- * that owns the phone cascade. The literals the caller emits on failure are recorded in the Javadoc of the
- * individual predicates so that the contract stays discoverable from here, but this class never composes
- * or returns them.
+ * <p>This class answers membership questions and nothing else: message composition, error-flag state,
+ * field-level error decoration and the blank, numeric and zero pre-checks that precede the area-code
+ * membership test all belong to the caller. The literals the caller emits on failure are recorded in the
+ * individual predicates' Javadoc so the contract stays discoverable from here.
  *
- * <h2>Layer position and dependencies</h2>
- * A tier-zero service: it injects no other service. Its only collaborators are the Jackson object mapper
- * that Spring Boot auto-configures and Spring's resource abstraction, both supplied through the
- * constructor. Nothing in the API, batch or configuration packages is referenced.
- *
- * <h2>Thread safety</h2>
- * A stateless singleton. Every field is {@code private static final} or {@code private final}, the three
- * published sets are built with {@code Set.copyOf} and are therefore genuinely unmodifiable, there is no
- * setter, no lazy re-read and no mutable state of any kind, so the bean is safe for unrestricted
- * concurrent use. Each membership question is a hash-set containment test.
+ * <p>A tier-zero stateless singleton: it injects no other service, its only collaborators are the Jackson
+ * object mapper and Spring's resource abstraction, every field is final, and the three published sets are
+ * built with {@code Set.copyOf}, so the bean is safe for unrestricted concurrent use.
  */
 @Service
 public final class ValidationLookupService {
@@ -290,10 +252,8 @@ public final class ValidationLookupService {
         Objects.requireNonNull(objectMapper, "objectMapper must not be null");
         Objects.requireNonNull(resourceLoader, "resourceLoader must not be null");
 
-        // ------------------------------------------------------------------
         // Area codes. One resource, two named arrays, three exposed sets: the
         // two subsets as loaded and their union derived on the spot.
-        // ------------------------------------------------------------------
         final Map<String, List<String>> areaCodeArrays =
                 readJson(objectMapper, resourceLoader, NANPA_AREA_CODES_LOCATION, NAMED_STRING_ARRAYS);
         requireExactlyTheTwoSubsetArrays(areaCodeArrays);
@@ -310,11 +270,9 @@ public final class ValidationLookupService {
         requireSubsetsDisjoint(this.generalPurposeAreaCodes, this.easilyRecognisableAreaCodes);
         this.phoneAreaCodes = deriveAreaCodeUnion(generalPurposeValues, easyRecognitionValues);
 
-        // ------------------------------------------------------------------
         // State codes and state-plus-ZIP combinations. Two independent
         // resources that are never related to one another; see the class
         // documentation for why intersecting them would be a defect.
-        // ------------------------------------------------------------------
         this.usStateCodes = verifiedSet(
                 readJson(objectMapper, resourceLoader, US_STATE_CODES_LOCATION, STRING_ARRAY),
                 US_STATE_CODES_LOCATION, CONDITION_US_STATE_CODE, US_STATE_CODE_COUNT, US_STATE_CODE_WIDTH);
@@ -340,23 +298,23 @@ public final class ValidationLookupService {
      * <p>Translated from the fourth and final stage of {@code EDIT-AREA-CODE} at
      * {@code app/cbl/COACTUPC.cbl} line 2246, where lines 2296 to 2298 move the trimmed field into the
      * three-byte work item and the following statement tests {@code VALID-GENERAL-PURP-CODE}. On failure the
-     * legacy program raises the general input-error flag and the area-code not-OK flag and composes the
-     * message {@code ": Not valid North America general purpose area code"} &mdash; with no trailing full
-     * stop &mdash; at line 2306. Composing that message and setting those flags belong to the caller that
-     * owns the phone cascade; this method returns only the outcome of the membership test.</p>
+     * legacy program raises the general input-error flag and the area-code not-OK flag and composes
+     * {@code ": Not valid North America general purpose area code"} &mdash; with no trailing full stop
+     * &mdash; at line 2306. Composing that message and setting those flags belong to the caller that owns
+     * the phone cascade.
      *
      * <p><strong>This predicate deliberately excludes the 80 easily-recognisable codes.</strong> The legacy
      * program tests the general-purpose subset and not the 490-member union, so accepting an
      * easily-recognisable code here would accept 80 area codes that the mainframe rejects. Callers
      * validating a customer or account telephone number must use this method and not
-     * {@code isValidPhoneAreaCode}.</p>
+     * {@code isValidPhoneAreaCode}.
      *
-     * <p>The three stages that precede this one in the legacy cascade &mdash; the blank check whose message
-     * is {@code ": Area code must be supplied."}, the numeric check whose message is
+     * <p>The three stages that precede this one &mdash; the blank check whose message is
+     * {@code ": Area code must be supplied."}, the numeric check whose message is
      * {@code ": Area code must be A 3 digit number."} and the zero check whose message is
-     * {@code ": Area code cannot be zero"} &mdash; are the caller's responsibility and are deliberately not
-     * reproduced here. A key that would have failed one of them simply fails this membership test as well,
-     * but with no message and no distinction between the four failure reasons.</p>
+     * {@code ": Area code cannot be zero"} &mdash; are the caller's responsibility. A key that would have
+     * failed one of them fails this membership test as well, but with no message and no distinction
+     * between the four failure reasons.
      *
      * @param areaCode the candidate area code; normalised as described by {@code areaCodeKey} before the
      *                 test, so a value carrying the surrounding spaces of a fixed-width field is accepted
@@ -446,20 +404,17 @@ public final class ValidationLookupService {
      * address state code with the first two characters of the ten-character address ZIP code, giving exactly
      * four characters that fill the {@code PIC X(4)} sub-field. <strong>There is no trim.</strong> The
      * remaining three ZIP digits live in a separate sub-field at copybook line 1314 and take no part in the
-     * test.</p>
+     * test. The caller assembles the key and passes it already concatenated.
      *
-     * <p>The caller assembles the key and passes it here already concatenated: this method owns the
-     * membership test alone. It performs no trim, does not validate the state code independently as part of
-     * this call, and above all does <strong>not</strong> cross-check the leading two characters against the
-     * 56-code state table. Six of the 62 prefixes that appear in this table &mdash; {@code AA}, {@code AE},
-     * {@code AP}, {@code FM}, {@code MH} and {@code PW} &mdash; are absent from that table, so any such
-     * cross-check would reject addresses the legacy system accepts.</p>
+     * <p>This method does <strong>not</strong> cross-check the leading two characters against the 56-code
+     * state table. Six of the 62 prefixes that appear here &mdash; {@code AA}, {@code AE}, {@code AP},
+     * {@code FM}, {@code MH} and {@code PW} &mdash; are absent from that table, so any such cross-check
+     * would reject addresses the legacy system accepts.
      *
      * <p>On failure the legacy program raises the general input-error flag and <em>both</em> the state
      * not-OK flag at line 2546 and the ZIP-code not-OK flag at line 2547, then composes the bare literal
-     * {@code "Invalid zip code for state"} at line 2550. That message is unique in the program for carrying
-     * no field-name prefix: every other message there is composed as the trimmed field label followed by a
-     * suffix. Raising both flags and preserving the absent prefix belong to the caller.</p>
+     * {@code "Invalid zip code for state"} at line 2550 &mdash; unique in the program for carrying no
+     * field-name prefix. Raising both flags and preserving the absent prefix belong to the caller.
      *
      * @param stateAndFirstZip2 the four-character positional key, being the two-character state code
      *                          followed by the first two characters of the ZIP code, tested exactly as
@@ -525,28 +480,21 @@ public final class ValidationLookupService {
     /**
      * Normalises a candidate area code into the key the legacy condition is actually tested against,
      * reproducing both halves of the legacy statement pair at {@code app/cbl/COACTUPC.cbl} lines 2296 to
-     * 2298.
+     * 2298: trim the field, then move the result into {@code WS-US-PHONE-AREA-CODE-TO-EDIT}, which copybook
+     * line 24 declares {@code PIC XXX}. Two distinct COBOL semantics are in play and both are reproduced.
      *
-     * <p>The legacy statement trims the field and moves the result into
-     * {@code WS-US-PHONE-AREA-CODE-TO-EDIT}, which copybook line 24 declares {@code PIC XXX}. Two distinct
-     * COBOL semantics are therefore in play and both are reproduced:</p>
-     * <ul>
-     *   <li><strong>The trim removes spaces only.</strong> The COBOL trimming intrinsic strips leading and
-     *       trailing space characters. It is not the same as the Java methods that strip every character at
-     *       or below the space code point, nor the same as the one that strips every Unicode whitespace
-     *       character, so this method strips the space character and nothing else.</li>
-     *   <li><strong>The move left-justifies into three bytes.</strong> A shorter value is space-filled to
-     *       the declared width and a longer value is truncated on the right. Space-filling has no
-     *       observable effect because no value in any of the three tables contains a space, but truncation
-     *       does: a longer key is tested on its first three characters, exactly as the mainframe tests it.
-     *       From the estate's only call site the field being trimmed is itself declared {@code PIC X(3)} at
-     *       line 87, so a trimmed value can never exceed three characters there and truncation is
-     *       unreachable; the semantics are preserved so that the behaviour is correct for any caller rather
-     *       than only for the one the legacy code happened to have.</li>
-     * </ul>
+     * <p><strong>The trim removes spaces only.</strong> The COBOL trimming intrinsic strips leading and
+     * trailing space characters &mdash; not every character at or below the space code point, and not every
+     * Unicode whitespace character &mdash; so this method strips the space character and nothing else.
      *
-     * <p>This is work-item normalisation on a three-byte COBOL field, not offset slicing of a fixed-width
-     * record image; record images are the concern of the mapper layer and are never touched here.</p>
+     * <p><strong>The move left-justifies into three bytes.</strong> A shorter value is space-filled and a
+     * longer value is truncated on the right. Space-filling has no observable effect because no value in any
+     * of the three tables contains a space, but truncation does: a longer key is tested on its first three
+     * characters, exactly as the mainframe tests it. From the estate's only call site the field being
+     * trimmed is itself {@code PIC X(3)} at line 87, so truncation is unreachable there; the semantics are
+     * preserved so the behaviour is correct for any caller rather than only for the one the legacy code
+     * happened to have. This is work-item normalisation on a three-byte COBOL field, not offset slicing of
+     * a record image.
      *
      * @param rawAreaCode the candidate area code, never {@code null} at any call site
      * @return a key of exactly {@code AREA_CODE_WIDTH} characters

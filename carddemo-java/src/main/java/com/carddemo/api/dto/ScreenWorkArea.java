@@ -25,144 +25,100 @@ import java.util.Optional;
  * Immutable screen work area carried across one CardDemo pseudo-conversational turn.
  *
  * <p>This record is the transport-era projection of the {@code CC-WORK-AREAS} structure declared in
- * copybook member {@code app/cpy/CVCRD01Y.cpy}. The group item occupies line 1, its single
- * subordinate group occupies line 2, and the members this record models are declared between
- * lines 3 and 42. The structure is the per-interaction scratch pad the legacy screens used to
- * remember which attention key the operator pressed, where the flow was headed next, which message
- * to render, and which account, card and customer the operator was working on.</p>
+ * copybook member {@code app/cpy/CVCRD01Y.cpy}: the group item occupies line 1, its single
+ * subordinate group line 2, and the members modelled here are declared between lines 3 and 42. The
+ * structure is the per-interaction scratch pad the legacy screens used to remember which attention
+ * key the operator pressed, where the flow was headed next, which message to render, and which
+ * account, card and customer the operator was working on. {@code CVCRD01Y} is copied by
+ * {@code COACTUPC}, {@code COACTVWC}, {@code COCRDLIC}, {@code COCRDSLC} and {@code COCRDUPC} and by
+ * no other member of the estate - the account and card family, which is also the only family that
+ * arms a CICS abend handler and the only family that copies the attention-key procedural member
+ * {@code app/cpy/CSSTRPFY.cpy}. That fan-out of five is why exactly five services consume this type.
  *
- * <p><strong>Included by exactly five programs.</strong> {@code CVCRD01Y} is copied by
- * {@code COACTUPC}, {@code COACTVWC}, {@code COCRDLIC}, {@code COCRDSLC} and {@code COCRDUPC} and
- * by no other member of the estate. Those five are the account and card family written to the
- * "Program / Layer / Function" header convention, and they are also the only family that arms a
- * CICS abend handler and the only family that copies the attention-key procedural member
- * {@code app/cpy/CSSTRPFY.cpy}. That fan-out of five is why exactly five services consume this
- * type: the account view and account update services, and the card list, card detail and card
- * update services.</p>
+ * <p><strong>Four members of the originating copybook are commented out and are absent here.</strong>
+ * They are not part of the record layout at all, and a reader skimming the member for subordinate
+ * declarations would model them by accident and invent state the legacy system deliberately
+ * abandoned, so each is named to make the exclusion auditable: the last-program field (line 20), the
+ * return-to-program field (line 22), the return-flag field (line 25) with both its condition names
+ * (lines 26 and 27), and the function field (line 31) with both its condition names (lines 32 and
+ * 33). A mechanical scan of every program finds zero references to any of the four and zero to any of
+ * their condition names, corroborating abandonment rather than mere disuse. This record therefore
+ * declares no last-program, return-to-program, return-flag or function component, and no on/off state
+ * for the return flag: inventing a boolean that nothing would ever set would fabricate a state
+ * transition the 3270 contract never had. Decision log entry D-40 records the exclusion.
  *
- * <h2>Half of the originating copybook is commented out, and those members are absent here</h2>
+ * <p><strong>Two similarly named members must not be confused.</strong> The return <em>message</em>
+ * field on line 29 is live, and so is its own "off" condition name on line 30; the return
+ * <em>flag</em> field on line 25 and its "off" condition name on line 26 are the dead pair. This
+ * record carries the return message and does not carry the return flag. Two live members are
+ * themselves unreferenced by the five including programs - the customer identifier with its numeric
+ * alias, and the return message with its condition name - and are modelled all the same, because the
+ * distinction that governs this file is membership of the layout, not reference count: a live member
+ * is modelled whether or not a program happens to read it, while a commented-out member is not a
+ * member at all.
  *
- * <p>Four members of the structure carry a comment indicator and are therefore not part of the
- * record layout at all. A reader skimming the member for subordinate declarations would model them
- * by accident and would invent state the legacy system deliberately abandoned, so each is named
- * here to make the exclusion an auditable decision rather than an oversight:</p>
- * <ul>
- *   <li>the last-program field, commented at line 20;</li>
- *   <li>the return-to-program field, commented at line 22;</li>
- *   <li>the return-flag field, commented at line 25, together with both of its condition names on
- *       lines 26 and 27;</li>
- *   <li>the function field, commented at line 31, together with both of its condition names on
- *       lines 32 and 33.</li>
- * </ul>
- *
- * <p>A mechanical scan of every program in the estate finds zero references to any of the four, and
- * zero references to any of their four condition names, which corroborates that they were abandoned
- * rather than merely left unused. Consequently this record declares no last-program component, no
- * return-to-program component, no return-flag component and no function component, and it declares
- * no on/off state for the return flag. In particular there is no boolean that nothing would ever
- * set: inventing one would fabricate a state transition the 3270 contract never had. The exclusion
- * is a deliberate translation decision and is recorded in {@code docs/decision-log.md}.</p>
- *
- * <p><strong>Two similarly named members must not be confused.</strong> The return
- * <em>message</em> field on line 29 is live, and so is its own "off" condition name on line 30.
- * The return <em>flag</em> field on line 25 and its "off" condition name on line 26 are the dead
- * pair. This record therefore carries the return message and does not carry the return flag.</p>
- *
- * <p>Two live members are also unreferenced by the five including programs - the customer
- * identifier with its numeric alias, and the return message with its condition name. They are
- * modelled all the same, because they are part of the declared structure. The distinction that
- * governs this file is membership of the layout, not reference count: a live member is modelled
- * whether or not a program happens to read it, while a commented-out member is not a member at
- * all.</p>
- *
- * <h2>The attention identifier has no default, because the legacy mapping has no fallback</h2>
- *
- * <p>The attention identifier is the five-character field on line 3, beneath which the copybook
- * declares sixteen level-88 condition names on lines 4 through 19 - one for the ENTER key, one for
- * the CLEAR key, one for each of the two program-attention keys, and one for each of the twelve
- * program-function keys. Those sixteen names are realised as the sixteen constants of
- * {@link KeyAction}, so the component below is typed as that enum rather than as loose text.</p>
- *
- * <p>The legacy mapping from a terminal attention identifier to one of those names lives in
- * {@code app/cpy/CSSTRPFY.cpy}, whose two paragraphs begin on lines 17 and 80. Between them sits a
+ * <p><strong>The attention identifier has no default, because the legacy mapping has no
+ * fallback.</strong> It is the five-character field on line 3, beneath which the copybook declares
+ * sixteen level-88 condition names on lines 4 through 19 - ENTER, CLEAR, the two program-attention
+ * keys and the twelve program-function keys - realised as the sixteen constants of
+ * {@link KeyAction}, so the component below is typed as that enum rather than as loose text. The
+ * mapping from a terminal attention identifier to one of those names lives in
+ * {@code app/cpy/CSSTRPFY.cpy}, whose two paragraphs begin on lines 17 and 80; between them sits a
  * single ordered conditional running from line 21 to line 78 with twenty-eight branches and,
- * verified by a mechanical count, <strong>no otherwise branch</strong>. The absence is
- * behaviourally significant: when the incoming identifier matches no branch, nothing is assigned
- * and the field retains whatever value it already held. Absence is therefore modelled as an absent
- * component - {@code null}, surfaced explicitly by {@link #attentionKey()} - and never as a
- * synthetic default, unknown, none or invalid constant. Substituting such a constant would
- * manufacture a state the legacy system cannot produce and would discard the retained value it
- * relies on.</p>
+ * verified by a mechanical count, <strong>no otherwise branch</strong>. That absence is
+ * behaviourally significant: when the incoming identifier matches no branch nothing is assigned and
+ * the field retains whatever value it already held, so absence is modelled as an absent component -
+ * {@code null}, surfaced explicitly by {@link #attentionKey()} - and never as a synthetic default,
+ * unknown, none or invalid constant, which would manufacture a state the legacy system cannot
+ * produce. The same conditional folds program-function keys 13 through 24 back onto the same twelve
+ * flags as keys 1 through 12 on lines 54 through 77, so keys 13 through 24 are not distinct actions
+ * and no constant exists for them (decision log entry D-20). Performing that fold is the work of the
+ * utility-layer key translator: this record accepts an already-resolved key action and performs no
+ * translation, folding or key interpretation, and holds no dependency on the utility layer.
  *
- * <p>The same conditional folds program-function keys 13 through 24 back onto the same twelve
- * flags as keys 1 through 12, on lines 54 through 77, so keys 13 through 24 are not distinct
- * actions and no constant exists for them. Performing that fold is the work of the utility-layer
- * key translator, not of this transport type: this record accepts an already-resolved key action
- * and performs no translation, no folding and no key interpretation of any kind. It holds no
- * dependency on the utility layer.</p>
- *
- * <h2>Three identifiers are stored as text and expose derived numeric views</h2>
- *
- * <p>The account identifier, the card number and the customer identifier are each declared twice
- * in the copybook: once as fixed-width text and once, immediately afterwards, as an unsigned
- * numeric redefinition over the very same bytes - the text form on lines 34, 37 and 40 and the
- * numeric alias on lines 36, 39 and 42. A redefinition is not a second field; it is a second way
- * of reading one storage area, which is why the two views can never disagree.</p>
- *
- * <p>That property is reproduced by storing only the textual form and deriving each numeric view on
- * demand from it. The text is authoritative for the contract: every fixed-width numeric field in
- * this migration crosses the API as bounded text rather than as a numeric type, because leading
- * zeros and external field widths are contractual and a numeric type would silently discard them.
- * The derived views - {@link #accountIdNumeric()}, {@link #cardNumberNumeric()} and
- * {@link #customerIdNumeric()} - exist only for callers that genuinely need arithmetic or a numeric
- * comparison, mirroring how the legacy programs use the numeric alias to test an identifier against
- * zero, to compare it with a record key, and to move it into a numeric key field.</p>
- *
- * <p>All three text fields are initialised to spaces by the copybook, so a blank identifier is a
- * normal state rather than an error, and every derived view is total: it reports absence for a
- * missing, empty, blank or otherwise non-numeric value and never raises an exception. Writing
+ * <p><strong>Three identifiers are stored as text and expose derived numeric views.</strong> The
+ * account identifier, the card number and the customer identifier are each declared twice in the
+ * copybook - once as fixed-width text (lines 34, 37 and 40) and once, immediately afterwards, as an
+ * unsigned numeric redefinition over the very same bytes (lines 36, 39 and 42). A redefinition is
+ * not a second field but a second way of reading one storage area, which is why the two views can
+ * never disagree, and that property is reproduced by storing only the textual form and deriving each
+ * numeric view on demand. The text is authoritative: every fixed-width numeric field in this
+ * migration crosses the API as bounded text rather than as a numeric type, because leading zeros and
+ * external field widths are contractual. The derived views - {@link #accountIdNumeric()},
+ * {@link #cardNumberNumeric()} and {@link #customerIdNumeric()} - exist only for callers that
+ * genuinely need arithmetic or a numeric comparison, mirroring how the legacy programs use the
+ * numeric alias to test an identifier against zero, compare it with a record key and move it into a
+ * numeric key field. All three text fields are initialised to spaces by the copybook, so a blank
+ * identifier is a normal state rather than an error, and every derived view is total: it reports
+ * absence for a missing, empty, blank or otherwise non-numeric value and never raises. Writing
  * <em>through</em> the numeric alias, which the legacy programs also do, right-justifies and
  * zero-fills the shared bytes; forming that text is the caller's business, so this record neither
- * pads nor justifies anything.</p>
+ * pads nor justifies anything.
  *
- * <h2>The screen-flow components are declarative only</h2>
+ * <p><strong>The screen-flow components are declarative only.</strong> The next-program, next-mapset
+ * and next-map components record where the interaction is headed and are data and nothing more: the
+ * legacy transfer-of-control dispatches become route values returned in a response body, the client
+ * drives the following call, and there is no server-side forwarding anywhere in the target. This
+ * record declares no route table, no route constant and no dispatch behaviour; naming and resolving
+ * routes belongs to the service layer.
  *
- * <p>The next-program, next-mapset and next-map components record where the interaction is headed.
- * They are data and nothing more. The legacy transfer-of-control dispatches become route values
- * returned in a response body, the client drives the following call, and there is no server-side
- * forwarding anywhere in the target. This record therefore declares no route table, no route
- * constant and no dispatch behaviour; naming and resolving routes belongs to the navigation
- * service.</p>
+ * <p><strong>Absence, not sentinel bytes, and no presence constraints.</strong> The return-message
+ * field carries a condition name on line 30 that reads "off" as a low-values field. Here "off" is
+ * simply an absent component: no low-values sentinel is encoded, no null character is ever produced,
+ * and callers test for absence rather than for a magic byte. That substitution is the one place where
+ * this transport type departs from the legacy byte-level representation, and decision log entry D-40
+ * records it. Every component may legitimately be absent or blank, so none carries a presence,
+ * pattern or range constraint; the only constraint used is an upper bound at the width the copybook
+ * declares, because a bound measures and reports without trimming, padding or rewriting a value,
+ * which is the only safe constraint on fixed-width fields whose leading and trailing spaces are real
+ * data.
  *
- * <h2>Absence, not sentinel bytes, and no presence constraints</h2>
- *
- * <p>The return-message field carries a condition name on line 30 that reads "off" as a
- * low-values field. In this record "off" is simply an absent component: no low-values sentinel is
- * encoded, no null character is ever produced, and callers test for absence rather than for a
- * magic byte. Substituting absence for a sentinel byte is the one place where this transport type
- * departs from the legacy byte-level representation, and it is recorded as such in
- * {@code docs/decision-log.md}.</p>
- *
- * <p>Every component may legitimately be absent or blank, so no component carries a presence,
- * pattern or range constraint of any kind. The only constraint used is an upper bound on each text
- * component, set to the width the copybook declares. A bound measures and reports; it never trims,
- * pads or rewrites a value, which is why it is the only constraint that is safe on fixed-width
- * fields whose leading and trailing spaces are real data.</p>
- *
- * <p>The record is deeply immutable: every component is either an enum constant or a
- * {@code String}, there is no collection, no array and no mutable state, and the canonical
- * constructor is deliberately left exactly as generated - it defaults nothing, normalises nothing
- * and rejects nothing, so every value crosses this boundary character for character. The type is
- * framework-free apart from the length bounds, is mapped to no database column, and represents
- * transient screen-interaction state rather than persisted data.</p>
- *
- * <h2>Provenance</h2>
- *
- * <p>Translated from the CardDemo mainframe estate at checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, which the originating member carries on
- * line 45. The estate is read-only reference and is cited here by member name, field name, field
- * width and line number only; no COBOL text is reproduced.</p>
+ * <p>The record is deeply immutable: every component is either an enum constant or a {@code String},
+ * there is no collection, array or mutable state, and the canonical constructor is deliberately left
+ * exactly as generated - it defaults nothing, normalises nothing and rejects nothing, so every value
+ * crosses this boundary character for character. The type is framework-free apart from the length
+ * bounds, is mapped to no database column, and represents transient screen-interaction state rather
+ * than persisted data.
  *
  * @param keyAction the attention key the operator pressed, from the five-character
  *     {@code CCARD-AID} field {@code PIC X(5)} on line 3 of {@code app/cpy/CVCRD01Y.cpy} and its
@@ -231,6 +187,20 @@ public record ScreenWorkArea(
 
         /* CC-CUST-ID, width 9, CVCRD01Y line 40; numeric redefinition on line 42 is derived. */
         @Size(max = ScreenWorkArea.CUSTOMER_ID_LENGTH) String customerId) {
+
+    /**
+     * Fixed stand-in emitted by {@link #toString()} in place of each business key.
+     *
+     * <p>A constant rather than any transformation of the value, so nothing about a redacted key - not
+     * its length, not a prefix or suffix, not a digest - survives into a stringified instance. A
+     * partial mask was rejected deliberately: a truncated primary account number is still cardholder
+     * data, and a digest of a nine- or eleven-character numeric key is trivially reversible by
+     * enumeration.
+     *
+     * <p>Private because it is a rendering detail and not part of the screen work-area
+     * contract.</p>
+     */
+    private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
 
     /**
      * Width in characters of the attention identifier: 5.
@@ -445,5 +415,46 @@ public record ScreenWorkArea(
             }
         }
         return Optional.of(new BigInteger(value));
+    }
+
+    /**
+     * Returns a diagnostic representation carrying the screen-control state and redacting the three
+     * business keys.
+     *
+     * <p><strong>Why the implicit record rendering could not stand.</strong> A record's generated
+     * {@code toString()} prints every component, and three of the nine here are the keys the five
+     * card-and-account screens carry between turns: the account identifier, the card number - a primary
+     * account number - and the customer identifier. This work area is populated on every turn of those
+     * screens, so a default rendering would have written cardholder data into any log line, assertion
+     * failure or diagnostic dump that touched an instance.
+     *
+     * <p><strong>What is retained.</strong> The six control components, which are exactly what makes
+     * this type worth rendering: the resolved attention key, the declared next program, mapset and map,
+     * and the two message slots. None of them is regulated. The two message slots carry catalogue text
+     * destined for a terminal operator - they are written to be read by a human and are the first thing
+     * anyone diagnosing a screen turn wants - so withholding them would remove the type's diagnostic
+     * value without protecting anything.
+     *
+     * <p><strong>What is withheld.</strong> The three business keys, each replaced by a fixed
+     * placeholder rather than a partial mask, for the reason given on the placeholder constant.
+     *
+     * <p>{@code equals} and {@code hashCode} remain as the record contract generates them: they compare
+     * every component and emit nothing.
+     *
+     * @return the screen-control state, with the three business keys replaced by a fixed placeholder
+     */
+    @Override
+    public String toString() {
+        return "ScreenWorkArea["
+                + "keyAction=" + keyAction
+                + ", nextProgram=" + nextProgram
+                + ", nextMapset=" + nextMapset
+                + ", nextMap=" + nextMap
+                + ", errorMessage=" + errorMessage
+                + ", returnMessage=" + returnMessage
+                + ", accountId=" + REDACTION_PLACEHOLDER
+                + ", cardNumber=" + REDACTION_PLACEHOLDER
+                + ", customerId=" + REDACTION_PLACEHOLDER
+                + "]";
     }
 }

@@ -24,45 +24,67 @@ import jakarta.persistence.Table;
 import java.util.Objects;
 
 /**
- * Sign-on identity and role source: the Java translation of the legacy {@code SEC-USER-DATA}
- * record declared in {@code app/cpy/CSUSR01Y.cpy} (L17), whose fields sum to exactly 80 bytes.
- * That copybook is the only one of the eleven entity copybooks that carries the Apache-2.0 header
- * itself, at L1 through L16, so it independently corroborates the header block reproduced above.
+ * Sign-on identity and role source - the Java translation of the legacy {@code SEC-USER-DATA}
+ * record declared in copybook {@code CSUSR01Y}, whose fields sum to exactly 80 bytes.
  *
- * <h2>Verified 80-byte record layout</h2>
+ * <p><strong>Verified 80-byte layout.</strong> Five fields become columns, at zero-based offset and
+ * width: the 8-byte identifier at 0, the 20-byte given name at 8, the 20-byte family name at 28, the
+ * 8-byte credential at 48 and the 1-byte role code at 56. Mapped bytes end at offset 57, where a
+ * 23-byte trailing filler begins. That filler is <em>named</em> in the source rather than being a
+ * bare {@code FILLER}, which changes nothing about persistence - it is padding reconstructed on
+ * output from the declared record width, there is no filler attribute and no filler column, and the
+ * only code that addresses those bytes is the fixed-width mapper in the utility layer. This class
+ * carries JPA column widths and nothing positional.
  *
- * <p>Zero-based offset and width, recomputed field by field from the copybook. Only the first five
- * fields become columns.
+ * <p><strong>Dataset provenance, corroborated twice.</strong> The provisioning job
+ * {@code DUSRSECJ.jcl} discards any prior copy of the sequential dataset, then runs
+ * {@code IEBGENER} over ten user records supplied <strong>in stream as ASCII card images</strong> -
+ * five of role {@code A} and five of role {@code U} - writing them with
+ * {@code DCB=(LRECL=80,RECFM=FB,DSORG=PS,BLKSIZE=0)}, and finally defines the indexed cluster with
+ * {@code KEYS(8,0)} and {@code RECORDSIZE(80,80)} and copies the sequential dataset into it. The key
+ * definition independently confirms a single-part business key of width 8 at offset 0, and the record
+ * size confirms the 80-byte width the copybook sums to. Because the seed content originates in stream
+ * in ASCII rather than in the mainframe encoding, no EBCDIC decode is needed to reproduce it, which is
+ * why the EBCDIC dataset having no ASCII twin costs nothing.
  *
- * <table>
- *   <caption>{@code SEC-USER-DATA} field positions</caption>
- *   <tr><th>Record field</th><th>Picture</th><th>Offset</th><th>Width</th><th>Column</th></tr>
- *   <tr><td>{@code SEC-USR-ID}</td><td>{@code X(08)}</td><td>0</td><td>8</td>
- *       <td>{@code sec_usr_id}, the primary key</td></tr>
- *   <tr><td>{@code SEC-USR-FNAME}</td><td>{@code X(20)}</td><td>8</td><td>20</td>
- *       <td>{@code sec_usr_fname}</td></tr>
- *   <tr><td>{@code SEC-USR-LNAME}</td><td>{@code X(20)}</td><td>28</td><td>20</td>
- *       <td>{@code sec_usr_lname}</td></tr>
- *   <tr><td>{@code SEC-USR-PWD}</td><td>{@code X(08)}</td><td>48</td><td>8</td>
- *       <td>{@code sec_usr_pwd}, widened to 60 - see the parity exception below</td></tr>
- *   <tr><td>{@code SEC-USR-TYPE}</td><td>{@code X(01)}</td><td>56</td><td>1</td>
- *       <td>{@code sec_usr_type}</td></tr>
- *   <tr><td>{@code SEC-USR-FILLER}</td><td>{@code X(23)}</td><td>57</td><td>23</td>
- *       <td>not persisted</td></tr>
- * </table>
+ * <p><strong>The credential column is the module's single intentional width divergence.</strong> The
+ * legacy record holds the credential as eight cleartext characters at offset 48, and legacy sign-on
+ * tests it for direct equality against the value keyed at the terminal. Reproducing cleartext storage
+ * would satisfy byte-for-byte parity and violate the binding no-hardcoded-credentials requirement at
+ * the same time, so this is the one place in the eleven-entity schema where fidelity is deliberately
+ * broken: {@code sec_usr_pwd} is {@code VARCHAR(60)}, sized for a BCrypt digest, rather than the
+ * legacy width of 8. Every other column width in the module equals its picture width.
  *
- * <p>Mapped bytes therefore end at offset 57, and the trailing 23 bytes carry no information. The
- * filler is <em>named</em> in the source - {@code SEC-USR-FILLER} rather than a bare
- * {@code FILLER} - which changes nothing about persistence: there is no filler field here and no
- * filler column in the schema. It is padding, reconstructed on output from the declared record
- * width, and the only class that ever addresses it is the fixed-width mapper
- * {@code com.carddemo.util.UserSecurityRecordMapper}. Byte offsets live exclusively in that mapper.
- * This class carries JPA column widths and nothing positional.
+ * <p><strong>What this class stores, and what does not yet exist.</strong> This entity performs no
+ * hashing, no verification and no comparison, and it is the width and the format of the column that
+ * are fixed here - not the production or checking of the digest. <strong>No password encoder, no
+ * sign-on path and no credential-verifying component exists anywhere in the module yet.</strong>
+ * Decision log entry D-12 records that as an unmet requirement rather than an implemented control.
+ * Whatever component later fills that gap carries two obligations that this mapping cannot enforce on
+ * its behalf: it must write only a digest, and it must never store or compare a cleartext credential.
+ * Until it exists no row can be written to this table at all, because the column is not nullable and
+ * no cleartext value may be supplied. The attribute is left uninitialised so that no default,
+ * fallback or placeholder credential can exist in source.
  *
- * <h2>Legacy dataset provenance</h2>
+ * <p><strong>The role code is a raw character, not an enumerated field.</strong> The legacy field
+ * carries {@code A} for an administrator and {@code U} for a standard user, and the communication-area
+ * copybook declares exactly those two as condition names. The module does model them as
+ * {@link com.carddemo.domain.enums.UserType}, but that type is deliberately not used as the attribute
+ * type here. Three mechanical reasons each suffice: the column is {@code VARCHAR(1)}, so persisting
+ * the constant name would not fit one character and would fail schema validation or truncate;
+ * persisting the ordinal would require an integer column and fail validation too; and a converter
+ * would place translation logic inside {@code domain}, breaching the one-way layer boundary.
  *
- * <p>The provisioning job {@code app/jcl/DUSRSECJ.jcl} builds this data in three steps, and all
- * three were read from the checkout rather than inferred.
+ * <p>The decisive reason, though, is behavioral. Legacy sign-on moves the stored character into the
+ * communication area, tests <em>only</em> the administrator condition, and reaches the main menu
+ * through an <strong>unconditional</strong> alternative. There is no third branch and no error path
+ * for a code the estate never declared, so every non-administrator value - including an unexpected
+ * one - routes to the main menu without raising anything. Storing the raw character preserves that
+ * tolerance exactly; an enumerated attribute would reject at the persistence boundary a value the
+ * legacy system silently accepted and routed. Translation belongs to the service layer, which must
+ * model an unrecognised code as an absent value rather than throw. That single character is nonetheless the sole authority
+ * for the estate's authorization split, so whatever component gates the administrative routes must
+ * derive them from it.
  *
  * <ol>
  *   <li>A predelete step (L23) discards any prior copy of the physical sequential dataset
@@ -100,8 +122,28 @@ import java.util.Objects;
  * <p>Hashing, verification and every other credential operation live outside this package, in
  * {@code com.carddemo.service.AuthenticationService} and {@code com.carddemo.config.SecurityConfig}.
  * This entity performs no hashing, no verification and no comparison of the stored digest: the
- * verifier is a password encoder, not an equality test. Keeping that logic outside {@code domain}
- * is what guarantees a cleartext value can never reach an instance of this class.
+ * verifier is a password encoder, not an equality test.
+ *
+ * <p><strong>Keeping the hashing outside this package is not by itself what stops a cleartext value
+ * reaching an instance; the guard below is.</strong> A column sized for a digest will hold anything
+ * that fits in sixty characters, an eight-character cleartext credential included, so relying on
+ * every caller to remember to hash first is a convention rather than a control. Both write paths -
+ * the five-argument constructor and {@link #replaceCredentialDigest(String)} - therefore verify that
+ * the value handed to them is structurally a BCrypt digest: exactly sixty characters, a recognised
+ * version marker, a two-digit cost of at least {@value #MINIMUM_BCRYPT_COST}, and a radix-64 tail.
+ * A cleartext credential cannot satisfy that shape and is refused rather than stored. The check is
+ * structural only - it neither hashes nor verifies, and it needs no encoder - so the layer boundary
+ * stays intact while the column stops being able to hold a secret in the clear.
+ *
+ * <p><strong>The digest is not exposed as a bean property.</strong> The reader is
+ * {@link #credentialDigest()} and the writer is {@link #replaceCredentialDigest(String)}, neither of
+ * which follows the JavaBean naming convention. That is deliberate: a {@code getSecUsrPwd} accessor
+ * would make the digest a discoverable property and would therefore be picked up by JSON
+ * serialization, by interface-based repository projections, by bean-mapping utilities and by
+ * diagnostic renderers that walk properties - every one of which is a route by which stored
+ * credential material could leave the process without anyone writing a line of code to send it.
+ * Persistence is unaffected, because the mapping annotations sit on the fields and the provider
+ * therefore uses field access rather than property access.
  *
  * <h2>The user type is a raw one-character code, not an enumerated field</h2>
  *
@@ -180,6 +222,35 @@ import java.util.Objects;
 public class UserSecurity {
 
     /**
+     * Exact character length of a BCrypt digest: a seven-character prefix of the form
+     * {@code $2x$nn$} followed by a 53-character radix-64 tail carrying the salt and the hash.
+     * A value of any other length is not a digest.
+     */
+    private static final int BCRYPT_DIGEST_LENGTH = 60;
+
+    /**
+     * Lowest cost factor this entity will store. Ten is the encoder's own default, so requiring at
+     * least ten rejects a deliberately weakened work factor without rejecting anything the module
+     * produces. A higher factor is always accepted.
+     */
+    private static final int MINIMUM_BCRYPT_COST = 10;
+
+    /**
+     * Version markers a BCrypt digest may carry. All three denote the same algorithm and differ only
+     * in how a historical implementation defect was handled; the encoder in use emits {@code $2a$}
+     * and can be configured to emit either of the others, so all three are admitted.
+     */
+    private static final String[] BCRYPT_VERSION_MARKERS = {"$2a$", "$2b$", "$2y$"};
+
+    /**
+     * Radix-64 alphabet BCrypt encodes its salt and hash with. It is deliberately <em>not</em> the
+     * standard Base64 alphabet - the ordering differs and the padding character is absent - so the
+     * set is spelled out here rather than borrowed.
+     */
+    private static final String BCRYPT_RADIX_64_ALPHABET =
+            "./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+    /**
      * Eight-character sign-on identifier; record offset 0, width 8. The primary key, assigned by
      * the application from the legacy business key and never generated. Stored exactly as read:
      * no trimming, padding or case folding is applied anywhere in this class.
@@ -197,10 +268,10 @@ public class UserSecurity {
     private String secUsrLname;
 
     /**
-     * The stored BCrypt digest of the sign-on credential - <strong>never a cleartext value and
-     * never a password</strong>. The legacy field at record offset 48 is eight cleartext
-     * characters; this column is 60 characters wide to hold a digest instead, which is the
-     * deliberate, documented parity exception described in the class documentation.
+     * The stored BCrypt digest of the sign-on credential - <strong>never a cleartext value and never
+     * a password</strong>. The legacy field at record offset 48 is eight cleartext characters; this
+     * column is 60 characters wide to hold a digest instead, the single deliberate width divergence
+     * described in the class documentation.
      *
      * <p>The field name matches the legacy field name so the traceability row back to
      * {@code SEC-USR-PWD} stays findable even though the content has changed. Digest production
@@ -209,6 +280,12 @@ public class UserSecurity {
      * {@code com.carddemo.config.SecurityConfig}; nothing in this class hashes, verifies or
      * compares the value, and it is deliberately left uninitialised so that no default, fallback
      * or placeholder credential can exist in source.
+     *
+     * <p>Both write paths validate the digest structurally before assigning it, so this field can
+     * hold a digest and cannot hold a cleartext credential. The accessors are deliberately named
+     * outside the JavaBean convention - {@link #credentialDigest()} and
+     * {@link #replaceCredentialDigest(String)} - so that the value is not a discoverable property and
+     * cannot be emitted by serialization, a repository projection or a property-walking renderer.
      */
     @Column(name = "sec_usr_pwd", length = 60, nullable = false)
     private String secUsrPwd;
@@ -216,7 +293,7 @@ public class UserSecurity {
     /**
      * Role code; record offset 56, width 1. Held as a raw single character rather than an
      * enumerated field: {@code A} selects the administrative role and {@code U} the standard one,
-     * and translation to {@code com.carddemo.domain.enums.UserType} happens at the service layer.
+     * and translation to {@link com.carddemo.domain.enums.UserType} belongs to the service layer.
      *
      * <p>The raw form is deliberate. Legacy sign-on tests only the administrator condition and
      * routes every other value to the main menu through an unconditional alternative, so a code
@@ -246,10 +323,13 @@ public class UserSecurity {
      * @param secUsrFname given name; record offset 8, width 20
      * @param secUsrLname family name; record offset 28, width 20
      * @param secUsrPwd   the <strong>already hashed</strong> credential: a BCrypt digest produced
-     *                    by the service layer. No cleartext value may be passed here - this
-     *                    constructor performs no hashing and would store whatever it is given
+     *                    by the service layer. A cleartext value cannot be passed here - this
+     *                    constructor performs no hashing, and it refuses any argument that is not
+     *                    structurally a digest
      * @param secUsrType  raw one-character role code, {@code A} or {@code U}; an unrecognised code
      *                    is accepted, matching the legacy unconditional routing alternative
+     * @throws IllegalArgumentException when the credential argument is not a structurally valid
+     *                                  BCrypt digest of at least the minimum cost
      */
     public UserSecurity(String secUsrId,
                         String secUsrFname,
@@ -259,7 +339,7 @@ public class UserSecurity {
         this.secUsrId = secUsrId;
         this.secUsrFname = secUsrFname;
         this.secUsrLname = secUsrLname;
-        this.secUsrPwd = secUsrPwd;
+        this.secUsrPwd = requireBcryptDigest(secUsrPwd);
         this.secUsrType = secUsrType;
     }
 
@@ -319,24 +399,43 @@ public class UserSecurity {
 
     /**
      * Returns the stored BCrypt digest. This is a hash and never a password: no accessor on this
-     * class can return a cleartext credential, because none is ever stored. Verification is
-     * performed by the encoder in the service layer, not by comparing this value.
+     * class can return a cleartext credential, because the write paths refuse to store one.
+     * Verification is performed by the encoder in the service layer, not by comparing this value.
+     *
+     * <p><strong>Deliberately not named {@code getSecUsrPwd}.</strong> A JavaBean accessor would make
+     * the digest a discoverable property, and every property-walking mechanism in the stack - JSON
+     * serialization, interface-based repository projections, bean mapping, diagnostic rendering -
+     * would then be able to emit credential material with no code written to send it. The non-bean
+     * name closes all of those at once. The reader remains public because the encoder in the service
+     * layer needs the stored digest in order to verify a submitted credential against it.
      *
      * @return the stored digest as persisted
      */
-    public String getSecUsrPwd() {
+    public String credentialDigest() {
         return secUsrPwd;
     }
 
     /**
-     * Replaces the stored digest. Plain assignment: this setter does not hash, does not verify and
-     * does not validate the shape of its argument, so the caller must supply a value that has
-     * already been hashed by the service layer. Hashing deliberately lives outside this package.
+     * Replaces the stored credential digest with another already-hashed value.
      *
-     * @param secUsrPwd the already hashed credential to store
+     * <p>This method does not hash and does not verify - hashing deliberately lives outside this
+     * package - but it does <strong>refuse</strong>. The argument must be structurally a BCrypt
+     * digest: exactly {@value #BCRYPT_DIGEST_LENGTH} characters, a recognised version marker, a
+     * two-digit cost of at least {@value #MINIMUM_BCRYPT_COST}, and a radix-64 tail. An
+     * eight-character cleartext credential cannot satisfy that shape, which is what stops a caller
+     * from writing one into a column that would otherwise accept it.
+     *
+     * <p><strong>Deliberately not named {@code setSecUsrPwd}.</strong> The same reasoning as for the
+     * reader applies, with one addition: a bean-style setter invites automatic population from
+     * request binding, and credential material must never be bound from a request into a persistent
+     * entity.
+     *
+     * @param digest the already hashed credential to store
+     * @throws IllegalArgumentException when the argument is not a structurally valid BCrypt digest of
+     *                                  at least the minimum cost
      */
-    public void setSecUsrPwd(String secUsrPwd) {
-        this.secUsrPwd = secUsrPwd;
+    public void replaceCredentialDigest(String digest) {
+        this.secUsrPwd = requireBcryptDigest(digest);
     }
 
     /**
@@ -394,7 +493,87 @@ public class UserSecurity {
         return Objects.hashCode(secUsrId);
     }
 
-    // toString is deliberately not overridden: every field of this entity is sensitive - the digest
-    // is credential material, both names are personal data and the role code is an authorization
-    // signal - so no rendering of an instance may be made available to a logger by default.
+    /**
+     * Renders the sign-on identifier and nothing else.
+     *
+     * <p>Every other field of this entity is sensitive - the digest is credential material, both
+     * names are personal data and the role code is an authorization signal - so none of them appears
+     * here, in any form, masked or otherwise. The identifier is retained because it is an account
+     * identifier rather than a secret and is what makes a diagnostic line about a sign-on identity
+     * useful at all.
+     *
+     * <p>This override exists rather than relying on the inherited rendering. The inherited form is
+     * harmless today, but its harmlessness is an accident of the base class rather than a stated
+     * property of this one: a field added later, or a future decision to render fields reflectively,
+     * would leak silently. Stating the safe rendering explicitly makes the guarantee belong to this
+     * class, and it fails a review visibly if it is ever widened.
+     *
+     * @return a representation carrying the sign-on identifier alone
+     */
+    @Override
+    public String toString() {
+        return "UserSecurity[secUsrId=" + secUsrId + "]";
+    }
+
+    /**
+     * Rejects any credential value that is not structurally a BCrypt digest, so that cleartext cannot
+     * be stored in a column wide enough to hold it.
+     *
+     * <p>Four conditions must all hold. The value must be non-null and exactly
+     * {@value #BCRYPT_DIGEST_LENGTH} characters long; it must open with one of the recognised version
+     * markers; the two characters after that marker must be digits forming a cost of at least
+     * {@value #MINIMUM_BCRYPT_COST}, followed by a separator; and the remaining 53 characters must all
+     * come from BCrypt's radix-64 alphabet. The check is structural only - it does not hash, does not
+     * verify and does not need an encoder - so it adds no dependency to this layer.
+     *
+     * <p><strong>The rejection message never contains the offending value</strong>, because a rejected
+     * value is by definition likely to be the very cleartext credential the caller should not have
+     * had, and an exception message is one of the surfaces most likely to reach a log.
+     *
+     * @param digest the candidate digest
+     * @return the digest, unchanged, when it is acceptable
+     * @throws IllegalArgumentException when the candidate is not a valid BCrypt digest
+     */
+    private static String requireBcryptDigest(String digest) {
+        if (digest == null) {
+            throw new IllegalArgumentException(
+                    "the stored credential must be a BCrypt digest and must not be null");
+        }
+        if (digest.length() != BCRYPT_DIGEST_LENGTH) {
+            throw new IllegalArgumentException("the stored credential must be a BCrypt digest of "
+                    + BCRYPT_DIGEST_LENGTH + " characters, but a value of length " + digest.length()
+                    + " was supplied; storing a cleartext credential is not permitted");
+        }
+        boolean versionRecognised = false;
+        for (String marker : BCRYPT_VERSION_MARKERS) {
+            if (digest.startsWith(marker)) {
+                versionRecognised = true;
+                break;
+            }
+        }
+        if (!versionRecognised) {
+            throw new IllegalArgumentException("the stored credential must be a BCrypt digest opening"
+                    + " with a recognised version marker; storing a cleartext credential is not"
+                    + " permitted");
+        }
+        final char costTens = digest.charAt(4);
+        final char costUnits = digest.charAt(5);
+        if (costTens < '0' || costTens > '9' || costUnits < '0' || costUnits > '9'
+                || digest.charAt(6) != '$') {
+            throw new IllegalArgumentException("the stored credential must be a BCrypt digest whose"
+                    + " version marker is followed by a two-digit cost and a separator");
+        }
+        final int cost = (costTens - '0') * 10 + (costUnits - '0');
+        if (cost < MINIMUM_BCRYPT_COST) {
+            throw new IllegalArgumentException("the stored credential must be a BCrypt digest with a"
+                    + " cost of at least " + MINIMUM_BCRYPT_COST + ", but " + cost + " was supplied");
+        }
+        for (int index = 7; index < BCRYPT_DIGEST_LENGTH; index++) {
+            if (BCRYPT_RADIX_64_ALPHABET.indexOf(digest.charAt(index)) < 0) {
+                throw new IllegalArgumentException("the stored credential must be a BCrypt digest"
+                        + " whose salt and hash use the BCrypt radix-64 alphabet");
+            }
+        }
+        return digest;
+    }
 }

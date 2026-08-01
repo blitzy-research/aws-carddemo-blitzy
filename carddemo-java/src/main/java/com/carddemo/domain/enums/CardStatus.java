@@ -23,72 +23,50 @@ import java.util.Optional;
 /**
  * Card active-status flag, translated from the legacy {@code CARD-ACTIVE-STATUS} field.
  *
- * <h2>Legacy provenance</h2>
- * <p>Migrated from the AWS CardDemo mainframe estate at checkout commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated {@code 2022-07-19}.</p>
+ * <p><strong>Legacy provenance.</strong> The field is declared {@code PIC X(01)} in the card record
+ * copybook {@code CVACT02Y}. Within the 150-byte {@code CARD-RECORD} image it occupies <strong>byte
+ * offset 91</strong>, immediately after the five leading fields that together consume the first 90
+ * bytes - card number 16, account identifier 11, verification code 3, embossed name 50 and expiry date
+ * 10 - and a trailing 59-byte filler occupies the remainder, so the widths sum to exactly 150. That
+ * offset is the contract every fixed-width card record mapper slices at.
  *
- * <p>The field is declared {@code PIC X(01)} on line 10 of the card record copybook
- * {@code app/cpy/CVACT02Y.cpy}. Within the 150-byte {@code CARD-RECORD} image it occupies
- * <strong>byte offset 91</strong>, immediately after the four leading fields and the expiry
- * field, which together consume the first 90 bytes: card number {@code X(16)} at bytes 1-16,
- * account identifier {@code 9(11)} at bytes 17-27, card verification code {@code 9(03)} at
- * bytes 28-30, embossed name {@code X(50)} at bytes 31-80 and expiry date {@code X(10)} at
- * bytes 81-90. A trailing {@code FILLER X(59)} occupies bytes 92-150, so the widths sum to
- * exactly 150. That offset is the contract every fixed-width card record mapper slices at.</p>
- *
- * <h2>How the {@code Y}/{@code N} vocabulary was established</h2>
- * <p>The vocabulary is deliberately recorded here because it is <em>not</em> declared by the
- * record layout and could not simply be read off it. Three findings frame the problem:</p>
- * <ul>
- *   <li>The copybook attaches no level-88 condition name to {@code CARD-ACTIVE-STATUS}, so it
- *       enumerates no permitted values.</li>
- *   <li>The field is never compared against a literal anywhere in the estate. It is only moved
- *       into a before-image field, compared field-to-field against that before-image as part of
- *       the card-update optimistic-lock check, or moved into a screen output field.</li>
- *   <li>All 50 seeded card records in {@code app/data/ASCII/carddata.txt} carry {@code Y} at
- *       byte offset 91, a single distinct value, so the seed data alone cannot reveal the
- *       vocabulary either.</li>
- * </ul>
+ * <p><strong>How the {@code Y}/{@code N} vocabulary was established.</strong> This is recorded
+ * deliberately, because the vocabulary is <em>not</em> declared by the record layout and could not be
+ * read off it. Three findings frame the problem: the copybook attaches no level-88 condition name to
+ * the field, so it enumerates no permitted values; the field is never compared against a literal
+ * anywhere in the estate, being only moved into a before-image field, compared field-to-field against
+ * that before-image for the card-update optimistic-lock check, or moved into a screen output field;
+ * and all 50 seeded card records carry {@code Y} at byte offset 91, a single distinct value, so the
+ * seed data cannot reveal the vocabulary either.
  *
  * <p>The vocabulary was therefore recovered from the only program that validates the field, the
- * card-update program {@code app/cbl/COCRDUPC.cbl}. Lines 89-91 declare a one-character yes/no
- * check field, {@code FLG-YES-NO-CHECK}, initialised to {@code N} and carrying the level-88
- * condition name {@code FLG-YES-NO-VALID} whose two permitted codes are {@code Y} and
- * {@code N}. The card-status editor at line 861 routes the submitted status value through that
- * same check field, after first treating low-values, spaces and zeros as a not-supplied
- * condition at lines 850-852. The shared editor {@code 1220-EDIT-YESNO} in the account-update
- * program {@code app/cbl/COACTUPC.cbl}, lines 1856-1897, corroborates the same two-value
- * vocabulary and rejects any other value with a message naming those two codes.</p>
+ * card-update program. It declares a one-character yes/no check field initialised to {@code N} and
+ * carrying a level-88 condition name whose two permitted codes are {@code Y} and {@code N}; its
+ * card-status editor routes the submitted value through that same check field, after first treating
+ * low-values, spaces and zeros as a not-supplied condition. The shared editor in the account-update
+ * program corroborates the same two-value vocabulary and rejects any other value with a message naming
+ * those two codes. The two constants below are declared in the order the legacy condition name lists
+ * its values, and {@link #isActive()} evaluates its cases in that same order, so the translated
+ * condition ordering matches the source.
  *
- * <p>The two constants below are declared in the order the legacy condition name lists its
- * values, {@code Y} then {@code N}, and {@link #isActive()} evaluates its cases in that same
- * order so the translated condition ordering matches the source.</p>
+ * <p><strong>Validation-flag states are excluded on purpose.</strong> The account-update program's
+ * parallel level-88 group declares two further one-character states beside the pair: a not-OK state
+ * coded {@code '0'} and a blank state coded {@code 'B'}. Neither is a card status - both are states of
+ * the <em>validation flag</em> that drives field-level error display, recording respectively that a
+ * submitted value failed validation and that the field was left blank. Neither is ever stored in the
+ * field or written to the 150-byte record, so admitting them here would invent two card statuses the
+ * estate does not have. They belong to the field-error surface, which exposes per-field MISSING and
+ * INVALID states.
  *
- * <h2>Validation-flag states are excluded on purpose</h2>
- * <p>The account-update program's parallel level-88 group declares two further one-character
- * states beside the {@code Y}/{@code N} pair: a not-OK state coded {@code '0'} and a blank state
- * coded {@code 'B'}. Neither is a card status. They are states of the <em>validation flag</em>
- * that drives field-level error display: {@code '0'} records that a submitted value failed
- * validation and {@code 'B'} records that the field was left blank. Neither is ever stored in
- * {@code CARD-ACTIVE-STATUS} and neither is ever written to the 150-byte record, so admitting
- * them here would invent two card statuses the estate does not have. They belong to the
- * field-error surface, which exposes per-field MISSING and INVALID states, and they are modelled
- * there rather than in this enum.</p>
- *
- * <h2>Why an unmapped code is tolerated rather than rejected</h2>
- * <p>Only the online card-update program validates this field. The batch programs that read card
- * records, including the card-file reader {@code app/cbl/CBACT02C.cbl} and the daily posting
- * program {@code app/cbl/CBTRN02C.cbl}, take the status straight from the file and never check
- * it, and the relational column that replaces byte 91 is a plain one-character column with no
- * check constraint. A file-sourced value outside the two known codes therefore flows through the
- * legacy system untouched, and it must flow through this lookup untouched too.</p>
- *
- * <p>Consequently {@link #fromCode(char)} and {@link #fromCode(String)} never throw: an
- * unrecognised code yields {@link Optional#empty()}. There is deliberately no synthetic
- * {@code UNKNOWN}-style constant to absorb a miss, because such a constant would be a value the
- * estate never produces. Callers that need a boolean answer compose the two members, and an
- * absent or unrecognised code then answers {@code false}:</p>
+ * <p><strong>Why an unmapped code is tolerated rather than rejected.</strong> Only the online
+ * card-update program validates this field; the batch programs that read card records take the status
+ * straight from the file and never check it, and the relational column replacing byte 91 is a plain
+ * one-character column with no check constraint. A file-sourced value outside the two known codes
+ * therefore flows through the legacy system untouched and must flow through this lookup untouched too.
+ * Consequently neither lookup ever throws: an unrecognised code yields {@link Optional#empty()}, and
+ * there is deliberately no synthetic {@code UNKNOWN}-style constant to absorb a miss, because such a
+ * constant would be a value the estate never produces. Callers needing a boolean compose the two
+ * members, so an absent or unrecognised code answers {@code false}:
  *
  * <pre>{@code
  * boolean active = CardStatus.fromCode(card.getActiveStatus())
@@ -96,24 +74,20 @@ import java.util.Optional;
  *                            .orElse(false);
  * }</pre>
  *
- * <h2>Deliberately not the persistence type</h2>
- * <p>This enum is a pure value type. It carries no persistence annotation and no attribute
- * converter, and it drives no schema. The card entity keeps its status column as a raw
- * one-character string, so translation from the raw code to a constant happens in the service
- * layer through the lookups below. Persisting the enum directly would be wrong in either
- * mapping: a string mapping stores the constant name and a one-character column cannot hold it,
- * and an ordinal mapping needs an integer column that the record layout does not have.</p>
+ * <p><strong>Deliberately not the persistence type.</strong> This is a pure value type carrying no
+ * persistence annotation and no attribute converter, and driving no schema. The card entity keeps its
+ * status column as a raw one-character string, so translation from raw code to constant happens in the
+ * service layer through the lookups below. Persisting the enum directly would be wrong in either
+ * mapping: a string mapping stores the constant name, which a one-character column cannot hold, and an
+ * ordinal mapping needs an integer column the record layout does not have.
  *
- * <h2>Representation choice</h2>
- * <p>The raw code is carried as a {@code char} rather than as a single-character
- * {@link String}. The legacy field is exactly one character wide, so a {@code char} makes that
- * width a property of the type itself and leaves no room for a longer value that would invite
- * trimming or case folding. No normalisation of any kind is applied before lookup, which is
- * faithful to the legacy comparison: it tested the byte as supplied, so a lowercase {@code y} is
- * not an active status.</p>
- *
- * <p>Instances are immutable and the lookup index is built once and unmodifiable, so this type is
- * safe for concurrent use.</p>
+ * <p><strong>Representation.</strong> The raw code is carried as a {@code char} rather than a
+ * single-character {@link String}, because the legacy field is exactly one character wide, so a
+ * {@code char} makes that width a property of the type and leaves no room for a longer value that
+ * would invite trimming or case folding. No normalization of any kind is applied before lookup, which
+ * is faithful to the legacy comparison: it tested the byte as supplied, so a lowercase {@code y} is not
+ * an active status. Instances are immutable and the lookup index is built once and unmodifiable, so
+ * this type is safe for concurrent use.
  */
 public enum CardStatus {
 

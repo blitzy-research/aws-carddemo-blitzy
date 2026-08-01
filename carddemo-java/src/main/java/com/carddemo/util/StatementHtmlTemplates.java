@@ -22,51 +22,40 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Fixed-width HTML line templates for the account-statement HTML output stream.
+ * Fixed-width HTML line templates for the account-statement HTML output stream, and the single holder
+ * of the thirty-four literal HTML lines that the legacy batch statement generator wrote to its HTML
+ * output file.
  *
- * <p>This class is the single holder of the thirty-four literal HTML lines that the legacy
- * batch statement generator wrote to its HTML output file, together with the two composed
- * sub-group lines and the width rule for the three free-form work lines that share the same
- * record. It holds fixed-width layout knowledge and nothing else: it performs no I/O, makes
- * no emission-sequencing decision, formats no number, and touches no persistent state.</p>
+ * <p>It also holds the two composed sub-group lines and the width rule for the three free-form work
+ * lines that share the same record. It holds fixed-width layout knowledge and nothing else: it performs
+ * no input or output, makes no emission-sequencing decision, formats no number and touches no
+ * persistent state.
  *
- * <h2>The record</h2>
+ * <p><strong>The record.</strong> The HTML output file's record is declared as
+ * {@code 01 FD-HTMLFILE-REC PIC X(100).} - a fixed one-hundred-byte record
+ * [app/cbl/CBSTM03A.CBL:L47]. The template group {@code 01 HTML-LINES.} opens at
+ * [app/cbl/CBSTM03A.CBL:L148] with a {@code 05 HTML-FIXED-LN PIC X(100).} elementary item, and
+ * <strong>exactly thirty-four</strong> level-88 condition-name constants are declared against it at
+ * [app/cbl/CBSTM03A.CBL:L150-L211] - a mechanically verified figure, enumerated programmatically over
+ * that line range, with the resulting name list reproduced verbatim in the inventory below. Three
+ * subordinate groups follow at [app/cbl/CBSTM03A.CBL:L212-L223]. Every constant published here is
+ * already padded on the right with ASCII spaces to exactly {@value #HTML_RECORD_LENGTH} encoded bytes,
+ * so a caller may hand any of them straight to a writer without further measurement, and none of the
+ * underlying literals exceeds the record width - the widest is eighty-five bytes - so no template is
+ * ever truncated.
  *
- * <p>The HTML output file's record is declared as {@code 01 FD-HTMLFILE-REC PIC X(100).}
- * &mdash; a fixed one-hundred-byte record [app/cbl/CBSTM03A.CBL:L47]. The template group
- * {@code 01 HTML-LINES.} opens at [app/cbl/CBSTM03A.CBL:L148] with a
- * {@code 05 HTML-FIXED-LN PIC X(100).} elementary item, and <strong>exactly thirty-four</strong>
- * level-88 condition-name constants are declared against it at
+ * <p>The HTML output file's record is a fixed one-hundred-byte alphanumeric record, declared at
+ * [app/cbl/CBSTM03A.CBL:L47]. The template group opens at [app/cbl/CBSTM03A.CBL:L148] over a
+ * single one-hundred-byte elementary item, and <strong>exactly thirty-four</strong>
+ * condition-name constants are declared against that item at
  * [app/cbl/CBSTM03A.CBL:L150-L211]. That count of thirty-four is a mechanically verified
  * figure, not an estimate: the declarations were enumerated programmatically over that line
- * range and the resulting name list is reproduced verbatim in the inventory below. Three
- * subordinate groups follow at [app/cbl/CBSTM03A.CBL:L212-L223].</p>
+ * range and the resulting name list is carried in the inventory below. Three subordinate groups
+ * follow at [app/cbl/CBSTM03A.CBL:L212-L223].</p>
  *
- * <p>Every constant published here is already padded on the right with ASCII spaces to
- * exactly {@value #HTML_RECORD_LENGTH} encoded bytes, so a caller may hand any of them
- * straight to a writer without further measurement. None of the underlying literals exceeds
- * the record width &mdash; the widest is eighty-five bytes &mdash; so no template is ever
- * truncated.</p>
- *
- * <h2>No line terminator</h2>
- *
- * <p>The hundred-byte image carries <strong>no line terminator of any kind</strong>. The
- * COBOL source file itself uses CRLF endings, but that is a property of the source file and
- * not of the emitted records. Each emitted record is one hundred data bytes; whether and how
- * records are separated on the resulting artefact is the writer's decision and lives in the
- * batch layer. No carriage return, line feed, tab or platform line separator appears inside
- * any constant published here.</p>
- *
- * <p>One of the templates declares {@code <meta charset="utf-8">}. That declaration is
- * <em>content</em>, not configuration. Every literal in this class is pure ASCII, so the
- * declared character set changes neither the encoding nor any width, and every width in this
- * class is measured in US-ASCII encoded bytes regardless.</p>
- *
- * <h2>The thirty-four fixed templates, in exact source order</h2>
- *
- * <p>The order below is the declaration order in the legacy source and is contractual. The
- * ordered accessor {@link #fixedTemplates()} returns the templates in precisely this
- * sequence.</p>
+ * <p><strong>The thirty-four fixed templates, in exact source order.</strong> The order below is the
+ * declaration order in the legacy source and is contractual; the ordered accessor
+ * {@link #fixedTemplates()} returns the templates in precisely this sequence.
  *
  * <pre>{@code
  *  #  legacy name   source lines   content
@@ -107,13 +96,11 @@ import java.util.Objects;
  * 34  HTML-L80      L211           </html>
  * }</pre>
  *
- * <h2>Continuation reassembly</h2>
- *
- * <p>Several of the literals above are declared across two source lines using COBOL literal
- * continuation, with a hyphen in the indicator column of the second line. Counting the
- * continuation indicators over [app/cbl/CBSTM03A.CBL:L150-L211] gives <strong>eleven</strong>
- * continued literals &mdash; templates 8, 13, 14, 18, 19, 22, 24, 26, 28, 29 and 30 &mdash;
- * of which <strong>seven</strong> split <em>mid-token</em>:</p>
+ * <p><strong>Continuation reassembly.</strong> Several of the literals above are declared across two
+ * source lines using COBOL literal continuation, with a hyphen in the indicator column of the second
+ * line. Counting the continuation indicators over [app/cbl/CBSTM03A.CBL:L150-L211] gives
+ * <strong>eleven</strong> continued literals - templates 8, 13, 14, 18, 19, 22, 24, 26, 28, 29 and 30 -
+ * of which <strong>seven</strong> split <em>mid-token</em>:
  *
  * <ul>
  *   <li>template 8 splits {@code styl} / {@code e=}, which rejoins as {@code style=};</li>
@@ -128,11 +115,8 @@ import java.util.Objects;
  * literal, and the join integrity was checked explicitly: no {@code styl e=}, no
  * {@code style =} and no {@code background- color:} occurs anywhere.</p>
  *
- * <h2>Style-attribute spacing is inconsistent between the two table-cell families</h2>
- *
- * <p>The inconsistency is contractual and <strong>neither family is normalised toward the
- * other</strong>:</p>
- *
+ * <p><strong>Style-attribute spacing is inconsistent between the two table-cell families.</strong> The
+ * inconsistency is contractual and <strong>neither family is normalised toward the other</strong>:
  * <ul>
  *   <li>The {@code colspan="3"} family &mdash; templates 13, 14, 18 and 19 &mdash; has
  *       <strong>no space</strong> between {@code padding:0px 5px;} and
@@ -144,14 +128,12 @@ import java.util.Objects;
  *
  * <p>No whitespace is normalised anywhere in this class, in either direction.</p>
  *
- * <h2>Colour and width values are contractual bytes, not design choices</h2>
- *
- * <p>No design system, component library, styling framework or design-token set is in scope
- * anywhere in this migration, and no design asset exists for it. The colour and width
- * literals below are legacy bytes reproduced for output parity. They are not replaced by
- * tokens, CSS custom properties, a stylesheet or a theme, they are not canonicalised, not
- * shortened, not expanded, and their case is preserved character for character.</p>
- *
+ * <p><strong>Colour and width values are contractual bytes, not design choices.</strong> No design
+ * system, component library, styling framework or design-token set is in scope anywhere in this
+ * migration and no design asset exists for it. The colour and width literals below are legacy bytes
+ * reproduced for output parity: they are not replaced by tokens, CSS custom properties, a stylesheet or
+ * a theme, they are not canonicalised, not shortened, not expanded, and their case is preserved
+ * character for character.
  * <ul>
  *   <li>Colours: {@code #1d1d96b3} (template 13), {@code #FFAF33} (14), {@code #f2f2f2}
  *       (18, 28, 29, 30), {@code #33FFD1} (19) and {@code #33FF5E} (22, 24, 26).</li>
@@ -164,7 +146,14 @@ import java.util.Objects;
  *       {@code 20%} (26, 30).</li>
  * </ul>
  *
- * <h2>Anomaly one: the double space inside the table tag</h2>
+ * <p><strong>Anomaly one: the double space inside the table tag.</strong> Template 8 reads
+ * {@code <table} followed by <strong>two</strong> space characters and then {@code align}, verified by
+ * a raw byte read of the source line with control characters exposed - the bytes are
+ * {@code 3C 74 61 62 6C 65 20 20 61 6C 69 67 6E} - so it is real source content and not an artefact of
+ * formatting or of the continuation reassembly. The double space is <strong>emitted</strong>: not
+ * collapsed, not normalised and not treated as a typographical error to correct, because byte-identical
+ * output is the requirement and the parity gate compares bytes. Carried as row 21 of the source anomaly
+ * register. See {@link #HTML_L08} [app/cbl/CBSTM03A.CBL:L157-L158].
  *
  * <p>Template 8 reads {@code <table} followed by <strong>two</strong> space characters and
  * then {@code align}. This was verified by a raw byte read of the source line with control
@@ -175,71 +164,160 @@ import java.util.Objects;
  * is the requirement, and the parity gate compares bytes.
  * See {@link #HTML_L08} [app/cbl/CBSTM03A.CBL:L157-L158].</p>
  *
- * <h2>Anomaly two: the unclosed paragraph tag on the customer-name line</h2>
+ * <h2>The two composed lines, and why they are assembled differently</h2>
  *
- * <p>Two subordinate groups compose a line from a literal plus a substituted value, and they
- * differ in a way that matters:</p>
+ * <p>Two subordinate groups each pair a literal with a substituted value, but the program does
+ * not emit them the same way, and the difference decides the bytes:</p>
  *
- * <pre>{@code
- * group      source       composition                                                  declared  closes?
- * ---------  -----------  -----------------------------------------------------------  --------  -------
- * HTML-L11   L212-L216    X(34) "<h3>Statement for Account Number: "  (trailing space)     59     YES
- *                       + L11-ACCT X(20)
- *                       + X(05) "</h3>"
- * HTML-L23   L217-L220    X(26) "<p style="font-size:16px">"                              76     NO
- *                       + L23-NAME X(50)
- * }</pre>
+ * <ul>
+ *   <li><strong>The account-number heading is emitted from its group.</strong> The group is
+ *       declared at [app/cbl/CBSTM03A.CBL:L212-L216] as a
+ *       {@value #ACCOUNT_LINE_PREFIX_LENGTH}-byte opening-heading literal ending in a space, a
+ *       {@value #ACCOUNT_LINE_ACCOUNT_LENGTH}-byte account-identifier field and a
+ *       {@value #ACCOUNT_LINE_SUFFIX_LENGTH}-byte closing-heading literal, giving
+ *       {@value #ACCOUNT_LINE_DECLARED_LENGTH} declared bytes. The emitting paragraph moves the
+ *       account identifier into the middle field and writes the record <em>from the group</em>
+ *       [app/cbl/CBSTM03A.CBL:L529-L530], so the emitted record is the whole group, trailing
+ *       spaces of the identifier field included, padded on the right to
+ *       {@value #HTML_RECORD_LENGTH} bytes. {@link #accountNumberLine(String)} reproduces
+ *       exactly that.</li>
+ *   <li><strong>The customer-name line is not emitted from its group.</strong> The group at
+ *       [app/cbl/CBSTM03A.CBL:L217-L220] is a {@value #NAME_LINE_PREFIX_LENGTH}-byte opening
+ *       paragraph literal plus a {@value #NAME_LINE_NAME_LENGTH}-byte name field, and it carries
+ *       no closing literal &mdash; but that group is only a <em>staging area</em>. The emitting
+ *       paragraph at [app/cbl/CBSTM03A.CBL:L558-L568] moves the assembled name into the
+ *       fifty-byte field, clears the hundred-byte record to spaces, and then <em>composes the
+ *       record itself</em> from four pieces: the opening paragraph literal, the name field
+ *       transferred only as far as its first pair of adjacent spaces, two literal space bytes,
+ *       and a {@value #NAME_LINE_CLOSING_TAG_LENGTH}-byte closing paragraph literal. The record
+ *       written is that composition, so <strong>the emitted line does close its paragraph
+ *       tag</strong>. {@link #customerNameLine(String)} reproduces the emitted record, not the
+ *       staging group.</li>
+ * </ul>
  *
- * <p>{@code HTML-L23} has <strong>no third component</strong>: the group simply ends after
- * the fifty-byte name field, so there is no closing {@code </p>}. Its neighbour
- * {@code HTML-L11} <em>does</em> close, with a five-byte {@code </h3>}, which proves the
- * omission is specific to the customer-name line rather than a general pattern in the
- * program. {@link #customerNameLine(String)} therefore emits the line
- * <strong>unclosed</strong>; no {@code </p>} is appended. The result is technically invalid
- * markup, and that invalid markup is the required output
- * [app/cbl/CBSTM03A.CBL:L217-L220].</p>
+ * <p>The distinction matters because reading the staging group as if it were the emitted image
+ * gets both halves of the line wrong: it pads the name field out to its full fifty bytes when
+ * the emission stops at the first pair of adjacent spaces, and it omits a closing tag that the
+ * emission does write. Byte parity is decided by the emitting paragraph, never by the
+ * declaration.</p>
  *
- * <p>Both composed groups are shorter than the record &mdash; fifty-nine and seventy-six
- * declared bytes respectively &mdash; so both are space-padded on the right to exactly
- * {@value #HTML_RECORD_LENGTH} bytes when written, exactly as moving a short group into a
- * hundred-byte alphanumeric record would do.</p>
+ * <p>Because the transfer stops at the first pair of adjacent spaces, the widest record the
+ * customer-name line can produce is {@value #NAME_LINE_MAX_SIGNIFICANT_LENGTH} significant
+ * bytes &mdash; {@value #NAME_LINE_PREFIX_LENGTH} plus {@value #NAME_LINE_NAME_LENGTH} plus
+ * {@value #NAME_LINE_DELIMITER_LENGTH} plus {@value #NAME_LINE_CLOSING_TAG_LENGTH} &mdash;
+ * which is inside the {@value #HTML_RECORD_LENGTH}-byte record, so padding can never displace
+ * the closing tag. Both composed lines are shorter than the record and are space-padded on the
+ * right to exactly {@value #HTML_RECORD_LENGTH} bytes, exactly as moving a short value into a
+ * hundred-byte alphanumeric record does.</p>
  *
- * <h2>The three free-form work lines</h2>
+ * <p>One consequence of the delimiter is visible in real data and must not be "corrected". The
+ * name is assembled upstream at [app/cbl/CBSTM03A.CBL:L455-L490] from the first, middle and last
+ * name, each transferred up to its own first space and each followed by one separator space, so
+ * a customer with no middle name yields two adjacent spaces after the first name. The emission
+ * then stops there and the line carries the first name alone. That is the legacy output, and it
+ * is reproduced rather than repaired.</p>
+ *
+ * <p><strong>Move semantics: truncate and pad, in encoded bytes.</strong> Every substitution reproduces
+ * the semantics of moving a value into a fixed-width alphanumeric field: a value shorter than its field
+ * is <strong>padded on the right with ASCII spaces</strong> and a longer one is <strong>truncated to
+ * the field width</strong>. Padding is always the ASCII space character - never a zero, never a NUL,
+ * never a tab. Widths are measured and applied in <strong>US-ASCII encoded bytes</strong>, never in
+ * {@code String} character counts, and {@link java.nio.charset.StandardCharsets#US_ASCII} is named
+ * explicitly at every such point so no result can depend on a platform default charset. The
+ * distinction is not academic: a supplementary code point occupies two {@code char} values but encodes
+ * to a single replacement byte, so a character-based measurement would silently produce a record of the
+ * wrong width.
  *
  * <p>Three further fields share the same hundred-byte record and are declared with no
  * internal structure at [app/cbl/CBSTM03A.CBL:L221-L223]: an address line, a basic-details
- * line and a transaction line, each {@code PIC X(100)}. Their <em>content</em> is composed by
+ * line and a transaction line, each one hundred bytes wide. Their <em>content</em> is composed by
  * the statement-generation service at run time and is deliberately not modelled here; their
  * <em>width</em> is this class's business, which is why {@link #workLine(String)} exists and
  * why {@link #ADDRESS_WORK_LINE_LENGTH}, {@link #BASIC_DETAILS_WORK_LINE_LENGTH} and
  * {@link #TRANSACTION_WORK_LINE_LENGTH} are named. Keeping the hundred-byte figure here and
  * out of the service layer is what stops fixed-width layout knowledge from leaking upward.</p>
  *
- * <h2>Move semantics: truncate and pad, in encoded bytes</h2>
+ * <p><strong>No templating engine.</strong> A templating engine is forbidden for this output (decision
+ * D-27), and so is any general-purpose format-string abstraction that could reorder or re-space
+ * content: byte-identical output requires the same literals, in the same order, at the same width, and
+ * an engine introduces whitespace and ordering variability that the byte-parity comparison fails
+ * immediately. Every template here is therefore a plain string literal, padded once at class
+ * initialisation.
  *
- * <p>Every substitution in this class reproduces the semantics of moving a value into a
- * fixed-width alphanumeric field. A value shorter than its field is <strong>padded on the
- * right with ASCII spaces</strong>; a value longer than its field is
- * <strong>truncated to the field width</strong>. Padding is always the ASCII space character
- * &mdash; never a zero, never a NUL, never a tab.</p>
+ * <p><strong>Related context, owned elsewhere.</strong> The statement <em>text</em> stream is a
+ * different record width - {@code 01 FD-STMTFILE-REC PIC X(80).} [app/cbl/CBSTM03A.CBL:L45] - and its
+ * eighty-byte templates live in a separate class; the two are kept strictly apart, so no hundred-byte
+ * template may leak into the eighty-byte stream and no eighty-byte constant appears here. The
+ * generator's control flow is a hand-rolled dispatcher driven by a data-definition-name work field with
+ * backward jumps into the dispatcher, and becomes an explicit state enumeration driven by a loop over a
+ * switch in the statement-generation service: which template is emitted, when, and how many times is
+ * that service's decision, and this class holds the templates and their order of <em>declaration</em>,
+ * never their order of emission. The statement job declares the same HTML data definition at
+ * {@code LRECL=80} in one step and {@code LRECL=100} in the next [app/jcl/CREASTMT.JCL], resolved by
+ * decision D-44 to one hundred for this stream, which agrees with the record declaration above. The
+ * same job reprojects its sorted input into a 328-of-350-byte projection that truncates a transaction
+ * processing timestamp by two bytes; that truncation is handled in the batch layer and never here.
  *
  * <p>Widths are measured and applied in <strong>US-ASCII encoded bytes</strong>, never in
  * {@code String} character counts, and {@link java.nio.charset.StandardCharsets#US_ASCII} is
  * named explicitly at every such point so that no result can depend on a platform default
- * charset. The distinction is not academic: a supplementary code point occupies two
- * {@code char} values but encodes to a single replacement byte, so a character-based
- * measurement would silently produce a record of the wrong width.</p>
+ * charset. The record is a byte image, so the byte domain is the only domain in which an
+ * exact width can be asserted. Character-domain arithmetic is not merely less direct, it is
+ * wrong: a supplementary code point occupies two {@code char} values, so a character count
+ * cannot describe the record it produces. Every caller-supplied value is proven
+ * single-byte representable by the guard described below before any width arithmetic runs,
+ * so an unmappable value is refused outright and is never quietly turned into a substitute
+ * byte.</p>
  *
- * <h2>No escaping, and why</h2>
+ * <h2>Escaping: what is escaped, what is not, and why</h2>
  *
- * <p>Substituted values &mdash; an account identifier and a customer name &mdash; are placed
- * into their fields <strong>raw</strong>, exactly as the legacy move did. This class applies
- * no HTML escaping, no sanitising, no entity encoding, no attribute-quoting normalisation, no
- * tag balancing, no pretty-printing and no minifying. That is deliberate parity, and it is
- * safe in context because the artefact produced here is a fixed-width batch file, not a
- * served web response, so no output-encoding requirement attaches to it at this layer. Were
- * the artefact ever served over HTTP, escaping would belong at that serving boundary and not
- * in this class, because escaping here would change the bytes the parity gate compares.</p>
+ * <p>Every <strong>substituted value</strong> is escaped by {@link #escapeText(String)} before it
+ * is fitted to its field. Every <strong>markup literal</strong> &mdash; all thirty-four fixed
+ * templates, the leading and trailing literals of the two composed lines, and the paragraph tags
+ * of the three work lines &mdash; is emitted exactly as the legacy source declares it, with no
+ * escaping, no attribute-quoting normalisation, no tag balancing, no pretty-printing and no
+ * minifying. The division is between markup this class owns and data a caller supplies, and it is
+ * drawn there because those are the only two categories of byte in the output.</p>
+ *
+ * <p>Escaping the data half is a deliberate, documented divergence from byte-for-byte
+ * faithfulness. It was not the original position taken here. The earlier reasoning was that the
+ * artefact is a fixed-width batch file rather than a served response, so no output-encoding
+ * requirement attached at this layer and escaping belonged at some later serving boundary. That
+ * reasoning does not hold, for a reason specific to this migration: on the mainframe the statement
+ * data could only have come from a VSAM record written by another batch program in the same estate,
+ * whereas here the customer name and the address lines are free text that online maintenance
+ * screens accept. A value such as {@code <script>} submitted through one of those screens is
+ * written to the statement file and rendered later to whoever opens it &mdash; stored cross-site
+ * scripting, with no serving boundary in between to defer to, because the file is the artefact and
+ * its viewer is unknown.</p>
+ *
+ * <p>The divergence is the narrowest one available: escaping is the identity function on the entire
+ * legitimate domain of every field it touches, so for real data the emitted bytes are unchanged and
+ * the hundred-byte parity gate is unaffected. It differs only for input that would otherwise inject
+ * markup. It is recorded in {@code docs/decision-log.md} rather than left as an unexplained
+ * difference from the legacy bytes.</p>
+ *
+ * <p>There is correspondingly <strong>no method here that accepts composed markup</strong>. The
+ * three free-form work lines are built by {@link #addressWorkLine(String)},
+ * {@link #basicDetailsWorkLine(String, String)} and {@link #transactionWorkLine(String)}, each of
+ * which owns its own paragraph tags and reproduces its own legacy {@code STRING} statement,
+ * including the address line's two-space delimiter and the asymmetry that the other two lines have
+ * none. Composing the markup here rather than accepting it from a caller is what makes an
+ * unescaped-data path into the output unreachable rather than merely discouraged.</p>
+ *
+ * <p>Escaping is not the only control here, and it is deliberately not asked to carry the whole
+ * load. A second, independent guard stands in front of it: every caller-supplied value must be
+ * <strong>printable US-ASCII</strong>, and the account-number slot is narrowed further to ASCII
+ * digits and the ASCII space to match its {@code PIC 9(11)} source. Refusal never alters a byte,
+ * so it cannot disturb parity for any value the legacy system is capable of producing, and it
+ * closes two routes that escaping does not address at all. It removes record-framing injection
+ * &mdash; the hundred-byte image carries no terminator, so an embedded carriage return or line
+ * feed would split one logical record into two in the written file and desynchronise every
+ * record after it. And it removes a byte-corrupting parity defect, because a code point outside
+ * US-ASCII would otherwise be encoded to a substitute byte, leaving a field of the right width
+ * holding the wrong content. The two controls are complementary rather than alternative: the
+ * guard bounds the character set, and escaping neutralises the markup metacharacters that live
+ * inside that set.</p>
  *
  * <h2>No templating engine</h2>
  *
@@ -253,24 +331,23 @@ import java.util.Objects;
  * <h2>Related context, implemented elsewhere</h2>
  *
  * <ul>
- *   <li>The statement <em>text</em> stream is a different record width &mdash;
- *       {@code 01 FD-STMTFILE-REC PIC X(80).} [app/cbl/CBSTM03A.CBL:L45] &mdash; and its
- *       eighty-byte line templates live in a separate class. The two are kept strictly
- *       apart: no hundred-byte template may leak into the eighty-byte stream, and no
- *       eighty-byte constant appears here.</li>
+ *   <li>The statement <em>text</em> stream is a different record width &mdash; eighty bytes,
+ *       declared at [app/cbl/CBSTM03A.CBL:L45] &mdash; and its eighty-byte line templates live
+ *       in a separate class. The two are kept strictly apart: no hundred-byte template may leak
+ *       into the eighty-byte stream, and no eighty-byte constant appears here.</li>
  *   <li>The generator's control flow is a hand-rolled dispatcher driven by a DD-name work
  *       field with backward jumps back into the dispatcher; it becomes an explicit state
  *       enumeration driven by a loop over a switch in the statement-generation service.
  *       Which template is emitted, when, and how many times is that service's decision. This
  *       class holds the templates and their order of <em>declaration</em>, never their order
  *       of emission.</li>
- *   <li>The statement job declares the same HTML data definition at {@code LRECL=80} in one
- *       step and {@code LRECL=100} in the immediately following step that runs the generator
+ *   <li>The statement job declares the same HTML data definition with a record length of eighty
+ *       in one step and of one hundred in the immediately following step that runs the generator
  *       [app/jcl/CREASTMT.JCL]. The conflict is resolved to <strong>100 for the HTML
- *       stream</strong>, which agrees with {@code 01 FD-HTMLFILE-REC PIC X(100).}
- *       [app/cbl/CBSTM03A.CBL:L47], and to 80 for the text stream, which agrees with
- *       {@code 01 FD-STMTFILE-REC PIC X(80).} [app/cbl/CBSTM03A.CBL:L45]. That resolution is
- *       what confirms one hundred is the correct width here.</li>
+ *       stream</strong>, which agrees with the emitting program's hundred-byte record
+ *       declaration [app/cbl/CBSTM03A.CBL:L47], and to 80 for the text stream, which agrees with
+ *       its eighty-byte record declaration [app/cbl/CBSTM03A.CBL:L45]. That resolution is what
+ *       confirms one hundred is the correct width here.</li>
  *   <li>The same job reprojects its sorted input with an output-record specification that
  *       yields a 328-of-350-byte projection &mdash; three hundred and twenty-eight bytes of
  *       the three hundred and fifty in the record are retained &mdash; truncating a
@@ -284,11 +361,16 @@ import java.util.Objects;
  *   <li><strong>Anomaly &mdash; the double space inside the table tag.</strong> Template 8
  *       carries two spaces between {@code <table} and {@code align}, verified by a raw byte
  *       read. Reproduced exactly; not collapsed, not normalised, not corrected.</li>
- *   <li><strong>Anomaly &mdash; the unclosed paragraph tag on the customer-name line.</strong>
- *       {@code HTML-L23} is 26 + 50 = 76 declared bytes with no closing {@code </p>}, while
- *       the neighbouring {@code HTML-L11} is 34 + 20 + 5 = 59 declared bytes and does close
- *       with {@code </h3>}. The omission is specific, the output is technically invalid HTML,
- *       and it is reproduced deliberately.</li>
+ *   <li><strong>The customer-name line follows the emitting paragraph, not the declaration.
+ *       </strong> Its staging group is 26 + 50 = 76 declared bytes and carries no closing
+ *       literal, but the group is never written: the paragraph at
+ *       [app/cbl/CBSTM03A.CBL:L558-L568] composes the record from the opening literal, the name
+ *       field cut at its first pair of adjacent spaces, two literal spaces and a four-byte
+ *       closing paragraph literal. The neighbouring account-number heading is different in kind
+ *       &mdash; 34 + 20 + 5 = 59 declared bytes written straight from the group
+ *       [app/cbl/CBSTM03A.CBL:L529-L530] &mdash; which is why the two builders in this class are
+ *       not symmetrical. Treating the staging group as the emitted image would both over-pad the
+ *       name and drop a closing tag the legacy program writes.</li>
  *   <li><strong>Exactly thirty-four fixed templates, emitted in source order at one hundred
  *       bytes each.</strong> The count and the order are contractual; the count was verified
  *       mechanically over [app/cbl/CBSTM03A.CBL:L150-L211].</li>
@@ -298,20 +380,28 @@ import java.util.Objects;
  *       canonicalised.</li>
  *   <li><strong>Style-attribute spacing is inconsistent between the two table-cell
  *       families</strong> and neither is normalised toward the other.</li>
- *   <li><strong>No HTML escaping, sanitising or entity encoding is applied</strong>, matching
- *       the legacy move; the artefact is a batch file rather than a served response, and
- *       escaping &mdash; if ever needed &mdash; belongs at a serving boundary outside this
- *       module.</li>
+ *   <li><strong>Markup literals are never escaped, normalised or balanced</strong>, matching the
+ *       legacy declarations byte for byte; substituted values <em>are</em> escaped, which is the
+ *       one documented divergence in this class and is set out under the escaping heading
+ *       above.</li>
+ *   <li><strong>Refusal stands alongside escaping as the second injection control.</strong> Every
+ *       caller-supplied value is required to be printable US-ASCII, and the account-number slot is
+ *       narrowed further to digits and spaces to match its {@code PIC 9(11)} source. A value that
+ *       is not representable is refused rather than encoded to a substitute byte, which removes a
+ *       byte-corrupting parity defect as well as the record-framing hazard. The customer-name slot
+ *       and the three work lines are deliberately not narrowed below printable US-ASCII, because
+ *       the legacy fields feeding them are alphanumeric and the middle-name component carries no
+ *       legacy edits at all.</li>
  *   <li><strong>A templating engine is forbidden</strong>; byte-identical output cannot
  *       survive an engine's whitespace and ordering variability.</li>
  *   <li><strong>The hundred-byte image carries no line terminator</strong> even though the
  *       COBOL source file has CRLF endings; record separation is the writer's concern in the
  *       batch layer. The {@code <meta charset="utf-8">} declaration is content, and every
  *       literal is ASCII.</li>
- *   <li><strong>The statement job declares the same HTML data definition at {@code LRECL=80}
- *       and {@code LRECL=100} in consecutive steps</strong> [app/jcl/CREASTMT.JCL]; resolved
- *       to 100 for the HTML stream and 80 for the text stream, matching the two record
- *       declarations.</li>
+ *   <li><strong>The statement job declares the same HTML data definition with a record length
+ *       of eighty in one step and of one hundred in the next</strong> [app/jcl/CREASTMT.JCL];
+ *       resolved to 100 for the HTML stream and 80 for the text stream, matching the two
+ *       record declarations.</li>
  *   <li><strong>The continuation counts stated here are the measured ones.</strong> Eleven
  *       literals use continuation and seven of those splits fall mid-token. Earlier prose
  *       described nine and three; the enumeration over
@@ -336,17 +426,16 @@ import java.util.Objects;
 public final class StatementHtmlTemplates {
 
     /*
-     * ------------------------------------------------------------------------------------
      * Record and component widths.
      *
      * These are factual layout evidence read from the legacy record declarations - record
      * widths, byte offsets and field lengths - and not tuning or capacity figures.
-     * ------------------------------------------------------------------------------------
      */
 
     /**
-     * Width in encoded bytes of one HTML output record, from
-     * {@code 01 FD-HTMLFILE-REC PIC X(100).} [app/cbl/CBSTM03A.CBL:L47].
+     * Width in encoded bytes of one HTML output record. The emitting program declares that
+     * record as a single fixed one-hundred-byte alphanumeric item at
+     * [app/cbl/CBSTM03A.CBL:L47].
      */
     public static final int HTML_RECORD_LENGTH = 100;
 
@@ -397,40 +486,93 @@ public final class StatementHtmlTemplates {
     public static final int NAME_LINE_NAME_LENGTH = 50;
 
     /**
-     * Declared width of the whole customer-name group {@code HTML-L23}, being
-     * {@value #NAME_LINE_PREFIX_LENGTH} + {@value #NAME_LINE_NAME_LENGTH}. There is
-     * deliberately no third component and therefore no closing tag; the group is
-     * space-padded to {@value #HTML_RECORD_LENGTH} bytes when written
+     * Declared width of the whole customer-name <em>staging</em> group, being
+     * {@value #NAME_LINE_PREFIX_LENGTH} + {@value #NAME_LINE_NAME_LENGTH}
      * [app/cbl/CBSTM03A.CBL:L217-L220].
+     *
+     * <p>This is the width of the declaration, not of the emitted record. The group is never
+     * written: the emitting paragraph at [app/cbl/CBSTM03A.CBL:L558-L568] uses only its
+     * fifty-byte name field as a staging area and then composes the record from four pieces. The
+     * emitted record therefore carries a closing paragraph tag that this group does not, and its
+     * name segment stops at the first pair of adjacent spaces rather than running the full fifty
+     * bytes. The constant is published because it is the declared figure a reader will find in
+     * the source; {@link #NAME_LINE_MAX_SIGNIFICANT_LENGTH} is the emitted bound.</p>
      */
     public static final int NAME_LINE_DECLARED_LENGTH = 76;
 
     /**
-     * Width of the free-form address work line, from {@code 05 HTML-ADDR-LN PIC X(100).}
+     * Width of the two literal space bytes the emitting paragraph writes after the name segment,
+     * which is also the two-space delimiter at which the name transfer stops
+     * [app/cbl/CBSTM03A.CBL:L563-L564].
+     */
+    public static final int NAME_LINE_DELIMITER_LENGTH = 2;
+
+    /**
+     * Width of the closing paragraph literal the emitting paragraph writes at the end of the
+     * customer-name record [app/cbl/CBSTM03A.CBL:L565].
+     */
+    public static final int NAME_LINE_CLOSING_TAG_LENGTH = 4;
+
+    /**
+     * Widest significant prefix the customer-name record can carry, being
+     * {@value #NAME_LINE_PREFIX_LENGTH} + {@value #NAME_LINE_NAME_LENGTH} +
+     * {@value #NAME_LINE_DELIMITER_LENGTH} + {@value #NAME_LINE_CLOSING_TAG_LENGTH}, reached
+     * only by a fifty-byte name containing no pair of adjacent spaces.
+     *
+     * <p>It is inside the {@value #HTML_RECORD_LENGTH}-byte record, which is what guarantees
+     * that fitting the composition to the record can only pad it and can never displace the
+     * closing tag.</p>
+     */
+    public static final int NAME_LINE_MAX_SIGNIFICANT_LENGTH = 82;
+
+    /**
+     * Width of the free-form address work line, declared with no internal structure at
      * [app/cbl/CBSTM03A.CBL:L221]. Its content is composed in the service layer and fitted
      * to width by {@link #workLine(String)}.
      */
     public static final int ADDRESS_WORK_LINE_LENGTH = 100;
 
     /**
-     * Width of the free-form basic-details work line, from
-     * {@code 05 HTML-BSIC-LN PIC X(100).} [app/cbl/CBSTM03A.CBL:L222]. Its content is
-     * composed in the service layer and fitted to width by {@link #workLine(String)}.
+     * Width of the free-form basic-details work line, declared with no internal structure at
+     * [app/cbl/CBSTM03A.CBL:L222]. Its content is composed in the service layer and fitted to
+     * width by {@link #workLine(String)}.
      */
     public static final int BASIC_DETAILS_WORK_LINE_LENGTH = 100;
 
     /**
-     * Width of the free-form transaction work line, from
-     * {@code 05 HTML-TRAN-LN PIC X(100).} [app/cbl/CBSTM03A.CBL:L223]. Its content is
-     * composed in the service layer and fitted to width by {@link #workLine(String)}.
+     * Width of the free-form transaction work line, declared with no internal structure at
+     * [app/cbl/CBSTM03A.CBL:L223]. Its content is composed in the service layer and fitted to
+     * width by {@link #workLine(String)}.
      */
     public static final int TRANSACTION_WORK_LINE_LENGTH = 100;
 
     /** The single ASCII byte used for padding: {@code 0x20}, the space. Never zero or NUL. */
     private static final byte ASCII_SPACE = 0x20;
 
+    /**
+     * The lowest printable US-ASCII code point, the space. Everything below it is a C0 control
+     * character, and a carriage return or line feed among them would split the hundred-byte
+     * record in the written file.
+     */
+    private static final char FIRST_PRINTABLE_US_ASCII = 0x20;
+
+    /**
+     * The highest printable US-ASCII code point, the tilde. The delete control sits immediately
+     * above it, and every code point beyond that is outside US-ASCII and so has no single-byte
+     * image in this record.
+     */
+    private static final char LAST_PRINTABLE_US_ASCII = 0x7E;
+
+    /** The lowest ASCII digit, the start of the account-number slot's permitted range. */
+    private static final char FIRST_ASCII_DIGIT = '0';
+
+    /** The highest ASCII digit, the end of the account-number slot's permitted range. */
+    private static final char LAST_ASCII_DIGIT = '9';
+
+    /** The ASCII space, permitted in the account-number slot because the legacy move pads with it. */
+    private static final char ASCII_SPACE_CHARACTER = ' ';
+
     /*
-     * ------------------------------------------------------------------------------------
      * The thirty-four fixed HTML line templates, in exact legacy declaration order
      * [app/cbl/CBSTM03A.CBL:L150-L211].
      *
@@ -440,7 +582,6 @@ public final class StatementHtmlTemplates {
      * block diff-able against the legacy declarations; hand-typed trailing spaces would not
      * be. The helper also fails initialisation loudly, naming the offending template, if a
      * literal is ever widened past the record.
-     * ------------------------------------------------------------------------------------
      */
 
     /** Template 1, legacy {@code HTML-L01}: the document type declaration. [app/cbl/CBSTM03A.CBL:L150] */
@@ -645,7 +786,6 @@ public final class StatementHtmlTemplates {
     public static final String HTML_L80 = fixed("HTML-L80", "</html>");
 
     /*
-     * ------------------------------------------------------------------------------------
      * Literal components of the two composed sub-groups [app/cbl/CBSTM03A.CBL:L212-L220].
      *
      * These are NOT padded to the record width: each is exactly the width its group declares,
@@ -653,7 +793,6 @@ public final class StatementHtmlTemplates {
      * whole is padded to HTML_RECORD_LENGTH. The component(..) helper asserts each width at
      * class initialisation, which is what makes the declared component widths above
      * load-bearing rather than merely documentary.
-     * ------------------------------------------------------------------------------------
      */
 
     /**
@@ -662,36 +801,108 @@ public final class StatementHtmlTemplates {
      * identifier and is part of the declared width [app/cbl/CBSTM03A.CBL:L213-L214].
      */
     private static final String ACCOUNT_LINE_PREFIX = component(
-            "HTML-L11 leading FILLER PIC X(34)",
+            "account-number line leading literal",
             "<h3>Statement for Account Number: ",
             ACCOUNT_LINE_PREFIX_LENGTH);
 
     /**
-     * The five-byte trailing literal of the account-number line: the closing heading tag.
-     * Its presence here, contrasted with its absence from the customer-name line, is the
-     * evidence that anomaly two is specific rather than systematic
+     * The five-byte trailing literal of the account-number line: the closing heading tag, which
+     * is part of the declared group and is therefore written with it
      * [app/cbl/CBSTM03A.CBL:L216].
      */
     private static final String ACCOUNT_LINE_SUFFIX = component(
-            "HTML-L11 trailing FILLER PIC X(05)",
+            "account-number line trailing literal",
             "</h3>",
             ACCOUNT_LINE_SUFFIX_LENGTH);
 
     /**
-     * The twenty-six-byte leading literal of the customer-name line. There is deliberately no
-     * matching trailing literal: see anomaly two in the class documentation
-     * [app/cbl/CBSTM03A.CBL:L218-L219].
+     * The twenty-six-byte leading literal of the customer-name line, taken from the staging
+     * group's leading literal [app/cbl/CBSTM03A.CBL:L218-L219] and written first by the emitting
+     * paragraph [app/cbl/CBSTM03A.CBL:L562].
      */
     private static final String NAME_LINE_PREFIX = component(
-            "HTML-L23 leading FILLER PIC X(26)",
+            "customer-name line leading literal",
             "<p style=\"font-size:16px\">",
             NAME_LINE_PREFIX_LENGTH);
 
+    /**
+     * The two literal space bytes the emitting paragraph writes after the name segment
+     * [app/cbl/CBSTM03A.CBL:L564].
+     *
+     * <p>The same two bytes are also the delimiter that stops the name transfer
+     * [app/cbl/CBSTM03A.CBL:L563], so one constant serves both roles and the two can never drift
+     * apart.</p>
+     */
+    private static final String NAME_LINE_DELIMITER = component(
+            "customer-name line separator literal",
+            "  ",
+            NAME_LINE_DELIMITER_LENGTH);
+
+    /**
+     * The four-byte closing paragraph literal the emitting paragraph writes last
+     * [app/cbl/CBSTM03A.CBL:L565].
+     */
+    private static final String NAME_LINE_CLOSING_TAG = component(
+            "customer-name line closing literal",
+            "</p>",
+            NAME_LINE_CLOSING_TAG_LENGTH);
+
     /*
      * ------------------------------------------------------------------------------------
+     * Work-line composition literals and the five HTML character references.
+     * ------------------------------------------------------------------------------------
+     */
+
+    /** The opening paragraph literal shared by all three free-form work lines. */
+    private static final String PARAGRAPH_OPEN = "<p>";
+
+    /** The closing paragraph literal shared by all three free-form work lines. */
+    private static final String PARAGRAPH_CLOSE = "</p>";
+
+    /**
+     * The two literal spaces the address work line appends after the transferred address.
+     *
+     * <p>Declared explicitly because they are a separate sending item in the legacy
+     * {@code STRING} statement, delimited by {@code SIZE}, and are therefore appended
+     * unconditionally &mdash; they are not padding and must not be trimmed away
+     * [app/cbl/CBSTM03A.CBL:L572].
+     */
+    private static final String ADDRESS_LINE_TRAILING_SPACES = "  ";
+
+    /**
+     * The two-space run that terminates the address field's transfer in the legacy
+     * {@code STRING ... DELIMITED BY '  '} clause.
+     */
+    private static final String ADDRESS_LINE_DELIMITER = "  ";
+
+    /** Character reference for the ampersand. Replaced first, so it cannot be double-escaped. */
+    private static final String AMPERSAND_REFERENCE = "&amp;";
+
+    /** Character reference for the less-than sign, which would otherwise open an element. */
+    private static final String LESS_THAN_REFERENCE = "&lt;";
+
+    /** Character reference for the greater-than sign, which would otherwise close one. */
+    private static final String GREATER_THAN_REFERENCE = "&gt;";
+
+    /** Character reference for the quotation mark, which would otherwise close an attribute. */
+    private static final String QUOTATION_MARK_REFERENCE = "&quot;";
+
+    /**
+     * Character reference for the apostrophe. The numeric form is used rather than
+     * {@code &apos;} because the numeric reference is defined in every HTML version, whereas the
+     * named one is not defined in HTML 4 and a statement file has no controlled viewer.
+     */
+    private static final String APOSTROPHE_REFERENCE = "&#39;";
+
+    /** The character that opens every character reference this class emits. */
+    private static final char REFERENCE_START = '&';
+
+    /** The character that closes every character reference this class emits. */
+    private static final char REFERENCE_END = ';';
+
+    /*
      * The ordered template sequence. Declared last among the fields so that all thirty-four
      * template constants are already initialised when it is built.
-     * ------------------------------------------------------------------------------------
      */
 
     /** Immutable, ordered view of the thirty-four fixed templates in legacy source order. */
@@ -730,29 +941,45 @@ public final class StatementHtmlTemplates {
      * declared group width of {@value #ACCOUNT_LINE_DECLARED_LENGTH} bytes, which is then
      * space-padded on the right to the full {@value #HTML_RECORD_LENGTH}-byte record.</p>
      *
-     * <p>This line <strong>does</strong> close its tag. Its unclosed sibling
-     * {@link #customerNameLine(String)} is the anomaly; this method is the control that proves
-     * the anomaly is specific.</p>
+     * <p>This line is emitted <strong>from its declared group</strong>
+     * [app/cbl/CBSTM03A.CBL:L529-L530], so the whole group reaches the record, trailing spaces of
+     * the identifier field included, and the closing heading tag is part of the group. Its
+     * sibling {@link #customerNameLine(String)} is composed by the emitting paragraph instead,
+     * which is why the two builders differ.</p>
      *
-     * <p>The identifier is substituted <strong>raw</strong>: it is neither escaped, sanitised
-     * nor entity-encoded, matching the legacy move. An identifier longer than its field is
-     * truncated in encoded bytes; a shorter one is padded on the right with spaces.</p>
+     * <p>The identifier is escaped before it is fitted, so it cannot carry markup into the
+     * heading element; see {@link #escapeText(String)}. Escaping is the identity function on an
+     * account identifier, which is eleven digits, so the emitted bytes are unchanged for every real
+     * value. An identifier longer than its field is truncated in encoded bytes; a shorter one is
+     * padded on the right with spaces.</p>
+     *
+     * <p>Because no substituted byte may be rewritten, the identifier is instead
+     * <strong>validated</strong> before substitution. The legacy field moved into this slot is
+     * {@code ACCT-ID PIC 9(11)} [app/cbl/CBSTM03A.CBL:L529], a numeric display item, so this
+     * slot accepts only ASCII digits and the ASCII space the move pads with. That refuses
+     * nothing the legacy system could emit, and it means no markup character can reach the
+     * active heading element this line opens.</p>
      *
      * @param accountId the account identifier to substitute into the twenty-byte field; must
-     *                  not be {@code null}, may be empty, and is truncated or space-padded to
-     *                  the field width
+ *                  not be {@code null}, may be empty, must hold only ASCII digits and the ASCII
+ *                  space, and is escaped and then truncated or space-padded to the field width
      * @return one HTML output record of exactly {@value #HTML_RECORD_LENGTH} encoded bytes,
      *         carrying no line terminator
-     * @throws NullPointerException  if {@code accountId} is {@code null}
-     * @throws IllegalStateException if the assembled record is not exactly
-     *                               {@value #HTML_RECORD_LENGTH} encoded bytes, which would
-     *                               indicate the component widths in this class no longer
-     *                               agree with the legacy group
+     * @throws NullPointerException     if {@code accountId} is {@code null}
+     * @throws IllegalArgumentException if {@code accountId} carries a character that is not
+     *                                  printable US-ASCII, or that is printable but is neither
+     *                                  an ASCII digit nor an ASCII space
+     * @throws IllegalStateException    if the assembled record is not exactly
+     *                                  {@value #HTML_RECORD_LENGTH} encoded bytes, which would
+     *                                  indicate the component widths in this class no longer
+     *                                  agree with the legacy group
      */
     public static String accountNumberLine(final String accountId) {
         Objects.requireNonNull(accountId, "accountId must not be null");
+        requirePrintableUsAscii(accountId, "account identifier");
+        requireDigitsOrSpaces(accountId, "account identifier");
         final String group = ACCOUNT_LINE_PREFIX
-                + fitToWidth(accountId, ACCOUNT_LINE_ACCOUNT_LENGTH)
+                + fitToWidth(escapeText(accountId), ACCOUNT_LINE_ACCOUNT_LENGTH)
                 + ACCOUNT_LINE_SUFFIX;
         requireExactWidth("HTML-L11 composed group", group, ACCOUNT_LINE_DECLARED_LENGTH);
         return requireExactWidth("HTML-L11 record",
@@ -760,44 +987,259 @@ public final class StatementHtmlTemplates {
     }
 
     /**
-     * Builds the customer-name line, legacy group {@code HTML-L23}
-     * [app/cbl/CBSTM03A.CBL:L217-L220].
+     * Builds the customer-name line exactly as the emitting paragraph writes it
+     * [app/cbl/CBSTM03A.CBL:L558-L568].
      *
-     * <p><strong>Anomaly two lives here.</strong> The legacy group has exactly two
-     * components &mdash; a {@value #NAME_LINE_PREFIX_LENGTH}-byte opening paragraph literal
-     * and a {@value #NAME_LINE_NAME_LENGTH}-byte name field, giving the declared width of
-     * {@value #NAME_LINE_DECLARED_LENGTH} bytes &mdash; and <strong>no third component</strong>,
-     * so the paragraph element is never closed. No {@code </p>} is appended here. The
-     * resulting markup is technically invalid, and that invalid markup is the required output;
-     * appending a closing tag would change the bytes the parity gate compares.</p>
+     * <p>The record is <strong>not</strong> the declared staging group. The legacy paragraph
+     * performs four steps, and all four are reproduced here in order:</p>
+     * <ol>
+     *   <li>The assembled name is moved into the {@value #NAME_LINE_NAME_LENGTH}-byte staging
+     *       field, so a longer name is truncated to that width and a shorter one is padded with
+     *       spaces.</li>
+     *   <li>The {@value #HTML_RECORD_LENGTH}-byte record is cleared to spaces, which is why every
+     *       byte after the composition is a space and never a residue.</li>
+     *   <li>The record is composed from the {@value #NAME_LINE_PREFIX_LENGTH}-byte opening
+     *       paragraph literal, then the staging field transferred only <em>up to its first pair
+     *       of adjacent spaces</em>, then {@value #NAME_LINE_DELIMITER_LENGTH} literal space
+     *       bytes, then the {@value #NAME_LINE_CLOSING_TAG_LENGTH}-byte closing paragraph
+     *       literal.</li>
+     *   <li>The record is written.</li>
+     * </ol>
      *
-     * <p>The declared group is space-padded on the right to the full
-     * {@value #HTML_RECORD_LENGTH}-byte record.</p>
+     * <p>Two consequences follow, and both are contractual. <strong>The line does close its
+     * paragraph tag</strong>, because the closing literal is a component of the composition even
+     * though it is absent from the declaration. And <strong>the name segment stops at the first
+     * pair of adjacent spaces</strong>, so the padding introduced by the staging move never
+     * reaches the record: a name of "{@code JOHN Q PUBLIC}" contributes thirteen bytes, not
+     * fifty. A customer with no middle name is assembled upstream with two adjacent spaces after
+     * the first name [app/cbl/CBSTM03A.CBL:L455-L490], and the line then carries the first name
+     * alone. That is the legacy output and it is reproduced, not repaired.</p>
      *
-     * <p>The name is substituted <strong>raw</strong>: it is neither escaped, sanitised nor
-     * entity-encoded, matching the legacy move. A name longer than its field is truncated in
-     * encoded bytes; a shorter one is padded on the right with spaces.</p>
+     * <p>The widest possible composition is {@value #NAME_LINE_MAX_SIGNIFICANT_LENGTH} bytes,
+     * which is inside the record, so fitting to the record only ever pads on the right and can
+     * never displace the closing tag.</p>
      *
-     * @param customerName the customer name to substitute into the fifty-byte field; must not
-     *                     be {@code null}, may be empty, and is truncated or space-padded to
-     *                     the field width
+     * <p>The name is escaped before it is fitted; see {@link #escapeText(String)}. This is the
+     * single most important escaping site in the class, for two reasons. The name is free text that
+     * a customer-maintenance screen accepts, so it is the one field on the line whose content an
+     * outside party influences; and the opening literal here carries a <em>quoted attribute</em>,
+     * so a value able to escape its element would land where an attribute could be closed. The
+     * escaped name is then fitted to the {@value #NAME_LINE_NAME_LENGTH}-byte staging field, in
+     * encoded bytes, before the delimiter rule below is applied.</p>
+     *
+     * @param customerName the assembled customer name; must not be {@code null}, may be empty, and
+     *                     is escaped and then fitted to the
+     *                     {@value #NAME_LINE_NAME_LENGTH}-byte staging field before the delimiter
+     *                     is applied
      * @return one HTML output record of exactly {@value #HTML_RECORD_LENGTH} encoded bytes,
-     *         carrying no line terminator and no closing paragraph tag
+     *         carrying no line terminator
      * @throws NullPointerException  if {@code customerName} is {@code null}
      * @throws IllegalStateException if the assembled record is not exactly
      *                               {@value #HTML_RECORD_LENGTH} encoded bytes, which would
-     *                               indicate the component widths in this class no longer
-     *                               agree with the legacy group
+     *                               indicate the component widths in this class no longer agree
+     *                               with the legacy emission
      */
     public static String customerNameLine(final String customerName) {
         Objects.requireNonNull(customerName, "customerName must not be null");
-        // Two components only. There is no closing tag component in the legacy group, and
-        // none is synthesised here: see anomaly two in the class documentation.
-        final String group = NAME_LINE_PREFIX
-                + fitToWidth(customerName, NAME_LINE_NAME_LENGTH);
-        requireExactWidth("HTML-L23 composed group", group, NAME_LINE_DECLARED_LENGTH);
-        return requireExactWidth("HTML-L23 record",
-                fitToWidth(group, HTML_RECORD_LENGTH), HTML_RECORD_LENGTH);
+        requirePrintableUsAscii(customerName, "customer name");
+        // Step one: the truncating move into the fifty-byte staging field, over the escaped name.
+        final String nameField = fitToWidth(escapeText(customerName), NAME_LINE_NAME_LENGTH);
+        // Step three: the transfer stops at the first pair of adjacent spaces, so the padding the
+        // move introduced is dropped rather than emitted. Steps two and four -- clearing the
+        // record to spaces and writing it -- are the right pad below and the caller's write.
+        final String record = NAME_LINE_PREFIX + nameUpToDelimiter(nameField)
+                + NAME_LINE_DELIMITER + NAME_LINE_CLOSING_TAG;
+        return requireExactWidth("customer-name record",
+                fitToWidth(record, HTML_RECORD_LENGTH), HTML_RECORD_LENGTH);
+    }
+
+    /**
+     * Returns the part of the staging field that the emitting paragraph actually transfers, being
+     * everything before its first pair of adjacent spaces [app/cbl/CBSTM03A.CBL:L563].
+     *
+     * <p>When the field holds no such pair &mdash; a fifty-byte name with no internal double
+     * space and no padding left &mdash; the whole field transfers, which is the legacy behaviour
+     * when a delimiter is not found. When the field begins with the pair, nothing transfers and
+     * the record carries the literals alone.</p>
+     *
+     * @param  nameField the staging field, already fitted to
+     *                   {@value #NAME_LINE_NAME_LENGTH} bytes
+     * @return the transferred segment, which may be empty and may be the whole field
+     */
+    private static String nameUpToDelimiter(final String nameField) {
+        final int delimiterAt = nameField.indexOf(NAME_LINE_DELIMITER);
+        return delimiterAt < 0 ? nameField : nameField.substring(0, delimiterAt);
+    }
+
+    /**
+     * Builds the address work line, legacy group {@code HTML-ADDR-LN}
+     * [app/cbl/CBSTM03A.CBL:L570-L576, L578-L584, L586-L592].
+     *
+     * <p>The legacy composition is a {@code STRING} statement of four sending items:
+     * {@code '<p>'}, the address field <strong>delimited by two spaces</strong>, a literal two
+     * spaces, and {@code '</p>'}. The delimiter is the load-bearing part: COBOL transfers the
+     * address field only up to, and excluding, the first run of two consecutive spaces, which is
+     * how a fixed-width padded field is right-trimmed. The two literal spaces are then appended
+     * unconditionally, so they appear even when the address filled its whole field. Both
+     * behaviours are reproduced here rather than replaced by a trim, because a trim would drop the
+     * two literal spaces and would also fail to cut an address that carries a double space in its
+     * middle &mdash; which the legacy statement does cut.</p>
+     *
+     * <p>This method is also the width authority for the three free-form work lines declared with
+     * no internal structure at [app/cbl/CBSTM03A.CBL:L221-L223] &mdash; the address line, the
+     * basic-details line and the transaction line, each one hundred bytes wide. The hundred-byte
+     * figure lives in exactly one place, and the three composers are self-documenting through
+     * {@link #ADDRESS_WORK_LINE_LENGTH}, {@link #BASIC_DETAILS_WORK_LINE_LENGTH} and
+     * {@link #TRANSACTION_WORK_LINE_LENGTH}, all of which equal
+     * {@value #HTML_RECORD_LENGTH}.</p>
+     *
+     * <p>The address text is escaped; the markup around it is not. See
+     * {@link #escapeText(String)} for why that division is where it is.</p>
+     *
+     * @param addressLine the address field to substitute; must not be {@code null} and may be
+     *                    empty or space-padded
+     * @return one HTML output record of exactly {@value #HTML_RECORD_LENGTH} encoded bytes,
+     *         carrying no line terminator
+     * @throws NullPointerException  if {@code addressLine} is {@code null}
+     * @throws IllegalStateException if the assembled record is not exactly
+     *                               {@value #HTML_RECORD_LENGTH} encoded bytes
+     */
+    public static String addressWorkLine(final String addressLine) {
+        Objects.requireNonNull(addressLine, "addressLine must not be null");
+        requirePrintableUsAscii(addressLine, "address line");
+        final String transferred = upToFirstDoubleSpace(addressLine);
+        final String composed = PARAGRAPH_OPEN + escapeText(transferred)
+                + ADDRESS_LINE_TRAILING_SPACES + PARAGRAPH_CLOSE;
+        return requireExactWidth("HTML-ADDR-LN record",
+                fitToWidth(composed, ADDRESS_WORK_LINE_LENGTH), HTML_RECORD_LENGTH);
+    }
+
+    /**
+     * Builds one basic-details work line, legacy group {@code HTML-BSIC-LN}
+     * [app/cbl/CBSTM03A.CBL:L613-L619, L620-L626, L627-L633].
+     *
+     * <p>The legacy composition is three sending items: an opening paragraph literal that already
+     * carries the label and its colon &mdash; {@code '<p>Account ID         : '},
+     * {@code '<p>Current Balance    : '}, {@code '<p>FICO Score         : '} &mdash; then the value
+     * delimited by an asterisk, then {@code '</p>'}. Delimiting by an asterisk on a value that
+     * contains none transfers the whole field, padding included, so the value is <em>not</em>
+     * trimmed here. That asymmetry with the address line is a real property of the legacy source
+     * and is preserved.</p>
+     *
+     * <p>The label is supplied by the caller because the legacy program carries a different literal
+     * on each of the three lines and this class does not own their business meaning. It is escaped
+     * along with the value: escaping is the identity function on all three legacy labels, so
+     * nothing changes for real input, and escaping it closes the label as a second injection route
+     * rather than leaving one open on the assumption that a caller will only ever pass a
+     * literal.</p>
+     *
+     * @param label the label text to place after the opening paragraph tag, colon and separating
+     *              spaces included; must not be {@code null}
+     * @param value the value to place after the label; must not be {@code null} and may be empty or
+     *              space-padded
+     * @return one HTML output record of exactly {@value #HTML_RECORD_LENGTH} encoded bytes,
+     *         carrying no line terminator
+     * @throws NullPointerException  if either argument is {@code null}
+     * @throws IllegalStateException if the assembled record is not exactly
+     *                               {@value #HTML_RECORD_LENGTH} encoded bytes
+     */
+    public static String basicDetailsWorkLine(final String label, final String value) {
+        Objects.requireNonNull(label, "label must not be null");
+        requirePrintableUsAscii(label, "work-line label");
+        Objects.requireNonNull(value, "value must not be null");
+        requirePrintableUsAscii(value, "work-line value");
+        final String composed = PARAGRAPH_OPEN + escapeText(label) + escapeText(value)
+                + PARAGRAPH_CLOSE;
+        return requireExactWidth("HTML-BSIC-LN record",
+                fitToWidth(composed, BASIC_DETAILS_WORK_LINE_LENGTH), HTML_RECORD_LENGTH);
+    }
+
+    /**
+     * Builds one transaction work line, legacy group {@code HTML-TRAN-LN}
+     * [app/cbl/CBSTM03A.CBL:L686-L692, L698-L704, L710-L716].
+     *
+     * <p>The legacy composition is {@code '<p>'}, the value delimited by an asterisk, and
+     * {@code '</p>'}. As on the basic-details line, an asterisk delimiter against a value that
+     * holds none transfers the whole field, so padding is carried through and the value is not
+     * trimmed. The legacy program emits this shape three times per transaction, for the
+     * identifier, the date and the amount; one method serves all three because the composition is
+     * identical and only the caller's value differs.</p>
+     *
+     * @param value the value to place between the paragraph tags; must not be {@code null} and may
+     *              be empty or space-padded
+     * @return one HTML output record of exactly {@value #HTML_RECORD_LENGTH} encoded bytes,
+     *         carrying no line terminator
+     * @throws NullPointerException  if {@code value} is {@code null}
+     * @throws IllegalStateException if the assembled record is not exactly
+     *                               {@value #HTML_RECORD_LENGTH} encoded bytes
+     */
+    public static String transactionWorkLine(final String value) {
+        Objects.requireNonNull(value, "value must not be null");
+        requirePrintableUsAscii(value, "work-line value");
+        final String composed = PARAGRAPH_OPEN + escapeText(value) + PARAGRAPH_CLOSE;
+        return requireExactWidth("HTML-TRAN-LN record",
+                fitToWidth(composed, TRANSACTION_WORK_LINE_LENGTH), HTML_RECORD_LENGTH);
+    }
+
+    /**
+     * Replaces the five markup-significant characters with their HTML character references.
+     *
+     * <p><strong>Why this exists.</strong> The legacy program moved statement data into an HTML
+     * record with no encoding of any kind, because on the mainframe the data could only have come
+     * from a VSAM record written by another batch program in the same estate. In this module the
+     * same values arrive from a relational store that an online transaction writes, and the account
+     * update and customer maintenance screens accept free text in the name and address fields. A
+     * value such as {@code <script>} stored through one of those screens and later rendered into a
+     * statement is stored cross-site scripting: the person harmed is whoever opens the statement,
+     * not the person who submitted the value, and nothing between the two notices. Escaping at the
+     * point of composition is the only place that closes it, because the statement file is written
+     * once and read by an unknown viewer later.</p>
+     *
+     * <p><strong>The parity position.</strong> This is a deliberate, documented divergence from
+     * byte-for-byte faithfulness, and it is the narrowest one available. It is the identity function
+     * on the entire legitimate domain of every field it touches &mdash; account identifiers are
+     * digits, amounts are digits with a sign and a decimal point, dates are digits and hyphens,
+     * names and addresses in every fixture in the estate are alphanumerics, spaces and punctuation
+     * that is not markup-significant &mdash; so for real data the emitted bytes are unchanged and
+     * the hundred-byte parity gate is unaffected. It differs only for input that would otherwise
+     * inject markup, which is exactly the input that must differ. The divergence is recorded in
+     * {@code docs/decision-log.md} rather than left as an unexplained difference.</p>
+     *
+     * <p><strong>Why the apostrophe is included.</strong> None of the five is optional. The
+     * apostrophe and the quotation mark matter because {@link #NAME_LINE_PREFIX} opens a tag
+     * carrying a quoted attribute, and a value that escaped its element could otherwise be
+     * positioned to close that attribute. Escaping all five means the emitted record cannot be
+     * reinterpreted as markup regardless of which element the value lands in.</p>
+     *
+     * <p>Published rather than private because the statement-generation service composes values
+     * from several fields before they reach a line builder, and it needs the same function rather
+     * than a second, possibly divergent one. The line builders in this class apply it themselves, so
+     * a caller that passes raw text is already safe; a caller that pre-composes must apply it.</p>
+     *
+     * @param text the text to escape; must not be {@code null} and may be empty
+     * @return the text with {@code &}, {@code <}, {@code >}, {@code "} and {@code '} replaced by
+     *         their character references, and every other character unchanged
+     * @throws NullPointerException if {@code text} is {@code null}
+     */
+    public static String escapeText(final String text) {
+        Objects.requireNonNull(text, "text must not be null");
+
+        // The ampersand must be replaced first, or the ampersands this method introduces would
+        // themselves be re-escaped. Building in one pass rather than by chained replacement makes
+        // that ordering hazard structurally impossible instead of merely avoided.
+        final StringBuilder escaped = new StringBuilder(text.length());
+        for (int index = 0; index < text.length(); index++) {
+            final char character = text.charAt(index);
+            switch (character) {
+                case '&' -> escaped.append(AMPERSAND_REFERENCE);
+                case '<' -> escaped.append(LESS_THAN_REFERENCE);
+                case '>' -> escaped.append(GREATER_THAN_REFERENCE);
+                case '"' -> escaped.append(QUOTATION_MARK_REFERENCE);
+                case '\'' -> escaped.append(APOSTROPHE_REFERENCE);
+                default -> escaped.append(character);
+            }
+        }
+        return escaped.toString();
     }
 
     /**
@@ -816,27 +1258,50 @@ public final class StatementHtmlTemplates {
      * <p>The semantics are those of moving a value into a hundred-byte alphanumeric field:
      * content shorter than the record is padded on the right with ASCII spaces, and content
      * longer than the record is truncated at {@value #HTML_RECORD_LENGTH}
-     * <strong>encoded bytes</strong>. Nothing is escaped, sanitised or entity-encoded, and no
-     * line terminator is added.</p>
+     * <strong>encoded bytes</strong>. Nothing is escaped or entity-encoded, and no line
+     * terminator is added.</p>
      *
-     * @param content the composed work-line content; must not be {@code null} and may be
-     *                empty, shorter than the record, or longer than the record
+     * <p>This is a <strong>guarded</strong> fitter rather than an unchecked sink. The content is
+     * validated to printable US-ASCII before it is fitted, so the C0 control range, the delete
+     * character and every code point outside US-ASCII are refused rather than encoded to a
+     * substitute byte. That guard is what keeps the hundred-byte framing intact: the batch
+     * writer supplies record separation, so an embedded carriage return or line feed would
+     * split one logical record into two in the written file and desynchronise every record
+     * after it. Markup characters are legitimate content here and pass through unchanged &mdash;
+     * the legacy composes these lines from paragraph literals wrapped around display fields
+     * [app/cbl/CBSTM03A.CBL:L614-L618, L687-L691] &mdash; so this method validates the
+     * character set and the width and never the markup structure.</p>
+     *
+     * <p>That last point is the whole reason this method is a framing primitive and not the
+     * sanitisation point. It receives content that has already been composed, so it cannot tell
+     * a legitimate paragraph literal from an injected one, and it therefore leaves markup
+     * untouched by design. Caller-supplied field values must be neutralised before they are
+     * composed into that content, which is what {@link #escapeText(String)} is for, and which is
+     * what {@link #addressWorkLine(String)}, {@link #basicDetailsWorkLine(String, String)} and
+     * {@link #transactionWorkLine(String)} already do for the three lines the statement
+     * generator emits. Those three composers are the supported path for raw field data; this
+     * fitter exists for content that is already composed and already neutralised.</p>
+     *
+     * @param content the composed work-line content; must not be {@code null}, must hold only
+     *                printable US-ASCII, and may be empty, shorter than the record, or longer
+     *                than the record
      * @return one HTML output record of exactly {@value #HTML_RECORD_LENGTH} encoded bytes,
      *         carrying no line terminator
-     * @throws NullPointerException  if {@code content} is {@code null}
-     * @throws IllegalStateException if the fitted record is not exactly
-     *                               {@value #HTML_RECORD_LENGTH} encoded bytes
+     * @throws NullPointerException     if {@code content} is {@code null}
+     * @throws IllegalArgumentException if {@code content} carries a character that is not
+     *                                  printable US-ASCII
+     * @throws IllegalStateException    if the fitted record is not exactly
+     *                                  {@value #HTML_RECORD_LENGTH} encoded bytes
      */
     public static String workLine(final String content) {
         Objects.requireNonNull(content, "content must not be null");
+        requirePrintableUsAscii(content, "work-line content");
         return requireExactWidth("HTML free-form work line",
                 fitToWidth(content, HTML_RECORD_LENGTH), HTML_RECORD_LENGTH);
     }
 
     /*
-     * ------------------------------------------------------------------------------------
      * Private helpers. All width arithmetic below is performed on US-ASCII encoded bytes.
-     * ------------------------------------------------------------------------------------
      */
 
     /**
@@ -900,6 +1365,72 @@ public final class StatementHtmlTemplates {
     }
 
     /**
+     * Rejects a caller-supplied value that carries a character outside printable US-ASCII.
+     *
+     * <p>The rejected set is the C0 control range, the delete character, and every code point
+     * above US-ASCII &mdash; that is, everything below the space and everything above the
+     * tilde. Two distinct hazards are closed by the one rule. A carriage return or line feed
+     * would split the hundred-byte record in the written file, because the batch writer supplies
+     * record separation and the image itself carries no terminator. A code point above US-ASCII
+     * has no single-byte image in this record at all, so encoding it would silently substitute a
+     * question-mark byte and corrupt the record rather than reporting a problem; refusing it is
+     * the faithful outcome.</p>
+     *
+     * <p>The diagnostic reports the offending position and the code point as a number, never the
+     * character itself, so a control byte cannot travel into the message that reports it.</p>
+     *
+     * @param value     the caller-supplied value, already known to be non-{@code null}
+     * @param fieldName a human-readable identification of the field, used in the failure message
+     * @throws IllegalArgumentException if any character is not printable US-ASCII
+     */
+    private static void requirePrintableUsAscii(final String value, final String fieldName) {
+        for (int index = 0; index < value.length(); index++) {
+            final char character = value.charAt(index);
+            if (character < FIRST_PRINTABLE_US_ASCII || character > LAST_PRINTABLE_US_ASCII) {
+                throw new IllegalArgumentException(fieldName + " must hold printable US-ASCII"
+                        + " only, because the HTML statement record is a fixed hundred-byte image"
+                        + " with no terminator and this class may not rewrite a substituted byte;"
+                        + " the character at position " + (index + 1) + " is code point "
+                        + (int) character);
+            }
+        }
+    }
+
+    /**
+     * Rejects a value for the account-number slot that is neither an ASCII digit nor an ASCII
+     * space.
+     *
+     * <p>The legacy slot receives {@code ACCT-ID PIC 9(11)} [app/cbl/CBSTM03A.CBL:L529], a
+     * numeric display item, so digits are all it can carry and the trailing spaces come from the
+     * move into the wider alphanumeric field. Narrowing the slot to that set refuses nothing the
+     * legacy system could emit while removing every markup character from the one composed slot
+     * whose surrounding literal opens an active element.</p>
+     *
+     * <p>This check runs after the printable check, so the value is already known to be printable
+     * before it is narrowed. The failure message still reports the offending position and its code
+     * point rather than the character itself, because a diagnostic that echoes rejected input is a
+     * second injection route into whatever reads the log (DL-041).</p>
+     *
+     * @param value     the caller-supplied value, already known to be printable US-ASCII
+     * @param fieldName a human-readable identification of the field, used in the failure message
+     * @throws IllegalArgumentException if any character is neither an ASCII digit nor an ASCII
+     *                                  space
+     */
+    private static void requireDigitsOrSpaces(final String value, final String fieldName) {
+        for (int index = 0; index < value.length(); index++) {
+            final char character = value.charAt(index);
+            final boolean acceptable = character == ASCII_SPACE_CHARACTER
+                    || (character >= FIRST_ASCII_DIGIT && character <= LAST_ASCII_DIGIT);
+            if (!acceptable) {
+                throw new IllegalArgumentException(fieldName + " must hold only ASCII digits and"
+                        + " spaces, because the legacy field moved into this slot is a numeric"
+                        + " display item; the character at position " + (index + 1)
+                        + " is code point " + (int) character);
+            }
+        }
+    }
+
+    /**
      * Fits a value to an exact width using fixed-width move semantics, working entirely in the
      * encoded-byte domain.
      *
@@ -907,8 +1438,19 @@ public final class StatementHtmlTemplates {
      * {@code width} bytes that has been pre-filled with the ASCII space. A value longer than
      * the field is therefore truncated at a byte boundary and a shorter one is space-padded on
      * the right. Operating on bytes rather than on {@code char} values is what makes the result
-     * exact: a supplementary code point occupies two {@code char} values but encodes to a
-     * single byte, so character-based arithmetic would produce the wrong width.</p>
+     * exact, because the record is a byte image and a {@code char} count cannot describe one.
+     * Every value reaching this helper is already known to be single-byte representable &mdash;
+     * the fixed templates are pure ASCII literals and every caller-supplied value has passed
+     * {@link #requirePrintableUsAscii(String, String)} &mdash; so the encoding step here can
+     * never introduce a substitute byte.</p>
+     *
+     * <p>One refinement is applied after the byte truncation: if the surviving bytes end in an
+     * unterminated character reference, that fragment is dropped and the space padding takes its
+     * place. Cutting a fixed-width field at a byte boundary is faithful, but cutting {@code &amp;}
+     * into {@code &am} would emit a fragment that a viewer may resynchronise against the following
+     * markup, turning a truncation into a rendering defect. Dropping the fragment costs nothing
+     * elsewhere, because a value with no unterminated {@code &} at the cut is returned untouched
+     * &mdash; which is every one of the thirty-four fixed templates, and all real data.</p>
      *
      * @param value the value to fit; must not be {@code null}
      * @param width the exact field width in encoded bytes; must not be negative
@@ -918,8 +1460,54 @@ public final class StatementHtmlTemplates {
         final byte[] source = value.getBytes(StandardCharsets.US_ASCII);
         final byte[] image = new byte[width];
         Arrays.fill(image, ASCII_SPACE);
-        System.arraycopy(source, 0, image, 0, Math.min(source.length, width));
+        final int copied = Math.min(source.length, width);
+        System.arraycopy(source, 0, image, 0, copied);
+
+        if (source.length > width) {
+            blankTrailingReferenceFragment(image, copied);
+        }
         return new String(image, StandardCharsets.US_ASCII);
+    }
+
+    /**
+     * Blanks a partial character reference left at the end of a truncated field image.
+     *
+     * <p>Scans backwards from the cut for the first reference delimiter. An unterminated
+     * {@code &} &mdash; one with no {@code ;} after it within the surviving bytes &mdash; is a
+     * fragment, and every byte from it to the cut is overwritten with the ASCII space so that the
+     * field keeps its exact width. A {@code ;} encountered first means the last reference completed
+     * and nothing needs removing. The scan is bounded by the cut, so it is linear in the width of
+     * one field and terminates unconditionally.</p>
+     *
+     * @param image the field image, already padded and already carrying the truncated bytes
+     * @param cut   the number of bytes copied into the image before padding begins
+     */
+    private static void blankTrailingReferenceFragment(final byte[] image, final int cut) {
+        for (int index = cut - 1; index >= 0; index--) {
+            if (image[index] == (byte) REFERENCE_END) {
+                return;
+            }
+            if (image[index] == (byte) REFERENCE_START) {
+                Arrays.fill(image, index, cut, ASCII_SPACE);
+                return;
+            }
+        }
+    }
+
+    /**
+     * Returns the leading portion of a value up to, and excluding, the first two-space run.
+     *
+     * <p>This reproduces the COBOL {@code STRING ... DELIMITED BY '  '} transfer the address work
+     * line uses. When the delimiter is absent the whole value is transferred, which is what COBOL
+     * does; when it is present in the middle of the value the transfer stops there, which is also
+     * what COBOL does and is why this is not a right trim.</p>
+     *
+     * @param value the sending value; must not be {@code null}
+     * @return the transferred portion, possibly the whole value and possibly empty
+     */
+    private static String upToFirstDoubleSpace(final String value) {
+        final int delimiter = value.indexOf(ADDRESS_LINE_DELIMITER);
+        return delimiter < 0 ? value : value.substring(0, delimiter);
     }
 
     /**

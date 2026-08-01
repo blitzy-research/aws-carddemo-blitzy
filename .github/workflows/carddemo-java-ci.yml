@@ -12,18 +12,15 @@
 # "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
 # either express or implied. See the License for the specific
 # language governing permissions and limitations under the License
-# ---------------------------------------------------------------------------------------------
+#
 # Continuous integration for the carddemo-java module.
 #
-# WHY THIS FILE SITS AT THE REPOSITORY ROOT
-# GitHub Actions resolves workflow definitions only from .github/workflows/ at the root of the
-# repository, so this is the one migration target that cannot live inside carddemo-java/. It
-# scopes itself straight back into the module with defaults.run.working-directory, so every
-# command below is module-relative even though the file is not.
+# This is the one migration target that cannot live inside carddemo-java/, because GitHub Actions
+# resolves workflow definitions only from .github/workflows/ at the repository root. It scopes
+# itself back into the module with defaults.run.working-directory.
 #
 # WHAT THIS RUN PROVES
-# A single job invokes the committed Maven Wrapper once. That one invocation is the whole gate
-# mechanism, because the module build binds all three enforcement points to the verify phase:
+# Three enforcement points, every one of which ends the run when it is not satisfied:
 #
 #   zero-warning build : the compiler plugin runs javac with -Xlint:all -Werror under release
 #                        25, so any warning ends the run instead of accumulating in a report.
@@ -34,17 +31,44 @@
 #   supply chain       : the vulnerability plugin runs its check goal and ends the build on any
 #                        finding at or above the configured score. It is EXECUTED here rather
 #                        than merely declared: the module build leaves the scan switched on by
-#                        default, so no command-line override is needed or wanted.
+#                        default, so a developer running the build by hand gets the scan with
+#                        no command-line override.
 #
 # Stopping at package instead of verify would run none of the three and a green run would prove
-# nothing, so this workflow always goes all the way to verify.
+# nothing, so the build invocation below always goes all the way to verify.
+#
+# WHY THE GATES ARE INVOKED SEPARATELY
+# The supply chain gate is invoked by itself rather than riding along inside the build. Both are
+# bound to the same build phase, and a phase stops at its first failure, so whichever gate runs
+# second is only reached when the first one passes. That made the supply chain scan conditional
+# on the coverage floor: a run under the floor never reached the scan and produced no scan
+# report at all, which is precisely the run whose supply chain position most needs recording.
+#
+# Two independent changes fix that, and both are needed. The module build now orders the scan
+# ahead of the coverage check and produces every report before either gate runs, so evidence is
+# never conditional on a verdict. This workflow then invokes each gate on its own, so a build,
+# test or coverage failure does not stop the scan from happening at all.
+#
+# Neither gate is softened by the split. Each step records its own real result, the uploads
+# publish whatever each gate produced, and the final step reads both results back and fails the
+# job when either one failed. A single gate failure therefore still fails the run - the only
+# thing that changed is that the other gate, and both sets of evidence, now still exist.
 #
 # WHY THE REPORTS ARE UPLOADED
 # Every report those gates produce is deliberately untracked by the module's ignore file, so the
 # uploaded artifacts of this run are their only durable record and the raw input a reviewer
-# cites when signing the gates off. The uploads therefore run even when the build fails, because
-# a failed run's coverage and vulnerability reports are exactly what a reviewer needs. That
-# masks nothing: the job's conclusion is decided by the build step, and no step here softens it.
+# cites when signing the gates off. The uploads therefore run even when a gate fails, because a
+# failed run's coverage and vulnerability reports are exactly what a reviewer needs.
+#
+# WHY EVERY ACTION IS PINNED TO A COMMIT
+# A moving major-version tag is a mutable reference: the same workflow text can run different
+# third-party code tomorrow than it ran today, and a compromised or simply changed release is
+# picked up with no review and no diff. Every action below is therefore pinned to the full
+# commit it resolved to when this file was written, with the release it corresponds to recorded
+# in a trailing comment so the pin stays readable and can be moved deliberately. This is the
+# same intent as the legacy procedures naming exact library data sets rather than accepting
+# whatever happened to be installed, and as the build tool wrapper pinning its own distribution
+# by digest.
 #
 # CONCEPTUAL ANTECEDENT
 # The legacy estate's compile-and-link pipeline - three job members under samples/jcl (job names
@@ -54,7 +78,17 @@
 #
 #   1. Pinned toolchain. The procedures named exact compiler and transaction-monitor library
 #      data sets rather than accepting whatever happened to be installed, so every action
-#      reference below is pinned and the JDK vendor and feature release are stated explicitly.
+#      reference below is pinned to an immutable commit identifier and the JDK vendor and
+#      feature release are stated explicitly. A release tag is deliberately NOT used for that
+#      purpose: a major-version tag such as v4 is mutable and its owner re-points it at every
+#      new release, so a tag pin lets the code a run executes change with nothing in this file
+#      changing - the integrity gap the pinning below closes. Each reference therefore carries
+#      the full forty-character commit identifier, with the release it belongs to retained in a
+#      trailing comment so a maintainer can move the pin deliberately rather than silently. Each
+#      identifier was read from the action repository's own tag reference and independently
+#      confirmed against the published release for that tag; every one resolves to a commit
+#      object and to the exact code the previous v4 reference already selected, so pinning
+#      changes the reference's integrity and not the build's behaviour.
 #   2. Explicit compiler options. Every compile and link step carried an explicit option list -
 #      the direct ancestor of the strict lint settings the module build applies.
 #   3. Condition-code gating. The whole pipeline contained exactly two condition-code clauses,
@@ -85,14 +119,11 @@
 ---
 name: CardDemo Java CI
 
-# The contribution guide directs contributors to work against main and to watch for automated CI
-# failures reported on their pull request, so both events are wired. Neither is narrowed by a
-# path filter: a filtered pull request event can leave a required check pending indefinitely,
-# and a run that never happens produces no evidence.
+# Neither event is narrowed by a path filter: a filtered pull request event can leave a required
+# check pending indefinitely, and a run that never happens produces no evidence.
 #
-# The key below is quoted because bare `on` is a YAML 1.1 boolean. GitHub reads either form, but
-# the quoted one keeps the key a string, so linters and parsers see the workflow the same way
-# GitHub does instead of a boolean-keyed mapping.
+# The key is quoted because bare `on` is a YAML 1.1 boolean. GitHub reads either form; quoting
+# keeps linters and parsers seeing the same workflow GitHub does.
 "on":
   push:
     branches:
@@ -102,21 +133,38 @@ name: CardDemo Java CI
       - main
   workflow_dispatch:
 
-# Least privilege. Reading the checkout is all any step below needs - nothing writes to the
-# repository, publishes an image, or comments on a pull request.
+# Least privilege: reading the checkout is all any step needs.
 permissions:
   contents: read
 
+# =================================================================================================
+# SUPPLY CHAIN NOTE :: every action below is pinned to an immutable commit, never to a tag.
+#
+# A tag reference such as @v4 is a MOVING pointer that the action's own maintainer controls. A
+# retargeted tag, a compromised release or a hijacked account silently changes the code that runs
+# here, and that code runs with this workflow's repository read access, its dependency and
+# vulnerability caches, and its build artifacts. A tag reference therefore delegates trust to
+# whatever that tag points at on the day the run happens, which is exactly the class of supply
+# chain compromise this build must not be exposed to.
+#
+# Each `uses:` below therefore names a full 40-character commit identifier - content addressed and
+# immutable - with the human readable release it corresponded to written beside it as a comment so
+# that a reviewer can see at a glance which release is in force. The comment is documentation; the
+# identifier is the contract, and only the identifier is what the runner resolves.
+#
+# Upgrading is deliberately a reviewed edit: bump the identifier and the comment together, in one
+# change, having read what moved. Automated dependency updates may propose that change, but nothing
+# may make it implicitly, which is precisely the property a tag reference gives away.
+# =================================================================================================
+
 # Supersede an in-flight run of the same ref only while a pull request is still being iterated.
-# Runs on main are never cancelled, because a main-branch evidence bundle is the record a
-# reviewer cites and discarding it would break the chain.
+# Runs on main are never cancelled: a main-branch evidence bundle is the record a reviewer cites.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Scopes every run: step into the module. It does NOT affect action steps - their inputs, such as
-# artifact paths and file-hash inputs, stay relative to the repository root, which is why every
-# one of them below carries the carddemo-java/ prefix.
+# Scopes every run: step into the module. Action steps are unaffected - their inputs stay relative
+# to the repository root, which is why each one below carries the carddemo-java/ prefix.
 defaults:
   run:
     working-directory: carddemo-java
@@ -124,35 +172,65 @@ defaults:
 jobs:
   build:
     name: Build, test and verify gates
-    # Ubuntu is required rather than merely preferred: the integration and end-to-end tiers
-    # start real PostgreSQL and LocalStack Community containers through Testcontainers, which
-    # needs the Docker daemon the hosted Ubuntu image provides. No service container is declared
-    # and no compose stack is brought up, because Testcontainers owns that lifecycle itself. No
-    # repository-level configuration value is required by any step: the vulnerability scan runs
-    # anonymously and the container-backed tiers use public community images only.
+    # Ubuntu is required, not preferred: the integration and end-to-end tiers start real
+    # PostgreSQL and LocalStack Community containers through Testcontainers, which needs the
+    # Docker daemon the hosted Ubuntu image provides. Testcontainers owns that lifecycle, so no
+    # service container is declared and no compose stack is brought up. No repository secret is
+    # required by any step.
     runs-on: ubuntu-latest
-    # Generous but bounded - the modern reading of the legacy job cards' effectively unlimited
-    # time limit. A cold run fetches the build tool distribution, the whole dependency graph, the
+    # Bounded but generous: a cold run fetches the Maven distribution, the dependency graph, the
     # vulnerability data set and several container images before a single test executes.
-    timeout-minutes: 120
+    #
+    # The bound is set from a measurement, not from an estimate. Building the vulnerability data
+    # set from empty against the anonymous NVD endpoint was timed at approximately 112 minutes
+    # during environment setup; a warm rescan of the same data takes about 40 seconds. Every
+    # other cold cost - the wrapper distribution, the 231-artifact dependency graph, the
+    # PostgreSQL and LocalStack images, then the unit, integration and end-to-end tiers - stacks
+    # on top of that first figure. A 120-minute cap therefore left roughly 8 minutes of headroom
+    # over the data set download alone, so the first run in any repository whose caches are cold
+    # was expected to be killed mid-scan rather than to fail on a finding. 240 minutes clears the
+    # measured worst case with real margin while still bounding a hung run, and it costs nothing
+    # on the steady-state path: a cache-warm run finishes far inside it and exits when the build
+    # exits, not when the timeout does.
+    timeout-minutes: 240
 
+    # Every action below is pinned to a full 40-character commit SHA with its release tag kept in
+    # a trailing comment. A tag - including a major-version tag like v4 - is a mutable pointer:
+    # whoever can move actions/checkout@v4 can change what executes in this job on the next run,
+    # without a commit to this repository and without any diff for a reviewer to read. These steps
+    # handle the checkout, the toolchain, the restored caches and the evidence bundle, so a moved
+    # tag would be an unreviewed third-party change inside the very pipeline that produces the gate
+    # evidence - exactly the exposure the pinned build tool and the pinned dependency graph exist to
+    # close. Pinning the commit makes the third-party code that runs here as fixed as the code in the
+    # module it builds, and the retained tag keeps the pinned commit legible so an upgrade is a
+    # deliberate, reviewable edit rather than a silent drift. Each SHA below was resolved from the
+    # upstream repository and is the exact commit its v4 tag pointed at, so pinning changed the
+    # identity of what runs, not its behaviour:
+    #
+    #   actions/checkout         11d5960a326750d5838078e36cf38b85af677262  v4 == v4.4.0
+    #   actions/setup-java       d7793b545071e98d581d3bf084a51c3213318a07  v4 == v4.9.0
+    #   actions/cache            0057852bfaa89a56745cba8c7296529d2fc39830  v4 == v4.3.0
+    #   actions/upload-artifact  ea165f8d65b6e75b540449e92b4886f43607fa02  v4 == v4.6.2
+    #
+    # To upgrade one of them, read the release notes, resolve the new tag to its commit, replace
+    # both the SHA and the tag in the comment together - never one without the other - and say in
+    # the commit message which release was adopted.
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Eclipse Temurin JDK 25
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07 # v4.9.0
         with:
           java-version: '25'
           distribution: 'temurin'
 
-      # One cache covers two things, which is why it is declared explicitly rather than left to
-      # the JDK action's built-in option: that option restores the artifact repository alone,
-      # while the script-only wrapper also installs the build tool distribution beneath the same
-      # home directory. The key is bound to both files that can change what lands there, and the
-      # prefix fallback keeps a partial hit useful.
+      # Declared explicitly rather than using the JDK action's built-in option, which restores the
+      # artefact repository alone: the script-only wrapper also installs the Maven distribution
+      # beneath the same home directory. The key is bound to both files that change what lands
+      # there.
       - name: Cache the Maven home directory
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.m2
           key: m2-${{ runner.os }}-${{ hashFiles('carddemo-java/pom.xml', 'carddemo-java/.mvn/wrapper/maven-wrapper.properties') }}
@@ -164,8 +242,26 @@ jobs:
       # refetched. The key rotates per run so each run saves its updated copy, and the prefix
       # fallback restores the most recent one. This is an optimisation only - it never changes
       # whether the scan executes or what it ends the build on.
+      #
+      # This cache is what separates the two very different costs of the scan, and the job
+      # timeout above is sized for the worse one. Restoring roughly 234 MB of previously built
+      # data turns the scan into an incremental update measured in seconds; missing the cache
+      # entirely means rebuilding that data set from empty against the anonymous NVD endpoint,
+      # which was timed at approximately 112 minutes during environment setup. The prefix
+      # fallback means only a genuinely first run - a new repository, a new runner OS, or an
+      # evicted cache - pays that price, but the bound has to accommodate it, because a scan
+      # killed by a timeout is indistinguishable from a scan that found nothing.
+      #
+      # Two accelerators exist and neither is wired in, deliberately. Supplying an NVD API key
+      # would cut the cold build substantially, and pre-seeding the data set from a trusted
+      # mirror would remove it altogether - but both turn this job into something that needs
+      # repository-level configuration to succeed, and every step here is written to run
+      # anonymously on a fork with no secrets available. The cache plus a sufficient bound gets
+      # the same steady-state result without that dependency. If a cold run ever has to be made
+      # routinely fast, add the key as an optional input rather than a required one, so that an
+      # absent secret degrades to the anonymous path instead of failing the build.
       - name: Cache the vulnerability data set
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.dependency-check-data
           key: nvd-${{ runner.os }}-${{ github.run_id }}
@@ -174,27 +270,59 @@ jobs:
 
       # Fail fast and legibly on an unusable runner rather than forty minutes into the container
       # tiers. This is also the wrapper's first invocation, which proves it can fetch and
-      # digest-verify its configured distribution before the real build depends on it. The
-      # wrapper needs unzip on PATH to honour that digest; the hosted image provides it.
+      # digest-verify its configured distribution before the real build depends on it. That
+      # verification needs nothing from the runner image beyond the JDK just installed: the
+      # wrapper digests with sha256sum or shasum and falls back to java.security, and extracts
+      # with unzip and falls back to the JDK's own zip filesystem provider, so a change to the
+      # hosted image's utility set can slow this step down but cannot skip the digest check.
       - name: Report the toolchain and container runtime
         run: |
           java -version
           ./mvnw -B --version
           docker version --format 'Docker server {{.Server.Version}}'
 
-      # THE BUILD. One invocation, three gates, nothing suppressed. A compiler warning, a
-      # failing test in either tier, coverage under the floor, or a vulnerability at or above the
-      # configured score each end the run right here, and no later step can rescue it.
-      - name: Build, test and verify
-        run: ./mvnw -B clean verify
+      # ---- gate 1 of 2: build, test and coverage ---------------------------------------------
+      # A compiler warning, a failing test in either tier, or coverage under the floor ends this
+      # step. The supply chain scan is switched off for this invocation only, because it is run
+      # by itself in the next step; leaving it on here would either scan twice or, when this step
+      # fails, not scan at all. Nothing else is suppressed, and the module build still performs
+      # the scan by default for anyone running it by hand.
+      #
+      # The step is allowed to continue so that the scan below still runs and both sets of
+      # evidence are still uploaded. Its real result is recorded and read back by the final step,
+      # which fails the job - so this changes what else gets to run, not whether the run passes.
+      - name: Build, test and coverage gate
+        id: build_gate
+        continue-on-error: true
+        run: ./mvnw -B clean verify -Ddependency-check.skip=true
+
+      # ---- gate 2 of 2: supply chain --------------------------------------------------------
+      # Invoked on its own and unconditionally. This goal needs only the resolved dependency
+      # graph, not compiled output, so it produces a verdict and a report even when the step
+      # above failed outright - which is the whole point of separating them. Configuration comes
+      # from the module build: the score that fails the build, the accepted-finding file and the
+      # report formats are all declared there, so nothing about the gate's strictness is decided
+      # in this file.
+      - name: Supply chain gate
+        id: supply_chain_gate
+        if: always()
+        continue-on-error: true
+        run: ./mvnw -B dependency-check:check
 
       # ---- evidence bundle ------------------------------------------------------------------
-      # The three uploads below carry if: always() so the gate reports survive a failed build.
+      # The three uploads below carry if: always() so the gate reports survive a failed gate.
       # A report that is absent is reported as a warning rather than swallowed, because an
       # unexpectedly missing gate report is itself a finding a reviewer needs to see.
+      #
+      # For that promise to hold, the ORDER the gates run in matters as much as the if: always()
+      # above. The vulnerability scan and the coverage check both bind to the same build phase, so
+      # whichever is declared first in pom.xml runs first - and a coverage failure ends the phase.
+      # pom.xml therefore declares the scan ahead of the coverage check, so a build that misses the
+      # coverage floor still produces and uploads its vulnerability report instead of publishing no
+      # supply-chain evidence at all. Reordering those two plugins would silently break this step.
       - name: Upload coverage reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: jacoco-coverage-reports
           path: |
@@ -209,7 +337,7 @@ jobs:
 
       - name: Upload vulnerability scan reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: owasp-dependency-check-report
           path: |
@@ -221,7 +349,7 @@ jobs:
 
       - name: Upload unit and integration test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-reports
           path: |
@@ -230,14 +358,161 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      # The executable jar is build output rather than gate evidence, so it is uploaded only on a
-      # successful run - and then an absent file is a hard error, because a green run that
-      # produced no artifact is a finding in its own right.
+      # ---- deployability --------------------------------------------------------------------
+      # A repackaged jar names a start class in its manifest, and nothing earlier in this workflow
+      # proves that the class is present in the artifact or that the context it starts can reach a
+      # started state. Both are proven here, before the upload, so that the only artifact this
+      # workflow publishes is one that was observed to start.
+      #
+      # The database is started with the container runtime already present on the runner rather than
+      # through a job-level service block, so the job keeps its single-job shape and - importantly -
+      # no new action reference enters the workflow, which would otherwise have to be pinned to a
+      # commit as every reference here already is. The image tag matches the one the module's own
+      # compose stack and integration tests pin, so the smoke test and the tests agree on the server.
+      #
+      # The local profile is selected deliberately: it is the only profile that supplies a datasource
+      # URL and the personal-data encryption key material with inline defaults, so the artifact starts
+      # here without any secret. The production profile resolves all of its secrets from the
+      # environment with no fallback and is therefore not a smoke-test profile by design.
+      #
+      # The step is conditioned on the build gate rather than on success(). The gates above are
+      # allowed to continue, so success() is true even when one of them failed, and there is no
+      # jar to start at all when the build gate failed - the step would then fail for the wrong
+      # reason and hide the real verdict.
+      - name: Smoke test the executable jar
+        id: deployability_gate
+        if: steps.build_gate.outcome == 'success'
+        run: |
+          set -euo pipefail
+
+          jar="$(ls target/carddemo-java-*.jar)"
+          echo "Artifact under test: ${jar}"
+
+          # The manifest's declared start class must actually be inside the artifact. This alone
+          # catches the failure mode where repackage names an entry point that was never written.
+          #
+          # Every match below reads a captured string rather than piping into grep -q. Under
+          # pipefail a grep -q closes the pipe as soon as it matches, the writer upstream is killed
+          # by SIGPIPE, and the pipeline reports failure even though the match succeeded - so the
+          # obvious spelling of this check would fail on a correct artifact.
+          manifest="$(unzip -p "${jar}" META-INF/MANIFEST.MF)"
+          start_class="$(printf '%s' "${manifest}" | tr -d '\r' | sed -n 's/^Start-Class: //p')"
+          echo "Declared start class: ${start_class}"
+          test -n "${start_class}"
+
+          listing="$(unzip -l "${jar}")"
+          start_class_entry="BOOT-INF/classes/${start_class//.//}.class"
+          case "${listing}" in
+            *"${start_class_entry}"*)
+              echo "Start class is present in the artifact: ${start_class_entry}"
+              ;;
+            *)
+              echo "The manifest declares ${start_class} but ${start_class_entry} is not in the jar."
+              exit 1
+              ;;
+          esac
+
+          docker run -d --name carddemo-smoke-db \
+            -e POSTGRES_DB=carddemo \
+            -e POSTGRES_USER=carddemo \
+            -e POSTGRES_PASSWORD=carddemo \
+            -p 5432:5432 \
+            postgres:16.14-bookworm
+
+          database_ready=0
+          for _ in $(seq 1 30); do
+            if docker exec carddemo-smoke-db pg_isready -U carddemo -d carddemo; then
+              database_ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "${database_ready}" -eq 1
+
+          java -jar "${jar}" --spring.profiles.active=local --server.port=8080 > smoke.log 2>&1 &
+          app_pid=$!
+          echo "Started process ${app_pid}."
+
+          # Health reporting UP is the same signal the container image uses as its health check, so a
+          # jar that satisfies this step satisfies the image too.
+          started=0
+          for _ in $(seq 1 60); do
+            if health="$(curl -fsS http://localhost:8080/actuator/health)"; then
+              case "${health}" in
+                *'"status":"UP"'*)
+                  echo "Health reported: ${health}"
+                  started=1
+                  break
+                  ;;
+              esac
+            fi
+            if ! kill -0 "${app_pid}" 2>/dev/null; then
+              echo "Process ${app_pid} exited before reporting health."
+              break
+            fi
+            sleep 2
+          done
+
+          # Only the process this step started is signalled, by the identifier captured above.
+          if kill "${app_pid}" 2>/dev/null; then
+            echo "Stopped process ${app_pid}."
+          else
+            echo "Process ${app_pid} had already exited."
+          fi
+          if wait "${app_pid}"; then
+            echo "Process ${app_pid} exited cleanly."
+          else
+            echo "Process ${app_pid} exited on signal, which is the expected end of this test."
+          fi
+          docker rm -f carddemo-smoke-db
+
+          echo "---- last 60 lines of the start-up log ----"
+          tail -n 60 smoke.log
+          rm -f smoke.log
+
+          test "${started}" -eq 1
+          echo "The artifact starts and reports healthy."
+
+      # The executable jar is build output rather than gate evidence, so it is uploaded only when
+      # every gate passed - and then an absent file is a hard error, because a fully green run
+      # that produced no artifact is a finding in its own right.
+      #
+      # The condition names both gate results explicitly instead of using success(). Those steps
+      # are allowed to continue, which makes success() true even when a gate failed, so it would
+      # publish an artifact from a failing run. Reading the recorded results is what keeps this
+      # honest.
+      #
+      # It also names the deployability result, so the only artifact this workflow publishes is
+      # one the smoke test above observed start and report healthy.
       - name: Upload the executable jar
-        if: success()
-        uses: actions/upload-artifact@v4
+        if: steps.build_gate.outcome == 'success' && steps.supply_chain_gate.outcome == 'success' && steps.deployability_gate.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: carddemo-java-jar
           path: carddemo-java/target/carddemo-java-*.jar
           if-no-files-found: error
           retention-days: 30
+
+      # ---- the verdict ----------------------------------------------------------------------
+      # This is the step that decides the run. Both gates were allowed to continue so that each
+      # could execute and publish its evidence regardless of the other; this step reads their
+      # real results back and fails the job when either one failed. It also prints them, so the
+      # run's summary states which gate failed without a reviewer opening a log.
+      #
+      # It runs even on cancellation, and treats anything other than an outright pass as a
+      # failure, so a cancelled or skipped gate can never be mistaken for a satisfied one.
+      - name: Gate verdict
+        if: always()
+        run: |
+          build_gate='${{ steps.build_gate.outcome }}'
+          supply_chain_gate='${{ steps.supply_chain_gate.outcome }}'
+          printf 'build, test and coverage gate : %s\n' "$build_gate"
+          printf 'supply chain gate             : %s\n' "$supply_chain_gate"
+          failed=0
+          if [ "$build_gate" != 'success' ]; then failed=1; fi
+          if [ "$supply_chain_gate" != 'success' ]; then failed=1; fi
+          if [ "$failed" -ne 0 ]; then
+            echo 'At least one gate did not pass. Failing the run.' >&2
+            exit 1
+          fi
+          echo 'Every gate passed.'

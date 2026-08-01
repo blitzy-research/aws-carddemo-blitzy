@@ -13,6 +13,10 @@
 #   CARDDEMO_DB_USERNAME
 #   CARDDEMO_DB_PASSWORD
 #   CARDDEMO_JWT_SECRET              >= 32 bytes of entropy for HMAC signing
+#   CARDDEMO_FIELD_ENCRYPTION_KEY    Base64 decoding to exactly 32 bytes - the AES-GCM key for the
+#                                    encrypted personal-data columns, used directly rather than
+#                                    derived, so there is no companion salt variable; rotating it
+#                                    invalidates every stored value sealed under the old key
 #   CARDDEMO_AWS_ACCESS_KEY_ID       omit BOTH aws credential lines to use an IAM role instead
 #   CARDDEMO_AWS_SECRET_ACCESS_KEY
 #   AWS_REGION
@@ -74,11 +78,17 @@ server:
   #   enabled: true
   #   bundle: carddemo
 
+# THE FOUR MANAGEMENT VALUES BELOW RESTATE THE SHARED BASELINE RATHER THAN NARROWING IT, and the
+# duplication is deliberate. application.yml is now fail-closed: it publishes these same three
+# endpoints and answers the probe with an aggregate status alone, and it is the local overlay that
+# widens both. Restating them here is a second, independent statement of the production posture, so
+# a future edit that reopens something in the shared baseline cannot silently reopen it in
+# production. They are not redundant lines to be tidied away.
 management:
   endpoints:
     web:
       exposure:
-        # Minimal surface in production; no env/configprops/beans exposure.
+        # Minimal surface in production; no env/configprops/beans/metrics/loggers exposure.
         include: health,info,prometheus
   endpoint:
     health:
@@ -90,6 +100,17 @@ management:
   otlp:
     tracing:
       endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}
+
+# Restated for the same reason as the management block above: the interface description and its
+# viewer are inherited disabled from application.yml, and this second statement means a future edit
+# that reopens either one in the shared baseline cannot reach production by inheritance. Served
+# openly the document is a complete map of every endpoint, field and declared error of the migrated
+# screen contract, and the viewer issues requests from the browser on top of that.
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
 
 logging:
   level:
@@ -111,4 +132,11 @@ carddemo:
       # No fallback. A missing value must fail startup.
       secret: ${CARDDEMO_JWT_SECRET}
       expiration: ${CARDDEMO_JWT_EXPIRATION:PT30M}
+    field-encryption:
+      # No fallback. Base64 of exactly 32 bytes; a missing or malformed key must fail startup rather
+      # than let regulated customer identifiers be sealed under something accidental.
+      key: ${CARDDEMO_FIELD_ENCRYPTION_KEY}
+    # Restated, not narrowed: application.yml already requires transport security, and only the local
+    # and test overlays relax it. Kept here so the production posture is stated independently of what
+    # the shared baseline happens to say.
     require-https: true

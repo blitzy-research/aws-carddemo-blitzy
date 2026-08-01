@@ -18,64 +18,51 @@ package com.carddemo.exception;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
- * Transport for the legacy field-flag validation surface: raised when one or more submitted
- * fields fail the edits the COBOL online layer applied, carrying enough detail for the REST
- * error contract to reproduce the legacy screen decoration exactly.
+ * Transport for the legacy field-flag validation surface: raised when one or more submitted fields
+ * fail the edits the COBOL online layer applied, carrying enough detail for the REST error contract
+ * to reproduce the legacy screen decoration exactly.
  *
  * <p>The shape of this type is dictated by {@code app/cpy/CSSETATY.cpy}, which is not a data
- * structure but a parameterised {@code PROCEDURE DIVISION} macro. It carries three
- * substitution tokens - {@code (TESTVAR1)} for the validation flag, {@code (SCRNVAR2)} for
- * the BMS (3270) field name and {@code (MAPNAME3)} for the map name - and is expanded by
- * {@code COPY ... REPLACING} exactly 39 times in {@code app/cbl/COACTUPC.cbl} between L3208
- * and L3432, always against the same map, with 39 distinct validation flags and 39 distinct
- * BMS field names. The migration collapses those 39 expansions into a single decorator call
- * ({@code api/dto/FieldErrorDecorator}); this exception is the transport for the errors that
- * decorator produces.</p>
+ * structure but a parameterised {@code PROCEDURE DIVISION} macro with three substitution tokens -
+ * {@code (TESTVAR1)} for the validation flag, {@code (SCRNVAR2)} for the BMS (3270) field name and
+ * {@code (MAPNAME3)} for the map name - expanded by {@code COPY ... REPLACING} exactly 39 times in
+ * {@code app/cbl/COACTUPC.cbl} between L3208 and L3432, always against the same map, with 39
+ * distinct validation flags and 39 distinct BMS field names. Those 39 expansions collapse into a
+ * single decorator call ({@code api/dto/FieldErrorDecorator}); this exception is the transport for
+ * the errors that decorator produces.</p>
  *
- * <p>Three properties of that macro are the contract this class exists to preserve:</p>
- * <ul>
- *   <li>It fires <strong>only</strong> when the re-enter condition is set. Per-field error
- *       states are therefore populated only on re-submission, never on the first
- *       presentation of the screen.</li>
- *   <li>It highlights the field - the CICS {@code DFHRED} attribute - when the flag is
- *       <em>either</em> not-OK <em>or</em> blank.</li>
- *   <li>It <em>additionally</em> writes a {@code '*'} marker when the flag is specifically
- *       blank, and not when it is merely not-OK.</li>
- * </ul>
+ * <p>Three properties of the macro are the contract this class exists to preserve: it fires only
+ * when the re-enter condition is set, so per-field error states are populated only on
+ * re-submission and never on first presentation; it highlights the field - the CICS
+ * {@code DFHRED} attribute - when the flag is <em>either</em> not-OK <em>or</em> blank; and it
+ * <em>additionally</em> writes a {@code '*'} marker when the flag is specifically blank, and not
+ * when it is merely not-OK. The third property distinguishes two error states that share the same
+ * highlight, so a boolean is insufficient and {@link FieldState} carries exactly two constants.
+ * Recorded as decision log entry D-33. Re-entry gating itself is deliberately not modelled here;
+ * the caller owns it, exactly as the legacy program owned its re-enter flag.</p>
  *
- * <p>The third property distinguishes two error states that share the same highlight, so a
- * boolean is insufficient: {@link FieldState} carries exactly two constants, MISSING and
- * INVALID. Re-entry gating itself is deliberately <strong>not</strong> modelled here. The
- * caller - the account-update service and the REST error mapper - owns that gating, exactly
- * as the legacy program owned its re-enter flag.</p>
+ * <p>This class is a <strong>generic carrier</strong>: a field name, a legacy BMS field id, a
+ * {@link FieldState} and a caller-supplied message, and nothing else. It holds no catalogue of
+ * field messages and synthesises no wording of its own, because the legacy message literals belong
+ * to the service and message-catalogue layer. It also never carries a submitted field
+ * <em>value</em>, so a failure on a credential field cannot echo what was supplied - recorded as
+ * decision log entry D-16.</p>
  *
- * <p>This class is a <strong>generic carrier</strong>. It holds a field name, a legacy BMS
- * field id, a {@link FieldState} and a caller-supplied message, and nothing else. It
- * deliberately holds no catalogue of field messages and synthesises no wording of its own,
- * because the legacy message literals belong to the service and message-catalogue layer. It
- * also never carries a submitted field <em>value</em>, so a failure on a credential field
- * cannot echo the value that was supplied.</p>
+ * <p><strong>Warning for DTO and service authors.</strong> Two of the 39 decorated fields are
+ * decorated for display but never actually validated: the middle name (BMS field {@code ACSMNAM},
+ * noted at {@code app/cbl/COACTUPC.cbl} L3345) and the second address line (BMS field
+ * {@code ACSADL2}, noted at L3369). No validation constraint may be attached to either field, since
+ * adding one would reject input the legacy system accepts. Recorded as decision log entry D-34.</p>
  *
- * <p><strong>Warning for DTO and service authors.</strong> Two of the 39 decorated fields
- * are decorated for display but never actually validated: the middle name (BMS field
- * {@code ACSMNAM}, noted at {@code app/cbl/COACTUPC.cbl} L3345) and the second address line
- * (BMS field {@code ACSADL2}, noted at L3369). No validation constraint may be attached to
- * either field. Adding one would reject input the legacy system accepts - an unrequested
- * behaviour change and a breach of the no-feature-expansion boundary.</p>
- *
- * <p>Instances are immutable: the field-error collection is defensively copied on
- * construction and exposed unmodifiable, and there are no setters. That collection is
- * {@code transient} because {@link FieldError} is intentionally not serialisable, so a
- * {@code ValidationException} survives Java serialisation without its per-field detail;
- * after such a round trip {@link #fieldErrors()} reports an empty list rather than
- * {@code null}. The message and the cause, which {@code Throwable} itself serialises, are
- * unaffected.</p>
- *
- * <p>Provenance: translated from the checkout at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
+ * <p>Instances are immutable: the field-error collection is defensively copied on construction and
+ * exposed unmodifiable, and there are no setters. That collection is {@code transient} because
+ * {@link FieldError} is intentionally not serialisable, so a {@code ValidationException} survives
+ * Java serialisation without its per-field detail and {@link #fieldErrors()} then reports an empty
+ * list rather than {@code null}. The message and the cause, which {@code Throwable} itself
+ * serialises, are unaffected.</p>
  */
 public class ValidationException extends RuntimeException {
 
@@ -126,7 +113,9 @@ public class ValidationException extends RuntimeException {
      *                   be supplied as {@code null} or empty where a validation is not
      *                   screen-bound; {@code null} is normalised to the empty string so the
      *                   accessor never returns {@code null}
-     * @param state      which of the two legacy error states the field is in
+     * @param state      which of the two legacy error states the field is in. Mandatory: the
+     *                   legacy flag is never absent when the macro fires, so there is no third
+     *                   state to represent and a {@code null} is rejected rather than guessed at
      * @param message    the caller-supplied message, owned by the service or message
      *                   catalogue that raised the failure
      */
@@ -134,9 +123,24 @@ public class ValidationException extends RuntimeException {
 
         /**
          * Normalises the optional legacy BMS field id to the empty string when it is absent,
-         * so consumers never have to null-check it.
+         * so consumers never have to null-check it, and rejects an absent state outright.
+         *
+         * <p>The state is mandatory because the legacy contract has exactly two meaningful
+         * values and the macro at {@code app/cpy/CSSETATY.cpy} L18-27 fires only when the flag
+         * holds one of them: it decorates the field when the flag is not-OK <em>or</em> blank,
+         * and writes the {@code '*'} marker only for blank. A {@code null} here would therefore
+         * describe a state the legacy screen cannot be in, and admitting it would force every
+         * consumer - the REST error mapper above all - to invent a value on the producer's
+         * behalf. Inventing one is worse than failing: MISSING tells the operator to supply a
+         * value they may already have supplied, and INVALID tells them to correct a value they
+         * may never have entered. Rejecting the {@code null} at construction keeps the two-state
+         * translation total and locates the defect in the producer that omitted the state.
+         *
+         * @throws NullPointerException if {@code state} is {@code null}
          */
         public FieldError {
+            Objects.requireNonNull(state, "state must not be null: the legacy field flag is"
+                    + " either MISSING or INVALID and is never absent");
             bmsFieldId = (bmsFieldId == null) ? "" : bmsFieldId;
         }
     }
@@ -170,8 +174,9 @@ public class ValidationException extends RuntimeException {
      * @param bmsFieldId the legacy BMS (3270) field name, or {@code null} when the
      *                   validation is not screen-bound
      * @param state      MISSING when the field was not supplied, INVALID when it was
-     *                   supplied but failed its edit
+     *                   supplied but failed its edit; must not be {@code null}
      * @param message    the caller-supplied message; passed through unchanged
+     * @throws NullPointerException if {@code state} is {@code null}
      */
     public ValidationException(String field, String bmsFieldId, FieldState state, String message) {
         this(message, List.of(new FieldError(field, bmsFieldId, state, message)));

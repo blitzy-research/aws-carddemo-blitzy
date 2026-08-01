@@ -40,46 +40,34 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Unit tests for the module's single time source.
  *
- * <h2>What is under test and why it matters</h2>
- * The class under test replaces {@code app/cpy/CSDAT01Y.cpy}, whose {@code WS-DATE-TIME} group item on
- * line 17 was textually included by all 17 online COBOL programs, each copy filled independently from
- * the language's current-date intrinsic. The migration collapses every one of those copies into one
- * injected clock, and the whole value of doing so rests on a single property: the clock can be
- * <em>pinned</em>. If it cannot, no fixed-width timestamp image can ever be asserted, because the
- * expected value would depend on when the test happened to run.
+ * <p>The class under test replaces {@code app/cpy/CSDAT01Y.cpy}, whose {@code WS-DATE-TIME} group item on
+ * line 17 was textually included by all 17 online COBOL programs, each copy filled independently from the
+ * language's current-date intrinsic. The migration collapses every copy into one injected clock, and the
+ * whole value of doing so rests on a single property: the clock can be <em>pinned</em>. If it cannot, no
+ * fixed-width timestamp image can ever be asserted, because the expected value would depend on when the
+ * test happened to run. These tests prove three things, in order of importance: that the published clock
+ * is fixed to UTC rather than to whatever zone the host is set to; that a test can substitute a fixed
+ * clock and get a byte-for-byte deterministic timestamp out of a consumer; and that the class registers no
+ * persistence infrastructure of its own, which is what keeps it from colliding with auto-configuration or
+ * from mapping a column the migrations never created.
  *
- * <p>These tests therefore prove three things, in order of importance: that the published clock is
- * fixed to UTC rather than to whatever zone the host is set to; that a test can substitute a fixed
- * clock and get a byte-for-byte deterministic timestamp out of a consumer; and that the class registers
- * no persistence infrastructure of its own, which is what keeps it from colliding with
- * auto-configuration or from mapping a column the migrations never created.</p>
+ * <p><strong>The constant tail is the point.</strong> The batch timestamp layout of
+ * {@code app/cbl/CBTRN02C.cbl} ends in four characters that are a <strong>literal</strong>, moved in at
+ * line 701 of {@code Z-GET-DB2-FORMAT-TIMESTAMP} (lines 692-705), because the item feeding the fraction,
+ * {@code COB-MIL} at line 157, is only {@code PIC X(02)} wide. An implementation emitting real
+ * microseconds there would be the right length and wrong bytes. {@link ImageDeterminism} pins two instants
+ * differing <em>only</em> below the hundredths place and asserts the rendered image is identical for both,
+ * which is the only way to demonstrate the tail is a constant rather than an accident of timing.
  *
- * <h2>The constant tail is the point</h2>
- * The batch timestamp layout of {@code app/cbl/CBTRN02C.cbl} ends in four characters that are a
- * <strong>literal</strong>, moved in at line 701 of {@code Z-GET-DB2-FORMAT-TIMESTAMP} (lines 692-705),
- * because the item feeding the fraction, {@code COB-MIL} at line 157, is only {@code PIC X(02)} wide.
- * An implementation that emitted real microseconds there would be the right length and wrong bytes.
- * {@link ImageDeterminism} pins two instants that differ <em>only</em> below the hundredths place and
- * asserts the rendered image is identical for both, which is the only way to demonstrate that the tail
- * is a constant rather than an accident of timing.
- *
- * <h2>How these tests are written</h2>
- * <ul>
- *   <li>Every expected value is a literal declared in this test class, and every rendered image is
- *       built by a private helper belonging to this test. No expected value is produced by calling
- *       production code, so the oracle is independent of what it judges. The production renderers live
- *       with the components that own the records they appear on and are covered by those components'
- *       own tests.</li>
- *   <li>Width assertions measure characters of a US-ASCII-safe image and are stated against the
- *       declared picture width of the legacy field, never against whatever the code happens to
- *       produce.</li>
- *   <li>Zone assertions compare against {@link ZoneOffset#UTC} explicitly. Asserting merely that the
- *       zone "is UTC-like" would pass on a host clock that happens to sit in that zone, which is the
- *       exact defect being guarded against.</li>
- *   <li>This is a plain unit test. It starts no container, opens no connection and binds no port. The
- *       contexts it builds are minimal and hold only the class under test plus, where needed, a local
- *       test consumer.</li>
- * </ul>
+ * <p><strong>How these tests are written.</strong> Every expected value is a literal declared here and
+ * every rendered image is built by a private helper belonging to this test, so the oracle is independent
+ * of what it judges; the production renderers live with the components that own the records they appear on
+ * and are covered by those components' own tests. Width assertions measure characters of a US-ASCII-safe
+ * image against the declared picture width of the legacy field, never against whatever the code happens to
+ * produce. Zone assertions compare against {@link ZoneOffset#UTC} explicitly, because asserting merely
+ * that the zone "is UTC-like" would pass on a host clock that happens to sit in that zone &mdash; the
+ * exact defect being guarded against. It is a plain unit test: no container, no connection, no bound port,
+ * and the contexts it builds hold only the class under test plus, where needed, a local test consumer.
  */
 @DisplayName("JPA configuration: one pinnable UTC clock, and no persistence infrastructure of its own")
 class JpaAuditConfigTest {

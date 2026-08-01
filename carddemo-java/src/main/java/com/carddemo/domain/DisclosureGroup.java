@@ -28,135 +28,67 @@ import jakarta.persistence.Table;
 import com.carddemo.domain.id.DisclosureGroupId;
 
 /**
- * Disclosure-group interest rate: the Java translation of the {@code DIS-GROUP-RECORD} layout
- * declared in copybook {@code CVTRA02Y} of the read-only legacy estate, whose own header states a
- * record length of 50.
+ * Disclosure-group interest rate - the Java translation of the {@code DIS-GROUP-RECORD} layout
+ * declared in copybook {@code CVTRA02Y}, whose header states a record length of 50.
  *
  * <p>A disclosure group associates an account group with a transaction type and a transaction
  * category, and carries the one interest rate that the interest-accrual batch program applies to
- * matching category balances. There is exactly one rate per group/type/category triple, so the
- * entire identity of a row is its three-part key and the rate is the only non-key attribute.
+ * matching category balances. There is exactly one rate per group/type/category triple, so the entire
+ * identity of a row is its three-part key and the rate is the only non-key attribute. Four fields of
+ * the 50-byte image are persisted; each attribute below documents its own offset and width. The three
+ * key parts sum to 10 + 2 + 4 = 16 bytes and occupy the leading portion of the image, and the
+ * trailing 28-byte filler beginning at offset 22 is <em>not</em> persisted - no attribute, no column.
+ * Offset arithmetic belongs exclusively to the fixed-width record mapper in the utility layer.
  *
- * <p><strong>Record layout and the sixteen-byte key.</strong> Four fields of the 50-byte record
- * image are persisted. Zero-based offset and width, in the order they occupy the image:
+ * <p><strong>Cluster provenance corroborates the component order.</strong> The legacy indexed cluster
+ * is defined in {@code DISCGRP.jcl} with {@code KEYS(16 0)} and {@code RECORDSIZE(50 50)}. A declared
+ * key length of 16 beginning at offset 0 is decisive: it confirms both that the key is the leading
+ * substring of the record image and that the three components, in exactly this order, make up that
+ * substring. The primary-key column order of the table agrees, giving three independent confirmations
+ * of one ordering. Because the key <em>is</em> that leading substring, the persistent identity of a
+ * row is its business key; no surrogate or provider-assigned identifier is introduced, since either
+ * would sever the record-image-to-row correspondence that byte-level output parity depends on.
  *
- * <ul>
- *   <li>{@code DIS-ACCT-GROUP-ID} - alphanumeric, 10 bytes at offset 0, key part 1, mapped to
- *       {@link #getDisAcctGroupId()}</li>
- *   <li>{@code DIS-TRAN-TYPE-CD} - alphanumeric, 2 bytes at offset 10, key part 2, mapped to
- *       {@link #getDisTranTypeCd()}</li>
- *   <li>{@code DIS-TRAN-CAT-CD} - external decimal, 4 bytes at offset 12, key part 3, mapped to
- *       {@link #getDisTranCatCd()}</li>
- *   <li>{@code DIS-INT-RATE} - signed external decimal, 6 bytes at offset 16, four integer digits
- *       and two decimal digits, mapped to {@link #getDisIntRate()}</li>
- * </ul>
+ * <p><strong>Composite identity.</strong> The key is realised as {@link DisclosureGroupId}, bound
+ * through {@code @IdClass} rather than as an embedded identifier. The provider matches an identifier
+ * class to its entity by field <em>name</em> and field <em>type</em>, so the three key attributes here
+ * are named and typed identically to that class; a divergence in either is a start-up failure rather
+ * than a silent defect, and component order is preserved in the declaration order below.
  *
- * <p>The three key parts sum to 10 + 2 + 4 = 16 bytes and occupy the leading portion of the record.
- * The record's trailing 28-byte filler begins at offset 22 and is <em>not</em> persisted: it has no
- * field on this class and no column in the schema. Offset arithmetic over the record image belongs
- * exclusively to the fixed-width record mapper {@code DisclosureGroupRecordMapper} in the utility
- * layer; this class carries declared column widths and performs no parsing of its own.
+ * <p>Three distinct identifier classes exist in this module and must never be interchanged: the
+ * 16-byte key modelled here, the 17-byte key of the transaction-category-balance entity, and the
+ * 6-byte key of the transaction-category entity. Each belongs to exactly one entity.
  *
- * <p><strong>Cluster provenance corroborates the component order.</strong> The legacy indexed
- * cluster for this file is defined in job {@code DISCGRP.jcl} with {@code KEYS(16 0)} and
- * {@code RECORDSIZE(50 50)}. A declared key length of 16 beginning at offset 0 is decisive: it
- * confirms both that the key is the leading substring of the record image and that the three
- * components above, in exactly this order, are what make up that substring. The primary-key column
- * order of the {@code disclosure_group} table agrees, giving three independent confirmations of one
- * ordering.
+ * <p><strong>Key values carry significant padding and are never trimmed</strong> - not in a
+ * constructor, not in an accessor, and above all not in {@link #equals(Object)} or
+ * {@link #hashCode()}. Components are compared byte for byte, so a padded identifier is deliberately
+ * unequal to its shortened form, exactly as the two are distinct in the database. The account group
+ * identifier documents why this is load-bearing rather than stylistic.
  *
- * <p>Because the key <em>is</em> the leading substring of the record image - the same key-then-data
- * split visible in the file-section layout of the sequential account reader {@code CBACT01C} - the
- * persistent identity of a row is its business key. No surrogate identifier and no provider-assigned
- * identifier is introduced: either would sever the record-image-to-row correspondence that
- * byte-level output parity depends on.
- *
- * <p><strong>Composite identity.</strong> The key is realised as an identifier class,
- * {@link DisclosureGroupId}, bound through {@code @IdClass} rather than as an embedded identifier.
- * The provider matches an identifier class to its entity by field <em>name</em> and field
- * <em>type</em>, so the three key fields declared here are named and typed identically to that
- * class; a divergence in either is a startup failure rather than a silent defect. Component order is
- * contractual and is preserved in the field declaration order below.
- *
- * <p>Three distinct identifier classes exist in this module and they must never be interchanged: the
- * 16-byte key modelled here, the 17-byte key of {@code TransactionCategoryBalance}, and the 6-byte
- * key of {@code TransactionCategory}. Each belongs to exactly one entity.
- *
- * <p><strong>Key values carry significant padding and are never trimmed.</strong> Every key
- * component is a fixed-width field lifted verbatim from the record image, so a value fills its whole
- * declared width and any padding is part of the stored key rather than incidental whitespace. The
- * account group identifier is the case that makes this load-bearing. The seeded reference data
- * contains exactly three group identifiers, each occupying the full ten characters and each present
- * 17 times:
- *
- * <ul>
- *   <li>{@code "A000000000"} - 17 rows, ten characters with no padding</li>
- *   <li>{@code "DEFAULT   "} - 17 rows, the seven characters {@code DEFAULT} followed by three
- *       trailing spaces</li>
- *   <li>{@code "ZEROAPR   "} - 17 rows, the seven characters {@code ZEROAPR} followed by three
- *       trailing spaces</li>
- * </ul>
- *
- * <p>The padded form is the actual key, and a runtime path depends on it. The interest-accrual
- * program {@code CBACT04C} treats a missing disclosure-group record - file status {@code 23} - as
- * recoverable: it substitutes the seven-character default group literal into the ten-byte
- * alphanumeric group-identifier field and re-reads the file with the mutated key. A legacy
- * alphanumeric move into a longer receiving field left-justifies and space-fills, so the retry key
- * is necessarily {@code "DEFAULT   "} at the full ten characters and never the seven-character
- * {@code "DEFAULT"}. Were this class to shorten its values, the retry would compare a seven-
- * character value against a ten-character stored key, match nothing, and the fallback would
- * silently never resolve a rate.
- *
- * <p>Nothing in this class therefore trims, pads, folds case, normalizes or validates a key
- * component - not in a constructor, not in an accessor, and above all not in
- * {@link #equals(Object)} or {@link #hashCode()}. Components are compared byte for byte, so a padded
- * identifier is deliberately unequal to its shortened form, exactly as the two are distinct in the
- * database.
- *
- * <p><strong>Seeded data and the branches it makes reachable.</strong> The reference-data seed loads
- * 51 rows measuring 2,601 bytes at a 50-byte record length, forming the three complete 17-row groups
- * listed above. That composition is what makes both arms of the rate lookup reachable from seeded
- * data alone - the direct group hit and the status-{@code 23} default fallback - without any
- * synthetic fixture. Two further seeded facts matter to the accrual tests: every one of the 50 seeded
- * account rows carries exactly ten spaces in its account group identifier, so seeded data exercises
- * the default-fallback path only; and every rate in the zero-rate group is exactly zero, which makes
- * the accrual program's skip branch reachable, since it computes interest only when the rate is
- * non-zero.
+ * <p><strong>Seeded data and the branches it makes reachable.</strong> The reference data holds 51
+ * rows measuring 2,601 bytes at a 50-byte record length, forming three complete 17-row groups keyed
+ * {@code "A000000000"}, {@code "DEFAULT   "} and {@code "ZEROAPR   "} - the latter two padded to the
+ * full ten characters. That composition makes both arms of the rate lookup reachable from seeded data
+ * alone, the direct group hit and the status-{@code 23} default fallback, without any synthetic
+ * fixture. Two further seeded facts matter to accrual tests: every one of the 50 seeded account rows
+ * carries exactly ten spaces in its account group identifier, so seeded data exercises the
+ * default-fallback path only; and every rate in the zero-rate group is exactly zero, which makes the
+ * accrual skip branch reachable, since interest is computed only when the rate is non-zero.
  *
  * <p><strong>No foreign key references this table, by design.</strong> The account table's group
- * identifier is deliberately <em>not</em> a foreign key to this table. It cannot be one: the group
- * identifier is only the first of three key components and is nonunique on its own, recurring once
- * per type/category combination - 17 times per group in the verified reference data. A single-column
- * reference to a partial composite prefix is not expressible as a foreign key, and promoting it to
- * one would fabricate a constraint the legacy design never had and would reject the very
- * unmatched-group case the fallback exists to absorb. Resolution is a runtime lookup with a
- * fallback, not referential integrity. Accordingly this class models no association of any kind, in
- * either direction, and holds no collection.
+ * identifier is deliberately not a foreign key here, and cannot be one: the group identifier is only
+ * the first of three key components and is nonunique on its own, recurring once per type/category
+ * combination - 17 times per group in the verified reference data. A single-column reference to a
+ * partial composite prefix is not expressible as a foreign key, and promoting it to one would
+ * fabricate a constraint the legacy design never had and would reject the very unmatched-group case
+ * the fallback exists to absorb. Resolution is a runtime lookup with a fallback, not referential
+ * integrity, so this class models no association in either direction and holds no collection.
  *
- * <p><strong>The rate is carried here and computed elsewhere.</strong> The rate column is the only
- * exact numeric column in the schema declared with a precision of six; every other amount column is
- * wider, so its precision must not be copied from a sibling entity. This class is a passive carrier:
- * it performs no arithmetic and applies no scaling. Both belong to the accrual service and to the
- * zoned-decimal codec in the utility layer, which is the single point at which a scale and a
- * truncating policy are applied.
+ * <p>The rate is carried here and computed elsewhere: this class performs no arithmetic and applies
+ * no scaling, both of which belong to the accrual service and to the zoned-decimal codec in the
+ * utility layer. The rate attribute records why that division of responsibility is contractual rather
+ * than merely tidy.
  *
- * <p>That division of responsibility is deliberate, because the arithmetic this rate feeds is
- * order-sensitive. The accrual program derives monthly interest by multiplying the category balance
- * by this rate <em>first</em> and only then dividing the product by the twelve-hundred monthly
- * divisor, storing the result into a two-decimal field. The legacy estate contains no rounding
- * clause anywhere, so that store truncates toward zero rather than rounding. Simplifying the
- * expression by scaling the rate before the multiplication is algebraically identical in exact
- * arithmetic yet moves the point at which truncation occurs, and so changes the resulting cent. The
- * operand order is therefore contractual and is reproduced literally by the service that owns it.
- * For the same reason no fee logic may be invented anywhere in this module: the fee routine invoked
- * alongside interest accrual is an empty routine in the legacy program and is preserved as a
- * documented no-op.
- *
- * <p><strong>Provenance.</strong> Translated from the read-only legacy estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, which appears in the trailer of the source
- * copybook at line 12. Only member names, field names, widths, offsets and status codes are cited
- * here; no legacy source text is transcribed, and the legacy tree is never copied into this module.
  *
  * @see DisclosureGroupId
  */

@@ -88,10 +88,6 @@ import java.util.Objects;
  * also named differently from this key's 2-byte component, so the two must never be conflated. Of
  * the two reference tables, only the transaction-category table takes a composite key, and this
  * class is that key.
- *
- * <p><strong>Provenance.</strong> Translated from the read-only legacy estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
 public class TransactionCategoryId implements Serializable {
 

@@ -13,4 +13,3 @@ ${AnsiColor.DEFAULT}${AnsiStyle.NORMAL}
 
  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  Released under the Apache License 2.0. See LICENSE and NOTICE.
-

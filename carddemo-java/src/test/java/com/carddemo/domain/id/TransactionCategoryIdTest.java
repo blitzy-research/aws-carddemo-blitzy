@@ -41,18 +41,13 @@ import org.junit.jupiter.api.Test;
  * transaction-category reference table.
  *
  * <p><strong>What this test proves.</strong> Two independent legacy authorities fix the same key
- * geometry, and this test pins both of them:
- * <ul>
- *   <li>the copybook member {@code CVTRA04Y}, whose record length is 60 and whose key group
- *       {@code TRAN-CAT-KEY} is 6 bytes wide - a 2-byte {@code TRAN-TYPE-CD} at offset 0 followed by
- *       a 4-digit {@code TRAN-CAT-CD} at offset 2 - ahead of a 50-byte description field at offset 6
- *       and a 4-byte trailing filler at offset 56; and</li>
- *   <li>the {@code TRANCATG} VSAM KSDS cluster definition in the batch job library, which declares
- *       {@code KEYS(6 0)} together with {@code RECORDSIZE(60 60)} on an {@code INDEXED} cluster.</li>
- * </ul>
- * The declared key length of 6 and the sum of the two component widths are therefore cross-checks on
- * one another rather than restatements: one comes from the copybook, the other from the cluster
- * definition, and this test asserts that they agree.
+ * geometry and this test pins both: the copybook {@code CVTRA04Y}, whose 60-byte record carries a
+ * 6-byte key group of a 2-byte type code at offset 0 plus a 4-digit category code at offset 2, ahead
+ * of a 50-byte description at offset 6 and a 4-byte trailing filler at offset 56; and the
+ * {@code TRANCATG} cluster definition, which declares {@code KEYS(6 0)} with
+ * {@code RECORDSIZE(60 60)} on an {@code INDEXED} cluster. The declared key length and the sum of the
+ * two component widths are therefore cross-checks on one another rather than restatements - one comes
+ * from the copybook, the other from the cluster definition, and this test asserts they agree.
  *
  * <p><strong>Reference data.</strong> The eighteen distinct 6-byte keys asserted here are the
  * measured contents of the transaction-category reference fixture, which holds 18 rows of 60 bytes
@@ -72,13 +67,8 @@ import org.junit.jupiter.api.Test;
  * produced by calling the class under test, and no assertion compares a computed value with a second
  * evaluation of the same computation. Where an equality or hash expectation involves two keys, the
  * two keys are constructed independently.
- *
- * <p><strong>Provenance.</strong> Legacy estate read at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The stamp is cited here as provenance only;
- * it is deliberately never asserted against a member, because the estate does not carry it
- * uniformly.
  */
+@DisplayName("TransactionCategoryId :: six-byte composite key of the transaction-category table")
 class TransactionCategoryIdTest {
 
     // Two aspects of the class under test were optional in its own contract, and this test follows what

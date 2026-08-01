@@ -51,112 +51,42 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Unit tests for {@link AccountUpdateRequest}, the inbound contract for legacy CICS transaction
- * {@code CAUP}.
+ * {@code CAUP}, derived from program {@code app/cbl/COACTUPC.cbl}, symbolic map
+ * {@code app/cpy-bms/COACTUP.CPY} and mapset {@code app/bms/COACTUP.bms}.
  *
- * <h2>What this class is for</h2>
- *
- * <p>The legacy account-update program runs a <strong>first-error-wins</strong> validation cascade:
- * every edit stage is gated on the summary-message slot still being empty, so a submission with
- * five bad fields yields exactly one summary message - the message of the first failing stage in
- * source order - alongside as many independently set field flags as there are bad fields. Bean
- * Validation evaluates constraints in an unspecified order and would report all of them at once
- * under an arbitrary message, which is a different externally observable contract. The ordered
- * cascade therefore lives in the service layer, and this request must <em>tolerate</em> null, blank
- * and out-of-range input rather than reject it.
+ * <p>The legacy program runs a <strong>first-error-wins</strong> validation cascade: every edit
+ * stage is gated on the summary-message slot still being empty, so a submission with five bad
+ * fields yields exactly one summary message - that of the first failing stage in source order -
+ * alongside as many independently set field flags as there are bad fields. Bean Validation
+ * evaluates constraints in an unspecified order and would report all of them at once under an
+ * arbitrary message, which is a different externally observable contract. The ordered cascade
+ * therefore lives in the service layer, and this request must <em>tolerate</em> null, blank and
+ * out-of-range input rather than reject it.
  *
  * <p>That makes the interesting property of this type the constraints it does <strong>not</strong>
- * carry. A test that only checked happy-path getters would pass while a well-meaning future edit
- * silently added a bound and broke parity. Every assertion below therefore either proves a value
- * is carried untouched or proves that no rule fired on it, and two of them are contrast proofs that
+ * carry. A test that only checked happy-path accessors would pass while a well-meaning future edit
+ * silently added a bound and broke parity. Every assertion below therefore either proves a value is
+ * carried untouched or proves that no rule fired on it, and two of them are contrast proofs that
  * would fail if the constraint inventory ever drifted.
  *
- * <h2>Provenance</h2>
+ * <p>The map declares 54 input families, eleven of which are non-editable screen furniture and are
+ * absent from the request, leaving the <strong>43</strong> components exercised here - 38 bounded
+ * strings and 5 exact decimals. Thirty nine of the 43 are error-decoration targets, so exactly four
+ * are editable-but-undecorated - the account id, the account group id, the customer id and the
+ * government-issued id - and {@link StringComponent#UNDECORATED} pins that set down.
  *
- * <ul>
- *   <li>Program {@code app/cbl/COACTUPC.cbl} - 4,236 lines, the largest single translation in the
- *       estate.</li>
- *   <li>Symbolic map {@code app/cpy-bms/COACTUP.CPY} - 54 input families and 54 output families
- *       with no width disagreement between the two views.</li>
- *   <li>Mapset {@code app/bms/COACTUP.bms} - 512 lines, declaring 43 of those 54 families
- *       unprotected.</li>
- *   <li>Record layouts {@code app/cpy/CVACT01Y.cpy} (account, 300 bytes) and
- *       {@code app/cpy/CVCUS01Y.cpy} (customer, 500 bytes) for the persisted types.</li>
- *   <li>Validation tables {@code app/cpy/CSLKPCDY.cpy}; date cascade
- *       {@code app/cpy/CSUTLDPY.cpy} (14 paragraphs).</li>
- *   <li>Checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}; upstream release stamp
- *       {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Recorded here as documentation
- *       only - the stamp is not universal across the estate and is never compiled into a
- *       constant.</li>
- * </ul>
+ * <p><strong>Independent oracles.</strong> No expected value here is produced by the type under
+ * test or by any production collaborator. Every declared width in {@link StringComponent} and
+ * {@link MoneyComponent} was read from the symbolic map, not from the request. The only helpers used
+ * to build an expectation are the platform's own {@link String#repeat(int)} and string
+ * concatenation, which produce literal runs rather than compute anything. The zoned-decimal codec is
+ * deliberately not imported: it owns truncation for the whole module, and using it to generate an
+ * expectation would make this test agree with a defect rather than detect one.
  *
- * <h2>The 54 to 43 to 39 arithmetic</h2>
- *
- * <p>Eleven of the 54 map families are non-editable screen furniture and are absent from this
- * request: the transaction name, both title lines, the current date, the program name, the current
- * time, the information message, the error message and three function-key legends. 54 minus 11
- * leaves the <strong>43</strong> components exercised here - 38 bounded strings and 5 exact
- * decimals.
- *
- * <p>Of those 43, <strong>39</strong> are error-decoration targets, so 43 minus 39 leaves exactly
- * <strong>four editable-but-undecorated</strong> fields: the account id, the account group id, the
- * customer id and the government-issued id. They are genuine inputs that simply never receive
- * field-level decoration, and {@link StringComponent#UNDECORATED} pins that set down.
- *
- * <h2>Lookup cardinalities - documentation, never asserted here</h2>
- *
- * <p>The validation tables hold 490 telephone area codes, being 410 general-purpose plus 80
- * easily-recognisable codes in a disjoint partition, 56 state codes, and 240 state-plus-postal-
- * prefix combinations. Six of those 240 use prefixes that are absent from the 56-code list, so the
- * two lists must never be intersected. Those sets live under
- * {@code src/main/resources/lookup/} and are asserted by the gate verification test; no lookup
- * resource is loaded here and no cardinality is asserted here.
- *
- * <h2>Contract text composed elsewhere</h2>
- *
- * <p>The following externally observable literals belong to the service and the response contract
- * and are recorded only so a reader can find the enforcement site rather than assume this request
- * lost a constraint. Measured lengths are given because trailing punctuation and word spacing are
- * contractual.
- *
- * <ul>
- *   <li>Credit score window, line 2523: {@code : should be between 300 and 850} - 31 characters,
- *       leading colon-space, no trailing period. Enforced by paragraph
- *       {@code 1275-EDIT-FICO-SCORE} at lines 2514-2530 over the condition name declared at lines
- *       848-849 and gated at lines 1553-1554.</li>
- *   <li>State membership, line 2503: {@code : is not a valid state code} - 27 characters, from
- *       paragraph {@code 1270-EDIT-US-STATE-CD} at lines 2493-2510.</li>
- *   <li>State-and-postal combination, line 2550: {@code Invalid zip code for state} - 26
- *       characters and <strong>bare</strong>, carrying no field-name prefix, from paragraph
- *       {@code 1280-EDIT-US-STATE-ZIP-CD} at lines 2536-2557.</li>
- *   <li>Telephone stages, from paragraph {@code 1260-EDIT-US-PHONE-NUM} at lines 2225-2427: line
- *       2254 at 29 characters, line 2272 {@code : Area code must be A 3 digit number.} at 37
- *       characters with a capital {@code A} and a trailing period, line 2286 at 26 characters and
- *       line 2306 at 51 characters.</li>
- *   <li>Service outcomes: line 508 {@code Credit Limit is not valid} at 25, line 510 at 42, line
- *       512 at 24, line 514 at 43, line 516 at 44, line 518
- *       {@code Could not lock account record for update} at 40, line 520
- *       {@code Could not lock customer record for update} at 41, line 522
- *       {@code Record changed by some one else. Please review} at 46 - two words, not one - line
- *       524 at 23, line 526 at 28 and line 528 {@code Looks Good.... so far} at 21 with four
- *       dots.</li>
- * </ul>
- *
- * <h2>Independent oracles</h2>
- *
- * <p>No expected value here is produced by the type under test or by any production collaborator.
- * Every declared width in {@link StringComponent} and {@link MoneyComponent} was read from the
- * symbolic map, not from the request. The only helpers used to build an expectation are the
- * platform's own {@link String#repeat(int)} and string concatenation, which produce literal runs
- * rather than compute anything. The zoned-decimal codec is deliberately not imported: it owns
- * truncation for the whole module and using it to generate an expectation would make this test
- * agree with a defect rather than detect one.
- *
- * <h2>Byte-exact, never trimmed</h2>
- *
- * <p>Leading, interior and trailing spaces are contractual data on a 3270 screen, so no comparison
- * here trims, strips, case-folds or normalises either side. Nothing in this class parses a date,
- * assembles a telephone number, concatenates a lookup key, slices a fixed-width image or rescales
- * a decimal.
+ * <p><strong>Byte-exact, never trimmed.</strong> Leading, interior and trailing spaces are
+ * contractual data on a 3270 screen, so no comparison here trims, strips, case-folds or normalises
+ * either side. Nothing in this class parses a date, assembles a telephone number, concatenates a
+ * lookup key, slices a fixed-width image or rescales a decimal.
  */
 @DisplayName("AccountUpdateRequest - the CAUP inbound contract")
 class AccountUpdateRequestTest {
@@ -181,6 +111,13 @@ class AccountUpdateRequestTest {
      * <p>The builder form matters: the single-argument inclusion setter is deprecated in the
      * pinned databind release and the module compiles with warnings promoted to errors, so the
      * value-based setter is used instead.
+     *
+     * <p>A hand-built mapper can only assert the settings this file believes are in force, so it is
+     * not on its own evidence about the deployed contract. {@link ApplicationJsonContractTest}
+     * closes that gap: it obtains the mapper from a real context in which the module's own
+     * {@code application.yml} has been read, asserts the same four behaviours against it, and
+     * compares its output byte for byte with a mapper built exactly as this one is. An edit to the
+     * module's file therefore fails that test rather than silently invalidating this one.
      */
     private static final ObjectMapper MAPPER = JsonMapper.builder()
             .defaultPropertyInclusion(JsonInclude.Value.construct(
@@ -196,15 +133,33 @@ class AccountUpdateRequestTest {
         validator = validatorFactory.getValidator();
     }
 
+    /**
+     * Releases the validator factory, tolerating the case where it was never opened.
+     *
+     * <p>The guard is not decoration. This method runs even when {@link #openValidatorFactory()}
+     * threw - a missing provider on the classpath is the realistic cause - and an unguarded call
+     * would then raise a second failure that hides the first. Reporting the real cause is worth one
+     * null test.
+     */
     @AfterAll
     static void closeValidatorFactory() {
-        validatorFactory.close();
+        if (validatorFactory != null) {
+            validatorFactory.close();
+        }
     }
 
     private static Set<ConstraintViolation<AccountUpdateRequest>> violations(
             AccountUpdateRequest request) {
         return validator.validate(request);
     }
+
+    /**
+     * The literal the request emits in place of every withheld component.
+     *
+     * <p>Restated here rather than read from the request, so that a change to the production constant
+     * has to be made deliberately in both places and cannot silently weaken these assertions.
+     */
+    private static final String REDACTION_PLACEHOLDER_TEXT = "***REDACTED***";
 
     /**
      * Right-pads with spaces to an exact screen width. A 3270 field is always transmitted at its
@@ -687,8 +642,8 @@ class AccountUpdateRequestTest {
      * the gate at lines 1553-1554. Its message is the 31-character suffix
      * {@code : should be between 300 and 850}.
      *
-     * <p>That gating is the whole reason the bound is <strong>delegated to
-     * {@code com.carddemo.service.AccountUpdateService} and not annotated here</strong>. A
+     * <p>That gating is the whole reason the bound is <strong>delegated to the service layer and
+     * not annotated here</strong>. A
      * declarative minimum and maximum would hoist the check out of the ordered cascade and change
      * which single summary message a bad submission produces, so this request must accept 299 and
      * 851 exactly as readily as it accepts 300 and 850. The window is not weakened by that - it is
@@ -1630,18 +1585,35 @@ class AccountUpdateRequestTest {
             assertThat(request.creditLimit()).isSameAs(amount);
         }
 
+        /**
+         * The textual form is a redaction, and this is asserted negatively on purpose.
+         *
+         * <p>Every one of the forty-three components is either regulated personal data, a regulated
+         * financial value, or a key that joins straight to both, so the rendering discloses none of
+         * them. The assertion walks the realistic draft's whole component set and requires that no
+         * value appears anywhere in the rendered text, rather than spot-checking a handful: a
+         * spot-check would pass while a newly added component leaked, and the point of the
+         * override is that the type has no safe component to print.</p>
+         */
         @Test
-        @DisplayName("the textual form names the type and carries the component values")
-        void theTextualFormNamesTheTypeAndCarriesTheComponentValues() {
-            String text = Draft.realistic().build().toString();
+        @DisplayName("the textual form names the type and discloses no component value at all")
+        void theTextualFormNamesTheTypeAndDisclosesNoComponentValue() {
+            Draft draft = Draft.realistic();
+            AccountUpdateRequest request = draft.build();
 
-            assertThat(text)
-                    .startsWith("AccountUpdateRequest[")
-                    .endsWith("]")
-                    .contains("accountId=00000000011")
-                    .contains("ficoScore=742")
-                    .contains("creditLimit=5000.00")
-                    .contains("middleName=Q. Ann-Marie 3rd, Jr.");
+            String text = request.toString();
+
+            assertThat(text).isEqualTo("AccountUpdateRequest[***REDACTED***]");
+            for (StringComponent component : StringComponent.values()) {
+                assertThat(text)
+                        .as("%s must not appear in the rendered text", component.described())
+                        .doesNotContain(component.read(request));
+            }
+            for (MoneyComponent component : MoneyComponent.values()) {
+                assertThat(text)
+                        .as("%s must not appear in the rendered text", component.described())
+                        .doesNotContain(component.read(request).toPlainString());
+            }
         }
 
         @Test

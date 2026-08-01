@@ -30,133 +30,62 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
- * Unit tests for {@link AccountStatus}, the typed replacement for the CardDemo
- * account active-status vocabulary.
+ * Unit tests for {@link AccountStatus}, the typed replacement for the CardDemo account
+ * active-status vocabulary.
  *
- * <h2>What is under test</h2>
+ * <p>The type stands in for the legacy field {@code ACCT-ACTIVE-STATUS}, a one-byte alphanumeric
+ * field declared in the account copybook and occupying byte 12 of the 300-byte account record. It
+ * replaces character comparison with two named constants and a predicate, which is the translation
+ * the migration mandates for a legacy condition-name vocabulary: a level-88 value list becomes enum
+ * constants with predicate methods, and a set-to-true becomes an enum assignment.
  *
- * <p>{@link AccountStatus} stands in for the legacy field
- * {@code ACCT-ACTIVE-STATUS}, a one-byte alphanumeric field declared in the
- * account copybook {@code app/cpy/CVACT01Y.cpy} at line 6 and occupying byte 12
- * of the 300-byte {@code ACCOUNT-RECORD}. The type replaces character
- * comparison with two named constants and a predicate, which is the translation
- * the migration mandates for a legacy condition-name vocabulary: a level-88
- * value list becomes enum constants with predicate methods, and a
- * {@code SET ... TO TRUE} becomes an enum assignment.</p>
+ * <p><strong>The vocabulary was recovered, not read.</strong> Three verified negative findings mean
+ * the two admitted codes cannot be read off the record layout, so this class re-derives them from
+ * the same evidence the production type cites and never from the production type itself: the
+ * copybook attaches no level-88 condition name to the field, so it enumerates no permitted value at
+ * all; the field is never compared against a literal anywhere in the estate, its six references
+ * being a declaration, three moves, a field-to-field comparison against a before-image and a
+ * diagnostic display; and all 50 seeded account records carry a single distinct value at byte 12, so
+ * the seed data reveals one code and cannot reveal the other. The vocabulary therefore comes from
+ * the account-update program, the only one that validates this field, which routes the submitted
+ * status through a shared yes/no editor paragraph whose two level-88 names each admit exactly two
+ * values, and whose leading comment states the same requirement in words.
  *
- * <h2>The vocabulary was recovered, not read</h2>
+ * <p><strong>Why an unmapped code must not throw.</strong> Only the online update program validates
+ * this field. The batch programs that read account records take the status straight from the file
+ * without validating it, and the relational column is a plain one-character string carrying no check
+ * constraint, so an out-of-vocabulary byte <em>persists successfully</em> at the database layer and
+ * reaches the Java layer intact. Every lookup assertion below therefore proves absorption rather
+ * than rejection: an unmapped code yields an empty result and never an exception.
  *
- * <p>Three verified negative findings mean the two admitted codes cannot be read
- * off the record layout, so this test class re-derives them from the same
- * evidence the production type cites, and never from the production type
- * itself.</p>
- *
- * <ul>
- *   <li>The account copybook attaches no level-88 condition name to
- *       {@code ACCT-ACTIVE-STATUS}, so it enumerates no permitted value at
- *       all.</li>
- *   <li>The field is never compared against a literal anywhere in the estate.
- *       Its six references are a declaration, a move to a screen output field, a
- *       move to the communication area, a move to a before-image field, a
- *       field-to-field comparison against that before-image, and a diagnostic
- *       display.</li>
- *   <li>All 50 seeded account records in {@code app/data/ASCII/acctdata.txt}
- *       carry a single distinct value at byte 12, so the seed data reveals one
- *       code and cannot reveal the other.</li>
- * </ul>
- *
- * <p>The vocabulary therefore comes from the account-update program
- * {@code app/cbl/COACTUPC.cbl}, the only program in the estate that validates
- * this field. It routes the submitted status through the shared yes/no editor
- * paragraph {@code 1220-EDIT-YESNO} at lines 1472 through 1476, and the
- * level-88 names {@code FLG-YES-NO-ISVALID} at line 78 and
- * {@code FLG-ACCT-STATUS-ISVALID} at line 193 each admit exactly two values.
- * The editor's own leading comment at line 1857 states the same requirement in
- * words.</p>
- *
- * <h2>Why an unmapped code must not throw</h2>
- *
- * <p>Only the online update program validates this field. The batch programs
- * that read account records take the status straight from the file without
- * validating it, and the relational column is a plain one-character string
- * carrying no check constraint, so an out-of-vocabulary byte <em>persists
- * successfully</em> at the database layer and reaches the Java layer intact.
- * Every lookup assertion below therefore proves absorption rather than
- * rejection: an unmapped code yields an empty result and never an exception.</p>
- *
- * <h2>Scope of this class</h2>
- *
- * <p>This is a pure in-process unit test. It starts no application context,
- * opens no database, queue or socket, reads no file, and uses no mocking
- * framework, because the type under test is a value type with no collaborator.
- * It deliberately asserts nothing about persistence mapping: the type carries no
- * persistence annotation and no attribute converter, the account entity keeps
- * the status as a raw one-character string column, and the correspondence
- * between entity and schema is verified in the integration tier against a real
- * database rather than here.</p>
- *
- * <p>No user-specified rules exist for this project, so this class is held to
- * enterprise-standard practice instead: a hermetic and deterministic test, a
- * zero-warning compile under all lint categories promoted to errors, no
- * reflection, and expectations derived independently of the code under test.</p>
- *
- * <p>Provenance of the translated source: legacy checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL source text is
- * reproduced here; only member names, field names, paragraph names, level-88
- * names, widths, byte offsets, line numbers, record counts and codes are
- * cited.</p>
+ * <p><strong>Scope.</strong> A pure in-process unit test: it starts no application context, opens no
+ * database, queue or socket, reads no file, and uses no mocking framework, because the type under
+ * test is a value type with no collaborator. It deliberately asserts nothing about persistence
+ * mapping - the type carries no persistence annotation and no attribute converter, the account
+ * entity keeps the status as a raw one-character column, and the correspondence between entity and
+ * schema is verified in the integration tier against a real database rather than here.
  *
  * @see AccountStatus
  */
+@DisplayName("AccountStatus :: typed account active-status vocabulary")
 class AccountStatusTest {
 
     /*
-     * ==================================================================
-     * THE INDEPENDENT ORACLE
-     * ==================================================================
-     * Every expected value in this class is written below as a literal
-     * hand-derived from the legacy artefacts. Nothing here asks the type
-     * under test to supply its own expected value, nothing snapshots its
-     * output, and no assertion compares a production call against another
-     * production call.
+     * THE INDEPENDENT ORACLE.
      *
-     * ------------------------------------------------------------------
-     * Divergences between the production type and the shape this class
-     * was originally specified against. In each case the production file
-     * is authoritative and this class follows it.
-     * ------------------------------------------------------------------
-     * 1. The raw code is carried as a char rather than as a
-     *    one-character String. The width assertion therefore encodes the
-     *    char to bytes at an explicit US-ASCII boundary rather than
-     *    measuring a String, and additionally pins the resulting code
-     *    point, because a char is inherently one byte wide in the
-     *    US-ASCII record encoding and measuring it alone would prove
-     *    nothing.
-     * 2. The static lookup is overloaded: one accepts the raw char read
-     *    from byte 12 of the record image, the other accepts the raw
-     *    one-character column value and tolerates a null, an empty and an
-     *    over-length argument. Both overloads are exercised.
-     * 3. A second predicate exists alongside the instance predicate: a
-     *    static form that answers directly from a raw column value. It is
-     *    exercised for the active case, the inactive case, the
-     *    out-of-vocabulary case and the absent case.
-     * 4. The code index is an unmodifiable map assigned by a field
-     *    initialiser rather than by an explicit static block. It still
-     *    runs exactly once during class initialisation, which the
-     *    repeated-resolution test below observes from the outside without
-     *    reflection.
+     * Every expected value in this class is a literal hand-derived from the legacy artefacts.
+     * Nothing here asks the type under test to supply its own expected value, nothing snapshots its
+     * output, and no assertion compares one production call against another.
      *
-     * ------------------------------------------------------------------
-     * Where faithful translation and idiomatic Java diverge, the legacy
-     * behaviour wins and this class asserts the legacy behaviour. Two
-     * divergences are asserted below and both are recorded in
-     * docs/decision-log.md rather than being settled by taste here:
-     * the two validation-flag characters are excluded from the constant
-     * set even though the legacy level-88 group lists them alongside the
-     * two real codes, and an unmapped code yields an empty result instead
-     * of the exception an idiomatic lookup would raise. This class only
-     * verifies those decisions; it never edits that log.
+     * Two places where faithful translation and idiomatic Java diverge are asserted below, and both
+     * are recorded in docs/decision-log.md rather than settled by taste here: the two
+     * validation-flag characters are excluded from the constant set even though the legacy level-88
+     * group lists them alongside the two real codes, and an unmapped code yields an empty result
+     * instead of the exception an idiomatic lookup would raise.
+     *
+     * The width assertion encodes the raw char to bytes at an explicit US-ASCII boundary and pins
+     * the resulting code point, because a char is inherently one byte wide in that encoding and
+     * measuring it alone would prove nothing.
      */
 
     /**

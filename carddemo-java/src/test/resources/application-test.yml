@@ -68,8 +68,8 @@ carddemo:
     s3:
       bucket: carddemo-batch-staging
     sqs:
-      job-submission-queue: JOBS.fifo
-      message-group-id: JOBS
+      job-submission-queue: carddemo-jobs.fifo
+      message-group-id: carddemo-job-submission
       record-length: 80
       fail-on-error: false
     sns:
@@ -79,4 +79,14 @@ carddemo:
       issuer: carddemo-java
       secret: test-only-signing-secret-not-used-outside-tests-0123456789
       expiration: PT15M
+    field-encryption:
+      # Base64 of exactly 32 bytes. Fixed rather than random so that a sealed fixture is reproducible
+      # across runs; test-only, never deployed, and worth nothing outside this suite.
+      key: Y2FyZGRlbW8tdGVzdC1vbmx5LWZpeGVkLWtleSEhISE=
+    # RELAXES A REQUIRED BASELINE, stated here so the concession is visible in the profile taking it.
+    # application.yml requires transport security. A Testcontainers-provided endpoint is reached over
+    # the loopback interface by the process that started it and is destroyed with the suite, so there
+    # is no wire for a token or a decrypted field to be observed on. Nothing else is relaxed: the
+    # management surface and the interface description stay exactly as the baseline closed them, so a
+    # test asserting the shipped posture asserts the real one.
     require-https: false

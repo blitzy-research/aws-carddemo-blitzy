@@ -17,8 +17,10 @@
 package com.carddemo.service;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 
 import io.awspring.cloud.sqs.operations.SendResult;
 import io.awspring.cloud.sqs.operations.SqsOperations;
@@ -31,58 +33,87 @@ import com.carddemo.exception.JobSubmissionException;
 import com.carddemo.util.JclCardImageBuilder;
 
 /**
- * The estate's only online-to-batch bridge: it hands a job-submission card stream from the online
- * tier to the batch tier, one fixed-width card per message, in order.
+ * The estate's only online-to-batch bridge: it hands a job-submission card stream from the online tier to
+ * the batch tier, one fixed-width card per message, in order.
  *
- * <h2>Legacy authority</h2>
+ * <p><strong>Legacy authority.</strong> The estate contains exactly one transient-data-queue write, in the
+ * transaction-report request program {@code app/cbl/CORPT00C.cbl} (transaction {@code CR00}). Two regions
+ * of that member are the authority for this class. Lines 496 to 509 are the card-emitting loop: a
+ * loop-control flag is cleared at 496; the loop is entered at 498 to 499 with a guard testing the one-based
+ * card index against the declared array bound, the end-of-stream flag and the write-error flag; the current
+ * card is moved into the eighty-character record at 501; the end-of-stream test is made at 502 to 505; and
+ * the write is performed at 507. Lines 515 to 535 are the queue-write paragraph: it writes the
+ * eighty-character record capturing a response code and a reason code, continues on a normal response, and
+ * on any other response writes both codes to its diagnostic channel, raises the write-error flag, places a
+ * fixed failure literal in the screen message field, repositions the cursor and re-sends the screen. It
+ * does not abend and does not abort the transaction. Every behavioural rule below is read off those two
+ * regions rather than chosen.
  *
- * <p>The CardDemo mainframe estate contains exactly one transient-data-queue write. It lives in the
- * transaction-report request program {@code app/cbl/CORPT00C.cbl} (transaction {@code CR00}) and is
- * reached from a single paragraph. Two regions of that member are the authority for this class:
+ * <p><strong>Queue contract.</strong> The destination is declared in {@code app/csd/CARDDEMO.CSD} at lines
+ * 499 to 505, and each attribute binds this class. {@code RECORDSIZE(80)} with
+ * {@code RECORDFORMAT(FIXED)}: one card is one message and every body is a fixed-width eighty-character
+ * image, never concatenated and never variable-length. {@code BLOCKFORMAT(UNBLOCKED)}: each card is an
+ * individually addressable record, the second reason cards are published one at a time.
+ * {@code DISPOSITION(MOD)}: writes append, so order is significant, and every card of one submission is
+ * published into a single first-in-first-out message group. {@code ERROROPTION(IGNORE)}: a write failure is
+ * ignored rather than raised &mdash; the decisive attribute, mapped in decision log entry D-36.
+ * {@code TYPE(EXTRA)}, {@code DATABUFFERS(1)}, {@code DDNAME(INREADER)} and {@code OPENTIME(INITIAL)}: the
+ * destination exists and is open before first use, so this class never creates, configures or describes the
+ * queue; provisioning belongs to
+ * {@code carddemo-java/localstack/init/01-create-aws-resources.sh} locally and to the deployment elsewhere.
+ * {@code TYPEFILE(OUTPUT)}: publish-only from the online tier, so no receive, poll, peek, purge or delete
+ * operation is exposed.
  *
- * <ul>
- *   <li>lines 496 to 509 - the card-emitting loop. A loop-control flag is cleared at line 496; the
- *       loop is entered at lines 498 to 499 with a guard that tests the one-based card index against
- *       the declared array bound, the end-of-stream flag and the write-error flag; the current card
- *       is moved into the eighty-character record at line 501; the end-of-stream test is made at
- *       lines 502 to 505; and the write is performed at line 507.</li>
- *   <li>lines 515 to 535 - the queue-write paragraph itself. It writes the eighty-character record
- *       to the queue capturing a response code and a reason code, continues on a normal response,
- *       and on any other response writes both codes to its diagnostic channel, raises the
- *       write-error flag, places a fixed failure literal in the screen message field, repositions
- *       the cursor and re-sends the screen. It does not abend and it does not abort the
- *       transaction.</li>
- * </ul>
+ * <p><strong>Exactly seventeen messages, and the sentinel is transmitted.</strong> The legacy card group
+ * holds seventeen eighty-byte cards and the last is the end-of-stream sentinel. The loop recognises the
+ * sentinel at lines 502 to 505 and performs the write at line 507 &mdash; it sets its termination flag
+ * <em>before</em> writing. So <strong>the sentinel card is itself transmitted and the loop then
+ * stops</strong>: a complete submission is seventeen messages. Dropping it would break the batch-trigger
+ * contract; sending an eighteenth would invent a message the legacy never sent. The legacy array's declared
+ * index bound is never reached in practice, so it is reproduced here as a defensive guard only &mdash; not
+ * a capacity, a batch size or a tuning value.
  *
- * <p>Because that single paragraph is the whole of the legacy submission mechanism, this class is
- * its only translation, and every behavioural rule below is read off those two regions rather than
- * chosen.
+ * <p><strong>A failed publish stops the remaining cards, and is non-fatal.</strong> The write-error flag
+ * raised inside the queue-write paragraph is also one of the three conditions in the emitting loop's guard
+ * at line 499, so setting it terminates the loop and the cards after the failing one are never sent. That
+ * partial submission is deliberate legacy behaviour. Three observable consequences follow from
+ * {@code ERROROPTION(IGNORE)} and the absence of any abend or re-raise, and all three hold here: the
+ * failure is <strong>logged</strong> with its response and reason codes and underlying cause; the
+ * <strong>remaining cards are not sent</strong>; and <strong>control returns normally</strong>. A
+ * {@code JobSubmissionException} is therefore constructed and logged at the publish boundary and
+ * <em>never</em> propagated out of this class; callers receive a {@code SubmissionResult} instead. No retry,
+ * backoff, dead-letter redirect or circuit breaker is implemented: none exists in the legacy and each would
+ * add a timing characteristic the migrated system must not inherit. The failure text handed back is the
+ * frozen literal {@code JobSubmissionException.DEFAULT_MESSAGE} and nothing else; diagnostic detail goes to
+ * the log so that text cannot drift.
  *
- * <h2>Queue contract</h2>
+ * <p><strong>Fixed-width payload.</strong> Every message body is exactly
+ * {@code JobSubmissionException.RECORD_SIZE} characters, asserted on the encoded bytes rather than the
+ * character count. A card is never trimmed, stripped or right-justified before publishing: the trailing
+ * spaces are part of the record. A card that does not satisfy the width, or holds a character not
+ * representable as a single US-ASCII byte, is a programming error and is rejected with
+ * {@code IllegalArgumentException}. The card content itself &mdash; the seventeen literal images, the four
+ * ten-character date substitution slots and the sentinel &mdash; is owned entirely by
+ * {@code JclCardImageBuilder}.
  *
- * <p>The destination is declared in {@code app/csd/CARDDEMO.CSD} at lines 499 to 505. Its attributes
- * are contractual rather than incidental, and each one binds this class:
+ * <p><strong>Resource names arrive from configuration.</strong> No queue name, URL, ARN, account
+ * identifier, region or endpoint is written into this class; the destination queue and message group are
+ * bound under the {@code carddemo.aws.*} prefix and the region and endpoint belong to the injected
+ * messaging client. The queue name <strong>must end in the FIFO suffix</strong>, since a first-in-first-out
+ * queue is rejected by the queue service without it and ordering is contractual here, so the suffix is
+ * validated when this bean is constructed and a misconfigured deployment fails at startup rather than at
+ * the first submission. Neither bound value carries an inline default, matching the production profile,
+ * which resolves every secret and resource name from an environment variable with no fallback.
  *
- * <ul>
- *   <li>{@code RECORDSIZE(80)} with {@code RECORDFORMAT(FIXED)} - one card is one message and every
- *       message body is a fixed-width eighty-character image. Cards are never concatenated into one
- *       message and a variable-length body is never sent.</li>
- *   <li>{@code BLOCKFORMAT(UNBLOCKED)} - each card is an individually addressable record, which is
- *       the second reason cards are published one at a time.</li>
- *   <li>{@code DISPOSITION(MOD)} - writes append, so order is significant. Every card of one
- *       submission is published into a single first-in-first-out message group, which is what
- *       preserves that order end to end.</li>
- *   <li>{@code ERROROPTION(IGNORE)} - a write failure is ignored rather than raised. This is the
- *       decisive attribute and it is what makes the failure path of this class non-fatal.</li>
- *   <li>{@code TYPE(EXTRA)}, {@code DATABUFFERS(1)}, {@code DDNAME(INREADER)} and
- *       {@code OPENTIME(INITIAL)} - the destination exists and is open before first use. This class
- *       therefore never creates, configures or describes the queue; provisioning belongs to
- *       {@code carddemo-java/localstack/init/01-create-aws-resources.sh} for local validation and to
- *       the deployment elsewhere.</li>
- *   <li>{@code TYPEFILE(OUTPUT)} - the destination is publish-only from the online tier. This class
- *       exposes no receive, poll, peek, purge or delete operation, and the batch tier is the only
- *       consumer.</li>
- * </ul>
+ * <p><strong>Message deduplication is an addition forced by the target technology.</strong> A
+ * first-in-first-out queue requires either content-based deduplication on the queue or an explicit
+ * identifier per message; the legacy transient-data queue had no deduplication concept at all. An explicit
+ * identifier is supplied, composed of the submission's own identity and the one-based card ordinal. The
+ * ordinal keeps the seventeen cards of one submission distinct, which content-based deduplication would
+ * also achieve; the submission identity makes two submissions of the same reporting period deduplicate
+ * against each other, which content-based deduplication would achieve only by accident of the card bytes
+ * and a random identifier would defeat entirely. Nothing here is random, so a repeated submission is
+ * idempotent within the queue service's deduplication interval.
  *
  * <h2>Exactly seventeen messages, and the sentinel is transmitted</h2>
  *
@@ -122,10 +153,51 @@ import com.carddemo.util.JclCardImageBuilder;
  *
  * <p>A {@code JobSubmissionException} is therefore <em>constructed and logged</em> at the publish
  * boundary and is <em>never</em> propagated out of this class. Callers receive a
- * {@code SubmissionResult} describing the outcome instead. No retry, no backoff, no dead-letter
- * redirect and no circuit breaker is implemented: none exists in the legacy, and each would add a
- * timing characteristic the migrated system must not inherit. Nothing on the publish path takes part
- * in a database transaction, because this class performs no database work.
+ * {@code SubmissionResult} describing the outcome instead. Nothing on the publish path takes part in a
+ * database transaction, because this class performs no database work.
+ *
+ * <h2>Resilience: what this class does, and the one thing the transport does</h2>
+ *
+ * <p><strong>This class implements no resilience behaviour of its own.</strong> It contains no retry
+ * loop, no backoff, no dead-letter redirect, no application-level circuit breaker and no re-send of a
+ * card whose publish was refused. A refused card is logged once and the remaining cards are abandoned,
+ * because the legacy write-error flag participates in the emitting loop's guard. Adding any of those
+ * behaviours here would change the observable outcome of a failed submission, and none has a legacy
+ * antecedent.
+ *
+ * <p><strong>The transport, however, is not single-shot, and that is a documented parity
+ * exception.</strong> The queue client is the one auto-configured by the messaging starter, and the
+ * AWS SDK's own default strategy classifies certain transport-level faults as retryable and re-issues
+ * the request, with jittered backoff and a token-bucket breaker, <em>before</em> the call ever returns
+ * to this class. Four considerations make that acceptable rather than a defect to be configured away,
+ * and all four belong in the decision log:
+ *
+ * <ol>
+ *   <li>A transport fault has <strong>no legacy antecedent</strong>. The legacy queue was an
+ *       extrapartition transient-data queue writing to a sequential data set through a data-definition
+ *       name; it could not experience a lost connection or a throttled endpoint. Refusing to retry a
+ *       fault the legacy transport could not produce would turn a class of purely-new failures into
+ *       observable submission failures the legacy never had, which is a regression against parity, not
+ *       a defence of it.</li>
+ *   <li>A retried send is <strong>idempotent by construction</strong>. Every message carries an
+ *       explicit deduplication identifier composed of the submission identity and the card ordinal, so
+ *       a retry of a send that had in fact already reached the queue is collapsed by the queue service
+ *       within its deduplication interval instead of appending a seventeenth-plus card. The card image
+ *       cannot be corrupted by a retry, which is precisely what the explicit identifier buys.</li>
+ *   <li>The client configuration contract for this module <strong>mandates leaving the SDK defaults in
+ *       place</strong>: no retry count, no backoff duration and no call timeout may be hardcoded
+ *       anywhere, because the migration has no documented legacy baseline from which any such figure
+ *       could be derived and the performance gate establishes a baseline rather than testing a
+ *       threshold. A literal here would be an invented service level.</li>
+ *   <li>The failure this class does observe is therefore an <em>exhausted</em> transport failure, which
+ *       is the closest available analogue of the legacy bad response code: the write did not happen and
+ *       will not happen. That is the condition the ignore-on-error semantics were written for.</li>
+ * </ol>
+ *
+ * <p>No call-level bound is configured for the same reason a retry count is not. Each individual
+ * attempt is nevertheless bounded by the transport's own default connect, read and write limits, so a
+ * publish cannot block a caller indefinitely; the bounds are the client's, are not restated here, and
+ * are deliberately not tuned.
  *
  * <p>The failure text handed back to the caller is the frozen operator-facing literal published as
  * {@code JobSubmissionException.DEFAULT_MESSAGE} and nothing else. Diagnostic detail - response
@@ -150,9 +222,35 @@ import com.carddemo.util.JclCardImageBuilder;
  * <p>No queue name, queue URL, queue ARN, account identifier, region or endpoint is written into
  * this class. The destination queue and the message group are bound from configuration under the
  * {@code carddemo.aws.*} prefix, and the region and endpoint belong to the injected messaging client
- * rather than to this class. The canonical names are the job-submission FIFO queue, the
- * job-submission message group, the job-notification topic and the batch-staging bucket; only the
- * first two are referenced here, because this class publishes one kind of message and nothing else.
+ * rather than to this class.
+ *
+ * <p>The canonical resource names are mandated rather than chosen, and are recorded here so the
+ * agreement between this class and the configuration that feeds it is auditable without leaving the
+ * file. They are documentation only: each value reaches this class through the binding on its
+ * constructor parameter and none of them is a literal in any expression.
+ *
+ * <table>
+ *   <caption>Canonical resource names</caption>
+ *   <tr><th>Resource</th><th>Canonical name</th><th>Referenced here</th></tr>
+ *   <tr><td>job-submission queue</td><td>{@code carddemo-jobs.fifo}</td><td>yes, as the
+ *       destination</td></tr>
+ *   <tr><td>message group</td><td>{@code carddemo-job-submission}</td><td>yes, one group per
+ *       submission</td></tr>
+ *   <tr><td>notification topic</td><td>{@code carddemo-job-notifications}</td><td>no</td></tr>
+ *   <tr><td>batch staging bucket</td><td>{@code carddemo-batch-staging}</td><td>no</td></tr>
+ * </table>
+ *
+ * <p>Only the first two are referenced at all, because this class publishes one kind of message and
+ * nothing else. The same four names must appear unchanged in the shared configuration, in the local
+ * and test overlays, in the container composition and in the emulator bootstrap that creates them; a
+ * disagreement produces a deployment that starts cleanly and then fails on its first publish, with
+ * no start-up error pointing at the cause.
+ *
+ * <p>Renaming the queue away from the legacy transient-data queue's own name does not cost
+ * traceability. That name survives verbatim where it is externally observable - in the operator-facing
+ * failure text and in the default queue-name constant of {@code JobSubmissionException} - which is
+ * where the legacy identity belongs, rather than in an infrastructure resource name governed by a
+ * different service's naming rules.
  *
  * <p>The queue name <strong>must end in the FIFO suffix</strong>: a first-in-first-out queue is
  * rejected by the queue service unless its name carries that suffix, and ordering is contractual
@@ -162,20 +260,62 @@ import com.carddemo.util.JclCardImageBuilder;
  * every resource name from an environment variable with no fallback, so a missing value fails
  * startup rather than silently binding a placeholder.
  *
- * <h2>Message deduplication</h2>
+ * <h2>Message deduplication, and why it must not become idempotency</h2>
  *
  * <p>A first-in-first-out queue requires either content-based deduplication enabled on the queue or
  * an explicit deduplication identifier on every message. The legacy transient-data queue had no
  * deduplication concept at all, so this is an addition forced by the target technology and is
- * recorded as such.
+ * recorded as such. Content-based deduplication is deliberately not relied upon, because it would
+ * make the collapsing of two messages an accident of the card bytes rather than a stated rule.
  *
- * <p>An explicit per-message identifier is supplied, composed of the submission's own identity and
- * the one-based card ordinal. The composition is deliberate on both halves. The ordinal keeps the
- * seventeen cards of one submission distinct from each other, which content-based deduplication
- * would also achieve; the submission identity makes two submissions of the same reporting period
- * deduplicate against each other, which content-based deduplication would achieve only by accident
- * of the card bytes and which a random identifier would defeat entirely. Nothing here is random, so
- * a repeated submission is idempotent within the queue service's own deduplication interval.
+ * <p>An explicit per-message identifier is therefore supplied, composed of the submission's own
+ * identity and the one-based card ordinal. The ordinal keeps the seventeen cards of one submission
+ * distinct from each other, which content-based deduplication would also achieve; the submission
+ * identity keeps one submission distinct from every other, which content-based deduplication would
+ * not, because two requests for the same reporting period produce byte-identical cards and the queue
+ * service would discard the second set as duplicates.
+ *
+ * <p>The <strong>ordinal</strong> keeps the seventeen cards of one submission distinct from each
+ * other. That is not a theoretical concern: the job image contains two pairs of cards whose
+ * eighty-character bodies are identical, so with content-based deduplication - which derives the
+ * identifier from the body - the second card of each pair would be accepted and silently discarded
+ * and the submitted job would arrive four cards short of the seventeen it must have. Content-based
+ * deduplication is therefore disabled on the queue and never relied upon.
+ *
+ * <p>The identity half is the part that is easy to get wrong, and getting it wrong invents behaviour
+ * the legacy never had. The queue is defined {@code DISPOSITION(MOD)} at
+ * {@code app/csd/CARDDEMO.CSD} lines 499 to 505, which means every write <strong>appends
+ * unconditionally</strong>; and the legacy program re-writes all seventeen cards on every pass
+ * through its submission driver, with no comparison against anything previously written. So two
+ * requests for the same reporting period legitimately enqueue two card streams and legitimately
+ * trigger the batch job twice. An identity derived from the reporting period <em>alone</em> would
+ * make the queue service silently discard every card of the second request while this class reported
+ * a complete submission - a cross-invocation idempotency that is a behavioural regression against
+ * {@code DISPOSITION(MOD)}, not a translation of it, and an unrequested feature besides.
+ *
+ * <p>The identity is consequently <strong>per submission attempt, never per reporting period</strong>.
+ * A caller that owns an identity of its own supplies it and the identifiers are then fully determined
+ * by that caller; a caller that does not supply one gets an identity derived for that single
+ * invocation from the two date slots <em>plus a nonce unique to the call</em>. The dates remain in it
+ * so that a submission is still legible in a diagnostic, and the nonce is what reproduces the append
+ * semantics. Either way two attempts are two submissions, exactly as they were on the mainframe.
+ * Deduplication then does exactly one job - it protects against a genuine double-publish of the same
+ * card within one submission, which is a programming error - and it never suppresses legitimate work.
+ * Repeat suppression, if a deployment ever wants it, belongs to whatever owns the request; it is not
+ * a property of this bridge, because it was not a property of the queue this bridge replaces.
+ *
+ * <p>The message group is a separate value and carries no nonce, so the cards of one submission still
+ * travel as one ordered group. Uniqueness and ordering are independent properties here, and only the
+ * first one is affected by the identity.
+ *
+ * <p>Ownership of the identity is the caller's wherever the caller has one, because only the caller
+ * can know whether a call is a new request or a retry of one. That is why the identity-bearing entry
+ * point takes the identity as its first argument and generates nothing of its own: given the same
+ * arguments it produces the same deduplication identifiers on every call, so a retry of a partially
+ * published submission adds exactly the cards that never landed. The convenience entry point that
+ * takes only the two dates mints a fresh identity for that one invocation and is consequently a new
+ * submission by construction and never a retry; a caller that needs retry semantics must keep the
+ * identity of the original attempt and use the identity-bearing form.
  *
  * <h2>Layer position and scope</h2>
  *
@@ -232,9 +372,11 @@ public final class JobSubmissionService {
     private static final String DEDUPLICATION_ID_SEPARATOR = "-";
 
     /**
-     * Separator between the two date slots when a submission identity is derived from them.
+     * Separator between the two date slots, and between the slots and the nonce, when a submission
+     * identity is derived rather than supplied. An underscore keeps the derived identity readable
+     * without colliding with the hyphen the deduplication identifier uses for the card ordinal.
      */
-    private static final String SUBMISSION_ID_DATE_SEPARATOR = "_";
+    private static final String SUBMISSION_ID_PART_SEPARATOR = "_";
 
     /**
      * The longest deduplication identifier the queue service accepts. This is an interface limit
@@ -250,6 +392,41 @@ public final class JobSubmissionService {
      * whose published bytes would not be the caller's bytes.
      */
     private static final char MAX_US_ASCII_CHARACTER = 0x7F;
+
+    /**
+     * The lowest character value a card may carry: the ASCII space, which is also the pad character.
+     *
+     * <p>Every byte of every legacy card is a printable graphic or a space, so nothing below this is
+     * legitimate content. Rejecting the range below it is what stops a control byte - a carriage
+     * return, a line feed, a NUL - from being published inside a fixed-width record. Such a byte would
+     * not overflow the eighty-byte frame and would therefore pass a width check, but a consumer that
+     * reconstructs a dataset from the queue would see one card become two records, or a truncated
+     * one, which silently corrupts the batch trigger.
+     *
+     * <p>Tab, null and escape are refused for the same reason as the carriage return and the line
+     * feed: a control character inside a fixed-width job-control record can split or corrupt that
+     * record for any consumer that reads the stream, and can forge a line in the diagnostics that
+     * name the card. The space itself is contractual padding and is of course permitted.
+     */
+    private static final char MIN_PRINTABLE_US_ASCII_CHARACTER = 0x20;
+
+    /**
+     * The highest printable US-ASCII character, one below the delete control code.
+     *
+     * <p>{@link #MAX_US_ASCII_CHARACTER} is retained separately because it answers a different
+     * question - whether a character survives the single-byte encoding at all - and the two limits are
+     * reported with different diagnostics.
+     *
+     * <p>The one code point between this limit and {@link #MAX_US_ASCII_CHARACTER} is the delete
+     * control, which is rejected for the same reason as the C0 range below the space.
+     */
+    private static final char MAX_PRINTABLE_US_ASCII_CHARACTER = 0x7E;
+
+    /** Number of hexadecimal characters in the per-submission uniqueness nonce. */
+    private static final int SUBMISSION_NONCE_LENGTH = 32;
+
+    /** Hexadecimal characters needed to render one sixty-four-bit value with leading zeros kept. */
+    private static final int HEX_CHARACTERS_PER_LONG = 16;
 
     /**
      * The one-based ordinal of the first card, matching the legacy card index, which is one-based.
@@ -305,69 +482,199 @@ public final class JobSubmissionService {
     }
 
     /**
-     * Submits the transaction-report job for one date range: builds the card stream and publishes
-     * it.
+     * Submits the transaction-report job for one date range: builds the card stream and publishes it.
      *
      * <p>This is the entry point that mirrors the legacy request path. The card images are built by
      * {@code JclCardImageBuilder}, which owns every literal and fills the four ten-character date
      * slots from these two arguments, and the resulting stream is then published by
-     * {@code submitJobStream}. The submission identity used for message deduplication is derived
-     * from the two date slots, so two submissions of the same reporting period are idempotent while
-     * two submissions of different periods are not.
+     * {@code submitJobStream}.
      *
-     * <p>The dates are raw ten-character slot values, conventionally formatted year, month and day
-     * separated by hyphens. They are neither parsed nor reformatted here; the card builder validates
-     * their width, and their calendar validity is the report-request service's concern.
+     * <p>An <strong>identity is derived for this one invocation</strong> and used, with each card's
+     * ordinal, to form the message deduplication identifiers. It carries the two date slots and a
+     * nonce unique to the call, so <strong>every</strong> submission is queued: the queue is defined
+     * append-on-write and the legacy program re-writes its whole card stream on every pass, so two
+     * requests for the same reporting period are two submissions and must both reach the queue.
+     * Deriving the identity from the dates alone would instead have the queue service discard the
+     * second request's cards inside its deduplication interval, behind a success response, while this
+     * method reported a complete submission - so a re-run would be lost silently. A caller that owns
+     * a stable identity of its own passes it to
+     * {@code submitTransactionReportJob(String, String, String)} rather than relying on the derived
+     * one.
+     *
+     * <p>The dates are raw ten-character slot values in the fixed year-month-day shape the legacy
+     * work field carries, with hyphens at its fifth and eighth positions. They are neither parsed nor
+     * reformatted here, but they are not passed through unexamined either: the card builder validates
+     * their width, their single-byte encodability and that shape - and that the day named exists -
+     * before it composes a single card, because cards 11 and 12 embed the slot inside a sort
+     * character constant and card 15 places it on a parameter card, so no malformed or injected slot
+     * value can reach a card image or the queue.
+     *
+     * <p><strong>The submission identity is supplied by the caller and is not derived from the
+     * dates.</strong> Deriving it from the reporting period would make every submission of that
+     * period share one set of deduplication identifiers, and the queue service would then accept and
+     * silently discard the second submission of the same period made inside its deduplication
+     * interval. The legacy transient-data queue had no deduplication of any kind: a second request
+     * for the same period was appended and the job ran again. Losing that second submission - with no
+     * failure reported to the operator, because a deduplicated send succeeds - would be a behavioural
+     * regression and a silent loss of work, so the identity is the caller's to choose. See
+     * {@code submitJobStream} for what the identity must guarantee.
      *
      * <p>A publish failure does not throw. It is logged and reported through the returned result, in
      * line with the queue's ignore-on-error contract.
      *
-     * @param startDate the ten-character start-date slot value; must not be {@code null}
-     * @param endDate   the ten-character end-date slot value; must not be {@code null}
+     * @param submissionId the identity of this logical submission, used with each card's ordinal to
+     *                     form that card's deduplication identifier; must be non-blank, free of
+     *                     whitespace, distinct for every distinct submission and identical only
+     *                     across retries of this same submission
+     * @param startDate    the ten-character start-date slot value; must not be {@code null}
+     * @param endDate      the ten-character end-date slot value; must not be {@code null}
      * @return the outcome, reporting how many cards reached the queue, whether a failure occurred
      *         and the frozen failure text when one did; never {@code null}
+     * <p>Each call to this form is a new submission: the identity it mints is unique to the call, so
+     * two calls for the same reporting period enqueue two card streams exactly as the appending
+     * transient-data queue did. A retry of an earlier attempt must instead supply that attempt's
+     * identity through {@link #submitTransactionReportJob(String, String, String)}.</p>
+     *
      * @throws NullPointerException     if either date is {@code null}
-     * @throws IllegalArgumentException if either date is not exactly ten encoded bytes, or if the
-     *                                  identity derived from the two dates cannot form a valid
-     *                                  deduplication identifier
+     * @throws IllegalArgumentException if either date is not exactly ten encoded bytes, is not shaped
+     *                                  as a hyphen-separated year, month and day, or does not name a
+     *                                  day that exists
      */
     public SubmissionResult submitTransactionReportJob(final String startDate, final String endDate) {
-        // The builder validates both slots before any card exists, so a malformed date fails here
-        // rather than part way through a submission.
-        final List<String> cardImages = JclCardImageBuilder.build(startDate, endDate);
-        return submitJobStream(deriveSubmissionId(startDate, endDate), cardImages);
+        return submitTransactionReportJob(newSubmissionId(startDate, endDate),
+                startDate, endDate);
     }
 
     /**
-     * Publishes an already-built job-submission card stream, one message per card, in order, in a
-     * single message group.
+     * Submits the transaction-report job for one date range under a caller-supplied submission
+     * identity.
      *
-     * <p>This method is the faithful translation of the emitting loop at
-     * {@code app/cbl/CORPT00C.cbl} lines 496 to 509, and its shape is dictated by that loop rather
-     * than chosen:
+     * <p>This overload exists so that the identity used for message deduplication is the caller's
+     * choice rather than something this class infers. The card images are built by
+     * {@code JclCardImageBuilder} and published by {@code submitJobStream}, exactly as in the
+     * two-argument form; only the identity differs.
      *
-     * <ul>
-     *   <li>the guard is evaluated before every card, testing the one-based ordinal against both the
-     *       supplied stream length and the legacy array bound, and testing the end-of-stream and
-     *       write-failure flags;</li>
-     *   <li>the end-of-stream test is applied to a card <em>before</em> that card is published, which
-     *       is why the sentinel card is transmitted and a complete submission is seventeen
-     *       messages;</li>
-     *   <li>a failed publish raises the write-failure flag, which the guard then observes, so the
-     *       remaining cards are not sent and the submission is left partial.</li>
-     * </ul>
+     * <p>The identity must be unique per submission attempt if the legacy append-on-write behaviour
+     * is to be preserved, because the queue service collapses two messages that share a
+     * deduplication identifier within its own deduplication interval. Supplying the same identity
+     * twice is therefore a deliberate request to have the second attempt suppressed, and it is the
+     * caller's decision to make - the legacy queue had no such concept, so this class neither
+     * imposes it nor prevents it.
      *
-     * <p>Every card in the stream is checked for the fixed record width before anything is
-     * published, so a malformed stream is rejected outright rather than leaving a partial submission
-     * behind. That check guards against a programming error; it has no legacy antecedent, because the
-     * legacy card group is a fixed layout that cannot be malformed.
+     * <h3>The complete stream is validated before the first message is sent</h3>
      *
-     * <p>The stream is copied on entry, so a caller mutating its list afterwards cannot affect a
-     * submission in progress, and no caller-supplied structure is retained after the call returns.
+     * <p>Nothing is published until the whole stream has been checked, and the check covers
+     * everything a send could fail on: the card count, the position of the end-of-stream card, the
+     * fixed record width and character set of every card, and the deduplication identifier of every
+     * card. This is a fail-fast guard rather than a translated behaviour &mdash; the legacy card group
+     * is a fixed layout that cannot be malformed, so there is no legacy conduct to preserve &mdash;
+     * and it exists for one specific reason: a rejection discovered part way through the loop would
+     * leave a partial submission on the queue that is indistinguishable from the deliberate partial
+     * submission a publish failure produces. Validating first means a malformed stream publishes
+     * nothing at all.</p>
+     *
+     * <p>The stream this entry point builds is always the canonical job image, and it is checked as
+     * one: exactly {@code JclCardImageBuilder.CARD_COUNT} cards, with exactly one end-of-stream card
+     * and that card last. Consequently exactly three outcomes are observable and there is no fourth:
+     * a complete submission of every card, a failure after some cards were published, and a failure
+     * on the very first card.</p>
+     *
+     * @param submissionId this submission's identity, used with each card ordinal to form the
+     *                     message deduplication identifiers; must be non-blank, free of whitespace,
+     *                     distinct for every distinct submission and identical only across retries of
+     *                     this same submission
+     * @param startDate    the ten-character start-date slot value; must not be {@code null}
+     * @param endDate      the ten-character end-date slot value; must not be {@code null}
+     * @return the outcome, reporting how many cards reached the queue, whether a failure occurred
+     *         and the frozen failure text when one did; never {@code null}
+     * @throws NullPointerException     if {@code submissionId} or either date is {@code null}
+     * @throws IllegalArgumentException if either date is not exactly ten encoded bytes, holds a
+     *                                  character that is not a single US-ASCII byte, or does not
+     *                                  take the fixed year-month-day slot shape; or if
+     *                                  {@code submissionId} is blank, holds whitespace, or would
+     *                                  form a deduplication identifier longer than the queue
+     *                                  service accepts
+     */
+    public SubmissionResult submitTransactionReportJob(final String submissionId,
+            final String startDate, final String endDate) {
+        // The identity is checked before any card is built, so a malformed identity cannot be
+        // discovered after the stream exists.
+        final String submission = requireSubmissionId(submissionId);
+        // The builder validates both slots - width, single-byte encodability and the fixed
+        // year-month-day shape - before any card exists, so a malformed or injected date fails here
+        // rather than part way through a submission and never reaches a published card.
+        final List<String> cardImages = JclCardImageBuilder.build(startDate, endDate);
+        return submitCanonicalJobImage(submission, cardImages);
+    }
+
+    /**
+     * Publishes a complete canonical job image, rejecting anything that is not one.
+     *
+     * <p>This is the entry point the report-submission path uses, and it is where the whole-stream
+     * validation that {@link #submitTransactionReportJob(String, String, String)} documents actually
+     * happens. On top of the well-formedness every published stream must satisfy, it requires the
+     * stream to be the canonical image the legacy emitter produced: exactly
+     * {@code JclCardImageBuilder.CARD_COUNT} cards, the last of them the end-of-stream card, and none
+     * of the others. A stream whose end-of-stream card arrives early, or which has none at all, or
+     * which is longer or shorter than the canonical image, is rejected rather than published, so the
+     * emitting loop's end-of-stream flag can never truncate a submission that was accepted.</p>
+     *
+     * <p>The check is deliberately here rather than in {@link #submitJobStream(String, List)}, which
+     * remains the general fixed-width stream publisher: the canonical shape is a property of the
+     * report-submission contract, not of publishing a card, and a caller with a legitimate stream of
+     * another length is not doing something wrong. Nothing is published until the whole stream has
+     * passed, so a malformed image leaves the queue untouched.</p>
+     *
+     * @param submissionId this submission's identity, used with each card ordinal to form the message
+     *                     deduplication identifiers; must be non-blank, free of whitespace, distinct
+     *                     for every distinct submission and identical only across retries of this
+     *                     same submission
+     * @param cardImages   the ordered canonical job image to publish; must not be {@code null}, must
+     *                     hold exactly {@code JclCardImageBuilder.CARD_COUNT} cards, must contain no
+     *                     {@code null} element, and must end with the end-of-stream card and hold no
+     *                     other
+     * @return the outcome, reporting how many cards reached the queue, whether a failure occurred and
+     *         the frozen failure text when one did; never {@code null}
+     * @throws NullPointerException     if {@code submissionId} or {@code cardImages} is {@code null},
+     *                                  or if any element is {@code null}
+     * @throws IllegalArgumentException if the identity is unusable, if the stream is not the canonical
+     *                                  job image, or if any card is not exactly
+     *                                  {@code JobSubmissionException.RECORD_SIZE} encoded bytes
+     */
+    public SubmissionResult submitCanonicalJobImage(final String submissionId,
+            final List<String> cardImages) {
+        final String submission = requireSubmissionId(submissionId);
+        final List<String> cards =
+                List.copyOf(Objects.requireNonNull(cardImages, "cardImages must not be null"));
+        requireCanonicalJobImage(cards);
+        return submitJobStream(submission, cards);
+    }
+
+    /**
+     * Publishes an already-built job-submission card stream, one message per card, in order, in a single
+     * message group.
+     *
+     * <p>A faithful translation of the emitting loop at {@code app/cbl/CORPT00C.cbl} lines 496 to 509, whose
+     * shape is dictated by that loop rather than chosen: the guard is evaluated before every card, testing
+     * the one-based ordinal against both the supplied stream length and the legacy array bound and testing
+     * the end-of-stream and write-failure flags; the end-of-stream test is applied to a card <em>before</em>
+     * that card is published, which is why the sentinel card is transmitted and a complete submission is
+     * seventeen messages; and a failed publish raises the write-failure flag, which the guard then observes,
+     * so the remaining cards are not sent and the submission is left partial.
+     *
+     * <p>Every card is checked for the fixed record width before anything is published, so a malformed
+     * stream is rejected outright rather than leaving a partial submission behind. That check guards against
+     * a programming error and has no legacy antecedent, because the legacy card group is a fixed layout that
+     * cannot be malformed. The stream is copied on entry, so a caller mutating its list afterwards cannot
+     * affect a submission in progress.
      *
      * @param submissionId the submission's identity, used with the card ordinal to form each
-     *                     message's deduplication identifier; must be non-blank and free of
-     *                     whitespace
+     *                     message's deduplication identifier; must be non-blank, free of whitespace,
+     *                     distinct for every distinct submission and identical only across retries of
+     *                     this same submission. A value not used before makes this a new submission,
+     *                     which the queue appends; a value used before makes this a retry, so every
+     *                     card the queue already accepted deduplicates and only the cards that never
+     *                     landed are added
      * @param cardImages   the ordered card stream to publish, each card exactly
      *                     {@code JobSubmissionException.RECORD_SIZE} encoded bytes; must not be
      *                     {@code null}, must not be empty and must contain no {@code null} element
@@ -375,10 +682,13 @@ public final class JobSubmissionService {
      *         and the frozen failure text when one did; never {@code null}
      * @throws NullPointerException     if {@code submissionId}, {@code cardImages} or any element of
      *                                  {@code cardImages} is {@code null}
-     * @throws IllegalArgumentException if {@code submissionId} is blank or holds whitespace, if
-     *                                  {@code cardImages} is empty, if any card is not exactly
+     * @throws IllegalArgumentException if {@code submissionId} is blank or holds whitespace, if the
+     *                                  stream does not hold exactly
+     *                                  {@code JclCardImageBuilder.CARD_COUNT} cards, if its final
+     *                                  card is not the end-of-stream card, if any earlier card is an
+     *                                  end-of-stream card, if any card is not exactly
      *                                  {@code JobSubmissionException.RECORD_SIZE} encoded bytes or
-     *                                  holds a character that is not a single US-ASCII byte, or if a
+     *                                  holds a character the record may not carry, or if any
      *                                  deduplication identifier would exceed the length the queue
      *                                  service accepts
      */
@@ -388,10 +698,10 @@ public final class JobSubmissionService {
         // published is exactly the sequence supplied at the moment of the call.
         final List<String> cards =
                 List.copyOf(Objects.requireNonNull(cardImages, "cardImages must not be null"));
-        if (cards.isEmpty()) {
-            throw new IllegalArgumentException("cardImages must hold at least one job-submission card");
-        }
         requireWellFormedCards(cards);
+        // Composing every identifier up front is what removes the last way a send could be refused
+        // after an earlier send had already succeeded.
+        final List<String> deduplicationIds = deduplicationIds(submission, cards.size());
 
         int cardsPublished = 0;
         boolean endOfStream = false;
@@ -413,9 +723,13 @@ public final class JobSubmissionService {
             // Set before the write, exactly as at lines 502 to 507. This ordering is the reason the
             // sentinel card is published and the submission is seventeen messages rather than
             // sixteen; reversing it would silently drop the batch tier's end-of-stream marker.
+            // The flag ends the loop after the card that carries it, which is the legacy conduct for
+            // any stream; on the canonical path submitCanonicalJobImage has already established that
+            // only the final card can carry it, so it never truncates a canonical submission.
             endOfStream = isEndOfStreamCard(cardImage);
 
-            if (writeJobSubmissionQueue(submission, cardImage, cardOrdinal)) {
+            if (publishCard(submission, cardImage, cardOrdinal,
+                    deduplicationIds.get(cardOrdinal - FIRST_CARD_ORDINAL))) {
                 cardsPublished++;
             } else {
                 // The legacy write-error flag. It appears in the loop guard, so raising it ends the
@@ -445,33 +759,32 @@ public final class JobSubmissionService {
     }
 
     /**
-     * Publishes exactly one job-submission card and reports whether it was accepted, without
-     * throwing on a publish failure.
+     * Publishes exactly one job-submission card and reports whether it was accepted, without throwing on a
+     * publish failure.
      *
-     * <p><strong>Traceability.</strong> This method replaces the queue-write paragraph at
-     * {@code app/cbl/CORPT00C.cbl} line 515. That paragraph's name is misspelled in the source - it
-     * reads {@code WIRTE-JOBSUB-TDQ} rather than the intended spelling - and the misspelling is
-     * recorded here, and in the traceability matrix, so the mapping stays findable under the name
-     * the source actually uses. It is deliberately not carried into any Java identifier: the
-     * paragraph is misspelled, this method is not.
+     * <p>Replaces the queue-write paragraph at {@code app/cbl/CORPT00C.cbl} line 515. That paragraph's name
+     * is misspelled in the source &mdash; {@code WIRTE-JOBSUB-TDQ} rather than the intended spelling &mdash;
+     * which is row 6 of the source anomaly register. The misspelling is deliberately not carried into any
+     * Java identifier: the paragraph is misspelled, this method is not.
      *
-     * <p>The returned value is the inverse of the legacy write-error flag. A normal response leaves
-     * that flag clear and the paragraph simply continues, which is reported here as {@code true}. Any
-     * other response raises the flag, which is reported as {@code false} - and because the flag also
-     * appears in the emitting loop's guard, {@code false} is what stops the remaining cards.
+     * <p>The returned value is the inverse of the legacy write-error flag. A normal response leaves that flag
+     * clear and the paragraph simply continues, reported here as {@code true}; any other response raises it,
+     * reported as {@code false} &mdash; and because the flag also appears in the emitting loop's guard,
+     * {@code false} is what stops the remaining cards.
      *
-     * <p>A publish failure never propagates. A {@code JobSubmissionException} is constructed to carry
-     * the queue name, the response and reason codes, the failing card's one-based ordinal and the
-     * underlying cause; it is logged with that cause; and {@code false} is returned. This mirrors the
-     * queue definition's ignore-on-error attribute and the paragraph's own behaviour, which reports
-     * the failure to the operator and returns control normally. No retry, backoff, dead-letter
-     * redirect or circuit breaker is attempted.
+     * <p>A publish failure never propagates, per decision log entry D-36. A
+     * {@code JobSubmissionException} is constructed to carry the queue name, the response and reason codes,
+     * the failing card's one-based ordinal and the underlying cause; it is logged with that cause; and
+     * {@code false} is returned. No retry, backoff, dead-letter redirect or circuit breaker is attempted.
+     * That mirrors the queue definition's ignore-on-error attribute and the emitting paragraph's own
+     * behaviour, which reports the failure to the operator and returns control normally. A failure
+     * that reaches this method has already exhausted whatever the transport itself was prepared to do
+     * with it.
      *
-     * <p>A malformed argument is a different matter and does throw: it is a programming error with no
-     * legacy antecedent, so the fixed-width precondition is enforced with
-     * {@code IllegalArgumentException} rather than reported as a publish failure. The card is
-     * published exactly as supplied - never trimmed, stripped or padded - because its trailing spaces
-     * are part of the fixed-width record.
+     * <p>A malformed argument is a different matter and does throw: a programming error with no legacy
+     * antecedent, so the fixed-width precondition is enforced with {@code IllegalArgumentException} rather
+     * than reported as a publish failure. The card is published exactly as supplied &mdash; never trimmed,
+     * stripped or padded &mdash; because its trailing spaces are part of the fixed-width record.
      *
      * @param submissionId the submission's identity, combined with {@code cardOrdinal} to form the
      *                     message's deduplication identifier; must be non-blank and free of
@@ -496,8 +809,27 @@ public final class JobSubmissionService {
             final int cardOrdinal) {
         final String submission = requireSubmissionId(submissionId);
         final String card = requireCardImage(cardImage, cardOrdinal);
-        final String deduplicationId = deduplicationId(submission, cardOrdinal);
+        return publishCard(submission, card, cardOrdinal, deduplicationId(submission, cardOrdinal));
+    }
 
+    /**
+     * Publishes one already-validated card and reports whether the queue accepted it.
+     *
+     * <p>This is the single send site of the class. Both public paths reach it, so there is exactly
+     * one place where a message is constructed, one place where a failure is caught, and one place
+     * where the failure is logged - which is what keeps the stream path and the single-card path from
+     * drifting apart. Every argument has already been validated by the caller, so no rejection can
+     * occur here and a partial submission can only ever be the deliberate consequence of a publish
+     * failure.
+     *
+     * @param submission      the validated submission identity, recorded in diagnostics
+     * @param card            the validated card, published exactly as supplied
+     * @param cardOrdinal     the card's one-based ordinal, recorded in diagnostics
+     * @param deduplicationId the validated deduplication identifier for this card
+     * @return {@code true} when the card was accepted, {@code false} when the publish failed
+     */
+    private boolean publishCard(final String submission, final String card, final int cardOrdinal,
+            final String deduplicationId) {
         try {
             // One card, one message: an eighty-character fixed-width body, published into the single
             // message group that carries this submission, which is what preserves append order.
@@ -588,23 +920,97 @@ public final class JobSubmissionService {
     }
 
     /**
-     * Validates every card of a stream before any of them is published.
+     * Rejects a card stream that is empty or that holds a card the fixed-width record contract does
+     * not permit.
      *
-     * <p>This is a fail-fast guard rather than a translated behaviour: the legacy card group is a
-     * fixed layout and cannot be malformed, so there is no legacy conduct to preserve. Checking the
-     * whole stream up front means a malformed card cannot leave a partial submission behind, which
-     * would otherwise be indistinguishable from the deliberate partial submission a publish failure
-     * produces.
+     * <p>This is the check every published stream passes, canonical or not. It establishes only what
+     * publishing a card requires: that there is at least one card, and that each card is exactly the
+     * declared record width and carries none but printable US-ASCII characters. The whole stream is
+     * checked before the first send, so a malformed card cannot be discovered after an earlier card
+     * has already reached the queue.
      *
-     * @param cards the stream to validate, in order
-     * @throws IllegalArgumentException if any card is not exactly
+     * @param cards the immutable stream snapshot, in card order
+     * @throws IllegalArgumentException if the stream is empty, or if any card is not exactly
      *                                  {@code JobSubmissionException.RECORD_SIZE} encoded bytes or
-     *                                  holds a character that is not a single US-ASCII byte
+     *                                  carries a character a card may not hold
      */
     private static void requireWellFormedCards(final List<String> cards) {
+        if (cards.isEmpty()) {
+            throw new IllegalArgumentException("cardImages must hold at least one job-submission card");
+        }
         for (int cardOrdinal = FIRST_CARD_ORDINAL; cardOrdinal <= cards.size(); cardOrdinal++) {
             requireCardImage(cards.get(cardOrdinal - FIRST_CARD_ORDINAL), cardOrdinal);
         }
+    }
+
+    /**
+     * Validates that a stream is the canonical job image, before any of it is published.
+     *
+     * <p>Three properties are checked, in the order in which a reader of the external contract would
+     * check them: the card count, the width and character set of every card, and the position of the
+     * end-of-stream card.
+     *
+     * <p>The count must be exactly {@code JclCardImageBuilder.CARD_COUNT}, which is the number of
+     * cards the job image holds and therefore the number of messages one submission is. That single
+     * check also settles the legacy array bound carried in the emitting loop's guard: the canonical
+     * count is far below it, so the bound can never be the condition that stops a submission this
+     * method has accepted.
+     *
+     * <p>The end-of-stream card must be the last card and must be the only one, because the emitting
+     * loop stops on the first card that satisfies that test. An earlier end-of-stream card would end
+     * the submission before the remaining cards were sent, and the outcome would be reported as a
+     * complete submission because no publish had failed - a silent short delivery. Rejecting the
+     * stream instead is what reduces the observable outcomes to three.
+     *
+     * @param cards the stream to validate, in order
+     * @throws IllegalArgumentException if the stream does not hold exactly
+     *                                  {@code JclCardImageBuilder.CARD_COUNT} cards, if any card is
+     *                                  not exactly {@code JobSubmissionException.RECORD_SIZE} encoded
+     *                                  bytes or holds a character the record may not carry, if the
+     *                                  final card is not the end-of-stream card, or if any earlier
+     *                                  card is one
+     */
+    private static void requireCanonicalJobImage(final List<String> cards) {
+        if (cards.size() != JclCardImageBuilder.CARD_COUNT) {
+            throw new IllegalArgumentException("a job-submission stream must hold exactly "
+                    + JclCardImageBuilder.CARD_COUNT + " cards, which is the canonical job image,"
+                    + " but held " + cards.size());
+        }
+        requireWellFormedCards(cards);
+        final int finalOrdinal = cards.size();
+        if (!isEndOfStreamCard(cards.get(finalOrdinal - FIRST_CARD_ORDINAL))) {
+            throw new IllegalArgumentException("the final card of a job-submission stream must be the"
+                    + " end-of-stream card, which is transmitted, but card " + finalOrdinal
+                    + " was not");
+        }
+        for (int cardOrdinal = FIRST_CARD_ORDINAL; cardOrdinal < finalOrdinal; cardOrdinal++) {
+            if (isEndOfStreamCard(cards.get(cardOrdinal - FIRST_CARD_ORDINAL))) {
+                throw new IllegalArgumentException("card " + cardOrdinal + " of a job-submission"
+                        + " stream ends the stream, but only the final card may: the emitting loop"
+                        + " stops on it and the cards after it would never be published");
+            }
+        }
+    }
+
+    /**
+     * Composes and validates the deduplication identifier of every card of a submission.
+     *
+     * <p>Composing them all before the first send is what makes the identifier length a rejection of
+     * the whole submission rather than an interruption of one. The returned list is positional: the
+     * identifier of the card at one-based ordinal <em>n</em> is at index <em>n</em> minus one.
+     *
+     * @param submissionId the already validated submission identity
+     * @param cardCount    the number of cards in the submission
+     * @return the identifiers, in card order; never {@code null}
+     * @throws IllegalArgumentException if any composed identifier would exceed the length the queue
+     *                                  service accepts
+     */
+    private static List<String> deduplicationIds(final String submissionId, final int cardCount) {
+        final List<String> identifiers = new ArrayList<>(cardCount);
+        for (int cardOrdinal = FIRST_CARD_ORDINAL; cardOrdinal <= cardCount; cardOrdinal++) {
+            identifiers.add(deduplicationId(submissionId, cardOrdinal));
+        }
+        return List.copyOf(identifiers);
     }
 
     /**
@@ -617,13 +1023,24 @@ public final class JobSubmissionService {
      * characters. Nothing is trimmed, stripped or padded: the trailing spaces of a fixed-width record
      * are part of the record.
      *
+     * <p>Every byte is further required to be a printable graphic or the space. This is the outer
+     * boundary of the online-to-batch bridge, and it is the last place a control byte can be stopped:
+     * a carriage return or a line feed inside a card does not change the record's width, so a width
+     * check alone admits it, yet a consumer reconstructing a dataset from the queue would then read
+     * one eighty-byte card as two records. Every card the legacy program emits is composed of
+     * printable literals and space padding, so the restriction refuses nothing legitimate. Together
+     * with the shape guard the card builder applies to its date slots, it means no caller-supplied
+     * text can carry framing or control-language characters onto the queue, whether the cards were
+     * built here or handed in ready-made.
+     *
      * @param cardImage   the card to validate
      * @param cardOrdinal the card's one-based ordinal, used only to identify it in a diagnostic
      * @return {@code cardImage}, unchanged
      * @throws NullPointerException     if {@code cardImage} is {@code null}
      * @throws IllegalArgumentException if {@code cardImage} is not exactly
-     *                                  {@code JobSubmissionException.RECORD_SIZE} encoded bytes or
-     *                                  holds a character that is not a single US-ASCII byte
+     *                                  {@code JobSubmissionException.RECORD_SIZE} encoded bytes,
+     *                                  holds a character that is not a single US-ASCII byte, or holds
+     *                                  a character that is neither a printable graphic nor the space
      */
     private static String requireCardImage(final String cardImage, final int cardOrdinal) {
         Objects.requireNonNull(cardImage, "cardImage must not be null");
@@ -634,10 +1051,20 @@ public final class JobSubmissionService {
                     + " encoded bytes but was " + width);
         }
         for (int index = 0; index < cardImage.length(); index++) {
-            if (cardImage.charAt(index) > MAX_US_ASCII_CHARACTER) {
+            final char character = cardImage.charAt(index);
+            if (character > MAX_US_ASCII_CHARACTER) {
                 throw new IllegalArgumentException("job-submission card " + cardOrdinal
                         + " holds a character at position " + (index + FIRST_CARD_ORDINAL)
                         + " that is not representable as a single US-ASCII byte");
+            }
+            if (character < MIN_PRINTABLE_US_ASCII_CHARACTER
+                    || character > MAX_PRINTABLE_US_ASCII_CHARACTER) {
+                throw new IllegalArgumentException("job-submission card " + cardOrdinal
+                        + " holds a non-printable character at position "
+                        + (index + FIRST_CARD_ORDINAL) + ", code point " + (int) character
+                        + "; a fixed-width card may carry only printable US-ASCII graphics and the"
+                        + " space, because a control byte would reframe the record at the consumer"
+                        + " and could forge a line in a log record that names the card");
             }
         }
         return cardImage;
@@ -672,12 +1099,22 @@ public final class JobSubmissionService {
     /**
      * Composes the deduplication identifier for one card.
      *
-     * <p>The identifier is the submission identity, a separator and the card's one-based ordinal. It
-     * is fully determined by its inputs: nothing random and nothing time-derived takes part, so
-     * republishing the same submission produces the same identifiers and the queue service treats the
-     * repetition as a duplicate rather than as new work. Content-based deduplication is deliberately
-     * not relied upon, so this identifier is what makes a first-in-first-out publish acceptable to the
-     * queue service.
+     * <p>The identifier is the submission identity, a separator and the card's one-based ordinal. This
+     * composition is a pure function of its two arguments - nothing random and nothing time-derived is
+     * introduced here - so publishing the same card of the same submission twice yields the same
+     * identifier and the queue service treats the repetition as the duplicate it is. Whether two
+     * <em>submissions</em> collide is therefore decided entirely by whether their identities differ,
+     * which is a property of the identity and not of this composition; {@code newSubmissionId}
+     * explains why a derived identity is unique per submission, and a caller-supplied identity carries
+     * that responsibility itself. Content-based deduplication is deliberately not relied upon, so this
+     * identifier is what makes a first-in-first-out publish acceptable to the queue service.
+     *
+     * <p>The composition cannot make two different cards collide. The ordinal is an unsigned decimal
+     * and therefore contains no separator, so the final separator of the composed value always marks
+     * the boundary between identity and ordinal: two pairs of inputs produce the same identifier only
+     * when both the identity and the ordinal are equal. Distinct submissions consequently never share
+     * an identifier, which is precisely what keeps a deliberate second submission from being
+     * discarded.
      *
      * @param submissionId the already validated submission identity
      * @param cardOrdinal  the card's one-based ordinal within the submission
@@ -702,25 +1139,81 @@ public final class JobSubmissionService {
     }
 
     /**
-     * Derives a submission identity from the two date slots that define a reporting period.
+     * Derives a submission identity from the two date slots that define a reporting period, plus a
+     * nonce that makes the identity unique to this submission.
      *
-     * <p>The two slots fully determine the card stream, so an identity derived from them makes two
-     * submissions of the same period deduplicate against each other, which is the idempotency the
-     * explicit-identifier strategy exists to provide. Whitespace is removed because the slots are
-     * fixed-width values that may be space-padded while a deduplication identifier may hold no
-     * whitespace; only the derived identity is condensed, never a card, whose padding is contractual.
+     * <p><strong>Why the nonce is required rather than optional.</strong> The queue's legacy
+     * counterpart is a transient-data queue defined with {@code DISPOSITION(MOD)}, which appends. An
+     * operator who requested the same reporting period twice got two job submissions, and that was
+     * the point: a report is re-run because the first run was lost, superseded, or wanted again.
+     * Deriving the identity from the dates alone made the two submissions carry identical
+     * deduplication identifiers, and the queue service then discarded the second one inside its
+     * deduplication interval - silently, with a success response, so neither the operator nor the
+     * caller could tell that no job had been queued. That is not idempotency; the request is not a
+     * retry of the first, it is a second unit of work, and suppressing it loses the append semantics
+     * the bridge exists to reproduce.
+     *
+     * <p>The dates are retained in the identity even though the nonce alone would make it unique,
+     * because the identity appears in every diagnostic this class emits and a submission that can be
+     * read back to its reporting period is worth far more operationally than an opaque one.
+     *
+     * <p><strong>What the nonce does not change.</strong> The message group is a separate value and is
+     * not touched, so the cards of one submission still travel in a single ordered group and arrive in
+     * the order they were published - the property that makes the seventeen-card stream reconstructable.
+     * The card ordinal still distinguishes the cards within a submission, so a genuine double-publish
+     * of the <em>same</em> card within one submission - which would be a programming error rather than
+     * an operator action - is still caught by the deduplication identifier.
+     *
+     * <p>Whitespace is removed from the dates because the slots are fixed-width values that may be
+     * space-padded while a deduplication identifier may hold no whitespace; only the derived identity
+     * is condensed, never a card, whose padding is contractual. The deviation from content-based
+     * deduplication is recorded in {@code docs/decision-log.md}.
      *
      * @param startDate the start-date slot value
      * @param endDate   the end-date slot value
-     * @return the derived submission identity
+     * @return the derived submission identity, unique to this call
      * @throws NullPointerException     if either date is {@code null}
-     * @throws IllegalArgumentException if the derived identity is blank
+     * @throws IllegalArgumentException if the minted identity is blank
      */
-    private static String deriveSubmissionId(final String startDate, final String endDate) {
+    private static String newSubmissionId(final String startDate, final String endDate) {
         Objects.requireNonNull(startDate, "startDate must not be null");
         Objects.requireNonNull(endDate, "endDate must not be null");
-        return requireSubmissionId(withoutWhitespace(startDate) + SUBMISSION_ID_DATE_SEPARATOR
-                + withoutWhitespace(endDate));
+        return requireSubmissionId(withoutWhitespace(startDate) + SUBMISSION_ID_PART_SEPARATOR
+                + withoutWhitespace(endDate) + SUBMISSION_ID_PART_SEPARATOR + submissionNonce());
+    }
+
+    /**
+     * Produces the per-submission uniqueness nonce as {@value #SUBMISSION_NONCE_LENGTH} lower-case
+     * hexadecimal characters.
+     *
+     * <p>Hexadecimal with the group separators removed, rather than the textual form of the
+     * identifier, because a deduplication identifier may hold only alphanumerics and a small set of
+     * punctuation and must hold no whitespace; restricting the nonce to hexadecimal keeps it inside
+     * that set with no escaping and no possibility of a character that the queue service would refuse.
+     *
+     * @return a whitespace-free hexadecimal nonce, distinct on every call
+     */
+    private static String submissionNonce() {
+        final UUID unique = UUID.randomUUID();
+        final StringBuilder nonce = new StringBuilder(SUBMISSION_NONCE_LENGTH);
+        appendFixedWidthHex(nonce, unique.getMostSignificantBits());
+        appendFixedWidthHex(nonce, unique.getLeastSignificantBits());
+        return nonce.toString();
+    }
+
+    /**
+     * Appends one sixty-four-bit value as exactly sixteen lower-case hexadecimal characters.
+     *
+     * <p>Zero filled on the left, because {@link Long#toHexString(long)} drops leading zeros and a
+     * variable-length nonce would make the composed identifier's length vary between submissions for
+     * no reason.
+     *
+     * @param target the buffer to append to
+     * @param value  the value to render
+     */
+    private static void appendFixedWidthHex(final StringBuilder target, final long value) {
+        final String hex = Long.toHexString(value);
+        target.append("0".repeat(HEX_CHARACTERS_PER_LONG - hex.length())).append(hex);
     }
 
     /**
@@ -815,19 +1308,18 @@ public final class JobSubmissionService {
     }
 
     /**
-     * The outcome of one job-submission attempt: how many cards reached the queue, whether the
-     * attempt failed, and the operator-facing text when it did.
+     * The outcome of one job-submission attempt: how many cards reached the queue, whether the attempt
+     * failed, and the operator-facing text when it did.
      *
-     * <p>This value exists because a failed publish must <em>not</em> be reported by throwing. The
-     * queue is defined ignore-on-error and the legacy transaction completes normally after a failed
-     * write, so the outcome has to travel back as data. Three states are distinguishable and all
-     * three occur in practice: a complete submission, a failure after some cards were published, and
-     * a failure on the very first card.
+     * <p>This value exists because a failed publish must <em>not</em> be reported by throwing. The queue is
+     * defined ignore-on-error and the legacy transaction completes normally after a failed write, so the
+     * outcome has to travel back as data. Three states are distinguishable and all three occur: a complete
+     * submission, a failure after some cards were published, and a failure on the very first card.
      *
-     * <p>{@code failureMessage} is normalised on construction: it is the frozen operator-facing
-     * literal published by {@code JobSubmissionException.DEFAULT_MESSAGE} when the attempt failed and
-     * no text was supplied, and it is the empty string whenever the attempt succeeded. It therefore
-     * never holds diagnostic detail, which belongs in the log, and never holds the text "null".
+     * <p>{@code failureMessage} is normalised on construction: the frozen literal published by
+     * {@code JobSubmissionException.DEFAULT_MESSAGE} when the attempt failed and no text was supplied, and
+     * the empty string whenever it succeeded. It therefore never holds diagnostic detail, which belongs in
+     * the log, and never holds the text "null".
      *
      * @param cardsRequested the number of cards the submission was asked to publish; never negative
      * @param cardsPublished the number of cards the queue accepted; never negative and never greater

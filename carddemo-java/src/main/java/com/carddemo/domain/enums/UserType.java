@@ -35,35 +35,25 @@ import java.util.Optional;
  * + password 8 + type 1 + filler 23 = 80. The provisioning job {@code app/jcl/DUSRSECJ.jcl} seeds
  * ten user records in stream, five of type {@code A} and five of type {@code U}.
  *
- * <h2>Routing tolerance: do not tighten this</h2>
- *
- * <p>Sign-on ({@code app/cbl/COSGN00C.cbl}) moves {@code SEC-USR-TYPE} straight into
- * {@code CDEMO-USER-TYPE} at L227, tests the administrator condition at L230, and when that test
- * holds transfers control to the administrative menu program {@code COADM01C}. The alternative at
- * L235 is an <strong>unconditional</strong> {@code ELSE} that transfers control to the main menu
- * program {@code COMEN01C}, and the construct closes at L240. That alternative is <em>not</em> a
- * second test of the standard-user condition: there is no third branch and no error path for a
+ * <p><strong>Routing tolerance - do not tighten this.</strong> Sign-on moves the persisted type
+ * straight into the communication-area field, tests the administrator condition, and when that test
+ * holds transfers control to the administrative menu program. The alternative is an
+ * <strong>unconditional</strong> one that transfers control to the main menu program: it is <em>not</em>
+ * a second test of the standard-user condition, and there is no third branch and no error path for a
  * code the estate never declared.
  *
- * <p>Two consequences bind every member below.
+ * <p>Two consequences bind every member below. Only code {@code A} is an administrator, so
+ * <em>every</em> other value - including an unexpected one such as {@code X} - reaches the main menu,
+ * raising no error and aborting no sign-on. And {@link #fromCode(String)} therefore never throws:
+ * absence is modelled explicitly as {@link Optional#empty()}, and an absent result can never answer
+ * {@code true} to {@link #isAdmin()} because there is no instance on which to call it, which is
+ * precisely what the unconditional alternative encodes. Callers compose the two as
+ * {@code fromCode(raw).map(UserType::isAdmin).orElse(false)}. A throwing lookup would be the more
+ * conventional Java shape and it would be wrong - it would abort a sign-on the legacy program
+ * completes. Faithful beats idiomatic.
  *
- * <ul>
- *   <li>Only code {@code A} is an administrator. <em>Every</em> other value, including an
- *       unexpected one such as {@code X}, reaches the main menu. It does not raise an error and it
- *       does not abort sign-on.</li>
- *   <li>{@link #fromCode(String)} therefore never throws. Absence is modelled explicitly as
- *       {@link Optional#empty()}, and an absent result can never answer {@code true} to
- *       {@link #isAdmin()} because there is no instance on which to call it, which is precisely
- *       what the unconditional alternative encodes. Callers compose the two as
- *       {@code fromCode(raw).map(UserType::isAdmin).orElse(false)}.</li>
- * </ul>
- *
- * <p>A throwing lookup would be the more conventional Java shape and it would be wrong: it would
- * abort a sign-on that the legacy program completes. Faithful beats idiomatic.
- *
- * <h2>Representation</h2>
- *
- * <p>The code is carried as a one-character {@link String} rather than as a {@code char}, used
+ * <p><strong>Representation.</strong> The code is carried as a one-character {@link String} rather
+ * than as a {@code char}, used
  * consistently for the field, the accessor, the lookup index key and the lookup parameter. The
  * source field is a single character, but every boundary that supplies it hands over a
  * {@code String}: the user-security entity persists {@code sec_usr_type} as {@code VARCHAR(1)},
@@ -72,24 +62,18 @@ import java.util.Optional;
  * unrecognised value inside this type, so no caller needs a conversion step that could itself
  * throw on a blank or absent code.
  *
- * <h2>Boundaries</h2>
- *
- * <p>This type is deliberately <strong>not</strong> a persistence field type. The user-security
+ * <p><strong>Boundaries.</strong> This type is deliberately <strong>not</strong> a persistence
+ * attribute type. The user-security
  * entity stores the raw one-character column and translation happens in the service layer, so this
  * file carries no persistence annotation of any kind, no enumerated-mapping annotation and no
  * attribute converter: mapping by constant name would overflow a one-character column, mapping by
  * ordinal would require an integer column, and either would push translation logic down into the
  * domain layer.
  *
- * <p>Screen-flow state is out of scope. The program-context condition names that sit beside the
- * user type in {@code app/cpy/COCOM01Y.cpy} (L29 to L31) model presentation state and belong to
- * {@code com.carddemo.api.dto.NavigationContext}, not to this package. The password field of the
- * user record ({@code app/cpy/CSUSR01Y.cpy} L21) is likewise absent here; it becomes a hashed
- * column on the user-security entity.
- *
- * <p>Provenance of the migrated behaviour, cited and never transcribed: source checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated {@code 2022-07-19}.
+ * <p>Screen-flow state is out of scope. The program-context condition names that sit beside the user
+ * type in the communication-area copybook model presentation state and belong to the navigation-context
+ * transfer object in the API layer, not to this package. The password field of the user record is
+ * likewise absent here; it becomes a hashed column on the user-security entity.
  */
 public enum UserType {
 

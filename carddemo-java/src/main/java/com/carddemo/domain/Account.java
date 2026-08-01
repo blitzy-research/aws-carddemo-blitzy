@@ -26,27 +26,29 @@ import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 
 /**
- * JPA entity for a CardDemo account - the Java translation of the {@code ACCOUNT-RECORD} data
- * structure declared by the legacy copybook {@code CVACT01Y}, whose own header line states a
- * record length of 300 bytes.
+ * JPA entity for a CardDemo account - the Java translation of the {@code ACCOUNT-RECORD} structure
+ * declared by the legacy copybook {@code CVACT01Y}, whose header states a record length of 300 bytes.
  *
- * <p><strong>Provenance and corroboration.</strong> Three artifacts of the read-only legacy
- * estate agree on this record, and each was re-verified against the checkout rather than assumed:
+ * <p><strong>Corroboration.</strong> Three independent artifacts of the read-only legacy estate agree
+ * on this record: the copybook declares twelve named fields plus a 178-byte trailing filler summing to
+ * exactly 300; the cluster definition in {@code ACCTFILE.jcl} specifies {@code KEYS(11 0)} and
+ * {@code RECORDSIZE(300 300)}; and {@code CBACT01C} declares it in its file section as an 11-byte key
+ * field followed by a 289-byte remainder, 11 + 289 = 300.
  *
  * <ul>
  *   <li>{@code app/cpy/CVACT01Y.cpy} declares twelve named fields followed by a 178-byte trailing
  *       filler; the declared widths sum to exactly 300.</li>
- *   <li>{@code app/jcl/ACCTFILE.jcl} defines the {@code ACCTDATA} VSAM KSDS base cluster as
- *       {@code INDEXED} with {@code KEYS(11 0)} and {@code RECORDSIZE(300 300)} - an 11-byte key
- *       at offset 0 and a fixed 300-byte record.</li>
+ *   <li>{@code app/jcl/ACCTFILE.jcl} defines the {@code ACCTDATA} VSAM KSDS base cluster with
+ *       indexed organisation, an 11-byte key at offset 0, and a record that is fixed at 300 bytes
+ *       for both its minimum and its maximum.</li>
  *   <li>{@code app/cbl/CBACT01C.cbl} declares the same record in its file section as an 11-byte
  *       key field, {@code FD-ACCT-ID}, followed by a 289-byte remainder, {@code FD-ACCT-DATA};
  *       11 + 289 = 300.</li>
  * </ul>
  *
- * <p><strong>Record layout.</strong> Fields are declared below in record order. Zero-based
- * offset and width, as recomputed from the copybook and confirmed against the sample account
- * dataset of the estate, whose fifty records are each exactly 300 bytes wide:
+ * <p>The five monetary fields are <em>not</em> contiguous: three precede the three date fields and two
+ * follow them. Declaration order is preserved exactly so that no reader treats the amounts as one
+ * block - a mapper that assumed contiguity would misread every account from offset 48 onward.
  *
  * <ul>
  *   <li>0/11 - account identifier, the business key</li>
@@ -66,41 +68,31 @@ import jakarta.persistence.Version;
  *
  * <p><strong>Identity is the legacy business key, never a surrogate.</strong> The legacy record
  * splits into an 11-byte key that is the leading substring of the 300-byte image plus a 289-byte
- * remainder, and the cluster definition states the same relationship as {@code KEYS(11 0)} - key
- * width 11 at offset 0. The persistent identity of an account row therefore <em>is</em> that
+ * remainder, and the cluster definition states the same relationship: key width 11 at offset 0,
+ * cited from {@code app/jcl/ACCTFILE.jcl}. The persistent identity of an account row therefore <em>is</em> that
  * account identifier. No generated value, sequence, table generator or synthetic identifier
  * appears on this class: introducing one would sever the record-image-to-row correspondence that
  * byte-level output parity depends on.
  *
  * <p><strong>This entity is a passive carrier; it computes nothing.</strong> Fixed-width offset
- * arithmetic belongs exclusively to {@code com.carddemo.util.AccountRecordMapper}, and zoned
- * decimal encoding and decoding - including the overpunched trailing-byte sign convention and the
- * scale policy applied to every amount - belongs exclusively to
- * {@code com.carddemo.util.ZonedDecimalCodec}. Neither concern leaks into this class, and this
- * class performs no arithmetic, no scaling, no rounding, no parsing and no validation. The
- * dependency direction is one-way: the utility layer produces entities, so this entity never
- * references the utility layer.
+ * arithmetic belongs to the record mapper in the utility layer, and zoned decimal encoding and
+ * decoding - including the overpunched trailing-byte sign convention and the scale policy applied to
+ * every amount - belongs exclusively to {@link com.carddemo.util.ZonedDecimalCodec}. This class
+ * performs no arithmetic, scaling, rounding, parsing or validation. The dependency direction is
+ * one-way: the utility layer produces entities, so an entity never references the utility layer.
  *
- * <p><strong>Fixed-width values are stored verbatim.</strong> Every character field carries a
- * value that occupies its whole declared width, so padding is part of the stored value rather
- * than incidental whitespace. Constructors, setters and accessors are therefore plain
- * assignments and plain returns: nothing is trimmed, stripped, padded, case folded, normalized or
- * validated anywhere in this class. Screen-level field editing lives in the account update
- * service and its request DTOs, which reproduce the legacy edit cascade; the persistence model
- * deliberately accepts everything the legacy system accepted.
+ * <p><strong>Fixed-width values are stored verbatim.</strong> Every character attribute carries a
+ * value occupying its whole declared width, so padding is part of the stored value rather than
+ * incidental whitespace. Constructors, mutators and accessors are plain assignments and plain returns:
+ * nothing is trimmed, stripped, padded, case-folded, normalized or validated anywhere in this class.
+ * Screen-level field editing belongs to the account-update request path, which reproduces the legacy
+ * edit cascade; the persistence model deliberately accepts everything the legacy system accepted.
  *
  * <p><strong>Schema authority.</strong> This mapping is validated, not generated. Flyway owns the
- * {@code account} table through {@code V1__create_schema.sql}, and the runtime configuration
- * fixes Hibernate at schema validation only, so any divergence between the annotations below and
- * that migration - a renamed column, a changed width, a changed precision, a wrong Java type -
- * fails application startup rather than silently reshaping the database. Thirteen columns,
- * thirteen fields, all non-nullable.
- *
- * <p>Translated from the read-only legacy estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, which appears in the trailer comment of
- * {@code CVACT01Y} at line 19. No legacy statement is transcribed into this module: only member
- * names, field names, widths, offsets and codes are cited.
+ * {@code account} table and the runtime configuration fixes Hibernate at schema validation only, so
+ * any divergence from the migration - a renamed column, a changed width or precision, a wrong Java
+ * type - fails start-up rather than silently reshaping the database. Thirteen columns, thirteen
+ * attributes, all non-nullable.
  */
 @Entity
 @Table(name = "account")
@@ -125,24 +117,18 @@ public class Account {
     /**
      * Active status code - a single byte at offset 11 of the record image.
      *
-     * <p>Held as the raw one-character code and <em>not</em> as a mapped enum constant. A sibling
-     * enum in {@code com.carddemo.domain.enums} models the vocabulary for service-layer use, but
-     * this entity deliberately neither imports nor references it, for four independent reasons:
+     * <p>Held as the raw one-character code and <em>not</em> as a mapped enum constant. A sibling enum
+     * in {@code com.carddemo.domain.enums} models the vocabulary for service-layer use, but this
+     * entity deliberately neither imports nor references it, for four independent reasons: string-valued
+     * enum mapping persists the constant <em>name</em>, which cannot fit a one-character column and
+     * would destroy byte parity of the fixed-width output; ordinal mapping persists an integer and
+     * would fail schema validation against a character column outright; an attribute converter would
+     * have no home, since the enum sub-package is a closed set of enum declarations and this package
+     * may not depend on the utility layer; and the raw code is lossless, tolerating every value the
+     * legacy file may carry - including one outside the documented vocabulary - exactly as the legacy
+     * programs did, where rejecting it here would be new behavior.
      *
-     * <ul>
-     *   <li>String-valued enum mapping persists the constant <em>name</em>, which is several
-     *       characters long and cannot fit a one-character column - it would overflow and destroy
-     *       byte parity of the fixed-width output.</li>
-     *   <li>Ordinal enum mapping persists an integer and would fail schema validation against a
-     *       character column outright.</li>
-     *   <li>An attribute converter would need a home: the enum sub-package is a closed set of
-     *       enum declarations, and this package may not depend on the utility layer.</li>
-     *   <li>The raw code is lossless and tolerates every value the legacy file may carry,
-     *       including a value outside the documented vocabulary, exactly as the legacy programs
-     *       did. Rejecting such a value here would be new behavior.</li>
-     * </ul>
-     *
-     * <p>Translation between code and constant is the service layer's responsibility. This field
+     * <p>Translation between code and constant is the service layer's responsibility. This attribute
      * stores the code, verbatim.
      */
     @Column(name = "acct_active_status", length = 1, nullable = false)
@@ -191,23 +177,15 @@ public class Account {
     /**
      * Expiration date - 10 bytes at offset 58 of the record image.
      *
-     * <p><strong>Documented source anomaly.</strong> The legacy field name, declared on line 11
-     * of {@code CVACT01Y}, drops a letter from EXPIRATION and reads {@code ACCT-EXPIRAION-DATE}.
-     * This is the first entry of the estate's fourteen-item anomaly register and is recorded in
-     * {@code docs/decision-log.md}. It is preserved and documented, never silently corrected in a
-     * way that would shift the layout:
+     * <p><strong>Documented source anomaly.</strong> The legacy field name drops a letter from
+     * EXPIRATION and reads {@code ACCT-EXPIRAION-DATE}. It is row 1 of the source anomaly register in
+     * {@code docs/decision-log.md}, and it is preserved and documented rather than silently corrected
+     * in a way that would shift the layout: the Java property and the column are both spelled
+     * correctly, the record offset is unchanged at 58 for a width of 10 so the record mapper reads
+     * exactly the same bytes and the image stays byte-compatible, and the misspelled legacy name is
+     * cited here so the mapping from this property back to the copybook field stays findable by search.
      *
-     * <ul>
-     *   <li>the Java property is spelled correctly, {@code acctExpirationDate};</li>
-     *   <li>the column is spelled correctly, {@code acct_expiration_date};</li>
-     *   <li>the record offset is unchanged at 58 for a width of 10, so
-     *       {@code com.carddemo.util.AccountRecordMapper} keeps reading exactly the same bytes and
-     *       the record image stays byte-compatible;</li>
-     *   <li>the original misspelled name is cited here so the traceability mapping from this
-     *       property back to the copybook field remains findable by search.</li>
-     * </ul>
-     *
-     * <p>Bounded {@link String} for the same reason as the other two date fields.
+     * <p>Bounded {@link String} for the same reason as the other two date attributes.
      */
     @Column(name = "acct_expiration_date", length = 10, nullable = false)
     private String acctExpirationDate;
@@ -273,26 +251,23 @@ public class Account {
     private String acctGroupId;
 
     /**
-     * Optimistic-locking version counter. Managed entirely by the persistence provider: it is
-     * read and compared on every update and incremented on every successful one.
+     * Optimistic-locking version counter, managed entirely by the persistence provider: read and
+     * compared on every update, incremented on every successful one.
      *
-     * <p><strong>Why this column exists, and why it is an improvement rather than a change in
-     * behavior.</strong> It replaces the legacy before-and-after image comparison that the online
-     * account update program performed by hand. The legacy file definitions in the CICS resource
-     * definition specify uncommitted read integrity, a locking update model, no recovery and no
-     * journaling, so concurrency correctness rested solely on that hand-written image comparison
-     * plus record locking. PostgreSQL read-committed isolation combined with this version check is
-     * <em>strictly stronger</em> than that verified baseline. A reviewer should read the stronger
-     * isolation as the documented improvement it is and not mistake it for a behavioral
-     * regression; the decision is recorded in {@code docs/decision-log.md}.
+     * <p><strong>Why it exists, and why it is an improvement rather than a change in behavior.</strong>
+     * It replaces the legacy before-and-after image comparison that the online account-update program
+     * performed by hand. The legacy file definitions in the CICS resource definition specify
+     * uncommitted read integrity, a locking update model, no recovery and no journaling, so concurrency
+     * correctness rested solely on that hand-written comparison plus record locking. PostgreSQL
+     * read-committed isolation combined with this version check is <em>strictly stronger</em> than that
+     * verified baseline. A reviewer should read the stronger isolation as the documented improvement it
+     * is and not mistake it for a behavioral regression; decision log entry D-15 records it.
      *
-     * <p>This entity is one of only two in the module that carries a version counter, the other
-     * being the card entity, matching the only two tables in the schema that define the column.
-     *
-     * <p>The field is not initialized to a non-zero value: the reference-data seed omits the
-     * column from its insert lists so that the schema default applies, and forcing a different
-     * starting value here would diverge from seeded rows. It is neither insert-excluded nor
-     * update-excluded, because the provider must be free to write it.
+     * <p>This is one of only two entities in the module carrying a version counter, the other being the
+     * card entity, matching the only two tables in the schema that define the column. The attribute is
+     * not initialised to a non-zero value, so the schema default applies and a seeded row that omits
+     * the column does not diverge; it is neither insert- nor update-excluded, because the provider must
+     * be free to write it.
      */
     @Version
     @Column(name = "version", nullable = false)
@@ -644,4 +619,3 @@ public class Account {
         return "Account[acctId='" + acctId + "', acctActiveStatus='" + acctActiveStatus + "']";
     }
 }
-

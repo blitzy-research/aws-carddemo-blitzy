@@ -36,13 +36,23 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * Unit test for {@link StatementHtmlTemplates}, the holder of the fixed-width HTML line
  * templates written to the account-statement HTML output stream.
  *
- * <h2>What this test guards</h2>
+ * <p><strong>What this test guards.</strong> The class under test publishes thirty-four fixed
+ * line templates, two composed lines built from a literal plus a substituted value, one
+ * fit-to-width helper for the three free-form work lines, and the named record and component
+ * widths. Every published record is exactly one hundred encoded bytes wide, which is the width
+ * of one HTML output record.</p>
  *
- * <p>The class under test publishes <strong>thirty-four</strong> fixed line templates, two
- * composed lines built from a literal plus a substituted value, one fit-to-width helper for
- * the three free-form work lines, and the named record and component widths. Every published
- * record is exactly <strong>one hundred</strong> encoded bytes wide, which is the width of one
- * HTML output record.</p>
+ * <p>This is a direct end-to-end byte-parity surface, so every assertion compares encoded byte
+ * arrays rather than strings and every width is measured through
+ * {@link java.nio.charset.StandardCharsets#US_ASCII} rather than by character count. Nothing is
+ * trimmed, collapsed, re-spaced, re-cased, balanced, re-quoted, entity-encoded or reformatted,
+ * and no markup tooling of any kind is used: a tool that silently improved the markup would
+ * break the very bytes this test exists to pin down. Literal constants stand in for a templating
+ * engine for the same reason (decision D-27), and no record carries a line terminator or tab
+ * byte (decision D-30). Caller-supplied data is escaped before composition and the raw-markup
+ * line composer no longer exists, so an unescaped-data path is unreachable rather than merely
+ * discouraged; every fixed literal the legacy generator emits is still emitted byte for byte,
+ * because a fixed literal is not caller-supplied data (decision D-49).</p>
  *
  * <p>This is a direct end-to-end byte-parity surface. The migrated batch stream has to be
  * byte-identical to the stream the legacy generator produced, so every assertion below
@@ -53,27 +63,33 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * used: a tool that silently improved the markup would break the very bytes this test exists
  * to pin down.</p>
  *
- * <h2>The five deliberate malformations that must survive</h2>
+ * <h2>The five deliberate legacy behaviours that must survive</h2>
  *
  * <ol>
  *   <li><strong>Two consecutive space bytes inside the table start tag.</strong> Template 8
- *       carries two spaces between the tag name and its first attribute. A whitespace
- *       normaliser would collapse them and a minified rewrite would drop them; both are
- *       parity failures, so the two space bytes are asserted by byte index.</li>
+ *       carries two spaces between the tag name and its first attribute, row 21 of the source
+ *       anomaly register. A whitespace normaliser would collapse them and a minified rewrite
+ *       would drop them, so the two space bytes are asserted by byte index.</li>
  *   <li><strong>Inconsistent spacing before the background colour property.</strong> The four
  *       spanning cells omit the space after {@code padding:0px 5px;} while the six
- *       explicitly-sized cells include it. Neither family is changed toward the other, and
- *       both spacings are asserted as found.</li>
+ *       explicitly-sized cells include it. Neither family is moved toward the other, and both
+ *       spacings are asserted as found.</li>
  *   <li><strong>A declared template that is never emitted.</strong> The bare table-cell start
  *       tag is declared but the legacy program never sets it, so it is asserted to exist at
  *       full record width and is deliberately <em>not</em> deleted as unused. Nothing is
  *       asserted about emission, because this class supplies templates and never emits
  *       them.</li>
- *   <li><strong>A line with no closing tag.</strong> The customer-name line is a
- *       twenty-six-byte opening paragraph literal plus a fifty-byte name field and stops
- *       there, so no closing tag is ever appended. Its neighbour, the account-number
- *       heading, is thirty-four plus twenty plus five bytes and does close, which is what
- *       proves the omission is specific rather than systematic.</li>
+ *   <li><strong>A composed line whose name transfer stops at the first pair of adjacent
+ *       spaces.</strong> The customer-name line is not written out of its declared group. The
+ *       emitting paragraph moves the name into a fifty-byte staging field and then assembles
+ *       the record from four parts, and the part carrying the name is transferred only as far
+ *       as the first pair of adjacent space bytes. A name whose middle portion is absent
+ *       therefore reaches the record cut short at that gap, and the padding the move introduced
+ *       never reaches the record at all. Its neighbour, the account-number heading, is written
+ *       straight out of its declared group and so carries its whole padded field. Both lines
+ *       close their element; what differs is how each record is assembled, and a
+ *       reasonable-looking implementation that emitted the padded staging field whole would
+ *       fail parity on every name that contains a double space.</li>
  *   <li><strong>The scaffold repeats once per account.</strong> In the emitted artefact the
  *       whole document scaffold, from the document type declaration through the closing html
  *       element, appears once for every account. That repetition is the statement-generation
@@ -81,7 +97,17 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  *       publishes, and builds no document.</li>
  * </ol>
  *
- * <h2>Facts recorded here but deliberately not asserted</h2>
+ * <p><strong>Facts recorded here but deliberately not asserted.</strong> How the legacy literals
+ * were typed is not the contract: some were written across two physical source lines using
+ * literal continuation and some of those splits fall inside a token, so no continuation count,
+ * split position or source-line count is asserted anywhere below. The assembly delimiter regimes
+ * — a two-space delimiter for the customer name and the three address lines, and an asterisk
+ * delimiter for the basic-detail and transaction lines so that the whole padded field width
+ * transfers with its trailing spaces intact — belong to the statement-generation service and are
+ * neither implemented nor asserted here. The colour and percentage-width bytes are legacy output
+ * content reproduced for parity, never themed, tokenised, re-cased or aligned to a palette; no
+ * design system, component library or design-token set exists anywhere in this migration and no
+ * graphical interface is built.</p>
  *
  * <ul>
  *   <li><strong>The legacy source layout.</strong> Some of the thirty-four literals were
@@ -95,12 +121,15 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  *       conflict is resolved to <strong>one hundred</strong> for the HTML stream, matching the
  *       record declaration of the emitting program, and one hundred is what this test
  *       asserts.</li>
- *   <li><strong>The assembly delimiter regimes.</strong> The emitting program composes the
- *       customer name and the three address lines with a two-space delimiter, and composes the
- *       basic-detail and transaction lines with an asterisk delimiter so that the entire padded
- *       field width transfers and its trailing spaces are retained inside the element. That
- *       assembly belongs to the statement-generation service; no delimiter regime is
- *       implemented or asserted here.</li>
+ *   <li><strong>The assembly delimiter regimes beyond the customer-name line.</strong> The
+ *       emitting program composes the customer name and the three address lines with a
+ *       two-space delimiter, and composes the basic-detail and transaction lines with an
+ *       asterisk delimiter so that the entire padded field width transfers and its trailing
+ *       spaces are retained inside the element. Only the customer-name line is published as a
+ *       composed line by the class under test, so only its regime is asserted below. The three
+ *       address lines and the two asterisk-delimited families are assembled by the
+ *       statement-generation service out of the fit-to-width helper, and neither their content
+ *       nor their delimiter is implemented or asserted in this file.</li>
  *   <li><strong>The initialisation width guard.</strong> The class under test fails
  *       initialisation with {@link IllegalStateException}, naming the offending template, if a
  *       literal is ever widened past the record. That guard is private and cannot be reached
@@ -128,8 +157,10 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * by a test. The divergences this file pins are: two consecutive space bytes preserved verbatim
  * after a tag name; an inconsistent space before a style property across two families of
  * constants, preserved in both directions rather than made uniform; a constant that is declared
- * and never emitted, retained rather than removed as dead code; a markup line deliberately
- * emitted without a closing tag; literal constants in place of a templating engine, so that no
+ * and never emitted, retained rather than removed as dead code; a composed line whose name
+ * transfer stops at the first pair of adjacent space bytes, so that a name carrying a double
+ * space is cut short rather than emitted whole, and whose declared group width is therefore not
+ * its emitted width; literal constants in place of a templating engine, so that no
  * whitespace or ordering variability can enter the output; a record-length conflict in the job
  * stream resolved to one hundred bytes for the HTML stream; and colour and width literals
  * reproduced byte for byte with no design-system involvement of any kind.</p>
@@ -144,12 +175,10 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 class StatementHtmlTemplatesTest {
 
     /*
-     * ----------------------------------------------------------------------------------------
      * Independently written widths. These repeat the legacy record and component widths as
      * plain literals so that the assertions never borrow a figure from the class under test.
      * They are factual layout evidence read from the legacy record declarations, not tuning or
      * capacity figures.
-     * ----------------------------------------------------------------------------------------
      */
 
     /** Width of one HTML output record in encoded bytes. */
@@ -176,13 +205,29 @@ class StatementHtmlTemplatesTest {
     /** Width of the substituted customer-name field of the customer-name line. */
     private static final int EXPECTED_NAME_FIELD_LENGTH = 50;
 
-    /** Declared width of the whole customer-name group before record padding. */
+    /**
+     * Declared width of the staging group the legacy program moves the customer name into. It is
+     * the leading literal plus the name field, and it is deliberately <em>not</em> the width of
+     * the emitted record: the emitting paragraph assembles the record from the staging field
+     * rather than writing the group out.
+     */
     private static final int EXPECTED_NAME_DECLARED_LENGTH = 76;
 
+    /** Width of the two-space separator the emitting paragraph appends after the name. */
+    private static final int EXPECTED_NAME_DELIMITER_LENGTH = 2;
+
+    /** Width of the closing paragraph tag the emitting paragraph appends last. */
+    private static final int EXPECTED_NAME_CLOSING_TAG_LENGTH = 4;
+
+    /**
+     * Greatest number of significant bytes the customer-name line can carry: the leading
+     * literal, a name field that reached its full width without meeting the separator, the
+     * separator, and the closing tag.
+     */
+    private static final int EXPECTED_NAME_MAX_SIGNIFICANT_LENGTH = 82;
+
     /*
-     * ----------------------------------------------------------------------------------------
      * Independently written literals of the two composed lines.
-     * ----------------------------------------------------------------------------------------
      */
 
     /** The account-number heading's leading literal; the trailing space is part of its width. */
@@ -191,14 +236,21 @@ class StatementHtmlTemplatesTest {
     /** The account-number heading's closing tag, present because that line does close. */
     private static final String EXPECTED_ACCOUNT_SUFFIX = "</h3>";
 
-    /** The customer-name line's leading literal. There is deliberately no trailing literal. */
+    /** The customer-name line's leading literal. */
     private static final String EXPECTED_NAME_PREFIX = "<p style=\"font-size:16px\">";
 
+    /**
+     * The two-space separator the emitting paragraph appends after the name. It is also the
+     * sequence that stops the name transfer, which is why a name carrying it is cut short.
+     */
+    private static final String EXPECTED_NAME_DELIMITER = "  ";
+
+    /** The customer-name line's closing tag, appended after the separator. */
+    private static final String EXPECTED_NAME_CLOSING_TAG = "</p>";
+
     /*
-     * ----------------------------------------------------------------------------------------
      * Named byte values. Written as hexadecimal so that no escape sequence for a line
      * terminator or a tab appears anywhere in this source.
-     * ----------------------------------------------------------------------------------------
      */
 
     /** The ASCII space, and the only byte the fixed-width move may use as padding. */
@@ -217,7 +269,6 @@ class StatementHtmlTemplatesTest {
     private static final int NOT_FOUND = -1;
 
     /*
-     * ----------------------------------------------------------------------------------------
      * The independent oracle: three parallel, hand-written lists in exact legacy declaration
      * order.
      *
@@ -232,7 +283,6 @@ class StatementHtmlTemplatesTest {
      *                                   list is derived from the class under test.
      *
      * The lists are index-aligned; the fixture provider zips them.
-     * ----------------------------------------------------------------------------------------
      */
 
     /** Legacy condition-names of the thirty-four fixed templates, in declaration order. */
@@ -332,10 +382,8 @@ class StatementHtmlTemplatesTest {
     private static final String SIZED_CELL_STYLE_FRAGMENT = "padding:0px 5px; background-color:";
 
     /*
-     * ----------------------------------------------------------------------------------------
      * Fixture providers. Each zips the parallel lists above so that a failure names the legacy
      * template it came from.
-     * ----------------------------------------------------------------------------------------
      */
 
     /**
@@ -384,12 +432,10 @@ class StatementHtmlTemplatesTest {
     }
 
     /*
-     * ----------------------------------------------------------------------------------------
      * Byte helpers and the padding oracle. Everything below works on encoded bytes and uses
      * literals only, so no expectation can be borrowed from the class under test. No helper
      * here removes, collapses, re-cases, re-quotes, entity-encodes or otherwise rewrites a
      * single byte.
-     * ----------------------------------------------------------------------------------------
      */
 
     /**
@@ -541,9 +587,7 @@ class StatementHtmlTemplatesTest {
     }
 
     /*
-     * ========================================================================================
      * The thirty-four fixed templates: width, content, padding and cleanliness.
-     * ========================================================================================
      */
 
     @ParameterizedTest(name = "[{0}] {1}")
@@ -609,15 +653,7 @@ class StatementHtmlTemplatesTest {
     }
 
     /*
-     * ========================================================================================
      * The ordered accessor.
-     *
-     * MALFORMATION FIVE, recorded and not asserted: in the emitted artefact the whole document
-     * scaffold, from the document type declaration through the closing html element, repeats
-     * once per account. That repetition is decided by the statement-generation service, which
-     * reproduces the legacy dispatcher. This class publishes declaration order only, so no
-     * document is built here and no emission sequence is asserted.
-     * ========================================================================================
      */
 
     @Test
@@ -681,9 +717,7 @@ class StatementHtmlTemplatesTest {
     }
 
     /*
-     * ========================================================================================
      * MALFORMATION ONE :: two consecutive space bytes inside the table start tag.
-     * ========================================================================================
      */
 
     @Test
@@ -728,10 +762,8 @@ class StatementHtmlTemplatesTest {
     }
 
     /*
-     * ========================================================================================
      * MALFORMATION TWO :: the space before the background colour property is present in one
      * table-cell family and absent in the other.
-     * ========================================================================================
      */
 
     @ParameterizedTest(name = "{0}")
@@ -798,9 +830,7 @@ class StatementHtmlTemplatesTest {
     }
 
     /*
-     * ========================================================================================
      * MALFORMATION THREE :: a declared template the legacy program never sets.
-     * ========================================================================================
      */
 
     @Test
@@ -842,18 +872,28 @@ class StatementHtmlTemplatesTest {
 
     /*
      * ========================================================================================
-     * MALFORMATION FOUR :: one composed line closes its tag and the other does not.
+     * LEGACY BEHAVIOUR FOUR :: the two composed lines are assembled differently.
      *
-     * The account-number heading is thirty-four plus twenty plus five bytes and closes. The
-     * customer-name line is twenty-six plus fifty bytes and stops there. Both are padded to the
-     * hundred-byte record. Every byte of both records is accounted for below by positional
-     * comparison, so nothing has to be removed from either record to measure it.
+     * The account-number heading is written straight out of its declared group, so its whole
+     * padded twenty-byte identifier field reaches the record and its five-byte closing tag sits
+     * at a fixed offset: thirty-four plus twenty plus five significant bytes, always.
+     *
+     * The customer-name line is not written out of its group. The emitting paragraph moves the
+     * name into the fifty-byte staging field and then assembles the record from four parts, the
+     * name part stopping at the first pair of adjacent space bytes. Its significant width is
+     * therefore variable: twenty-six, plus the name up to that separator, plus two, plus four.
+     * With no separator inside the field that reaches eighty-two bytes, and with a separator
+     * early in the field it is shorter. Neither line's group width is asserted as its emitted
+     * width, because for the name line the two are different numbers.
+     *
+     * Both records are padded to the hundred-byte record. Every byte of both is accounted for
+     * below by positional comparison, so nothing has to be removed from either to measure it.
      * ========================================================================================
      */
 
     @Test
-    @DisplayName("Malformation four, the control: the account-number heading closes its tag "
-            + "at fifty-nine significant bytes")
+    @DisplayName("the control: the account-number heading is written out of its declared group "
+            + "and closes at fifty-nine significant bytes")
     void accountNumberLineClosesItsHeadingAtFiftyNineSignificantBytes() {
         final String accountIdentifier = "00000000011";
         final byte[] image = asciiBytes(StatementHtmlTemplates.accountNumberLine(accountIdentifier));
@@ -926,12 +966,18 @@ class StatementHtmlTemplatesTest {
     }
 
     @Test
-    @DisplayName("Malformation four: the customer-name line is emitted with no closing tag "
-            + "at seventy-six significant bytes")
-    void customerNameLineIsEmittedWithNoClosingTagAtSeventySixSignificantBytes() {
+    @DisplayName("the customer-name line is assembled from four parts and closes at forty-five "
+            + "significant bytes for an ordinary name")
+    void customerNameLineClosesAtFortyFiveSignificantBytesForAnOrdinaryName() {
         final String customerName = "JOHN Q PUBLIC";
         final String record = StatementHtmlTemplates.customerNameLine(customerName);
         final byte[] image = asciiBytes(record);
+
+        // The whole record written out by hand: opening literal, the thirteen name bytes, the
+        // two-space separator, the closing tag, then space padding to the record width.
+        assertThat(image)
+                .as("the composed name record must equal its hand-written image byte for byte")
+                .isEqualTo(expectedRecord("<p style=\"font-size:16px\">JOHN Q PUBLIC  </p>"));
 
         assertThat(image.length)
                 .as("the name line must occupy exactly one record")
@@ -941,72 +987,184 @@ class StatementHtmlTemplatesTest {
                 .as("the opening paragraph literal must be present exactly as written")
                 .isEqualTo(asciiBytes(EXPECTED_NAME_PREFIX));
 
-        assertThat(segment(image, EXPECTED_NAME_PREFIX_LENGTH, EXPECTED_NAME_DECLARED_LENGTH))
-                .as("the name must be moved in raw and padded across its fifty-byte field")
-                .isEqualTo(expectedField(customerName, EXPECTED_NAME_FIELD_LENGTH));
+        // Twenty-six plus thirteen. A single space does not stop the transfer, so every byte of
+        // this name reaches the record.
+        final int nameEnd = 39;
+        assertThat(segment(image, EXPECTED_NAME_PREFIX_LENGTH, nameEnd))
+                .as("every byte of a name free of adjacent spaces must reach the record")
+                .isEqualTo(asciiBytes("JOHN Q PUBLIC"));
 
-        assertSpacePaddedFrom(image, EXPECTED_NAME_DECLARED_LENGTH);
+        assertThat(segment(image, nameEnd, nameEnd + EXPECTED_NAME_DELIMITER_LENGTH))
+                .as("the two-space separator must follow the transferred name")
+                .isEqualTo(asciiBytes(EXPECTED_NAME_DELIMITER));
 
-        // There is no third component in the legacy group, so no closing tag may be synthesised.
-        // Not a paragraph close, and not any end tag at all.
-        assertLacksBytes(record, "</p>");
-        assertLacksBytes(record, "</");
+        // Twenty-six plus thirteen plus two plus four.
+        final int significantWidth = 45;
+        assertThat(segment(image, significantWidth - EXPECTED_NAME_CLOSING_TAG_LENGTH,
+                        significantWidth))
+                .as("the closing tag must be the last significant component")
+                .isEqualTo(asciiBytes(EXPECTED_NAME_CLOSING_TAG));
 
-        // The contrast that proves the omission is specific rather than systematic: the
-        // neighbouring heading does close.
-        assertCarriesBytes(StatementHtmlTemplates.accountNumberLine("00000000011"),
-                EXPECTED_ACCOUNT_SUFFIX);
+        assertSpacePaddedFrom(image, significantWidth);
 
-        // Negative control against a tag balancer. The balanced form is written out here and the
-        // record must differ from it, so appending a closing tag could never pass unnoticed.
-        final String balancedForm = EXPECTED_NAME_PREFIX
-                + new String(expectedField(customerName, EXPECTED_NAME_FIELD_LENGTH),
-                        StandardCharsets.US_ASCII)
-                + "</p>";
+        // The element that closes is the paragraph, never the heading used by the other line.
+        assertCarriesBytes(record, EXPECTED_NAME_CLOSING_TAG);
+        assertLacksBytes(record, EXPECTED_ACCOUNT_SUFFIX);
+
+        // Negative control against emitting the staging group instead of the assembled record.
+        // A record that ran the padded fifty-byte field out whole would put the separator and
+        // the closing tag at seventy-six, and must not match.
+        final String paddedStagingField = new String(
+                expectedField(customerName, EXPECTED_NAME_FIELD_LENGTH), StandardCharsets.US_ASCII);
         assertThat(image)
-                .as("the name line must not equal the balanced form a tag balancer would produce")
-                .isNotEqualTo(expectedRecord(balancedForm));
+                .as("the padded staging field must not be emitted whole behind the literal")
+                .isNotEqualTo(expectedRecord(EXPECTED_NAME_PREFIX + paddedStagingField
+                        + EXPECTED_NAME_DELIMITER + EXPECTED_NAME_CLOSING_TAG));
     }
 
     @Test
-    @DisplayName("the customer-name line cuts an over-long name at its fifty-byte field and stays unclosed")
-    void customerNameLineCutsAnOverLongNameAtTheFieldWidthAndStaysUnclosed() {
-        final String overLongName = "ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJKLMNO";
-        final String record = StatementHtmlTemplates.customerNameLine(overLongName);
+    @DisplayName("the customer-name line stops at the first pair of adjacent spaces, so a name "
+            + "with no middle portion is cut short at the gap")
+    void customerNameLineStopsAtTheFirstPairOfAdjacentSpaces() {
+        // The legacy statement name is assembled from separate name parts, so an absent middle
+        // portion leaves two adjacent spaces inside the field. That pair stops the transfer.
+        final String nameWithMissingMiddle = "JOHN  PUBLIC";
+        final String record = StatementHtmlTemplates.customerNameLine(nameWithMissingMiddle);
         final byte[] image = asciiBytes(record);
+
+        assertThat(image)
+                .as("only the bytes before the adjacent-space pair may reach the record")
+                .isEqualTo(expectedRecord("<p style=\"font-size:16px\">JOHN  </p>"));
 
         assertThat(image.length)
                 .as("the name line must still occupy exactly one record")
                 .isEqualTo(EXPECTED_RECORD_LENGTH);
 
-        assertThat(segment(image, EXPECTED_NAME_PREFIX_LENGTH, EXPECTED_NAME_DECLARED_LENGTH))
-                .as("only the first fifty bytes of the name may reach the record")
-                .isEqualTo(asciiBytes("ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ"));
+        // Twenty-six plus four.
+        final int nameEnd = 30;
+        assertThat(segment(image, EXPECTED_NAME_PREFIX_LENGTH, nameEnd))
+                .as("the transfer must end at the gap, carrying only the leading portion")
+                .isEqualTo(asciiBytes("JOHN"));
+
+        assertThat(segment(image, nameEnd, nameEnd + EXPECTED_NAME_DELIMITER_LENGTH))
+                .as("the appended separator follows the truncated name")
+                .isEqualTo(asciiBytes(EXPECTED_NAME_DELIMITER));
+
+        // Twenty-six plus four plus two plus four.
+        final int significantWidth = 36;
+        assertThat(segment(image, significantWidth - EXPECTED_NAME_CLOSING_TAG_LENGTH,
+                        significantWidth))
+                .as("the closing tag must follow the separator, not the whole name")
+                .isEqualTo(asciiBytes(EXPECTED_NAME_CLOSING_TAG));
+
+        assertSpacePaddedFrom(image, significantWidth);
+
+        // The dropped portion must not survive anywhere in the record.
+        assertLacksBytes(record, "PUBLIC");
+    }
+
+    @Test
+    @DisplayName("the customer-name line keeps single internal spaces, which do not stop the transfer")
+    void customerNameLineKeepsSingleInternalSpaces() {
+        final String spacedName = "A B C";
+        final String record = StatementHtmlTemplates.customerNameLine(spacedName);
+        final byte[] image = asciiBytes(record);
+
+        // Twenty-six plus five plus two plus four is thirty-seven significant bytes.
+        assertThat(image)
+                .as("single spaces must be carried through rather than treated as the separator")
+                .isEqualTo(expectedRecord("<p style=\"font-size:16px\">A B C  </p>"));
+
+        assertThat(segment(image, EXPECTED_NAME_PREFIX_LENGTH, 31))
+                .as("all five bytes of the singly-spaced name must reach the record")
+                .isEqualTo(asciiBytes("A B C"));
+
+        assertSpacePaddedFrom(image, 37);
+    }
+
+    @Test
+    @DisplayName("the customer-name line cuts an over-long name at its fifty-byte field, giving "
+            + "the widest record the line can produce at eighty-two significant bytes")
+    void customerNameLineCutsAnOverLongNameAtTheFieldWidth() {
+        final String overLongName = "ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJKLMNO";
+        final String record = StatementHtmlTemplates.customerNameLine(overLongName);
+        final byte[] image = asciiBytes(record);
+
+        assertThat(image)
+                .as("the cut name, the separator and the closing tag must all be present")
+                .isEqualTo(expectedRecord("<p style=\"font-size:16px\">"
+                        + "ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ  </p>"));
+
+        assertThat(image.length)
+                .as("the name line must still occupy exactly one record")
+                .isEqualTo(EXPECTED_RECORD_LENGTH);
 
         assertThat(segment(image, 0, EXPECTED_NAME_PREFIX_LENGTH))
                 .as("the opening paragraph literal must be unaffected by the cut")
                 .isEqualTo(asciiBytes(EXPECTED_NAME_PREFIX));
 
-        assertSpacePaddedFrom(image, EXPECTED_NAME_DECLARED_LENGTH);
-        assertLacksBytes(record, "</");
+        // With no adjacent-space pair inside it, the field transfers in full: twenty-six plus
+        // fifty, which is the declared width of the staging group.
+        assertThat(segment(image, EXPECTED_NAME_PREFIX_LENGTH, EXPECTED_NAME_DECLARED_LENGTH))
+                .as("only the first fifty bytes of the name may reach the record")
+                .isEqualTo(asciiBytes("ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ"));
+
+        assertThat(segment(image, EXPECTED_NAME_DECLARED_LENGTH,
+                        EXPECTED_NAME_DECLARED_LENGTH + EXPECTED_NAME_DELIMITER_LENGTH))
+                .as("the separator follows the field even when the field was filled")
+                .isEqualTo(asciiBytes(EXPECTED_NAME_DELIMITER));
+
+        assertThat(segment(image,
+                        EXPECTED_NAME_MAX_SIGNIFICANT_LENGTH - EXPECTED_NAME_CLOSING_TAG_LENGTH,
+                        EXPECTED_NAME_MAX_SIGNIFICANT_LENGTH))
+                .as("the closing tag must sit at the widest position the line can reach")
+                .isEqualTo(asciiBytes(EXPECTED_NAME_CLOSING_TAG));
+
+        assertSpacePaddedFrom(image, EXPECTED_NAME_MAX_SIGNIFICANT_LENGTH);
+
+        // The bytes past the field width must be gone, not wrapped into the padding.
+        assertLacksBytes(record, "KLMNO");
     }
 
     @Test
-    @DisplayName("the customer-name line pads an empty name across the whole field and stays unclosed")
-    void customerNameLinePadsAnEmptyNameAcrossTheWholeFieldAndStaysUnclosed() {
+    @DisplayName("the customer-name line emits only the separator and the closing tag when the "
+            + "name is empty")
+    void customerNameLineEmitsOnlyTheSeparatorAndClosingTagForAnEmptyName() {
         final String record = StatementHtmlTemplates.customerNameLine("");
         final byte[] image = asciiBytes(record);
+
+        // Twenty-six plus nothing plus two plus four is thirty-two significant bytes. The
+        // fifty-byte staging field is all spaces, so its very first pair stops the transfer and
+        // no part of the field reaches the record.
+        assertThat(image)
+                .as("an empty name must contribute no bytes of its own")
+                .isEqualTo(expectedRecord("<p style=\"font-size:16px\">  </p>"));
 
         assertThat(image.length)
                 .as("the name line must still occupy exactly one record")
                 .isEqualTo(EXPECTED_RECORD_LENGTH);
 
-        assertThat(segment(image, EXPECTED_NAME_PREFIX_LENGTH, EXPECTED_NAME_DECLARED_LENGTH))
-                .as("an empty name must leave a field of fifty ASCII spaces")
-                .isEqualTo(expectedField("", EXPECTED_NAME_FIELD_LENGTH));
+        assertThat(segment(image, EXPECTED_NAME_PREFIX_LENGTH,
+                        EXPECTED_NAME_PREFIX_LENGTH + EXPECTED_NAME_DELIMITER_LENGTH))
+                .as("the separator must follow the literal directly")
+                .isEqualTo(asciiBytes(EXPECTED_NAME_DELIMITER));
 
-        assertSpacePaddedFrom(image, EXPECTED_NAME_PREFIX_LENGTH);
-        assertLacksBytes(record, "</");
+        // Twenty-six plus two plus four.
+        final int significantWidth = 32;
+        assertThat(segment(image, significantWidth - EXPECTED_NAME_CLOSING_TAG_LENGTH,
+                        significantWidth))
+                .as("the closing tag must follow the separator")
+                .isEqualTo(asciiBytes(EXPECTED_NAME_CLOSING_TAG));
+
+        assertSpacePaddedFrom(image, significantWidth);
+
+        // Emitting the empty staging field whole would push the closing tag out to seventy-six.
+        assertThat(image)
+                .as("the fifty spaces of the empty field must not be emitted")
+                .isNotEqualTo(expectedRecord(EXPECTED_NAME_PREFIX
+                        + new String(expectedField("", EXPECTED_NAME_FIELD_LENGTH),
+                                StandardCharsets.US_ASCII)
+                        + EXPECTED_NAME_DELIMITER + EXPECTED_NAME_CLOSING_TAG));
     }
 
     @Test
@@ -1021,8 +1179,8 @@ class StatementHtmlTemplatesTest {
     }
 
     @Test
-    @DisplayName("the component widths sum to the declared group widths: thirty-four plus "
-            + "twenty plus five, and twenty-six plus fifty")
+    @DisplayName("the component widths sum as the legacy layout requires: thirty-four plus twenty "
+            + "plus five, twenty-six plus fifty, and that sum plus two plus four")
     void componentWidthsSumToTheDeclaredGroupWidths() {
         assertThat(EXPECTED_ACCOUNT_PREFIX_LENGTH + EXPECTED_ACCOUNT_FIELD_LENGTH
                         + EXPECTED_ACCOUNT_SUFFIX_LENGTH)
@@ -1030,8 +1188,21 @@ class StatementHtmlTemplatesTest {
                 .isEqualTo(EXPECTED_ACCOUNT_DECLARED_LENGTH);
 
         assertThat(EXPECTED_NAME_PREFIX_LENGTH + EXPECTED_NAME_FIELD_LENGTH)
-                .as("the customer-name line's two components must sum to its declared width")
+                .as("the literal and the staging field must sum to the declared group width")
                 .isEqualTo(EXPECTED_NAME_DECLARED_LENGTH);
+
+        assertThat(EXPECTED_NAME_DECLARED_LENGTH + EXPECTED_NAME_DELIMITER_LENGTH
+                        + EXPECTED_NAME_CLOSING_TAG_LENGTH)
+                .as("adding the separator and the closing tag gives the widest composed record")
+                .isEqualTo(EXPECTED_NAME_MAX_SIGNIFICANT_LENGTH);
+
+        assertThat(asciiWidth(EXPECTED_NAME_DELIMITER))
+                .as("the separator must measure two bytes")
+                .isEqualTo(EXPECTED_NAME_DELIMITER_LENGTH);
+
+        assertThat(asciiWidth(EXPECTED_NAME_CLOSING_TAG))
+                .as("the closing tag must measure four bytes")
+                .isEqualTo(EXPECTED_NAME_CLOSING_TAG_LENGTH);
 
         assertThat(asciiWidth(EXPECTED_ACCOUNT_PREFIX))
                 .as("the heading's leading literal must measure its declared width, trailing space included")
@@ -1045,8 +1216,9 @@ class StatementHtmlTemplatesTest {
                 .as("the name line's leading literal must measure its declared width")
                 .isEqualTo(EXPECTED_NAME_PREFIX_LENGTH);
 
-        assertThat(EXPECTED_NAME_DECLARED_LENGTH)
-                .as("both declared groups must be shorter than the record, so both are padded")
+        assertThat(EXPECTED_NAME_MAX_SIGNIFICANT_LENGTH)
+                .as("even the widest composed name record must be shorter than the record, so it "
+                        + "is always padded")
                 .isLessThan(EXPECTED_RECORD_LENGTH);
 
         assertThat(EXPECTED_ACCOUNT_DECLARED_LENGTH)
@@ -1055,7 +1227,6 @@ class StatementHtmlTemplatesTest {
     }
 
     /*
-     * ========================================================================================
      * Colour and percentage-width bytes.
      *
      * These are legacy output content reproduced for parity, not design decisions. No design
@@ -1063,7 +1234,6 @@ class StatementHtmlTemplatesTest {
      * migration, so nothing below is themed, tokenised or aligned to a palette. The case of
      * every colour is reproduced character for character, in both directions: one colour is
      * lower case with an alpha channel, three are upper case, and one is lower case.
-     * ========================================================================================
      */
 
     @Test
@@ -1118,14 +1288,12 @@ class StatementHtmlTemplatesTest {
     }
 
     /*
-     * ========================================================================================
      * The named record and component widths.
      *
      * The statement job declares the same HTML data definition at eighty bytes in one step and
      * at one hundred in the following step, which is the step that runs the generator. The
      * conflict is resolved to one hundred for the HTML stream, matching the emitting program's
      * record declaration, and one hundred is what is asserted here.
-     * ========================================================================================
      */
 
     @Test
@@ -1164,8 +1332,20 @@ class StatementHtmlTemplatesTest {
                 .isEqualTo(EXPECTED_NAME_FIELD_LENGTH);
 
         assertThat(StatementHtmlTemplates.NAME_LINE_DECLARED_LENGTH)
-                .as("the name line group is seventy-six bytes, with no closing tag inside them")
+                .as("the staging group the name is moved into is seventy-six bytes")
                 .isEqualTo(EXPECTED_NAME_DECLARED_LENGTH);
+
+        assertThat(StatementHtmlTemplates.NAME_LINE_DELIMITER_LENGTH)
+                .as("the separator appended after the name is two bytes")
+                .isEqualTo(EXPECTED_NAME_DELIMITER_LENGTH);
+
+        assertThat(StatementHtmlTemplates.NAME_LINE_CLOSING_TAG_LENGTH)
+                .as("the closing tag appended after the separator is four bytes")
+                .isEqualTo(EXPECTED_NAME_CLOSING_TAG_LENGTH);
+
+        assertThat(StatementHtmlTemplates.NAME_LINE_MAX_SIGNIFICANT_LENGTH)
+                .as("the widest composed name record is eighty-two bytes")
+                .isEqualTo(EXPECTED_NAME_MAX_SIGNIFICANT_LENGTH);
 
         assertThat(StatementHtmlTemplates.ADDRESS_WORK_LINE_LENGTH)
                 .as("the free-form address line shares the record width")
@@ -1181,16 +1361,16 @@ class StatementHtmlTemplatesTest {
     }
 
     /*
-     * ========================================================================================
      * The fit-to-width helper for the three free-form work lines.
      *
      * The legacy program declares an address line, a basic-details line and a transaction line,
      * each a hundred bytes with no internal structure. Their content is composed by the
-     * statement-generation service, which assembles the customer name and the address lines with
-     * a two-space delimiter and the basic-details and transaction lines with an asterisk
-     * delimiter, so that in the second regime the entire padded field width transfers and its
-     * trailing spaces are retained inside the element. That assembly is the service's concern;
-     * only the width belongs here, so no delimiter regime is implemented or asserted below.
+     * statement-generation service, which assembles the three address lines with the same
+     * two-space delimiter the customer-name line uses, and the basic-details and transaction
+     * lines with an asterisk delimiter, so that in the second regime the entire padded field
+     * width transfers and its trailing spaces are retained inside the element. That assembly is
+     * the service's concern; only the width belongs here, so no delimiter regime is implemented
+     * or asserted below.
      * ========================================================================================
      */
 
@@ -1254,6 +1434,15 @@ class StatementHtmlTemplatesTest {
     @Test
     @DisplayName("the work-line helper moves markup characters in raw, with no entity encoding and no quote rewriting")
     void workLineMovesMarkupCharactersInRaw() {
+        // This is the approved safe contract for the work lines, and it is deliberately a
+        // round-trip rather than an escaping assertion. Escaping is prohibited here because the
+        // migrated stream is compared byte for byte against the legacy stream and entity encoding
+        // would change those bytes; the legacy composes these lines from paragraph literals
+        // wrapped around display fields, so markup characters are legitimate content in them. The
+        // control that stands in place of escaping is refusal of anything outside printable
+        // US-ASCII, which is asserted by the character-set rejection tests further down, together
+        // with the narrower digits-and-spaces rule that keeps markup out of the account-number
+        // slot entirely.
         final String rawContent = "<td>A & B \"quoted\" 'single' <end>";
         final String record = StatementHtmlTemplates.workLine(rawContent);
         final byte[] image = asciiBytes(record);
@@ -1306,9 +1495,7 @@ class StatementHtmlTemplatesTest {
     }
 
     /*
-     * ========================================================================================
      * Argument rejection. Each parameter is checked on its own.
-     * ========================================================================================
      */
 
     @Test
@@ -1333,6 +1520,208 @@ class StatementHtmlTemplatesTest {
         assertThatNullPointerException()
                 .as("null content must be refused rather than moved in as text")
                 .isThrownBy(() -> StatementHtmlTemplates.workLine(null));
+    }
+
+    /*
+     * ========================================================================================
+     * Character-set rejection. This is the control that stands in place of escaping.
+     *
+     * No substituted byte may be rewritten, because the migrated stream is compared byte for
+     * byte against the legacy stream, so the class refuses what it cannot safely carry instead
+     * of transforming it. Two rules are under test. Every caller-supplied value must be
+     * printable US-ASCII, which closes record-framing injection through an embedded carriage
+     * return or line feed and replaces the byte-corrupting question-mark substitution that
+     * encoding an unmappable value would otherwise have produced. The account-number slot is
+     * narrowed further to ASCII digits and spaces, matching the numeric display item the legacy
+     * moves into it, so no markup character can reach the active heading element that slot sits
+     * inside.
+     * ========================================================================================
+     */
+
+    /**
+     * Every value that must be refused for carrying a character outside printable US-ASCII,
+     * paired with a label naming the hazard.
+     *
+     * <p>The three C0 controls listed first are the framing hazard: the record image carries no
+     * terminator of its own, so a carriage return or line feed inside a substituted value would
+     * split one logical record into two in the written file. The code points above US-ASCII are
+     * the substitution hazard: they have no single-byte image in this record, so encoding them
+     * would have quietly produced a question-mark byte.</p>
+     *
+     * @return one argument pair per rejected value
+     */
+    private static Stream<Arguments> valuesOutsidePrintableUsAscii() {
+        return Stream.of(
+                Arguments.of("11111111111\r", "a carriage return, which would split the record"),
+                Arguments.of("11111111111\n", "a line feed, which would split the record"),
+                Arguments.of("1111\r\n1111", "a carriage-return line-feed pair mid-value"),
+                Arguments.of("11111111111\t", "a horizontal tab, which is not the pad byte"),
+                Arguments.of("1111111\u000B1111", "a vertical tab"),
+                Arguments.of("11111111111\u0000", "a NUL, the lowest C0 control"),
+                Arguments.of("11111111111\u001B", "an escape, the highest C0 control"),
+                Arguments.of("11111111111\u001F", "a unit separator"),
+                Arguments.of("11111111111\u007F", "the delete character, just above the tilde"),
+                Arguments.of("11111111111\u00A0", "a no-break space, outside US-ASCII"),
+                Arguments.of("11111111111\u00E9", "a Latin-1 accented letter, outside US-ASCII"),
+                Arguments.of("11111111111\u20AC", "a euro sign, outside US-ASCII"),
+                Arguments.of("11111111111\uFFFD", "a replacement character, outside US-ASCII"),
+                Arguments.of("11111111111\uD83D\uDCB3", "a supplementary code point, two chars, one substitute byte"));
+    }
+
+    @ParameterizedTest(name = "[{index}] {1}")
+    @MethodSource("valuesOutsidePrintableUsAscii")
+    @DisplayName("the account-number heading refuses a value outside printable US-ASCII")
+    void accountNumberLineRefusesValuesOutsidePrintableUsAscii(final String value, final String hazard) {
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .as("the account identifier must be refused for carrying %s", hazard)
+                .isThrownBy(() -> StatementHtmlTemplates.accountNumberLine(value))
+                .withMessageContaining("printable US-ASCII");
+    }
+
+    @ParameterizedTest(name = "[{index}] {1}")
+    @MethodSource("valuesOutsidePrintableUsAscii")
+    @DisplayName("the customer-name line refuses a value outside printable US-ASCII")
+    void customerNameLineRefusesValuesOutsidePrintableUsAscii(final String value, final String hazard) {
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .as("the customer name must be refused for carrying %s", hazard)
+                .isThrownBy(() -> StatementHtmlTemplates.customerNameLine(value))
+                .withMessageContaining("printable US-ASCII");
+    }
+
+    @ParameterizedTest(name = "[{index}] {1}")
+    @MethodSource("valuesOutsidePrintableUsAscii")
+    @DisplayName("the work-line helper refuses content outside printable US-ASCII")
+    void workLineRefusesContentOutsidePrintableUsAscii(final String value, final String hazard) {
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .as("the work-line content must be refused for carrying %s", hazard)
+                .isThrownBy(() -> StatementHtmlTemplates.workLine(value))
+                .withMessageContaining("printable US-ASCII");
+    }
+
+    @Test
+    @DisplayName("an unmappable value is refused outright and never becomes a question-mark byte")
+    void anUnmappableValueIsRefusedRatherThanSubstituted() {
+        final String unmappable = "\u00E9\u20AC";
+
+        // The hazard being closed: encoding this value to US-ASCII yields substitute bytes, so
+        // moving it in would have written a corrupted record that still measured one hundred
+        // bytes and would still have passed every width assertion.
+        assertThat(unmappable.getBytes(StandardCharsets.US_ASCII))
+                .as("the fixture must genuinely be unmappable, so that refusal is the only safe outcome")
+                .containsOnly((byte) '?');
+
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .as("an unmappable name must be refused rather than silently substituted")
+                .isThrownBy(() -> StatementHtmlTemplates.customerNameLine(unmappable))
+                .withMessageContaining("printable US-ASCII");
+
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .as("unmappable work-line content must be refused rather than silently substituted")
+                .isThrownBy(() -> StatementHtmlTemplates.workLine(unmappable))
+                .withMessageContaining("printable US-ASCII");
+    }
+
+    @Test
+    @DisplayName("a rejection diagnostic reports the code point as a number and never echoes the character")
+    void aRejectionDiagnosticNeverEchoesTheOffendingControlCharacter() {
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .isThrownBy(() -> StatementHtmlTemplates.workLine("ab\u001Bcd"))
+                .satisfies(thrown -> {
+                    final String message = thrown.getMessage();
+
+                    assertThat(message)
+                            .as("the position and the numeric code point must both be reported")
+                            .contains("position 3")
+                            .contains("code point 27");
+
+                    assertThat(message.chars().allMatch(codePoint -> codePoint >= 0x20 && codePoint <= 0x7E))
+                            .as("the control byte must not travel into the message that reports it")
+                            .isTrue();
+                });
+    }
+
+    /**
+     * Every value that must be refused by the account-number slot for carrying a printable
+     * character that is neither an ASCII digit nor an ASCII space.
+     *
+     * <p>The legacy moves a numeric display item into this slot, so digits and the pad space are
+     * the whole permitted set. The markup characters listed here are the injection vectors that
+     * the narrowing removes: the slot is substituted into an active heading element and nothing
+     * about it is escaped.</p>
+     *
+     * @return one argument pair per rejected value
+     */
+    private static Stream<Arguments> valuesRejectedByTheAccountNumberSlot() {
+        return Stream.of(
+                Arguments.of("</h3><script>", "a closing heading tag followed by a script element"),
+                Arguments.of("1</h3>1", "a closing heading tag spliced between digits"),
+                Arguments.of("<img src=x>", "an image element"),
+                Arguments.of("11111111111<", "a bare opening angle bracket"),
+                Arguments.of("11111111111>", "a bare closing angle bracket"),
+                Arguments.of("11111111111&", "an ampersand, which begins an entity reference"),
+                Arguments.of("11111111111\"", "a double quotation mark, which closes an attribute"),
+                Arguments.of("11111111111'", "a single quotation mark, which closes an attribute"),
+                Arguments.of("11111111111/", "a solidus, which closes an element"),
+                Arguments.of("11111111111=", "an equals sign, which begins an attribute value"),
+                Arguments.of("ACCT0000001", "letters, which a numeric display item cannot hold"),
+                Arguments.of("00000-00001", "a hyphen, which a numeric display item cannot hold"),
+                Arguments.of("00000.00001", "a decimal point, which the unedited item cannot hold"),
+                Arguments.of("+0000000001", "a leading sign, which the unedited item cannot hold"));
+    }
+
+    @ParameterizedTest(name = "[{index}] {1}")
+    @MethodSource("valuesRejectedByTheAccountNumberSlot")
+    @DisplayName("the account-number heading refuses anything but ASCII digits and spaces")
+    void accountNumberLineRefusesAnythingButDigitsAndSpaces(final String value, final String hazard) {
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .as("the account identifier must be refused for carrying %s", hazard)
+                .isThrownBy(() -> StatementHtmlTemplates.accountNumberLine(value))
+                .withMessageContaining("ASCII digits and spaces");
+    }
+
+    @Test
+    @DisplayName("the account-number heading accepts the digits and pad spaces its legacy field can hold")
+    void accountNumberLineAcceptsDigitsAndPadSpaces() {
+        // Exactly what a MOVE of a PIC 9(11) item into the twenty-byte field produces: eleven
+        // digits, then spaces. Both the bare digits and the already-padded form must be accepted,
+        // and both must produce the identical record.
+        final byte[] fromBareDigits = asciiBytes(StatementHtmlTemplates.accountNumberLine("00000000011"));
+        final byte[] fromPaddedDigits =
+                asciiBytes(StatementHtmlTemplates.accountNumberLine("00000000011         "));
+
+        assertThat(fromBareDigits)
+                .as("the padded and unpadded forms of the same identifier must produce one record")
+                .isEqualTo(fromPaddedDigits);
+
+        assertThat(fromBareDigits.length)
+                .as("the accepted identifier must still produce exactly one record")
+                .isEqualTo(EXPECTED_RECORD_LENGTH);
+
+        assertCarriesBytes(StatementHtmlTemplates.accountNumberLine("00000000011"), "00000000011");
+    }
+
+    @Test
+    @DisplayName("the customer-name line and the work lines still accept the printable set the legacy fields can hold")
+    void printableAlphanumericContentIsStillAccepted() {
+        // The whole printable US-ASCII range must be accepted, one record's worth at a time, so
+        // that the guard cannot be mistaken for a narrower rule than it is. The name and work-line
+        // fields are alphanumeric in the legacy and one name component carries no legacy edits at
+        // all, so nothing printable may be refused here.
+        final String printableRange = IntStream.rangeClosed(0x20, 0x7E)
+                .mapToObj(codePoint -> String.valueOf((char) codePoint))
+                .reduce("", String::concat);
+
+        assertThat(asciiWidth(printableRange))
+                .as("the fixture must span the whole printable US-ASCII range")
+                .isEqualTo(0x7E - 0x20 + 1);
+
+        assertThat(asciiWidth(StatementHtmlTemplates.customerNameLine(printableRange)))
+                .as("no printable character may be refused by the customer-name slot")
+                .isEqualTo(EXPECTED_RECORD_LENGTH);
+
+        assertThat(asciiWidth(StatementHtmlTemplates.workLine(printableRange)))
+                .as("no printable character may be refused by the work-line helper")
+                .isEqualTo(EXPECTED_RECORD_LENGTH);
     }
 
 }

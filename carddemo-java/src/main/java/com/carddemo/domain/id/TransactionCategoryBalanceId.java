@@ -27,9 +27,7 @@ import java.util.Objects;
  * the {@code @Id} markers and every column mapping live on the owning entity, which leaves this
  * type a plain serializable value object with no persistence-provider coupling.
  *
- * <h2>Legacy provenance</h2>
- *
- * <p>Derived from copybook {@code CVTRA01Y} of the AWS CardDemo mainframe estate, which describes
+ * <p><strong>Legacy provenance.</strong> Derived from copybook {@code CVTRA01Y} of the AWS CardDemo mainframe estate, which describes
  * a 50-byte transaction-category-balance record whose leading key group occupies 17 bytes starting
  * at offset 0. That layout is corroborated twice over: the {@code TCATBALF} VSAM KSDS definition
  * declares {@code KEYS(17 0)} and {@code RECORDSIZE(50 50)} over an indexed cluster, and the file
@@ -41,29 +39,16 @@ import java.util.Objects;
  * introduced anywhere, since a surrogate would break the record-image-to-table-row correspondence
  * that byte-level output parity depends on.
  *
- * <h2>Key components</h2>
+ * <p><strong>Key components.</strong> The key is the ordered concatenation of three fixed-width
+ * fields, each documented on its own attribute below: an 11-byte account identifier at offset 0, a
+ * 2-byte transaction type code at offset 11 and a 4-byte transaction category code at offset 13. The
+ * three widths sum to the declared 17-byte key length, and the declaration order is contractual - fixed
+ * by the copybook, by the key offset in the cluster definition and by the primary-key column order of
+ * the schema. The two remaining fields of the 50-byte record are intentionally absent from this class:
+ * the 11-byte category balance at offset 17 is a non-key attribute of the entity, and the 22-byte
+ * trailing filler at offset 28 is not persisted at all.
  *
- * <p>The key is the ordered concatenation of three fixed-width fields:
- *
- * <ul>
- *   <li>{@code TRANCAT-ACCT-ID} &mdash; account identifier, 11 bytes at offset 0, mapped to column
- *       {@code trancat_acct_id}</li>
- *   <li>{@code TRANCAT-TYPE-CD} &mdash; transaction type code, 2 bytes at offset 11, mapped to
- *       column {@code trancat_type_cd}</li>
- *   <li>{@code TRANCAT-CD} &mdash; transaction category code, 4 bytes at offset 13, mapped to
- *       column {@code trancat_cd}</li>
- * </ul>
- *
- * <p>The three widths sum to the declared 17-byte key length, and the declaration order above is
- * contractual: it is fixed by the copybook, by the key offset in the cluster definition and by the
- * primary-key column order of the generated schema. The two remaining fields of the 50-byte record
- * are intentionally absent from this class &mdash; the 11-byte category balance at offset 17 is a
- * non-key attribute of the entity, and the 22-byte trailing filler at offset 28 is not persisted at
- * all.
- *
- * <h2>The {@code TRAN-CAT-KEY} name collision</h2>
- *
- * <p>Copybook {@code CVTRA01Y} and copybook {@code CVTRA04Y} both name their key group
+ * <p><strong>The {@code TRAN-CAT-KEY} name collision.</strong> Copybook {@code CVTRA01Y} and copybook {@code CVTRA04Y} both name their key group
  * {@code TRAN-CAT-KEY}, yet the two keys are entirely unrelated. This key is 17 bytes wide and
  * leads with the account identifier; the transaction-category key described by {@code CVTRA04Y} is
  * 6 bytes wide, is declared with {@code KEYS(6 0)}, carries no account identifier at all and uses
@@ -71,13 +56,11 @@ import java.util.Objects;
  * backed by different tables, and they are modelled as two deliberately unrelated Java types that
  * share no supertype beyond {@link Object}.
  *
- * <p>The shared COBOL group name is a source-level coincidence and must never be taken as licence
- * to merge, reuse, subclass or cross-reference the two key definitions. This collision is recorded
- * in the project decision log so the distinction remains auditable.
+ * <p>The shared legacy group name is a source-level coincidence and must never be taken as licence to
+ * merge, reuse, subclass or cross-reference the two key definitions. Decision log entry D-37 records
+ * the collision so the distinction remains auditable.
  *
- * <h2>Why every component is a {@code String}</h2>
- *
- * <p>Two of the three components are digit-only fields in the legacy layout, yet all three are
+ * <p><strong>Why every component is a {@code String}.</strong> Two of the three components are digit-only fields in the legacy layout, yet all three are
  * modelled as {@link String} and stored in bounded {@code VARCHAR} columns, because their external
  * text representation is contractual rather than incidental. Leading zeros and exact field widths
  * carry meaning: a category code of {@code 0005} must remain four characters and must never
@@ -89,19 +72,11 @@ import java.util.Objects;
  * {@link #equals(Object)} or {@link #hashCode()}, where normalisation would make two distinct
  * database rows compare equal and corrupt the persistence-context identity map.
  *
- * <h2>Instances are effectively immutable</h2>
- *
- * <p>The fields cannot be declared {@code final} because a persistence provider requires a
+ * <p><strong>Instances are effectively immutable.</strong> The attributes cannot be declared
+ * {@code final} because a persistence provider requires a
  * no-argument constructor to instantiate an id class, and such a constructor cannot initialise
  * final fields. Immutability is therefore achieved by exposing accessors only and declaring no
  * mutator, which also makes instances safe to share across threads and safe to use as map keys.
- *
- * <h2>Provenance</h2>
- *
- * <p>Translated from the CardDemo COBOL estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy members named above are
- * read-only reference material; none of their text is reproduced here.
  *
  * @since 1.0.0
  */

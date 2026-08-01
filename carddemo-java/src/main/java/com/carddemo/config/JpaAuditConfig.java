@@ -24,11 +24,14 @@ import org.springframework.context.annotation.Configuration;
 /**
  * The module's single source of "now", and the recorded reason JPA auditing is not switched on.
  *
- * <p>This class publishes exactly one bean: the {@link Clock} that every collaborator needing the
- * current date or time constructor-injects. It replaces a declaration the legacy estate duplicated
- * textually in every program that needed a timestamp, and it is what makes a timestamp assertion
+ * <p>Publishes exactly one bean: the {@link Clock} that every collaborator needing the current date or
+ * time constructor-injects. It replaces the {@code WS-DATE-TIME} work area that {@code CSDAT01Y}
+ * duplicated textually into all seventeen online programs, and it is what makes a timestamp assertion
  * possible at all, because a pinned clock is the only way a fixed-width timestamp image can be
- * compared against an expected value.</p>
+ * compared against an expected value. Obtaining the current moment by any other means &mdash; the
+ * no-argument instant and local-date-time factories, the legacy mutable date type, the millisecond
+ * counter on {@code java.lang.System} &mdash; is prohibited module-wide, because a value read that way
+ * cannot be pinned and makes every timestamp assertion either impossible or flaky.
  *
  * <h2>Provenance</h2>
  * Translated from the AWS CardDemo z/OS mainframe application at checkout SHA
@@ -48,12 +51,13 @@ import org.springframework.context.annotation.Configuration;
  * its own storage, and every including program filled it from the language's current-date intrinsic.
  * The group holds five views of the same moment:
  * <ul>
- *   <li>{@code WS-CURDATE} (lines 19-22): {@code WS-CURDATE-YEAR PIC 9(04)},
- *       {@code WS-CURDATE-MONTH PIC 9(02)} and {@code WS-CURDATE-DAY PIC 9(02)}, eight digits in
- *       total, redefined on line 23 as the single numeric item {@code WS-CURDATE-N PIC 9(08)};</li>
+ *   <li>{@code WS-CURDATE} (lines 19-22): {@code WS-CURDATE-YEAR} of four digits,
+ *       {@code WS-CURDATE-MONTH} and {@code WS-CURDATE-DAY} of two digits each, eight digits in
+ *       total, redefined on line 23 as the single eight-digit numeric item
+ *       {@code WS-CURDATE-N};</li>
  *   <li>{@code WS-CURTIME} (lines 24-28): hours, minutes, seconds and
- *       {@code WS-CURTIME-MILSEC}, each {@code PIC 9(02)}, again eight digits, redefined on line 29
- *       as {@code WS-CURTIME-N PIC 9(08)};</li>
+ *       {@code WS-CURTIME-MILSEC}, two digits each, again eight digits, redefined on line 29
+ *       as the single eight-digit numeric item {@code WS-CURTIME-N};</li>
  *   <li>{@code WS-CURDATE-MM-DD-YY} (lines 30-35): the eight-character screen date, two-digit
  *       month, day and year separated by a solidus;</li>
  *   <li>{@code WS-CURTIME-HH-MM-SS} (lines 36-41): the eight-character screen time, two-digit
@@ -74,9 +78,9 @@ import org.springframework.context.annotation.Configuration;
  *       42-55, shaped {@code YYYY-MM-DD HH:MM:SS.mmmmmm}: a <strong>space</strong> between the date
  *       and the time, <strong>colons</strong> between the time parts, and a fraction of
  *       <strong>six genuine digits</strong>, because the trailing item
- *       {@code WS-TIMESTAMP-TM-MS6} on line 55 is declared {@code PIC 9(06)}.</li>
- *   <li><strong>Batch</strong>, from {@code DB2-FORMAT-TS PIC X(26)} declared at
- *       {@code app/cbl/CBTRN02C.cbl} line 159 and given its field-by-field shape by the
+ *       {@code WS-TIMESTAMP-TM-MS6} on line 55 is declared six digits wide.</li>
+ *   <li><strong>Batch</strong>, from the twenty-six-byte alphanumeric item {@code DB2-FORMAT-TS}
+ *       declared at {@code app/cbl/CBTRN02C.cbl} line 159 and given its field-by-field shape by the
  *       redefinition on lines 160-174, shaped {@code YYYY-MM-DD-HH.MM.SS.mm0000}: a
  *       <strong>hyphen</strong> where the online form has a space, <strong>dots</strong> between the
  *       time parts, and a fraction of only <strong>two significant digits</strong> followed by a
@@ -89,7 +93,7 @@ import org.springframework.context.annotation.Configuration;
  * The batch layout does not lose precision by accident and it must not be "improved". The intrinsic
  * that feeds it reports hundredths of a second, and the receiving item it is moved through,
  * {@code COB-MIL} of the {@code COBOL-TS} group at {@code app/cbl/CBTRN02C.cbl} line 157, is only
- * {@code PIC X(02)} wide &mdash; exactly as {@code WS-CURTIME-MILSEC} is only {@code PIC 9(02)} on
+ * two bytes wide &mdash; exactly as {@code WS-CURTIME-MILSEC} is only two digits wide on
  * the online side. Two digits of hundredths are therefore all the estate ever had, and line 701 of
  * that paragraph pads them out to a six-place fraction by moving a <strong>literal</strong>
  * {@code 0000} into the remaining four characters. An implementation that emitted real microseconds
@@ -101,43 +105,50 @@ import org.springframework.context.annotation.Configuration;
  *
  * <h3>Both images discard the zone offset</h3>
  * The current-date intrinsic returns a trailing offset from Greenwich, and both layouts throw it
- * away: on the batch side the {@code COBOL-TS} group ends in {@code COB-REST PIC X(05)}
- * ({@code app/cbl/CBTRN02C.cbl} line 158), which absorbs the offset and is never moved anywhere. A
+ * away: on the batch side the {@code COBOL-TS} group ends in the five-byte alphanumeric item
+ * {@code COB-REST} ({@code app/cbl/CBTRN02C.cbl} line 158), which absorbs the offset and is never
+ * moved anywhere. A
  * persisted timestamp in this estate is consequently a bounded twenty-six-character text field
  * rather than an instant: {@code V1__create_schema.sql} declares the four affected columns
  * {@code VARCHAR(26)}, and {@code application.yml} pins the persistence layer's own time zone to
  * UTC so that such a field round-trips identically no matter which host wrote it.
  *
- * <h2>Why no formatter is defined here</h2>
- * This class supplies the time source and nothing else. There is deliberately <strong>no</strong>
- * top-level timestamp-formatter type anywhere in the module, and none may be added: the two images
- * above are produced by private or nested helpers inside the components that own the records they
- * appear on. The batch image belongs to the batch tier, where the step template already renders it
- * from its injected clock; the online image belongs to the online services that stamp records on
- * behalf of a screen, principally transaction posting and interest calculation on the batch side and
- * the transaction-add and bill-payment services on the online side. Hoisting either into a shared
- * utility would put the two shapes one careless import apart from each other, which is precisely the
- * substitution the previous section warns about. The layouts are documented here, in one place, so
- * that every owner has a single authoritative description to implement against.
+ * <p><strong>No formatter is defined here.</strong> This class supplies the time source and nothing
+ * else; the two images are rendered by private or nested helpers inside whichever component owns the
+ * records they appear on, so that the two shapes are never one careless import apart. The batch image
+ * is already rendered from the injected clock by the batch step template; the online image is the
+ * obligation of each online component that stamps a record, none of which is delivered yet. The
+ * layouts are documented here, in one place, so every owner has one authoritative description to
+ * implement against.
  *
- * <h2>Why the clock is fixed to UTC</h2>
- * {@link Clock#systemUTC()} and never {@link Clock#systemDefaultZone()}. The zone of this bean is
- * part of the output contract, not a deployment detail: the persistence layer is configured for UTC
- * in {@code application.yml}, so a clock in any other zone would make a written timestamp disagree
- * with the value read back, and would make the same job emit different bytes on two hosts whose
- * regional settings differ. Byte-equivalent output has to be reproducible from the input alone,
- * which it cannot be if the answer depends on where the process happens to run. A component that
- * genuinely needs a civil-time view derives it from this clock rather than substituting another one.
+ * <p><strong>The clock is UTC, and the zone is part of the output contract.</strong> A clock in any
+ * other zone would make a written timestamp disagree with the value read back, and would make the same
+ * job emit different bytes on two hosts whose regional settings differ; byte-equivalent output has to
+ * be reproducible from the input alone. A component needing a civil-time view derives it from this
+ * clock rather than substituting another one. Recorded as decision log entry D-35.
  *
- * <h2>Why direct calls to the platform clock are prohibited</h2>
- * Across this module, obtaining the current moment by any means other than this bean is not
- * permitted. That rules out the no-argument current-instant and current-local-date-time factories,
- * the legacy mutable date type's default constructor, and the millisecond counter on
- * {@code java.lang.System}. Each of them reaches the host clock directly, and a value read that way
- * cannot be pinned, which makes every timestamp assertion in the test estate either impossible or
- * flaky. Every one has a clock-accepting counterpart, so the constraint costs nothing: inject this
- * bean and pass it. A test then supplies a fixed clock in its own context and asserts the emitted
- * image exactly.
+ * <p><strong>JPA auditing is deliberately not enabled.</strong> {@code V1__create_schema.sql} defines
+ * no creation or modification timestamp and no principal column on any of the eleven tables, no
+ * persistent type in this module carries an auditing annotation, and {@code application.yml} runs the
+ * schema check in validate mode, so mapping a property to a column the migrations do not create aborts
+ * start-up rather than degrading gracefully. There is no audited property for auditing to act upon, and
+ * adding audit columns is out of the question because this migration adds no field the estate did not
+ * have. No auditing date-time provider and no auditor supplier are declared for the same reason.
+ *
+ * <p>The prohibition extends to construction. No type in this module may offer a convenience
+ * constructor or factory that manufactures a clock for a caller that did not supply one, because such
+ * a path silently reintroduces the host clock behind an argument list that looks safe. Where a
+ * component needs the current moment, the clock is a required constructor parameter on its only
+ * construction path &mdash; as it is on the batch step template, whose sole constructor takes it.</p>
+ *
+ * <h2>One zone, and where civil time comes from</h2>
+ * Some legacy images are civil dates and times rather than instants, because the intrinsic that fed
+ * them returned civil time. Those images are still derived from <strong>this</strong> clock, rendered
+ * in <strong>its</strong> zone; the module has exactly one configured zone and no component may
+ * introduce a second one, whether from the platform default, from a host setting or from a property
+ * of its own. Changing the business zone therefore means changing this one bean, and every consumer
+ * follows. That is what keeps an emitted timestamp a function of the input alone rather than of the
+ * machine the job happened to run on.
  *
  * <h2>Why JPA auditing is not enabled</h2>
  * Framework-managed auditing is deliberately <strong>not</strong> switched on, and this is a recorded
@@ -163,27 +174,9 @@ import org.springframework.context.annotation.Configuration;
  * auditor supplier are declared here, because both are consulted only by the auditing infrastructure
  * that is intentionally absent, and a bean nothing consumes is dead configuration.
  *
- * <p>Should a future, separately reviewed migration introduce audit columns, the correct change is to
- * enable auditing here and route its date-time provider through <em>this same</em> clock, so that
- * audit timestamps and business timestamps can never come from two different sources.</p>
- *
- * <h2>What this class deliberately does not configure</h2>
- * Repository scanning, entity scanning, the entity manager factory, the data source, the vendor
- * adapter and the transaction manager are all left to auto-configuration, which already discovers
- * this module's persistence and repository packages from the application entry point. Declaring any
- * of them here would replace an auto-configured bean with a hand-rolled one and is a common cause of
- * duplicate-definition and ambiguous-bean start-up failures. Nothing already settled in
- * {@code application.yml} is restated in Java either &mdash; the schema-check mode, the entity
- * manager's request-scope binding, the provider time zone and the deliberate absence of a pinned
- * vendor dialect all stay in configuration, where a reader can see them in one place. Optimistic
- * locking is a property of the two entities that declare a version, not of this class. No
- * second-level or query cache is registered: the legacy system had no caching layer, and
- * introducing one would alter the very consistency behaviour this migration is measured against.
- *
- * <h2>Thread safety</h2>
- * Stateless and immutable. The class is final, holds no field, carries no static mutable state and
- * needs no collaborator. The clock it publishes is itself immutable and safe for unsynchronised
- * concurrent use, so the one instance is shared by every injection point.
+ * <p>Stateless and immutable: final, no fields, no static mutable state, no collaborators. The
+ * published clock is itself immutable and safe for unsynchronised concurrent use, so the one instance
+ * is shared by every injection point.
  */
 @Configuration(proxyBeanMethods = false)
 public final class JpaAuditConfig {
@@ -191,11 +184,9 @@ public final class JpaAuditConfig {
     /**
      * Creates the configuration singleton.
      *
-     * <p>This class sits at the base of the dependency graph and has no collaborators, so constructor
-     * injection contributes no parameters. The constructor is declared explicitly rather than left
-     * implicit so that the absence of collaborators is a visible, reviewable property of the class: a
-     * time source that itself depended on another bean could not be the first thing every other bean
-     * is built against.</p>
+     * <p>Declared explicitly rather than left implicit so that the absence of collaborators is a
+     * visible property of the class: a time source that itself depended on another bean could not be
+     * the first thing every other bean is built against.</p>
      */
     public JpaAuditConfig() {
         // No collaborators to inject: the published clock is created from a platform factory and this
@@ -205,20 +196,14 @@ public final class JpaAuditConfig {
     /**
      * The one time source for the whole module, fixed to UTC.
      *
-     * <p>Every component that needs the current date or time constructor-injects this clock and
-     * derives its value from it, rather than reaching the host clock directly. That is what lets a
-     * test pin the moment and assert an emitted timestamp image character for character, including
-     * the constant tail of the batch layout described in the class documentation.</p>
-     *
-     * <p>The zone is UTC because it is part of the output contract: it matches the time zone the
-     * persistence layer is configured with, so a bounded twenty-six-character timestamp column reads
-     * back exactly as it was written, and the same job emits the same bytes regardless of the
-     * regional settings of the host it runs on. The platform default zone is never used here, as
-     * that would make output depend on where the process happens to run.</p>
-     *
-     * <p>A test replaces this bean with a fixed clock; nothing else about the wiring changes,
-     * because every consumer depends on the abstraction rather than on this particular
-     * implementation.</p>
+     * <p>Every component needing the current date or time constructor-injects this clock rather than
+     * reaching the host clock directly, which is what lets a test pin the moment and assert an emitted
+     * timestamp image character for character &mdash; including the constant tail of the batch layout
+     * described in the class documentation. The zone is UTC because it is part of the output contract:
+     * it matches the time zone the persistence layer is configured with, so a bounded
+     * twenty-six-character timestamp column reads back exactly as written and the same job emits the
+     * same bytes regardless of the host's regional settings. A test replaces this bean with a fixed
+     * clock and nothing else about the wiring changes.</p>
      *
      * @return an immutable UTC clock, never {@code null}
      */

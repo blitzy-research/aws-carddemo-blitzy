@@ -25,163 +25,87 @@ import java.math.BigDecimal;
 import java.util.Objects;
 
 /**
- * Persistent daily-transaction record: the raw, deliberately unvalidated landing surface for the
+ * Persistent daily-transaction record - the raw, deliberately unvalidated landing surface for the
  * sequential daily input that the posting job consumes.
  *
  * <p>This is the Java translation of the {@code DALYTRAN-RECORD} layout described by copybook
- * {@code app/cpy/CVTRA06Y.cpy} of the AWS CardDemo mainframe estate, whose declared record length is
- * 350 bytes. Thirteen of its fourteen fields become the thirteen columns of table
- * {@code daily_transaction}; the fourteenth is a 20-byte trailing filler at offset 330 that carries
- * no information, so it is neither a field here nor a column in the schema. Trailing filler is
- * reconstructed on output from the declared record width rather than stored.
+ * {@code CVTRA06Y}, whose declared record length is 350 bytes. Thirteen of its fourteen fields become
+ * the thirteen columns of table {@code daily_transaction}; the fourteenth is a 20-byte trailing filler
+ * at offset 330 that carries no information, so it is neither an attribute here nor a column in the
+ * schema, and is reconstructed on output from the declared record width rather than stored. Each
+ * attribute below documents its own offset, width and column; the widths sum to exactly 350.
  *
- * <h2>Verified field layout</h2>
+ * <p>The legacy field-name prefix is spelled {@code DALYTRAN} rather than {@code DAILYTRAN}. The Java
+ * type name corrects the spelling while every column name and attribute name preserves the legacy
+ * prefix verbatim, because the schema is the contract and renaming a column would break it.
  *
- * <p>Zero-based offset and width, recomputed field by field from the copybook and confirmed against
- * a live input record. The widths sum to exactly 350.
+ * <p><strong>Deliberately separate from the posted-transaction entity.</strong> Copybook
+ * {@code CVTRA05Y} describes the posted record and its layout is byte-for-byte parallel with this one -
+ * the same fourteen fields, in the same order, at the same offsets, with the same widths, differing
+ * only in field-name prefix. The two are nevertheless modelled as independent entities over
+ * independent tables, because they are two distinct datasets with two distinct lifecycles: the posted
+ * record lived in a keyed indexed cluster, whereas this one has no cluster definition at all and
+ * arrives as a sequential dataset. That sequential, pre-validation character is what makes this table
+ * a landing area. Consequently this class shares no supertype with its sibling beyond {@link Object} -
+ * no inheritance, no mapped superclass, no embeddable, no reference in either direction. The
+ * duplication of thirteen attributes across the two classes is intentional and required: a shared base
+ * class would impose one set of column names on both tables and would silently destroy the
+ * merchant-column asymmetry described next.
  *
- * <ul>
- *   <li>{@code DALYTRAN-ID} &mdash; offset 0, width 16 &mdash; column {@code dalytran_id}, the
- *       primary key</li>
- *   <li>{@code DALYTRAN-TYPE-CD} &mdash; offset 16, width 2 &mdash; column
- *       {@code dalytran_type_cd}</li>
- *   <li>{@code DALYTRAN-CAT-CD} &mdash; offset 18, width 4 &mdash; column
- *       {@code dalytran_cat_cd}</li>
- *   <li>{@code DALYTRAN-SOURCE} &mdash; offset 22, width 10 &mdash; column
- *       {@code dalytran_source}</li>
- *   <li>{@code DALYTRAN-DESC} &mdash; offset 32, width 100 &mdash; column
- *       {@code dalytran_desc}</li>
- *   <li>{@code DALYTRAN-AMT} &mdash; offset 132, width 11 (9 integer digits plus 2 decimal digits,
- *       signed) &mdash; column {@code dalytran_amt}</li>
- *   <li>{@code DALYTRAN-MERCHANT-ID} &mdash; offset 143, width 9 &mdash; column
- *       {@code dalytran_merchant_id}</li>
- *   <li>{@code DALYTRAN-MERCHANT-NAME} &mdash; offset 152, width 50 &mdash; column
- *       {@code dalytran_merchant_name}</li>
- *   <li>{@code DALYTRAN-MERCHANT-CITY} &mdash; offset 202, width 50 &mdash; column
- *       {@code dalytran_merchant_city}</li>
- *   <li>{@code DALYTRAN-MERCHANT-ZIP} &mdash; offset 252, width 10 &mdash; column
- *       {@code dalytran_merchant_zip}</li>
- *   <li>{@code DALYTRAN-CARD-NUM} &mdash; offset 262, width 16 &mdash; column
- *       {@code dalytran_card_num}</li>
- *   <li>{@code DALYTRAN-ORIG-TS} &mdash; offset 278, width 26 &mdash; column
- *       {@code dalytran_orig_ts}</li>
- *   <li>{@code DALYTRAN-PROC-TS} &mdash; offset 304, width 26 &mdash; column
- *       {@code dalytran_proc_ts}</li>
- *   <li>trailing filler &mdash; offset 330, width 20 &mdash; <em>not persisted</em></li>
- * </ul>
+ * <p><strong>Merchant-column asymmetry - do not regularize.</strong> The two tables agree on the naming
+ * pattern for every column except the merchant block: on the posted-transaction table the four
+ * merchant columns are <em>unprefixed</em>, while on this table all four carry the {@code dalytran_}
+ * prefix. The asymmetry is a property of the migrated schema, recorded as decision log entry D-39, and
+ * must not be tidied in either direction - the provider validates every mapping against that schema,
+ * so dropping the prefix here, or adding one to the sibling, turns start-up into four mapping failures.
  *
- * <p>The legacy field-name prefix is spelled {@code DALYTRAN} rather than {@code DAILYTRAN}. The
- * Java type name corrects the spelling to {@code DailyTransaction}, while every column name and
- * every property name preserves the legacy prefix verbatim. That is deliberate: the schema is the
- * contract and renaming a column would break it.
+ * <p><strong>Zero foreign keys, on purpose, and load-bearing.</strong> No migration defines a foreign
+ * key on this table: none from the card number to the card table, none from the type or category code
+ * to the reference tables, none anywhere else. This class therefore declares no association and every
+ * attribute is a plain scalar. Rows land here unvalidated and the posting program validates each one
+ * itself, emitting a reject record carrying a numeric reason code when a check fails. Three of its
+ * five reason codes are exactly the referential failures a database constraint would pre-empt: 100 for
+ * an invalid card number, 101 for an account not found on read, and 109 for an account not found when
+ * the posted balance is written back. A foreign key would reject such a row at insert time, those code
+ * paths would become unreachable, and the reject output - a 430-byte record formed from the 350-byte
+ * source image followed by an 80-byte trailer of a 4-digit reason code plus a 76-character description
+ * - could never be produced. That output is contractual and verified byte for byte, so adding a
+ * constraint later would break it.
  *
- * <h2>Deliberately separate from {@code Transaction}</h2>
- *
- * <p>Copybook {@code app/cpy/CVTRA05Y.cpy} describes the posted-transaction record, and its layout is
- * byte-for-byte parallel with this one &mdash; the same fourteen fields, in the same order, at the
- * same offsets, with the same widths, differing only in field-name prefix. The two are nevertheless
- * modelled as two independent entities over two independent tables, because they are two distinct
- * datasets with two distinct lifecycles: the posted-transaction record lived in a keyed indexed
- * cluster, whereas the daily-transaction record has no cluster definition at all and arrives as a
- * sequential dataset. That sequential, pre-validation character is precisely what makes this table
- * the landing area described below.
- *
- * <p>Consequently this class shares no supertype with {@code Transaction} beyond {@link Object}.
- * There is no inheritance, no mapped superclass, no embeddable and no reference in either
- * direction. The duplication of thirteen properties across the two classes is intentional and
- * required: a shared base class would impose one set of column names on both tables and would
- * silently destroy the merchant-column asymmetry recorded next.
- *
- * <h2>Merchant-column asymmetry &mdash; do not regularize</h2>
- *
- * <p>The two tables agree on the naming pattern for every column except the merchant block. On the
- * posted-transaction table the four merchant columns are <em>unprefixed</em>
- * ({@code merchant_id}, {@code merchant_name}, {@code merchant_city}, {@code merchant_zip}); on
- * this table all four carry the {@code dalytran_} prefix ({@code dalytran_merchant_id},
- * {@code dalytran_merchant_name}, {@code dalytran_merchant_city},
- * {@code dalytran_merchant_zip}).
- *
- * <p>The asymmetry is a property of the migration schema and is recorded in the project decision
- * log. It must not be "tidied" in either direction: the persistence provider validates every
- * mapping against the migrated schema, so dropping the prefix here &mdash; or adding one to the
- * sibling entity &mdash; turns startup into four mapping failures.
- *
- * <h2>Zero foreign keys, on purpose</h2>
- *
- * <p>No migration version defines a foreign key on this table. There is none from
- * {@code dalytran_card_num} to the card table, none from {@code dalytran_type_cd} or
- * {@code dalytran_cat_cd} to the reference tables, and none anywhere else. This class therefore
- * declares no association of any kind and every property is a plain scalar.
- *
- * <p>That is a functional requirement rather than an oversight. Rows land here unvalidated, and the
- * posting program {@code app/cbl/CBTRN02C.cbl} validates each one itself, emitting a reject record
- * carrying a numeric reason code when a check fails. Three of its five reason codes are exactly the
- * referential failures a database constraint would pre-empt: 100 for an invalid card number, 101
- * for an account not found on read, and 109 for an account not found when the posted balance is
- * written back. A foreign key would reject such a row at insert time, those code paths would become
- * unreachable, and the reject output &mdash; a 430-byte record formed from the 350-byte source image
- * followed by an 80-byte trailer of a 4-digit reason code plus a 76-character description &mdash;
- * could never be produced. That output is contractual and is verified byte for byte, so the absence
- * of constraints here is load-bearing. Adding one later would break it.
- *
- * <h2>No Bean Validation constraints</h2>
- *
- * <p>For the same reason this class carries no Bean Validation annotation. A declarative constraint
+ * <p>For the same reason this class carries no Bean Validation annotation: a declarative constraint
  * that refused a malformed record before persistence would short-circuit the reject cascade and make
- * the reject file unreproducible. All validation for this data lives in
- * {@code com.carddemo.batch.step.TransactionValidationProcessor}, which applies the checks in
- * legacy source order and stops at the first failure, and the fee, balance and overlimit arithmetic
- * lives in {@code com.carddemo.service.TransactionPostingService}.
+ * the reject file unreproducible. Validation of this data belongs to the batch validation step, which
+ * must apply the checks in legacy source order and stop at the first failure, and the balance and
+ * overlimit arithmetic belongs to the posting service.
  *
- * <h2>Reference input composition</h2>
+ * <p><strong>Measured composition of the reference input.</strong> The file
+ * {@code app/data/ASCII/dailytran.txt} measures 105,300 bytes: 300 records of 350 bytes plus one line
+ * terminator each. Its composition is what this entity must tolerate without normalization. The source
+ * code reads {@code POS TERM} on 250 records and {@code OPERATOR} on 50, each space-padded to the full
+ * width of 10, so trimming would corrupt both. The amount is positive on 250 records and negative on
+ * 50, exercising both the debit and the credit posting paths, and a negative amount is ordinary data
+ * that must round-trip with its sign intact. All 300 origination timestamps carry the identical
+ * 26-character value {@code 2022-06-10 19:27:53.000000}, and all 300 processing timestamps are 26
+ * spaces.
  *
- * <p>The reference input {@code app/data/ASCII/dailytran.txt} measures 105,300 bytes: 300 records of
- * 350 bytes each plus one line terminator per record. Its measured composition is what this entity
- * must tolerate without normalization:
- *
- * <ul>
- *   <li>Source code: 250 records read {@code POS TERM} and 50 read {@code OPERATOR}, each
- *       space-padded to the full width of 10. Trimming would corrupt both.</li>
- *   <li>Amount: 250 positive and 50 negative values, so both the debit and the credit posting paths
- *       are exercised. Negative amounts are ordinary data and must round-trip with their sign
- *       intact.</li>
- *   <li>Origination timestamp: all 300 records carry the identical 26-character value
- *       {@code 2022-06-10 19:27:53.000000}.</li>
- *   <li>Processing timestamp: all 300 records are 26 spaces.</li>
- * </ul>
- *
- * <p>Those last two measurements are the reason the whole module models record timestamps as bounded
+ * <p>Those last two measurements are why the whole module models record timestamps as bounded
  * 26-character strings rather than as a temporal type: no temporal type can hold 26 spaces, and the
- * blank value must persist and reload as exactly 26 spaces &mdash; not {@code null}, not empty, not
- * trimmed. Because every record shares one origination timestamp, a date-window filtering test
- * cannot be written against this input; it needs a separately constructed fixture.
+ * blank value must persist and reload as exactly 26 spaces - not {@code null}, not empty, not trimmed.
+ * Because every record shares one origination timestamp, a date-window filtering test cannot be
+ * written against this input and needs a separately constructed fixture.
  *
- * <h2>Layering</h2>
+ * <p><strong>Layering.</strong> This class knows column names, widths and nullability, and nothing
+ * else. Fixed-width offset slicing belongs to the record mapper in the utility layer, and
+ * zoned-decimal encoding and decoding - including the overpunched sign in the trailing byte of an
+ * amount and the truncating scale policy - belongs to {@link com.carddemo.util.ZonedDecimalCodec}.
+ * This entity performs no parsing, formatting, scaling or arithmetic, and does not reference the
+ * utility layer: entities are produced by mappers, never the reverse.
  *
- * <p>This class knows column names, widths and nullability, and nothing else. Fixed-width offset
- * slicing belongs to {@code com.carddemo.util.DailyTransactionRecordMapper} and zoned-decimal
- * encoding and decoding &mdash; including the overpunched sign in the trailing byte of an amount and
- * the truncating scale policy &mdash; belongs to {@code com.carddemo.util.ZonedDecimalCodec}. This
- * entity performs no parsing, no formatting, no scaling and no arithmetic of its own, and it does
- * not reference the utility layer: entities are produced by mappers, never the reverse.
- *
- * <h2>Second reader of this layout</h2>
- *
- * <p>Batch program {@code app/cbl/CBTRN01C.cbl} also reads this record layout. It is a complete
- * 491-line program that no job member, cataloged procedure or online resource definition invokes
- * anywhere in the legacy estate. It is migrated all the same, as
- * {@code com.carddemo.service.DailyTransactionReadService} behind a batch job that is defined but
- * excluded from the default pipeline and exercised only by tests. The orphan wiring is a documented
- * source anomaly, not dead code to be dropped.
- *
- * <h2>Provenance</h2>
- *
- * <p>Translated from the CardDemo COBOL estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, which appears in the trailer comment of the
- * originating copybook. The legacy members named throughout this documentation are read-only
- * reference material: only names, widths, offsets, reason codes and measured counts are cited, and
- * no legacy source text is reproduced here or anywhere else in this module.
+ * <p><strong>A second legacy reader of this layout.</strong> Batch program {@code CBTRN01C} also reads
+ * this record. It is a complete 491-line program that no job member, cataloged procedure or online
+ * resource definition invokes anywhere in the estate. It is migrated all the same, behind a batch job
+ * that is defined but excluded from the default pipeline and exercised only by tests; the orphan
+ * wiring is a documented source anomaly, not dead code to be dropped.
  *
  * @since 1.0.0
  */
@@ -273,7 +197,7 @@ public class DailyTransaction {
      * rescales, rounds, negates nor takes the magnitude of a value; it is a passive carrier. A census
      * of the entire legacy estate found no rounding clause on any arithmetic statement, which means
      * every store into a two-decimal field truncates toward zero, so all scaling is funnelled
-     * through {@code com.carddemo.util.ZonedDecimalCodec}, which applies that truncating policy
+     * through {@link com.carddemo.util.ZonedDecimalCodec}, which applies that truncating policy
      * uniformly. Letting an entity scale independently is exactly how an inconsistent rounding policy
      * creeps in.
      *
@@ -281,9 +205,8 @@ public class DailyTransaction {
      * of the overlimit check, which the posting program evaluates strictly left to right as the
      * cycle credit less the cycle debit plus this amount, storing the result into a nine-integer,
      * two-decimal field. Because truncation makes that arithmetic non-associative, any algebraic
-     * rearrangement changes which records receive reject reason code 102, so the computation belongs
-     * to {@code com.carddemo.service.TransactionPostingService} and is reproduced there
-     * operand for operand.
+     * rearrangement changes which records receive reject reason code 102, so the computation belongs to
+     * the posting service and must be reproduced there operand for operand.
      *
      * <p>Negative values are ordinary data: 50 of the 300 reference records are operator-originated
      * returns carrying a negative amount, encoded in the input with an overpunched sign in the

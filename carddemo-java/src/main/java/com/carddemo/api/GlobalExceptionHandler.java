@@ -23,136 +23,181 @@ import com.carddemo.exception.JobSubmissionException;
 import com.carddemo.exception.OptimisticLockConflictException;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
+import jakarta.validation.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.MessageSourceResolvable;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.validation.BindException;
+import org.springframework.validation.ObjectError;
+import org.springframework.validation.method.ParameterValidationResult;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.bind.ServletRequestBindingException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 /**
  * The single REST failure adapter for the migrated CardDemo API layer: it turns each of the six
- * failure carriers in {@code com.carddemo.exception} into a sanitized
- * {@link ErrorResponse} body and a stable HTTP status, and it routes every diagnostic that the
- * legacy programs wrote to the console into SLF4J instead of into the response.
- *
- * <h2>Legacy antecedent</h2>
+ * failure carriers in {@code com.carddemo.exception} into a sanitized {@link ErrorResponse} body
+ * and a stable HTTP status, and it routes every diagnostic that the legacy programs wrote to the
+ * console into SLF4J instead of into the response.
  *
  * <p>The 3270 estate had no error object and no error status. Each online program declared its own
  * fixed-width screen message field - {@code COSGN00C} declares {@code WS-MESSAGE} as
- * {@code PIC X(80)} at {@code app/cbl/COSGN00C.cbl} line 38 - moved a literal into it, and
- * re-sent the map. Two of those literals were not per-program at all: the common message pair in
- * {@code app/cpy/CSMSG01Y.cpy} is included by all seventeen online programs and carries the
- * thank-you and invalid-key texts as two separate {@code PIC X(50)} space-padded values. That
- * copybook is the antecedent of this class, in the sense that it is where the estate first
- * centralized operator text; the two values themselves belong to the message catalogue service and
- * are deliberately neither redeclared, trimmed nor merged here, and neither of them is reachable
- * from any failure this class handles - they are the program-exit and unmapped-key outcomes, which
- * are ordinary screen results rather than failures.
+ * {@code PIC X(80)} at {@code app/cbl/COSGN00C.cbl} line 38 - moved a literal into it, and re-sent
+ * the map. The common message pair in {@code app/cpy/CSMSG01Y.cpy}, included by all seventeen online
+ * programs, is where the estate first centralized operator text and is this class's antecedent in
+ * that sense; the two space-padded {@code PIC X(50)} values themselves belong to the message
+ * catalogue and are neither redeclared, trimmed nor merged here, and neither is reachable from any
+ * failure this class handles - they are the program-exit and unmapped-key outcomes, which are
+ * ordinary screen results rather than failures.
  *
- * <h2>What each failure maps to</h2>
- *
- * <p>Exactly six handlers are declared, one per carrier, and there is deliberately no catch-all:
+ * <p><strong>What each failure maps to.</strong> Exactly six handlers are declared, one per carrier,
+ * and there is deliberately no catch-all:
  *
  * <ul>
- *   <li>{@link AbendException} - {@code 500 Internal Server Error}. Terminal and unrecoverable:
- *       the estate's nine batch calls to the Language Environment abort routine and its four
- *       online abend commands all end the unit of work. The body carries only the operator message
- *       field, which the legacy online abend routine defaults to a fixed literal
+ *   <li>{@link AbendException} - {@code 500 Internal Server Error}. Terminal and unrecoverable: the
+ *       estate's nine batch calls to the Language Environment abort routine and its four online
+ *       abend commands all end the unit of work. The body carries only the operator message field,
+ *       which the legacy online abend routine defaults to a fixed literal
  *       ({@code app/cbl/COACTUPC.cbl} lines 4205 to 4207).</li>
- *   <li>{@link FileStatusException} - {@code 500 Internal Server Error}. An unhandled file
- *       operation failure. The legacy sequence at all three I/O sites of
- *       {@code app/cbl/CBACT01C.cbl} - read at lines 110 to 113, open at 144 to 147, close at 162
- *       to 165 - is diagnostic first, raw two-byte status second, abend third, so the terminal
- *       outcome the operator sees is the abend text and the status stays on the diagnostic
- *       channel.</li>
+ *   <li>{@link FileStatusException} - {@code 500 Internal Server Error}. An unhandled file operation
+ *       failure. The legacy sequence at all three I/O sites of {@code app/cbl/CBACT01C.cbl} - read
+ *       at lines 110 to 113, open at 144 to 147, close at 162 to 165 - is diagnostic first, raw
+ *       two-byte status second, abend third, so the terminal outcome the operator sees is the abend
+ *       text and the status stays on the diagnostic channel.</li>
  *   <li>{@link RecordNotFoundException} - {@code 404 Not Found}. A keyed read that resolved to no
  *       record, the condition the estate reports as file status {@code 23}.</li>
  *   <li>{@link ValidationException} - {@code 400 Bad Request}, with the per-field detail
  *       preserved.</li>
  *   <li>{@link OptimisticLockConflictException} - {@code 409 Conflict}. Recoverable: the legacy
  *       write path re-displays the record for review and never abends.</li>
- *   <li>{@link JobSubmissionException} - a <strong>non-failing</strong> {@code 200 OK}. See
- *       below.</li>
+ *   <li>{@link JobSubmissionException} - a <strong>non-failing</strong> {@code 200 OK}.</li>
  * </ul>
+ *
+ * <h2>Framework rejections answer in the same shape</h2>
+ *
+ * <p>Six carriers are not the whole failure surface of a REST controller. A request can also be
+ * rejected before any service runs - a declarative constraint on a request body, a constraint on a
+ * controller parameter, a missing query parameter, a value that will not convert to its declared
+ * type, or a body the message converter cannot read at all. Those rejections are raised by the web
+ * framework and by the validation provider, not by this module, and left unhandled they would be
+ * rendered in the framework's own representation. That would give the API two error shapes for the
+ * same class of outcome - a caller-caused rejection - and the second shape would carry transport
+ * and framework metadata that {@link ErrorResponse} deliberately does not have.
+ *
+ * <p>Each of those rejections is therefore translated explicitly, one handler per named framework
+ * type, into the same {@code 400 Bad Request} plus {@link ErrorResponse} that a
+ * {@link ValidationException} produces. Three properties of the translation matter:
+ *
+ * <ul>
+ *   <li><strong>The two legacy states survive.</strong> A framework field error carries the value
+ *       that was rejected; that value is <em>inspected</em> to decide between the two states -
+ *       absent or blank means the field was not supplied, anything else means it was supplied and
+ *       failed - and is then discarded. It is never placed in a body and never written to a log,
+ *       because a rejected value can be a password or a card primary account number.</li>
+ *   <li><strong>Only the module's own text crosses the boundary.</strong> The summary is one of
+ *       three neutral, screen-independent literals declared here, and a per-field message is the
+ *       constraint message the module's own request contract declares. The framework exception's
+ *       own detail message is never used: it embeds the rejected value, the declared parameter
+ *       type or a fragment of the submitted body.</li>
+ *   <li><strong>No rejection is answered by a generic fallback.</strong> Every rejection above is
+ *       handled by a handler that names its concrete framework type, and this class deliberately
+ *       does not inherit from the framework's own exception-handling base class, so no
+ *       problem-detail representation is introduced and no rejection is flattened into a
+ *       misleading {@code 400}.</li>
+ * </ul>
+ *
+ * <h2>Authorization failures raised inside the dispatch, and the half that is not here</h2>
+ *
+ * <p>Two of the statuses the boundary must separate come from the security layer, and the layer
+ * raises them in two different places. A request rejected <em>before</em> dispatch - an absent or
+ * unusable credential, or a URL-level rule denying an anonymous caller - is rejected by the
+ * security filter chain, which never enters the servlet dispatch and therefore cannot reach any
+ * exception advice. Those are answered by the entry point and the denial handler that the filter
+ * chain installs, and both belong to the security configuration rather than here.
+ *
+ * <p>What reaches this class is the other half: a failure raised <em>inside</em> the dispatch, after
+ * a principal has been established, which is where a method-level authorization check fails.
+ * {@link org.springframework.security.core.AuthenticationException} is answered with
+ * {@code 401 Unauthorized} and
+ * {@link org.springframework.security.access.AccessDeniedException} with {@code 403 Forbidden},
+ * both in the same sanitized shape as everything else instead of a container default. Neither
+ * handler duplicates the filter chain's work and neither replaces it: they are the inside-dispatch
+ * arm of the same separation.
+ *
+ * <h2>The terminal handler preserves framework status semantics instead of flattening them</h2>
+ *
+ * <p>One handler is declared on {@link Exception}, and it exists for a single reason: a failure this
+ * class did not anticipate must not be rendered by whatever default the servlet container happened
+ * to install, because that default can carry a stack trace, an internal type name or a fragment of
+ * the submitted body. It is the last resort and it can never shadow the handlers above, since the
+ * framework resolves the most specific declared handler for the thrown type and reaches
+ * {@link Exception} only when no closer match exists.
+ *
+ * <p>Answering everything it sees with {@code 500} would be wrong, because the framework's own
+ * request faults - an unsupported method, an unacceptable or unsupported media type, an
+ * unresolvable path - are client faults the framework already classifies correctly. So the handler
+ * asks the failure what status it carries: {@link org.springframework.web.ErrorResponse} is the
+ * interface every framework exception that knows its own status implements, so a failure
+ * implementing it is answered with that status and a neutral body, and only a failure carrying no
+ * status of its own becomes {@code 500}. The status is honoured; the framework's own detail never
+ * is, because it can name a parameter, a media type, a target Java type or a path.
  *
  * <h2>The job-submission rule is a contract, not a leniency</h2>
  *
- * <p>The estate has exactly one online-to-batch bridge, the queue write in
- * {@code app/cbl/CORPT00C.cbl} lines 515 to 535, and its destination is declared with
- * {@code ERROROPTION(IGNORE)} in {@code app/csd/CARDDEMO.CSD}. On a non-normal response the
- * program writes the response and reason codes to its diagnostic channel, moves the failure
- * literal into its screen message field, repositions the cursor and re-sends the screen. It does
- * not abend and it does not abort the request: control returns to the user normally. The owning
- * service is expected to catch that failure at the publish boundary and never let it reach this
- * class; if it does reach here, this class still refuses to convert a request the legacy completes
- * into an HTTP failure. It answers {@code 200 OK} with the frozen failure literal in the body, and
- * the response and reason codes go to the log rather than to the caller.
+ * <p><strong>Sanitization contract.</strong> No response produced here ever carries a stack trace,
+ * an exception class name, a raw SQL fragment, a schema or table name, a secret, a credential, a
+ * password digest, a filesystem or internal path, job-control text, screen control bytes,
+ * fixed-width record storage, or the raw 134-byte abend context. Two carriers compose their detail
+ * message as a diagnostic rather than as operator text - the file-status carrier renders the raw
+ * two-byte status together with the legacy resource name, and the not-found carrier renders its own
+ * type name together with the searched key - so neither message is ever copied into a body. The four
+ * remaining carriers expose an operator-facing message by contract, and those pass through
+ * unchanged, untrimmed and unpadded, because the legacy fields they derive from are fixed-width and
+ * space-significant. Two values are withheld from the <em>log</em> as well: a business key can be a
+ * card primary account number and the estate provides no field-level masking for one (decision log
+ * entry D-14), so the not-found and conflict handlers log the record type and the entity name but
+ * never the key. The layer that performed the read has already logged its own diagnostic, including
+ * the raw status, before the failure was raised.
  *
- * <p>{@code 202 Accepted} is deliberately not used: nothing was accepted for processing. The write
- * failed, and because the legacy emitter tests the same error flag that the failure raises, the
- * cards after the failing one are never sent either. The response reports a completed request that
- * submitted no job, which is exactly what the legacy screen reported.
+ * <p><strong>Diagnostic channel.</strong> The estate's only instrumentation was 217 console display
+ * statements, and this class is where the last of them fire: the abend, file-status and
+ * job-submission handlers reproduce the diagnostic the legacy emitted immediately before it abended
+ * or re-sent the screen, using parameterized messages so the structured encoder can index the
+ * values. The validation and not-found handlers log at debug level, because the legacy online tier
+ * emitted no console output for either condition - it simply re-sent the map - and a client-caused
+ * rejection is not an operational event. The conflict handler logs at warning level: contention on
+ * the account-update path is an operational signal an operator needs, and surfacing it is part of
+ * the observability the migration adds rather than a change to what the caller sees.
  *
- * <h2>Sanitization contract</h2>
- *
- * <p>No response produced here ever carries a stack trace, an exception class name, a raw SQL
- * fragment, a schema or table name, a secret, a credential, a password digest, a filesystem or
- * internal path, job-control text, screen control bytes, fixed-width record storage, or the raw
- * 134-byte abend context. Two carriers compose their detail message as a diagnostic rather than as
- * operator text - the file-status carrier renders the raw two-byte status together with the legacy
- * resource name, and the not-found carrier renders its own type name together with the searched
- * key - so neither message is ever copied into a body. The four remaining carriers expose an
- * operator-facing message by contract, and those are passed through unchanged, untrimmed and
- * unpadded, because the legacy fields they derive from are fixed-width and space-significant.
- *
- * <p>Two values are withheld from the <em>log</em> as well as from the body. A business key can be
- * a card primary account number, and the estate provides no field-level masking for one, so the
- * not-found and conflict handlers log the record type and the entity name but never the key. The
- * layer that performed the read has already logged its own diagnostic, including the raw status,
- * before the failure was raised.
- *
- * <h2>Diagnostic channel</h2>
- *
- * <p>The estate's only instrumentation was 217 console display statements. Those become SLF4J
- * events, and this class is where the last of them fire: the abend, file-status and
- * job-submission handlers reproduce the diagnostic the legacy emitted immediately before it
- * abended or re-sent the screen, using parameterized messages so the structured encoder can index
- * the values. The validation and not-found handlers log at debug level, because the legacy online
- * tier emitted no console output for either condition - it simply re-sent the map - and a
- * client-caused rejection is not an operational event. The conflict handler logs at warning level:
- * contention on the account-update path is an operational signal an operator needs, and surfacing
- * it is part of the observability the migration adds rather than a change to what the caller
- * sees.
- *
- * <h2>Scope, and what this class deliberately does not do</h2>
- *
- * <p>The advice is bound to the package of this class, so it applies to the module's own REST
- * controllers and to nothing else. It declares no request mapping, so it neither maps nor shadows
- * the management endpoints or the published interface description, and it cannot intervene in a
- * request handled by either. It configures no interface documentation, no problem-detail
- * representation and no content negotiation. It performs no forwarding: the estate's twenty-five
- * program-to-program transfers become route constants in a response body, never a server-side
- * dispatch, so a failure here ends the exchange rather than redirecting it.
- *
- * <p>It also holds no message catalogue of its own. Per-screen operator text belongs to the
- * services that own those screens, so where a carrier supplies no operator-facing message this
- * class emits one neutral, screen-independent summary rather than borrowing a literal from a
- * screen it knows nothing about.
- *
- * <h2>Thread safety</h2>
+ * <p><strong>Scope.</strong> The advice is bound to the package of this class, so it applies to the
+ * module's own REST controllers and to nothing else, and it declares no request mapping, so it
+ * neither maps nor shadows the management endpoints or the published interface description. It
+ * configures no problem-detail representation and no content negotiation, and it performs no
+ * forwarding: the estate's twenty-five program-to-program transfers become route constants in a
+ * response body, so a failure here ends the exchange rather than redirecting it. It holds no message
+ * catalogue of its own either - per-screen operator text belongs to the services that own those
+ * screens, so where a carrier supplies no operator-facing message this class emits one neutral,
+ * screen-independent summary rather than borrowing a literal from a screen it knows nothing about.
  *
  * <p>The class is {@code final}, holds no injected collaborator, and its only state is one static
- * logger and two static text constants, all immutable. A single instance therefore serves every
- * request concurrently, which is how the framework uses it.
- *
- * <h2>Provenance</h2>
- *
- * <p>Behaviour cited, never transcribed, from the CardDemo COBOL estate at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
+ * logger and two static text constants, all immutable, so a single instance serves every request
+ * concurrently, which is how the framework uses it.
  *
  * @since 1.0.0
  */
@@ -182,6 +227,63 @@ public final class GlobalExceptionHandler {
      * an internal component.
      */
     private static final String RECORD_NOT_FOUND_MESSAGE = "Record not found";
+
+    /**
+     * The neutral summary emitted when the framework or the validation provider rejected the
+     * request before any service ran.
+     *
+     * <p>Like {@link #RECORD_NOT_FOUND_MESSAGE} this is deliberately not a legacy literal. The
+     * estate's validation texts are per-field and per-screen, and the service that owns a screen
+     * emits its own summary when it runs its own cascade; a rejection that never reached a service
+     * has no screen to borrow wording from. The per-field entries carry the specific reasons, so
+     * this line only has to say what class of failure occurred.
+     */
+    private static final String VALIDATION_FAILED_MESSAGE = "Submitted data failed validation";
+
+    /**
+     * The neutral summary emitted when the request body could not be read at all.
+     *
+     * <p>No field detail accompanies it, because a body that could not be parsed has no fields to
+     * attribute an error to. The parse diagnostic is not surfaced: it quotes the offending fragment
+     * of the submitted payload, which may hold a credential.
+     */
+    private static final String MALFORMED_REQUEST_BODY_MESSAGE = "Request body could not be read";
+
+    /**
+     * The neutral summary emitted when a request value could not be bound to the operation - a
+     * missing parameter, header, path variable or cookie, or a value that will not convert to its
+     * declared type.
+     *
+     * <p>It names no parameter, no header and no type. Where the failure identifies the request
+     * value it applies to, that name travels as a per-field entry instead, which is where a client
+     * looks for it.
+     */
+    private static final String REQUEST_BINDING_FAILED_MESSAGE = "Request value could not be bound";
+
+    /**
+     * The summary returned when a credential was required inside the dispatch and none was
+     * established. Deliberately free of detail: naming which credential was missing, or whether a
+     * principal existed at all, tells a prober more than it tells a caller.
+     */
+    private static final String AUTHENTICATION_REQUIRED_MESSAGE = "Authentication required";
+
+    /**
+     * The summary returned when an established principal was refused. It names neither the rule
+     * that refused nor the role that would have satisfied it, for the same reason.
+     */
+    private static final String ACCESS_DENIED_MESSAGE = "Access denied";
+
+    /**
+     * The bean-validation constraints that assert presence rather than shape. A field rejected by
+     * one of these was not supplied, which is the legacy BLANK state, and the estate distinguishes
+     * that from a supplied value that failed its edits - the decoration macro in
+     * {@code app/cpy/CSSETATY.cpy} writes its {@code '*'} marker only for the blank case. The
+     * constraint name is consulted in addition to the rejected value because a composed constraint
+     * or a custom message can reject a present-but-unusable value that is still, semantically, an
+     * absence.
+     */
+    private static final Set<String> PRESENCE_CONSTRAINT_NAMES =
+            Set.of("NotNull", "NotBlank", "NotEmpty");
 
     /**
      * The value that stands in for an absent text component.
@@ -271,10 +373,12 @@ public final class GlobalExceptionHandler {
      * absorb it, so a not-found that arrives here is one no caller excused, and the correct answer
      * is that the addressed resource does not exist.
      *
-     * <p>The carrier's own detail message renders its type name together with the searched key and
-     * the legacy resource name, so it is never copied into the body; the body carries one neutral
-     * summary instead. The log records the record type and the resource but deliberately omits the
-     * key, which may be a card primary account number that the estate does not mask.
+     * <p>The carrier's own detail message names its type and the legacy resource and carries a fixed
+     * placeholder where the searched key would be, so the key cannot reach a log or a report through
+     * it; even so the message is never copied into the body, which carries one neutral summary
+     * instead. The log here records the record type and the resource only. Neither path renders the
+     * key, which may be a card primary account number that the estate does not mask - the carrier's
+     * {@code key()} accessor is the single deliberate way to reach it.
      *
      * @param exception the not-found condition, never {@code null} when invoked by the framework
      * @return a {@code 404} response whose body holds a neutral summary and no record identity
@@ -386,6 +490,381 @@ public final class GlobalExceptionHandler {
     }
 
     /**
+     * Handles a declarative validation or binding failure on a request body or model attribute.
+     *
+     * <p>Both named types are translated here because both carry the same evidence - a binding
+     * result holding one entry per rejected field plus any class-level entries - and translating
+     * them separately would duplicate that translation without changing a single response. The
+     * subtype is named explicitly alongside its supertype so that the handled surface is visible
+     * at this declaration rather than inferred from a class hierarchy.
+     *
+     * <p>The status is {@code 400 Bad Request}, the same status a service-raised
+     * {@link ValidationException} produces, because the outcome is the same: the caller must change
+     * the submission. Per-field entries preserve the two legacy states, derived from whether the
+     * rejected value was absent or blank; the rejected value itself is discarded rather than
+     * reported. A class-level entry has no field to name, so it travels with an empty field name
+     * and its own message.
+     *
+     * <p>The log records the number of rejected fields and nothing else - no field name, no
+     * message, no rejected value and no throwable - because the failure is caller-caused rather
+     * than operational and because a rejected value may be a credential.
+     *
+     * @param exception the binding or validation failure, never {@code null} when invoked by the
+     *                  framework
+     * @return a {@code 400} response whose body holds the neutral summary and one entry per
+     *         rejected field
+     */
+    @ExceptionHandler({MethodArgumentNotValidException.class, BindException.class})
+    public ResponseEntity<ErrorResponse> handleBindingValidation(BindException exception) {
+        List<ErrorResponse.FieldError> fieldErrors = new ArrayList<>();
+        for (org.springframework.validation.FieldError fieldError : exception.getFieldErrors()) {
+            fieldErrors.add(new ErrorResponse.FieldError(
+                    orEmpty(fieldError.getField()),
+                    EMPTY,
+                    fieldStateFor(fieldError.getCode(), fieldError.getRejectedValue()),
+                    fieldError.getDefaultMessage()));
+        }
+        for (ObjectError objectError : exception.getGlobalErrors()) {
+            fieldErrors.add(new ErrorResponse.FieldError(
+                    EMPTY, EMPTY, ErrorResponse.FieldState.INVALID, objectError.getDefaultMessage()));
+        }
+        LOG.debug("Request failed declarative validation: fieldErrorCount={}", fieldErrors.size());
+        return badRequest(VALIDATION_FAILED_MESSAGE, fieldErrors);
+    }
+
+    /**
+     * Handles a constraint failure on a controller method parameter or return value.
+     *
+     * <p>This is the failure the framework raises when a constraint is declared directly on a
+     * handler parameter rather than on a request body, so the evidence arrives per parameter rather
+     * than as one binding result. Each parameter contributes its resolvable errors; an error that
+     * identifies a property of a validated object names that property, and an error on the
+     * parameter itself is named by the parameter, which is available because the module compiles
+     * with parameter names retained.
+     *
+     * <p>The two legacy states are derived exactly as they are for a body failure: from the
+     * rejected property value where one is reported, and otherwise from the argument the parameter
+     * received. Neither is placed in the response or the log.
+     *
+     * @param exception the method-validation failure, never {@code null} when invoked by the
+     *                  framework
+     * @return a {@code 400} response whose body holds the neutral summary and one entry per
+     *         rejected parameter or property
+     */
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ResponseEntity<ErrorResponse> handleHandlerMethodValidation(
+            HandlerMethodValidationException exception) {
+        List<ErrorResponse.FieldError> fieldErrors = new ArrayList<>();
+        for (ParameterValidationResult result : exception.getParameterValidationResults()) {
+            String parameterName = orEmpty(result.getMethodParameter().getParameterName());
+            for (MessageSourceResolvable resolvable : result.getResolvableErrors()) {
+                if (resolvable instanceof org.springframework.validation.FieldError fieldError) {
+                    fieldErrors.add(new ErrorResponse.FieldError(
+                            orEmpty(fieldError.getField()),
+                            EMPTY,
+                            stateOfRejectedValue(fieldError.getRejectedValue()),
+                            fieldError.getDefaultMessage()));
+                } else {
+                    fieldErrors.add(new ErrorResponse.FieldError(
+                            parameterName,
+                            EMPTY,
+                            stateOfRejectedValue(result.getArgument()),
+                            resolvable.getDefaultMessage()));
+                }
+            }
+        }
+        LOG.debug("Handler parameters failed validation: fieldErrorCount={}", fieldErrors.size());
+        return badRequest(VALIDATION_FAILED_MESSAGE, fieldErrors);
+    }
+
+    /**
+     * Handles a constraint failure raised by the validation provider itself.
+     *
+     * <p>This arrives when validation is triggered programmatically or on a bean method rather than
+     * by the web layer, so the evidence is a set of violations rather than an ordered result. A set
+     * has no order, and a response whose entries reorder between two identical requests is not a
+     * contract a client can test against, so the entries are sorted by field name and then by
+     * message. That ordering is imposed by this handler alone; the source-ordered cascade that the
+     * legacy screens ran belongs to the services and reaches this class as a
+     * {@link ValidationException}, whose order is preserved untouched.
+     *
+     * <p>A violation names its property by path; the leaf of that path is the field a client sent,
+     * and the interior nodes - which include the invoked method name - are internal detail and are
+     * dropped. The invalid value is inspected for the two-state decision and discarded.
+     *
+     * @param exception the constraint failure, never {@code null} when invoked by the framework
+     * @return a {@code 400} response whose body holds the neutral summary and one entry per
+     *         violation, in a stable order
+     */
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<ErrorResponse> handleConstraintViolation(
+            ConstraintViolationException exception) {
+        List<ErrorResponse.FieldError> fieldErrors = new ArrayList<>();
+        Set<ConstraintViolation<?>> violations = exception.getConstraintViolations();
+        if (violations != null) {
+            for (ConstraintViolation<?> violation : violations) {
+                fieldErrors.add(new ErrorResponse.FieldError(
+                        leafPropertyName(violation.getPropertyPath()),
+                        EMPTY,
+                        fieldStateFor(violation.getMessageTemplate(), violation.getInvalidValue()),
+                        violation.getMessage()));
+            }
+            fieldErrors.sort(Comparator.comparing(ErrorResponse.FieldError::fieldName)
+                    .thenComparing(fieldError -> orEmpty(fieldError.message())));
+        }
+        LOG.debug("Constraints were violated: fieldErrorCount={}", fieldErrors.size());
+        return badRequest(VALIDATION_FAILED_MESSAGE, fieldErrors);
+    }
+
+    /**
+     * Handles a required request parameter that was not supplied.
+     *
+     * <p>The parameter name is part of the module's own published interface, so it is safe to
+     * return, and it is the one piece of information a client needs. The state is MISSING, which is
+     * the legacy blank case: the value was never supplied, so the remedy is to supply one. Nothing
+     * else from the failure is used - its detail message additionally names the declared Java
+     * parameter type, which is internal.
+     *
+     * @param exception the missing-parameter failure, never {@code null} when invoked by the
+     *                  framework
+     * @return a {@code 400} response naming the missing parameter and nothing further
+     */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ErrorResponse> handleMissingRequestParameter(
+            MissingServletRequestParameterException exception) {
+        LOG.debug("Required request parameter was not supplied: parameter={}",
+                exception.getParameterName());
+        return badRequest(REQUEST_BINDING_FAILED_MESSAGE, List.of(new ErrorResponse.FieldError(
+                orEmpty(exception.getParameterName()), EMPTY, ErrorResponse.FieldState.MISSING,
+                REQUEST_BINDING_FAILED_MESSAGE)));
+    }
+
+    /**
+     * Handles a request value that was supplied but will not convert to its declared type.
+     *
+     * <p>The state is INVALID, which is the legacy not-OK case: a value was supplied and failed its
+     * edit, so the remedy is to correct it. The parameter name is returned because it is part of
+     * the published interface; the value that failed to convert and the type it failed to convert
+     * to are both withheld, the first because it is caller data and the second because it is
+     * internal.
+     *
+     * @param exception the conversion failure, never {@code null} when invoked by the framework
+     * @return a {@code 400} response naming the parameter that could not be converted
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ErrorResponse> handleTypeMismatch(
+            MethodArgumentTypeMismatchException exception) {
+        LOG.debug("Request value could not be converted: parameter={}", exception.getName());
+        return badRequest(REQUEST_BINDING_FAILED_MESSAGE, List.of(new ErrorResponse.FieldError(
+                orEmpty(exception.getName()), EMPTY, ErrorResponse.FieldState.INVALID,
+                REQUEST_BINDING_FAILED_MESSAGE)));
+    }
+
+    /**
+     * Handles the remaining request-binding failures - a missing header, path variable or cookie,
+     * and an unsatisfied parameter condition.
+     *
+     * <p>These are declared by the framework as one family, and the family is named here rather
+     * than enumerated member by member so that no member of it can escape into a second response
+     * shape. It is not a catch-all: it handles request binding and nothing else, and the two
+     * members with a value a client can act on - a missing parameter and a failed conversion - are
+     * handled above by their own more specific declarations, which the framework prefers.
+     *
+     * <p>No per-field entry is produced, because the members reached here identify the request
+     * value only inside a detail message that also carries framework and type detail.
+     *
+     * @param exception the binding failure, never {@code null} when invoked by the framework
+     * @return a {@code 400} response whose body holds the neutral summary and no field detail
+     */
+    @ExceptionHandler(ServletRequestBindingException.class)
+    public ResponseEntity<ErrorResponse> handleRequestBinding(
+            ServletRequestBindingException exception) {
+        LOG.debug("Request value could not be bound to the operation");
+        return badRequest(REQUEST_BINDING_FAILED_MESSAGE, List.of());
+    }
+
+    /**
+     * Handles a request body the message converter could not read.
+     *
+     * <p>A body that did not parse has no fields to attribute an error to, so the response carries
+     * the neutral summary alone. The parse diagnostic is used neither in the body nor in the log: it
+     * quotes the offending fragment of the payload, and a sign-on body's payload holds a password.
+     *
+     * @param exception the unreadable-body failure, never {@code null} when invoked by the
+     *                  framework
+     * @return a {@code 400} response whose body holds the neutral summary and no field detail
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleUnreadableBody(
+            HttpMessageNotReadableException exception) {
+        LOG.debug("Request body could not be read by the configured message converter");
+        return badRequest(MALFORMED_REQUEST_BODY_MESSAGE, List.of());
+    }
+
+    /**
+     * Answers a credential failure raised inside the dispatch with {@code 401 Unauthorized}.
+     *
+     * <p>This is the inside-dispatch arm of the separation described on the class: the filter chain
+     * answers what it rejects before dispatch, and this answers what a method-level check rejects
+     * afterwards. The body carries the neutral literal only. The failure itself is logged at
+     * warning level with its cause, because an operator needs it and a caller must not have it.
+     *
+     * @param exception the authentication failure, never {@code null} when invoked by the framework
+     * @return a {@code 401} response whose body names no credential, principal or rule
+     */
+    @ExceptionHandler(AuthenticationException.class)
+    public ResponseEntity<ErrorResponse> handleAuthenticationFailure(
+            AuthenticationException exception) {
+        LOG.warn("Authentication was required and not established at the REST boundary", exception);
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .body(new ErrorResponse(AUTHENTICATION_REQUIRED_MESSAGE));
+    }
+
+    /**
+     * Answers an authorization refusal raised inside the dispatch with {@code 403 Forbidden}.
+     *
+     * <p>The distinction from {@code 401} is the one the estate drew: a principal exists and is not
+     * entitled, which is the sign-on program routing a non-administrator away from the
+     * administrative menu rather than refusing the sign-on itself. The body names neither the rule
+     * that refused nor the role that would have satisfied it.
+     *
+     * @param exception the access denial, never {@code null} when invoked by the framework
+     * @return a {@code 403} response whose body names no rule or role
+     */
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ErrorResponse> handleAccessDenied(AccessDeniedException exception) {
+        LOG.warn("An established principal was refused at the REST boundary", exception);
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(new ErrorResponse(ACCESS_DENIED_MESSAGE));
+    }
+
+    /**
+     * The terminal handler: answers anything unanticipated without disclosing how it failed.
+     *
+     * <p>A failure that classifies itself - every framework request fault implements
+     * {@link org.springframework.web.ErrorResponse} - is answered with the status it declares and a
+     * neutral body, so a client fault is never reported as a server fault. Anything else becomes
+     * {@code 500 Internal Server Error} carrying {@link AbendException#DEFAULT_MESSAGE}, the same
+     * frozen terminal literal the online abend path uses, so the boundary has exactly one terminal
+     * text rather than one per cause. The cause is logged, never returned.
+     *
+     * @param exception the unanticipated failure, never {@code null} when invoked by the framework
+     * @return the framework's own status with a neutral body, or {@code 500} with the terminal
+     *         literal
+     */
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ErrorResponse> handleUnexpectedFailure(Exception exception) {
+        if (exception instanceof org.springframework.web.ErrorResponse declaredStatusFailure) {
+            HttpStatusCode status = declaredStatusFailure.getStatusCode();
+            LOG.debug("Framework request fault reached the REST boundary: status={}",
+                    status.value(), exception);
+            return ResponseEntity.status(status)
+                    .body(new ErrorResponse(MALFORMED_REQUEST_BODY_MESSAGE));
+        }
+        LOG.error("Unhandled failure reached the REST boundary", exception);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(new ErrorResponse(AbendException.DEFAULT_MESSAGE));
+    }
+
+    /**
+     * Builds the one caller-caused rejection response every framework translation returns.
+     *
+     * <p>It exists so that the status, the body shape and the focus hint are decided in exactly one
+     * place: a translation that composed its own {@code ResponseEntity} could drift from the others
+     * without any test noticing. The focus hint is derived by the same rule the service-raised path
+     * uses, which yields no hint for a framework failure because a framework failure names no
+     * legacy screen field.
+     *
+     * @param message     the neutral summary for this class of failure
+     * @param fieldErrors the translated per-field detail, possibly empty
+     * @return a {@code 400 Bad Request} carrying the canonical error body
+     */
+    private static ResponseEntity<ErrorResponse> badRequest(String message,
+            List<ErrorResponse.FieldError> fieldErrors) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(new ErrorResponse(message, fieldErrors, focusScreenFieldId(fieldErrors)));
+    }
+
+    /**
+     * Decides the two legacy field states from the constraint that was violated, falling back to
+     * the rejected value when the constraint is not named.
+     *
+     * <p>A presence constraint means the field was not supplied, which is the BLANK state the
+     * legacy screen marked with an asterisk; anything else means a value arrived and failed its
+     * edits. Where the framework does not report which constraint fired, the rejected value decides
+     * on its own, exactly as {@link #stateOfRejectedValue(Object)} describes.
+     *
+     * @param constraintName the violated constraint's code or message template, possibly
+     *                       {@code null}
+     * @param rejectedValue  the value that was rejected, possibly {@code null}; inspected and
+     *                       discarded, never reported
+     * @return MISSING when the field was not supplied, otherwise INVALID
+     */
+    private static ErrorResponse.FieldState fieldStateFor(String constraintName,
+            Object rejectedValue) {
+        if (constraintName != null) {
+            for (String presenceConstraint : PRESENCE_CONSTRAINT_NAMES) {
+                if (constraintName.contains(presenceConstraint)) {
+                    return ErrorResponse.FieldState.MISSING;
+                }
+            }
+        }
+        return stateOfRejectedValue(rejectedValue);
+    }
+
+    /**
+     * Decides which of the two legacy states a framework rejection represents, by inspecting the
+     * rejected value and then discarding it.
+     *
+     * <p>This is the same distinction the legacy screen-decoration macro drew: a field whose flag
+     * was blank had never been filled in and was marked as well as highlighted, while a field whose
+     * flag was not-OK had been filled in wrongly and was only highlighted. A value that is absent,
+     * or that is text consisting entirely of whitespace, is the blank case; anything else is the
+     * not-OK case.
+     *
+     * <p>The value is read here and nowhere else, and it does not leave this method. It is never
+     * returned, never placed in a response and never logged, because a rejected value can be a
+     * password on a sign-on field or a card primary account number on a card field, and the estate
+     * provides field-level masking for neither.
+     *
+     * @param rejectedValue the value the framework rejected, possibly {@code null}
+     * @return MISSING when nothing usable was supplied, otherwise INVALID
+     */
+    private static ErrorResponse.FieldState stateOfRejectedValue(Object rejectedValue) {
+        if (rejectedValue == null) {
+            return ErrorResponse.FieldState.MISSING;
+        }
+        if (rejectedValue instanceof CharSequence text && text.toString().isBlank()) {
+            return ErrorResponse.FieldState.MISSING;
+        }
+        return ErrorResponse.FieldState.INVALID;
+    }
+
+    /**
+     * Reduces a validation property path to the single name a client sent.
+     *
+     * <p>A provider-raised violation identifies its property as a path, and for a method-level
+     * validation that path begins with the invoked method and its parameter before reaching the
+     * property itself. Only the last node is returned: the interior nodes name internal components,
+     * and the module's request contract is expressed in terms of the leaf.
+     *
+     * @param propertyPath the violated property's path, possibly {@code null}
+     * @return the leaf node's name, or the empty string when the path names nothing
+     */
+    private static String leafPropertyName(Path propertyPath) {
+        if (propertyPath == null) {
+            return EMPTY;
+        }
+        String leafName = EMPTY;
+        for (Path.Node node : propertyPath) {
+            if (node.getName() != null) {
+                leafName = node.getName();
+            }
+        }
+        return leafName;
+    }
+
+    /**
      * Translates the carrier's per-field detail into the response contract's per-field detail.
      *
      * <p>The two field-error types are structurally identical and semantically identical, and the
@@ -428,20 +907,19 @@ public final class GlobalExceptionHandler {
      * instead of silently degrading a response. Arrow form is used, so no arm can fall through into
      * the next.
      *
-     * <p>An absent state is mapped to the "supplied but wrong" state. The carrier does not reject a
-     * {@code null} state while the response contract does, and this handler must not fail while
-     * handling a failure, so a malformed entry is still reported to the client. That state is the
-     * weaker of the two claims: it tells the operator to correct the value, whereas asserting a
-     * missing value would tell them they left a field blank that they may well have filled in.
+     * <p>There is deliberately no fallback arm for an absent state, because the carrier rejects a
+     * {@code null} state at construction: the legacy flag the two constants derive from is either
+     * not-OK or blank whenever the screen-decoration macro fires, so a third state does not exist
+     * to be translated. Guessing one here would be worse than the failure it hides - asserting
+     * MISSING would tell an operator they left a field blank that they may well have filled in,
+     * and asserting INVALID would tell them to correct a value they may never have entered - and
+     * either way it would conceal a malformed producer behind a plausible response.
      *
-     * @param state the carrier's state, possibly {@code null}
+     * @param state the carrier's state, never {@code null}
      * @return the corresponding response-contract state, never {@code null}
      */
     private static ErrorResponse.FieldState toResponseFieldState(
             ValidationException.FieldState state) {
-        if (state == null) {
-            return ErrorResponse.FieldState.INVALID;
-        }
         return switch (state) {
             case MISSING -> ErrorResponse.FieldState.MISSING;
             case INVALID -> ErrorResponse.FieldState.INVALID;

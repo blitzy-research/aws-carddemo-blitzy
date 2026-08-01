@@ -16,58 +16,91 @@
  */
 package com.carddemo.api.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Size;
 
 /**
  * Immutable sign-on request contract for legacy CICS transaction {@code CC00}.
  *
- * <p>This record is the REST-era replacement for the two operator-entered fields of the
- * 3270 sign-on screen driven by {@code app/cbl/COSGN00C.cbl}, the program bound to
- * transaction {@code CC00} in {@code app/csd/CARDDEMO.CSD}, through mapset
- * {@code COSGN00}. The screen layout lives in {@code app/bms/COSGN00.bms}, where the
- * user-id field is defined at line 156 and the password field at line 175, each declared
- * eight characters wide. The generated symbolic map that the program actually reads is
- * {@code app/cpy-bms/COSGN00.CPY}. The persisted credential record behind the transaction
- * is {@code app/cpy/CSUSR01Y.cpy}, whose user-id field (line 18) and password field
- * (line 21) are each eight-character alphanumeric fields - never numeric - which is why
- * both components below are {@code String} and not a numeric type.
+ * <p>The REST-era replacement for the two operator-entered fields of the 3270 sign-on screen driven
+ * by {@code COSGN00C}. Both the screen field definitions and the persisted credential record declare
+ * the user id and the password as eight-character <em>alphanumeric</em> fields - never numeric -
+ * which is why both components below are {@link String}.
  *
- * <h2>Only two of the map's eleven input items are genuine user input</h2>
+ * <p><strong>Only two of the map's eleven input items are genuine user input.</strong> The symbolic
+ * map declares eleven value items, but nine are screen metadata the legacy program writes outbound
+ * rather than reads inbound - the transaction name, two title lines, the current date, the program
+ * name, the current time, the application id, the system id and the error message. Those belong to
+ * the response contract and are deliberately absent here. Only the user-id and password items are
+ * typed by the operator, so this request carries exactly those two values and nothing more: no
+ * navigation context, no terminal identity, no remember-me flag and no second factor, because the
+ * legacy transaction has none and adding one would be feature expansion. The map's per-field length,
+ * flag and attribute items, and its leading twelve-byte terminal input/output area filler, are
+ * generated 3270 plumbing rather than contract. The password field is additionally defined with the
+ * non-display attribute in the mapset, so the legacy terminal never echoed it - a property
+ * {@link #toString()} honours.
  *
- * <p>The symbolic map's input structure declares eleven value items, but nine of them are
- * screen metadata that the legacy program writes outbound rather than reads inbound: the
- * transaction name, two title lines, the current date, the program name, the current time,
- * the application id, the system id and the error message. Those nine belong to the
- * response contract, {@code SignOnResponse}, and are deliberately absent here. Only
- * {@code USERIDI} (symbolic map line 72) and {@code PASSWDI} (line 78) are typed by the
- * operator, so this request carries exactly those two values and nothing more - no
- * navigation context, no terminal identity, no remember-me flag and no second factor,
- * because the legacy transaction has none and adding one would be feature expansion.
+ * <p><strong>Both values are carried verbatim; nothing is normalized here.</strong> The legacy
+ * program folds both the user id and the password to upper case in two statements that sit outside
+ * the end of the preceding validation cascade, so the fold executes unconditionally on every submit.
+ * That fold is part of the authentication algorithm rather than the transport shape, so it belongs to
+ * whatever component performs authentication. This record therefore never upper-cases, lower-cases,
+ * trims, strips, pads or canonicalises either value: what the client sent is exactly what the service
+ * receives, including leading and trailing spaces.
+ *
+ * <p>One parity consequence of that fold is preserved rather than corrected: because the submitted
+ * password is folded to upper case before it is compared, the legacy password is effectively
+ * <strong>case-insensitive</strong>. That behavior is observable through the sign-on interface, so it
+ * is reproduced deliberately rather than "fixed" here or compensated for by this contract.
  *
  * <p>The map's per-field length, flag and attribute items, and its leading twelve-byte
  * terminal input/output area filler, are generated 3270 plumbing rather than contract, so
  * they are not modelled. The password field is additionally defined with the non-display
- * attribute in the mapset, meaning the legacy terminal never echoed it - a property this
- * type honours in {@link #toString()}.
+ * attribute in the mapset (line 175 of {@code app/bms/COSGN00.bms}, where the user-id field
+ * one group earlier at line 156 is normal-intensity by contrast), so the legacy terminal
+ * accepted the credential but never rendered it. The program reinforces that asymmetry: it
+ * moves the user id onward to the shared communication area at line 226 of
+ * {@code COSGN00C}, whereas the outbound password item {@code PASSWDO} of the symbolic map
+ * (line 146) is never written by the program at all, so no outbound message the transaction
+ * builds has ever carried the credential. This type honours that inbound-only shape in two
+ * places - {@link #toString()} and the serialization access mode of the password
+ * component.
  *
- * <h2>Both values are carried verbatim; nothing is normalised here</h2>
+ * <p><strong>Blank handling is ordered, which is why no presence constraint appears here.</strong>
+ * The legacy program forms a single ordered evaluation cascade: the user id is tested for emptiness
+ * first, the password second, and because the construct stops at the first matching clause a
+ * submission with <em>both</em> fields empty reports the user-id prompt only - never the password
+ * prompt and never both messages. The legacy emptiness test additionally treats an all-spaces value
+ * and an all-low-values value as equally empty.
  *
- * <p>Program {@code COSGN00C} folds both the user id and the password to upper case at
- * lines 132-136, and those two statements sit outside the end of the preceding validation
- * cascade, so the fold executes unconditionally on every ENTER. That fold is part of the
- * authentication algorithm rather than part of the transport shape, so it is performed by
- * {@code AuthenticationService}. This record therefore never upper-cases, lower-cases,
- * trims, strips, pads, canonicalises or otherwise alters either value: what the client
- * sent is exactly what the service receives, including leading and trailing spaces.
+ * <p>Bean Validation evaluates constraints in an unspecified order and would report both violations
+ * at once, producing two messages where the legacy produces exactly one. This record therefore
+ * deliberately carries <em>no</em> presence constraint of any kind - no {@code NotBlank}, no
+ * {@code NotNull}, no {@code NotEmpty} - and tolerates {@code null}, an empty string and an
+ * all-spaces string without rejecting them, so that the authenticating component can run the ordered
+ * cascade and emit the single correct message. For the same reason no character-class, format or
+ * credential-strength constraint appears: the legacy screen applies none, and any of them would
+ * reject input the legacy system accepts. The one constraint that <em>is</em> present bounds each
+ * value to the eight-character screen width and measures only - it never trims, so leading and
+ * trailing spaces survive validation untouched.
  *
- * <p>One parity consequence of that fold is documented here and is preserved rather than
- * corrected: because the submitted password is folded to upper case before it is compared,
- * the legacy password is effectively <strong>case-insensitive</strong>. That behaviour is
- * observable through the sign-on interface, so it is reproduced deliberately and is
- * recorded in {@code docs/decision-log.md}; it is neither "fixed" here nor compensated for
- * by this contract.
+ * <p><strong>The password value never appears in {@code toString()}.</strong> A record's implicitly
+ * generated {@code toString()} prints every component, which here would leak the plaintext password
+ * into any log line, exception message, debugger view, diagnostic dump or test-failure report that
+ * stringifies the object. {@link #toString()} is therefore overridden and substitutes a fixed
+ * placeholder - never the value, never its length, never a hash and never a partial mask.
+ * {@code equals} and {@code hashCode} are intentionally not overridden, so they keep comparing both
+ * components as record semantics require, and the password component carries no serialization
+ * annotation because it must still deserialize from the request body for sign-on to work.
  *
- * <h2>Blank handling is ordered, which is why no presence constraint appears here</h2>
+ * <p><strong>Credential verification is out of scope for this type, and does not yet exist in the
+ * module.</strong> The legacy comparison is a direct equality test against a stored cleartext
+ * password. Replacing it with hashed verification is a documented parity exception recorded as
+ * decision log entry D-12, which also records that <strong>no password encoder and no verifying
+ * sign-on path has been delivered yet</strong> - this contract carries the two values and asserts
+ * nothing about how they are checked. No credential literal, hash, salt or work factor appears in
+ * this file.
  *
  * <p>Lines 118-131 of {@code COSGN00C} form a single ordered evaluation cascade: the user
  * id is tested for emptiness first, the password second, and because the construct stops
@@ -88,17 +121,41 @@ import jakarta.validation.constraints.Size;
  * eight-character screen width and measures only - it never trims, so leading and trailing
  * spaces survive validation untouched.
  *
- * <h2>The password value never appears in {@code toString()}</h2>
+ * <h2>The password value leaves this type by no route at all</h2>
  *
- * <p>A record's implicitly generated {@code toString()} prints every component value,
- * which for this type would leak the plaintext password into any log line, exception
- * message, debugger view, diagnostic dump or test-failure report that stringifies the
- * object. {@link #toString()} is therefore overridden and substitutes a fixed placeholder
- * for the password - never the value, never its length, never a hash and never a partial
- * mask. {@code equals} and {@code hashCode} are intentionally <em>not</em> overridden, so
- * they keep comparing both components as the record semantics require, and the password
- * component carries no serialization annotation because it must still deserialize from the
- * request body for sign-on to work.
+ * <p>Two escape routes exist for a credential carried on a record, and both are closed.
+ *
+ * <p><strong>Stringification.</strong> A record's implicitly generated {@code toString()}
+ * prints every component value, which for this type would leak the plaintext password into
+ * any log line, exception message, debugger view, diagnostic dump or test-failure report
+ * that stringifies the object. {@link #toString()} is therefore overridden and substitutes
+ * a fixed placeholder for the password - never the value, never its length, never a hash
+ * and never a partial mask.
+ *
+ * <p><strong>Serialization.</strong> The password component is annotated
+ * {@link JsonProperty.Access#WRITE_ONLY}, which is asymmetric on purpose: the property is
+ * still <em>read from</em> an inbound request body, so sign-on works exactly as before, but
+ * it is omitted entirely from any document this type is serialized into. That closes the
+ * route by which a request object reused as a response body, cached entry, queued message,
+ * audit event, request snapshot or trace attribute would carry the credential outward. The
+ * user id carries no such annotation and continues to serialize both ways, because it is an
+ * account identifier rather than a secret and is needed to correlate an attempt.
+ *
+ * <p>The annotation is a boundary control rather than a substitute for discipline: this
+ * type is an inbound request contract and must not be returned as an outbound model. The
+ * sign-on response is a separate type, and the accompanying tests assert that a serialized
+ * {@code SignOnRequest} document carries exactly one property and that the credential
+ * appears nowhere in it.
+ *
+ * <p>{@code equals} and {@code hashCode} are intentionally <em>not</em> overridden, so they
+ * keep comparing both components as the record semantics require; equality is an in-memory
+ * operation that emits nothing.
+ *
+ * <p>The same access mode is declared on the published OpenAPI schema, together with the
+ * password format, so that generated documentation and client tooling treat the property as a
+ * secret to be collected and never displayed. The suppression is an access-mode declaration
+ * rather than an exclusion, which is the distinction that matters: an outright ignore annotation
+ * would also block the inbound direction and break the transaction, so it is not used here.
  *
  * <p>Credential verification itself is out of scope for this type. The legacy plaintext
  * password comparison at line 223 of {@code COSGN00C} is replaced by hashed verification
@@ -125,11 +182,18 @@ import jakarta.validation.constraints.Size;
  *                 password field of the credential record {@code CSUSR01Y} (line 21).
  *                 Bounded to eight characters and carried unaltered, and likewise
  *                 permitted to be {@code null}, empty or blank. This value is a secret: it
- *                 is excluded from {@link #toString()} and must never be logged.
+ *                 is excluded from {@link #toString()}, excluded from every serialized
+ *                 document by {@link JsonProperty.Access#WRITE_ONLY}, and must never be
+ *                 logged.
  */
 public record SignOnRequest(
         @Size(max = 8) String userId,
-        @Size(max = 8) String password) {
+        @Size(max = 8)
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        @Schema(accessMode = Schema.AccessMode.WRITE_ONLY, format = "password",
+                description = "Operator-entered sign-on password, at most eight characters. "
+                        + "Accepted on request only and never returned in any response.")
+        String password) {
 
     /**
      * Fixed stand-in emitted by {@link #toString()} in place of the password.

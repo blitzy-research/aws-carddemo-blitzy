@@ -35,64 +35,56 @@ import org.junit.jupiter.params.provider.CsvSource;
  *
  * <p><strong>Why this test carries the weight it does.</strong> The codec is the only place in the
  * module where a scale is ever applied, which is what stops any one caller introducing a second
- * rounding policy, so byte parity for every monetary and rate value in the migration rests on it.
- * A wrong rounding mode would differ by one cent on roughly half of all interest computations, and
- * a test written under the same wrong assumption would never see it. Every expectation below was
- * therefore derived by hand from the verified field layouts and the shipped fixture bytes, and
- * re-derived independently before being written down. No assertion asks the codec what its own
- * answer ought to be.</p>
+ * rounding policy, so byte parity for every monetary and rate value in the migration rests on it. A
+ * wrong rounding mode would differ by one cent on roughly half of all interest computations, and a
+ * test written under the same wrong assumption would never see it. Every expectation below was
+ * therefore derived by hand from the verified field layouts and the sample bytes, and re-derived
+ * independently before being written down. No assertion asks the codec what its own answer ought to
+ * be.</p>
  *
  * <p><strong>Rounding is truncation toward zero.</strong> A search for the {@code ROUNDED} keyword
- * across every program and copybook in the estate returns zero occurrences, so not one arithmetic
- * statement anywhere specifies rounding. A COBOL store without it truncates toward zero, which
- * makes {@link RoundingMode#DOWN} the only faithful mode. The value {@code 1.015} is asserted
- * below precisely because truncation keeps {@code 1.01} while both conventional half-rounding
- * policies - half away from zero and half to even - would carry it to {@code 1.02}, so one case
- * rules out both and a mode swap cannot pass unnoticed. No decimal expectation in this file is
- * built from a binary approximation: every literal is either a decimal string or a
- * {@link BigInteger} paired with an explicit scale.</p>
+ * across every program and copybook in the estate returns zero occurrences, so a COBOL store
+ * truncates and {@link RoundingMode#DOWN} is the only faithful mode (decision D-02). The value
+ * {@code 1.015} is asserted below precisely because truncation keeps {@code 1.01} while both
+ * conventional half-rounding policies - half away from zero and half to even - would carry it to
+ * {@code 1.02}, so one case rules out both and a mode swap cannot pass unnoticed. No decimal
+ * expectation in this file is built from a binary approximation: every literal is either a decimal
+ * string or a {@link BigInteger} paired with an explicit scale.</p>
  *
- * <p><strong>Overpunched signs.</strong> The sign is folded into the final digit byte and there is
- * no separate sign byte, so the twenty characters <code>&#123;</code> and {@code A} through
- * {@code I} carry a positive digit 0 through 9 and <code>&#125;</code> and {@code J} through
- * {@code R} carry a negative digit 0 through 9. A plain trailing {@code '0'} through {@code '9'}
- * denotes an unsigned, positive field. All twenty overpunch characters occur in the shipped daily
- * transaction fixture: a census of the final byte of the amount field, at zero-based offset 142 of
- * the 350-byte record, across all 300 records yields <code>&#123;</code>&nbsp;25, {@code A} 28,
- * {@code B} 29, {@code C} 30, {@code D} 29, {@code E} 23, {@code F} 21, {@code G} 24, {@code H}
- * 17 and {@code I} 24 for 250 positive amounts, and <code>&#125;</code>&nbsp;6, {@code J} 3,
- * {@code K} 5, {@code L} 5, {@code M} 6, {@code N} 2, {@code O} 4, {@code P} 7, {@code Q} 4 and
- * {@code R} 8 for 50 negative amounts. Every one of the twenty is therefore exercised below by a
- * case rather than left to a synthetic sample. Positive zero and negative zero are both real,
- * observed codes, which is why both are covered.</p>
+ * <p><strong>Overpunched signs.</strong> The sign is folded into the final digit byte and there is no
+ * separate sign byte, so <code>&#123;</code> and {@code A} through {@code I} carry a positive digit 0
+ * through 9 while <code>&#125;</code> and {@code J} through {@code R} carry a negative digit 0
+ * through 9 (decision D-01); a plain trailing digit denotes an unsigned, positive field. All twenty
+ * overpunch characters occur in the shipped daily-transaction sample: a census of the final byte of
+ * the amount field, at zero-based offset 142 of the 350-byte record, across all 300 records finds
+ * every positive form (250 amounts) and every negative form (50 amounts). Each of the twenty is
+ * therefore exercised below by a case rather than left to a synthetic sample, positive and negative
+ * zero included, because both are real observed codes.</p>
  *
- * <p><strong>No packed decimal, and none may be expected.</strong> A search for {@code COMP-3}
- * across the estate finds ten textual sites in five programs - one in the card-list program, four
- * in the account-update program, two in the transaction-report program, two in the statement
- * program and one in the bill-payment program - and none at all in the copybook tree. The codec's
- * own documentation states nine declaration sites; ten is the figure this file measured, and the
- * difference is a counting convention rather than a disagreement about substance. The load-bearing
- * conclusion is identical either way: no {@code COMP-3} field is ever written to a file, so the
- * module carries no binary-coded-decimal decoder and this file asserts none.</p>
+ * <p><strong>No packed decimal, and none may be expected.</strong> A search for {@code COMP-3} across
+ * the estate finds ten textual sites in five programs - one in the card-list program, four in the
+ * account-update program, two in the transaction-report program, two in the statement program and one
+ * in the bill-payment program - and none at all in the copybook tree. The codec documents nine
+ * declaration sites, which is the same evidence counted by declaration rather than by textual
+ * occurrence. Either count carries the same load-bearing conclusion: no {@code COMP-3} field is ever
+ * written to a file, so the module carries no binary-coded-decimal decoder and this file asserts
+ * none (decision D-01).</p>
  *
- * <p><strong>A divergence from this file's written specification, recorded rather than
- * absorbed.</strong> That specification states that a {@code null} argument raises
- * {@link NullPointerException} because the codec guards with {@code Objects.requireNonNull}. The
- * codec as actually implemented does no such thing: it raises {@link IllegalArgumentException} on
- * every {@code null} path, by deliberate design documented in its own class comment, so that a
- * caller has exactly one exception type to handle. The implementation is authoritative on
- * signatures and behaviour, so the assertions below expect {@link IllegalArgumentException}.</p>
+ * <p><strong>One exception type on every rejection path.</strong> The codec raises
+ * {@link IllegalArgumentException} for a malformed image, a wrong width, a bad byte, a wrong scale
+ * and a {@code null} argument alike, so a caller has exactly one type to handle; decision D-11
+ * records why a module exception type is not used, and decision D-16 records why no message echoes
+ * the rejected value. The assertions below therefore expect {@link IllegalArgumentException} on the
+ * {@code null} paths as well.</p>
  *
- * <p><strong>Zero always renders its decimals.</strong> A search for {@code BLANK WHEN ZERO}
- * across the estate returns zero occurrences, so a zero amount is never blanked. That is why a
- * zero decodes to {@code 0.00} at the monetary scale and re-encodes to an all-zero image rather
- * than to spaces.</p>
+ * <p><strong>Zero always renders its decimals.</strong> A search for {@code BLANK WHEN ZERO} across
+ * the estate returns zero occurrences, so a zero amount is never blanked. That is why a zero decodes
+ * to {@code 0.00} at the monetary scale and re-encodes to an all-zero image rather than to spaces.</p>
  *
  * <p><strong>Scope.</strong> This is a pure unit test. It starts no application context, opens no
- * database, touches no filesystem, reaches no network, spawns no container and uses no reflection,
- * so it cannot erode the module's zero-reflection budget. It makes no assertion about elapsed
- * time, throughput or memory, because no such figure exists anywhere in the estate to assert
- * against.</p>
+ * database, touches no filesystem, reaches no network, spawns no container and uses no reflection, so
+ * it cannot erode the module's zero-reflection budget. It makes no assertion about elapsed time,
+ * throughput or memory, because no such figure exists anywhere in the estate to assert against.</p>
  *
  * <p><strong>Where faithful translation beats idiomatic Java, and where that is recorded.</strong>
  * Five decisions in this area resolve in favour of the legacy behaviour rather than the
@@ -102,10 +94,11 @@ import org.junit.jupiter.params.provider.CsvSource;
  * decoder, because no packed field is ever written to a file. Third, a malformed image raises
  * {@link IllegalArgumentException} rather than a {@code com.carddemo.exception} type, because a
  * keyed or sequential record is fixed length by construction and a short record therefore has no
- * legacy antecedent to model. Fourth, a negative zero decodes but is never emitted, so decoding
- * and encoding are deliberately asymmetric at that one value. Fifth, scaling is centralised in the
- * codec so that no other class can introduce a second rounding policy. This file proves all five;
- * it does not edit the decision log.</p>
+ * legacy antecedent to model. Fourth, the negative-zero sign is carried beside the amount in the
+ * codec's decoded-value carrier rather than discarded, because {@code BigDecimal} has one zero
+ * while the legacy image has two and byte parity is owed to both. Fifth, scaling is centralised in
+ * the codec so that no other class can introduce a second rounding policy. This file proves all
+ * five; it does not edit the decision log.</p>
  *
  * <p>Provenance: the legacy estate at commit
  * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
@@ -293,7 +286,10 @@ class ZonedDecimalCodecTest {
         @DisplayName("a magnitude below one cent collapses onto zero, which has no negative form")
         void aNegativeMagnitudeBelowOneCentCollapsesOntoPlainZero() {
             // -0.009 truncated toward zero has no hundredths left, and BigDecimal has no negative
-            // zero, so the result is plain 0.00 with a zero signum rather than a signed zero.
+            // zero, so the result is plain 0.00 with a zero signum rather than a signed zero. This
+            // is the computed path: there is no field image here, so there is no negative-zero byte
+            // to preserve. Preserving that byte is the decoded-value carrier's job, and it is
+            // proved separately against a real image.
             BigDecimal actual = ZonedDecimalCodec.toMonetaryScale(new BigDecimal("-0.009"));
             assertThat(actual).isEqualTo(new BigDecimal("0.00"));
             assertThat(actual.scale()).isEqualTo(2);
@@ -464,21 +460,142 @@ class ZonedDecimalCodecTest {
         }
 
         @Test
-        @DisplayName("an all-zero image ending in the negative-zero character also decodes to 0.00")
-        void decodesNegativeZeroToPlainZero() {
-            BigDecimal actual = ZonedDecimalCodec.decode("0000000000}", 11, 2, DALYTRAN_AMT);
-            assertThat(actual).isEqualByComparingTo(BigDecimal.ZERO);
-            assertThat(actual).isEqualTo(new BigDecimal("0.00"));
-            assertThat(actual.scale()).isEqualTo(2);
-            assertThat(actual.signum()).isZero();
+        @DisplayName("the positive-zero image round-trips byte for byte through the signed path")
+        void positiveZeroRoundTripsByteForByte() {
+            ZonedDecimalCodec.ZonedValue decoded =
+                    ZonedDecimalCodec.decodeSigned("0000000000{", 11, 2, DALYTRAN_AMT);
+            assertThat(decoded.value()).isEqualTo(new BigDecimal("0.00"));
+            assertThat(decoded.value().scale()).isEqualTo(2);
+            assertThat(decoded.negativeZero()).isFalse();
+            assertThat(ZonedDecimalCodec.encodeSigned(decoded, 11, 2, DALYTRAN_AMT))
+                    .isEqualTo("0000000000{");
+        }
 
-            // The one deliberate, documented asymmetry in the codec: the negative-zero image is
-            // decodable but is never emitted, because BigDecimal has no negative zero and encoding
-            // a zero therefore always writes the positive-zero character. The arithmetic value is
-            // identical either way, so the asymmetry is observable only on an all-zero field.
-            assertThat(ZonedDecimalCodec.encode(actual, 11, 2, DALYTRAN_AMT))
-                    .isEqualTo("0000000000{")
-                    .isNotEqualTo("0000000000}");
+        @Test
+        @DisplayName("the negative-zero image round-trips byte for byte and is never re-emitted as"
+                + " positive zero")
+        void negativeZeroRoundTripsByteForByte() {
+            // Byte parity is the contract, and it holds for an all-zero field too. The legacy image
+            // distinguishes the negative-zero character from the positive-zero character, so an
+            // image read from a record must be re-emitted with the character it arrived with.
+            // BigDecimal has one zero, so the sign travels beside the amount rather than inside it.
+            ZonedDecimalCodec.ZonedValue decoded =
+                    ZonedDecimalCodec.decodeSigned("0000000000}", 11, 2, DALYTRAN_AMT);
+            assertThat(decoded.value()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(decoded.value()).isEqualTo(new BigDecimal("0.00"));
+            assertThat(decoded.value().scale()).isEqualTo(2);
+            assertThat(decoded.value().signum()).isZero();
+            assertThat(decoded.negativeZero()).isTrue();
+
+            assertThat(ZonedDecimalCodec.encodeSigned(decoded, 11, 2, DALYTRAN_AMT))
+                    .isEqualTo("0000000000}")
+                    .isNotEqualTo("0000000000{");
+            assertThat(ZonedDecimalCodec.encodeSignedToBytes(decoded, 11, 2, DALYTRAN_AMT))
+                    .isEqualTo("0000000000}".getBytes(StandardCharsets.US_ASCII));
+        }
+
+        @Test
+        @DisplayName("the two zero images are distinguished by the signed path and only by it")
+        void theTwoZeroImagesAreDistinguishedOnlyByTheSignedPath() {
+            ZonedDecimalCodec.ZonedValue positive =
+                    ZonedDecimalCodec.decodeSigned("0000000000{", 11, 2, DALYTRAN_AMT);
+            ZonedDecimalCodec.ZonedValue negative =
+                    ZonedDecimalCodec.decodeSigned("0000000000}", 11, 2, DALYTRAN_AMT);
+            assertThat(positive.value()).isEqualTo(negative.value());
+            assertThat(positive).isNotEqualTo(negative);
+
+            // The value-only path returns the amount alone, so the two images become
+            // indistinguishable after decoding and a zero encodes as the positive-zero character.
+            // That is why a caller that may write the field back must use the signed path.
+            BigDecimal fromPositive = ZonedDecimalCodec.decode("0000000000{", 11, 2, DALYTRAN_AMT);
+            BigDecimal fromNegative = ZonedDecimalCodec.decode("0000000000}", 11, 2, DALYTRAN_AMT);
+            assertThat(fromPositive).isEqualTo(fromNegative);
+            assertThat(ZonedDecimalCodec.encode(fromNegative, 11, 2, DALYTRAN_AMT))
+                    .isEqualTo("0000000000{");
+        }
+
+        @Test
+        @DisplayName("the byte-array signed path agrees with the string signed path")
+        void theByteArraySignedPathAgreesWithTheStringSignedPath() {
+            byte[] record = "XX0000000000}YY".getBytes(StandardCharsets.US_ASCII);
+            ZonedDecimalCodec.ZonedValue fromRecord =
+                    ZonedDecimalCodec.decodeSigned(record, 2, 11, 2, DALYTRAN_AMT);
+            assertThat(fromRecord.value()).isEqualTo(new BigDecimal("0.00"));
+            assertThat(fromRecord.negativeZero()).isTrue();
+            assertThat(fromRecord)
+                    .isEqualTo(ZonedDecimalCodec.decodeSigned("0000000000}", 11, 2, DALYTRAN_AMT));
+            assertThat(ZonedDecimalCodec.encodeSigned(fromRecord, 11, 2, DALYTRAN_AMT))
+                    .isEqualTo("0000000000}");
+        }
+
+        @Test
+        @DisplayName("a non-zero amount carries its own sign, so the negative-zero marker is refused")
+        void aNonZeroAmountRefusesTheNegativeZeroMarker() {
+            // The marker describes the one case the amount cannot express. Pairing it with a
+            // non-zero amount would state two signs at once, so it is rejected rather than ignored.
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> new ZonedDecimalCodec.ZonedValue(
+                            new BigDecimal("-919.00"), true))
+                    .withMessageContaining("negative-zero marker")
+                    .withMessageNotContaining("919");
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> new ZonedDecimalCodec.ZonedValue(new BigDecimal("0.01"), true))
+                    .withMessageContaining("only to an amount of zero");
+        }
+
+        @Test
+        @DisplayName("a decoded value with no amount is rejected rather than carried as null")
+        void aDecodedValueWithNoAmountIsRejected() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> new ZonedDecimalCodec.ZonedValue(null, false))
+                    .withMessageContaining("must not be null");
+        }
+
+        @Test
+        @DisplayName("a zero amount accepts either marker, and each selects its own final byte")
+        void aZeroAmountAcceptsEitherMarker() {
+            ZonedDecimalCodec.ZonedValue positive =
+                    new ZonedDecimalCodec.ZonedValue(new BigDecimal("0.00"), false);
+            ZonedDecimalCodec.ZonedValue negative =
+                    new ZonedDecimalCodec.ZonedValue(new BigDecimal("0.00"), true);
+            assertThat(ZonedDecimalCodec.encodeSigned(positive, 11, 2, DALYTRAN_AMT))
+                    .isEqualTo("0000000000{");
+            assertThat(ZonedDecimalCodec.encodeSigned(negative, 11, 2, DALYTRAN_AMT))
+                    .isEqualTo("0000000000}");
+            assertThat(ZonedDecimalCodec.encodeSigned(negative, 12, 2, "ACCT-CURR-BAL"))
+                    .isEqualTo("00000000000}");
+            assertThat(ZonedDecimalCodec.encodeSigned(negative, 6, 2, "DIS-INT-RATE"))
+                    .isEqualTo("00000}");
+        }
+
+        @Test
+        @DisplayName("the marker changes nothing for an amount that already carries a sign")
+        void theMarkerChangesNothingForASignedAmount() {
+            ZonedDecimalCodec.ZonedValue negative =
+                    ZonedDecimalCodec.decodeSigned("0000009190}", 11, 2, DALYTRAN_AMT);
+            assertThat(negative.value()).isEqualTo(new BigDecimal("-919.00"));
+            assertThat(negative.negativeZero()).isFalse();
+            assertThat(ZonedDecimalCodec.encodeSigned(negative, 11, 2, DALYTRAN_AMT))
+                    .isEqualTo("0000009190}");
+
+            ZonedDecimalCodec.ZonedValue positive =
+                    ZonedDecimalCodec.decodeSigned("0000005047G", 11, 2, DALYTRAN_AMT);
+            assertThat(positive.value()).isEqualTo(new BigDecimal("504.77"));
+            assertThat(positive.negativeZero()).isFalse();
+            assertThat(ZonedDecimalCodec.encodeSigned(positive, 11, 2, DALYTRAN_AMT))
+                    .isEqualTo("0000005047G");
+        }
+
+        @Test
+        @DisplayName("the signed encode entry points reject a missing value like the plain ones do")
+        void theSignedEncodeEntryPointsRejectAMissingValue() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> ZonedDecimalCodec.encodeSigned(null, 11, 2, DALYTRAN_AMT))
+                    .withMessageContaining("must not be null");
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() ->
+                            ZonedDecimalCodec.encodeSignedToBytes(null, 11, 2, DALYTRAN_AMT))
+                    .withMessageContaining("must not be null");
         }
 
         @Test
@@ -504,8 +621,8 @@ class ZonedDecimalCodecTest {
         @Test
         @DisplayName("the first daily-transaction amount decodes to 504.77, not to 500.47")
         void decodesTheFirstDailyTransactionAmount() {
-            // Derivation, worked by hand rather than copied, because the figure matters and the
-            // migration plan's own table gets it wrong.
+            // Derivation, worked by hand from the overpunch convention (decision D-01) rather than
+            // copied, because the arithmetic is easy to invert:
             //
             //   image            0000005047G      eleven bytes
             //   leading ten      0000005047       plain digits, taken verbatim
@@ -514,9 +631,9 @@ class ZonedDecimalCodecTest {
             //   at scale 2       50477 hundredths
             //   value            504.77
             //
-            // The wrong answer, 500.47, comes from keeping the four visible digits 5047 and then
-            // inserting a decimal point, which drops the overpunched digit entirely. The unsigned
-            // digit string is the authority, and arithmetic on it gives 504.77.
+            // The inverted answer, 500.47, comes from keeping the four visible digits 5047 and then
+            // inserting a decimal point, which drops the overpunched digit entirely. Both are
+            // asserted below so the distinction cannot quietly regress.
             BigDecimal expected = new BigDecimal(new BigInteger("50477"), 2);
             assertThat(expected).isEqualTo(new BigDecimal("504.77"));
             assertThat(expected).isNotEqualByComparingTo(new BigDecimal("500.47"));
@@ -972,10 +1089,9 @@ class ZonedDecimalCodecTest {
         @Test
         @DisplayName("a null image is refused on the same code path as malformed data")
         void refusesANullImage() {
-            // Divergence from this file's written specification, recorded rather than absorbed: the
-            // specification expected a null-pointer failure from a requireNonNull guard, but the
-            // codec deliberately raises an argument rejection on every null path so that a caller
-            // has exactly one exception type to handle. The implementation is authoritative.
+            // Every rejection path, null included, raises the same argument rejection so that a
+            // caller has exactly one exception type to handle (decision D-11), and the message names
+            // the field without echoing the image (decision D-16).
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> ZonedDecimalCodec.decode(null, 11, 2, DALYTRAN_AMT))
                     .withMessage("zoned decimal field 'DALYTRAN-AMT': the field image must not be"

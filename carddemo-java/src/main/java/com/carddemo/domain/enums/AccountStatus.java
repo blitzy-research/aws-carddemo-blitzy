@@ -20,107 +20,56 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Account active-status flag, translated from the CardDemo COBOL field
- * {@code ACCT-ACTIVE-STATUS}.
+ * Account active-status flag, translated from the legacy field {@code ACCT-ACTIVE-STATUS}, which is
+ * declared {@code PIC X(01)} and occupies byte offset 12 of the 300-byte account record, immediately
+ * after the eleven-digit key.
  *
- * <h2>Legacy layout</h2>
+ * <p>The single character is carried as a {@code char} rather than a one-character {@link String}:
+ * {@code PIC X(01)} is exactly one byte wide, so a {@code char} makes an over-length code impossible
+ * to construct and removes the null case from the constant definitions entirely. Callers holding the
+ * raw column value or a fixed-width record slice as a {@link String} use {@link #fromCode(String)},
+ * which tolerates a null, empty or over-length value without throwing.
  *
- * <p>{@code ACCT-ACTIVE-STATUS} is declared {@code PIC X(01)} at
- * {@code app/cpy/CVACT01Y.cpy} line 6. It occupies byte offset 12 of the 300-byte
- * {@code ACCOUNT-RECORD}, immediately after {@code ACCT-ID}, an eleven-digit key
- * that occupies bytes 1 through 11.</p>
+ * <p><strong>How the Y/N vocabulary was established.</strong> This is recorded because the vocabulary
+ * was recovered by investigation rather than read off the record layout, and a future reader should
+ * not think the two values were invented. Three negative findings hold across the estate: the record
+ * copybook attaches no level-88 condition name to the field, so it enumerates no values at all; the
+ * field is never compared against a literal anywhere, its only uses being moves to a screen field, to
+ * the communication area and to a before-image field, a field-to-field comparison against that
+ * before-image for the optimistic-lock check, and a diagnostic display; and all 50 seeded account
+ * records carry {@code Y} at byte 12, a single distinct value, so the seed data cannot reveal the
+ * vocabulary either. The vocabulary lives instead in the account-update program, the only program that
+ * validates this field: it declares a shared yes/no work field whose level-88 enumerates exactly
+ * {@code 'Y'} and {@code 'N'}, declares an account-status validation flag with a matching level-88
+ * over the same two values, routes the submitted status through that shared editor, and the editor
+ * paragraph states in its own leading comment that the value must be {@code Y} or {@code N}.
  *
- * <p>The single character is carried here as a {@code char} rather than as a
- * one-character {@link String}. That choice is deliberate and uniform across the
- * type: {@code PIC X(01)} is exactly one byte wide, so a {@code char} makes an
- * over-length code impossible to construct and removes the null case from the
- * constant definitions entirely. Callers that hold the raw column value or a
- * fixed-width record slice as a {@link String} use {@link #fromCode(String)},
- * which tolerates a null, empty or over-length value without throwing.</p>
+ * <p><strong>Why {@code '0'} and {@code 'B'} are not constants here.</strong> The same level-88 group
+ * also carries {@code '0'} for not-OK and {@code 'B'} for blank, but those are states of the
+ * <em>validation flag</em> rather than values of the account status: {@code '0'} records that a
+ * submitted value failed validation and {@code 'B'} that the field was left blank. Neither is ever
+ * stored in the field or written to the 300-byte record, so admitting either as a status would invent
+ * an account state the estate does not have. Both belong to the field-error surface, which exposes
+ * them per field as MISSING and INVALID.
  *
- * <h2>How the Y / N vocabulary was established</h2>
+ * <p><strong>Why an unmapped code is tolerated rather than rejected.</strong> Both lookups return an
+ * empty {@link Optional} for any code outside the vocabulary and never throw, and no synthetic
+ * fallback constant exists. The reason is verified rather than defensive: only the online update
+ * program validates this field, the batch programs that read account records take the status straight
+ * from the file without validating it, and the relational column is a plain one-character string with
+ * no check constraint. A file-sourced value outside the vocabulary therefore flows through the legacy
+ * system untouched and must flow through this lookup the same way.
  *
- * <p>The vocabulary is recorded here because it was recovered by investigation
- * rather than read off the record layout, and a future reader should not think
- * the two values were invented. Three negative findings hold across the whole
- * legacy estate:</p>
+ * <p>Lookup applies no case folding and no trimming, because the legacy editor tests the raw
+ * character, so a lowercase {@code y} is not an active status. {@link #fromCode(String)} tests absence
+ * before it tests the vocabulary, mirroring the editor's evaluation order; both of the editor's
+ * failure outcomes converge on an empty {@link Optional} here, because both of the flag states they
+ * set are validation states rather than storable statuses.
  *
- * <ul>
- *   <li>{@code app/cpy/CVACT01Y.cpy} attaches no level-88 condition name to
- *       {@code ACCT-ACTIVE-STATUS}, so the copybook enumerates no values at
- *       all.</li>
- *   <li>The field is never compared against a literal anywhere. Its only uses
- *       are a move to a screen output field ({@code app/cbl/COACTVWC.cbl}
- *       line 473), a move to the communication area and to a before-image field
- *       ({@code app/cbl/COACTUPC.cbl} lines 3810 and 3819), a field-to-field
- *       comparison against that before-image for the optimistic-lock check
- *       ({@code app/cbl/COACTUPC.cbl} line 4115), and a diagnostic display
- *       ({@code app/cbl/CBACT01C.cbl} line 120).</li>
- *   <li>All 50 seeded account records in {@code app/data/ASCII/acctdata.txt}
- *       carry {@code Y} at byte 12, a single distinct value, so the seed data
- *       alone cannot reveal the vocabulary either.</li>
- * </ul>
- *
- * <p>The vocabulary lives instead in the account-update program, which is the
- * only program in the estate that validates this field.
- * {@code app/cbl/COACTUPC.cbl} lines 76 through 80 declare the shared yes/no
- * work field {@code WS-EDIT-YES-NO}, {@code PIC X(1)}, whose level-88
- * {@code FLG-YES-NO-ISVALID} enumerates exactly {@code 'Y'} and {@code 'N'}.
- * Lines 192 through 195 declare the account-status validation flag
- * {@code WS-EDIT-ACCT-STATUS} with the matching level-88
- * {@code FLG-ACCT-STATUS-ISVALID} over the same two values. Lines 1472 through
- * 1476 route the submitted active status through that shared editor, and the
- * editor paragraph {@code 1220-EDIT-YESNO} at lines 1856 through 1897 states in
- * its own leading comment that the value must be {@code Y} or {@code N}.</p>
- *
- * <h2>Why '0' and 'B' are not constants here</h2>
- *
- * <p>{@code FLG-ACCT-STATUS-NOT-OK} takes the value {@code '0'} and
- * {@code FLG-ACCT-STATUS-BLANK} takes the value {@code 'B'}, and both sit in the
- * same level-88 group as the two real codes. They are states of the
- * <em>validation flag</em>, not values of the account status: {@code '0'} records
- * that a submitted value failed validation and {@code 'B'} records that the field
- * was left blank. Neither is ever stored in {@code ACCT-ACTIVE-STATUS} and
- * neither is ever written to the 300-byte record, so admitting either one as a
- * status would invent an account state that the estate does not have. Those two
- * states belong to the field-error surface, which exposes them per field as
- * MISSING and INVALID.</p>
- *
- * <h2>Why an unmapped code is tolerated rather than rejected</h2>
- *
- * <p>{@link #fromCode(char)} and {@link #fromCode(String)} return an empty
- * {@link Optional} for any code outside the vocabulary and never throw, and no
- * synthetic fallback constant exists. The reason is specific and verified rather
- * than defensive: only the online update program validates this field. The batch
- * programs that read account records, namely {@code app/cbl/CBACT01C.cbl},
- * {@code app/cbl/CBTRN02C.cbl} and {@code app/cbl/CBACT04C.cbl}, take the status
- * straight from the file without validating it, and the relational column is a
- * plain one-character string with no check constraint. A file-sourced value
- * outside the vocabulary therefore flows through the legacy system untouched, and
- * it must flow through this lookup the same way.</p>
- *
- * <p>Lookup applies no case folding and no trimming. The legacy editor tests the
- * raw character, so a lowercase {@code y} is not an active status.</p>
- *
- * <p>{@link #fromCode(String)} tests absence before it tests the vocabulary,
- * mirroring the evaluation order of {@code 1220-EDIT-YESNO}, which tests for a
- * missing value first and only then tests validity. Both of the editor's failure
- * outcomes converge on an empty {@link Optional} here, because both of the flag
- * states they set are validation states rather than storable statuses.</p>
- *
- * <h2>Not a persistence mapping</h2>
- *
- * <p>This type is a pure value type. It carries no persistence annotation and no
- * attribute converter, and the account entity deliberately keeps
- * {@code acct_active_status} as a raw one-character string column. Translation
- * from raw code to constant happens in the service layer, so nothing in the
- * domain layer depends on this type being persistable.</p>
- *
- * <p>Provenance of the translated source: legacy checkout commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL source text is
- * reproduced here; only member names, field names, paragraph names, widths, byte
- * offsets, line numbers and codes are cited.</p>
+ * <p>This is a pure value type carrying no persistence annotation and no attribute converter - the
+ * account entity deliberately keeps the status as a raw one-character column, and translation from
+ * code to constant happens in the service layer, so nothing in the domain layer depends on this type
+ * being persistable.
  */
 public enum AccountStatus {
 

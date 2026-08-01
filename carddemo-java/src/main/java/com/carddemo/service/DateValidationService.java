@@ -16,6 +16,7 @@
  */
 package com.carddemo.service;
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
@@ -33,43 +34,30 @@ import com.carddemo.util.CobolStringUtils;
 
 /**
  * Shared date validation, translated from the two legacy date authorities of the CardDemo estate and
- * exposed through <strong>two deliberately separate entry points</strong>.
+ * exposed through <strong>two deliberately separate entry points</strong> that are never conflated:
+ * they take different input, produce different output and serve different callers.
  *
- * <h2>Provenance</h2>
- * Translated from the AWS CardDemo z/OS mainframe application at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy authorities are:
- * <ul>
- *   <li>{@code app/cbl/CSUTLDTC.cbl} &mdash; 157 lines, CICS transaction {@code CDV1}, exactly two
- *       paragraphs ({@code A000-MAIN} at {@code [app/cbl/CSUTLDTC.cbl:L103]} and
- *       {@code A000-MAIN-EXIT} at {@code [app/cbl/CSUTLDTC.cbl:L152]}). This is the callable
- *       subprogram: three linkage parameters at {@code [app/cbl/CSUTLDTC.cbl:L83]} through
- *       {@code [app/cbl/CSUTLDTC.cbl:L86]}, a ten-clause outcome selection at
- *       {@code [app/cbl/CSUTLDTC.cbl:L128]} through {@code [app/cbl/CSUTLDTC.cbl:L149]}, and an
- *       80-character result block at {@code [app/cbl/CSUTLDTC.cbl:L42]} through
- *       {@code [app/cbl/CSUTLDTC.cbl:L57]}.</li>
- *   <li>{@code app/cpy/CSUTLDPY.cpy} &mdash; 375 lines, fourteen procedure-division paragraphs. This is
- *       the field-level cascade, included by {@code app/cbl/COACTUPC.cbl} alone.</li>
- *   <li>{@code app/cpy/CSUTLDWY.cpy} &mdash; the companion working-storage copybook that declares the
- *       cascade's input field, its three-byte flag group and its result block. Also included by
- *       {@code app/cbl/COACTUPC.cbl} alone.</li>
- * </ul>
- * No COBOL source is read at runtime and no COBOL statement is transcribed here. Only member names,
- * paragraph names, line numbers, field names, field widths and the external-contract literals
- * themselves are carried across.
+ * <p><strong>The copybook cascade.</strong> {@code validateCcyymmddDate} reproduces
+ * {@code PERFORM EDIT-DATE-CCYYMMDD THRU EDIT-DATE-CCYYMMDD-EXIT}, the field-level,
+ * message-accumulating validator that the account-update program performs four times - open date at
+ * {@code [app/cbl/COACTUPC.cbl:L1480]}, expiry date at {@code [app/cbl/COACTUPC.cbl:L1492]}, reissue
+ * date at {@code [app/cbl/COACTUPC.cbl:L1505]} and date of birth at
+ * {@code [app/cbl/COACTUPC.cbl:L1536]}. Its companion {@code validateDateOfBirth} reproduces the
+ * separate range performed at {@code [app/cbl/COACTUPC.cbl:L1540]}.
  *
  * <h2>Two entry points, two different callers</h2>
  * <ol>
- *   <li><strong>The copybook cascade.</strong> {@code validateCcyymmddDate} reproduces
- *       {@code PERFORM EDIT-DATE-CCYYMMDD THRU EDIT-DATE-CCYYMMDD-EXIT}, the field-level,
+ *   <li><strong>The copybook cascade.</strong> {@code validateCcyymmddDate} reproduces the paragraph
+ *       range from {@code EDIT-DATE-CCYYMMDD} through to its own exit paragraph: the field-level,
  *       message-accumulating validator that the account-update program performs four times &mdash; open
  *       date at {@code [app/cbl/COACTUPC.cbl:L1480]}, expiry date at
  *       {@code [app/cbl/COACTUPC.cbl:L1492]}, reissue date at {@code [app/cbl/COACTUPC.cbl:L1505]} and
  *       date of birth at {@code [app/cbl/COACTUPC.cbl:L1536]}. Its companion
  *       {@code validateDateOfBirth} reproduces the separate range performed at
  *       {@code [app/cbl/COACTUPC.cbl:L1540]}.</li>
- *   <li><strong>The subprogram contract.</strong> {@code validateDate} reproduces
- *       {@code CALL 'CSUTLDTC'} and returns the 80-character result block. The four genuine call sites
+ *   <li><strong>The subprogram contract.</strong> {@code validateDate} reproduces a static invocation
+ *       of the date-validation subprogram {@code CSUTLDTC} and returns the 80-character result block.
+ *       The four genuine call sites
  *       are {@code [app/cbl/COTRN02C.cbl:L393]}, {@code [app/cbl/COTRN02C.cbl:L413]},
  *       {@code [app/cbl/CORPT00C.cbl:L392]} and {@code [app/cbl/CORPT00C.cbl:L412]}, which become the
  *       transaction-add and report-request services.</li>
@@ -77,15 +65,15 @@ import com.carddemo.util.CobolStringUtils;
  * The two are never conflated: they take different input, they produce different output and they serve
  * different callers.
  *
- * <h2>Why the cascade is the most dangerous translation in the online tier</h2>
- * The head paragraph {@code EDIT-DATE-CCYYMMDD} at {@code [app/cpy/CSUTLDPY.cpy:L18]} has a body of
- * exactly one statement, at {@code [app/cpy/CSUTLDPY.cpy:L19]}: it sets the three-byte flag group to
- * the all-invalid value. It performs no validation of any kind. Every check the cascade actually
- * applies lives in the eleven paragraphs the {@code THRU} range falls through, so a translation that
- * mapped only the head paragraph would compile, would look correct, and would validate nothing. The
- * cascade below therefore invokes the five real stages in source order &mdash; year, month, day,
- * combined day/month/year, then the Language-Environment stage &mdash; each retaining its own early
- * exit, so a failing stage short-circuits exactly where the legacy short-circuits.
+ * <p><strong>The cascade is the most dangerous translation in the online tier.</strong> The head
+ * paragraph {@code EDIT-DATE-CCYYMMDD} at {@code [app/cpy/CSUTLDPY.cpy:L18]} has a body of exactly one
+ * statement, at {@code [app/cpy/CSUTLDPY.cpy:L19]}: it sets the three-byte flag group to the
+ * all-invalid value and performs no validation of any kind. Every check the cascade actually applies
+ * lives in the eleven paragraphs the {@code THRU} range falls through, so a translation that mapped
+ * only the head paragraph would compile, would look correct, and would validate nothing. The cascade
+ * below therefore invokes the five real stages in source order - year, month, day, combined
+ * day/month/year, then the Language-Environment stage - each retaining its own early exit, so a
+ * failing stage short-circuits exactly where the legacy short-circuits.
  *
  * <h2>Why no overall "is valid" verdict is returned</h2>
  * The only statement in the whole range that declares a date good sits at
@@ -94,17 +82,16 @@ import com.carddemo.util.CobolStringUtils;
  * the stage only while the whole three-byte flag group still reads as valid and the jump at
  * {@code [app/cpy/CSUTLDPY.cpy:L277]} leaves the range otherwise, and the migration analysis records the
  * guard as never satisfied in the shipped estate &mdash; which on that reading makes the embedded
- * {@code CALL 'CSUTLDTC'} at {@code [app/cpy/CSUTLDPY.cpy:L293]} dead code and the valid-marking
+ * invocation of {@code CSUTLDTC} at {@code [app/cpy/CSUTLDPY.cpy:L293]} dead code and the valid-marking
  * statement unreachable with it. The guard is reproduced exactly as written rather than resolved either
  * way here, so this translation neither asserts nor contradicts that finding; see {@code editDateLe}.
  *
- * <p>{@code DateEditResult} therefore exposes the input-error indicator, the three per-stage flags and
- * the accumulated return message, and nothing else. A synthesised boolean would have to invent a rule
- * for combining them that the source never states, it would report a verdict on a path the analysis says
- * cannot be taken, and it would hide from the caller which of the three fields actually failed &mdash;
- * which is precisely what the account-update screen needs in order to decorate the right field. A caller
- * that wants the legacy group test performs it on the flags, exactly as
- * {@code [app/cbl/COACTUPC.cbl:L1539]} performs it on the copied group.
+ * <p><strong>What this service deliberately does not do.</strong> It does not prefix the field label and
+ * does not compose the final operator message; every message below is the bare suffix the copybook
+ * declares, because the legacy prefix is {@code FUNCTION TRIM(WS-EDIT-VARIABLE-NAME)} - a 25-character
+ * work field at {@code [app/cbl/COACTUPC.cbl:L53]} owned by the account-update program, not by the
+ * copybook. The 75-character message field at {@code [app/cbl/COACTUPC.cbl:L479]} and the input-error
+ * flag at {@code [app/cbl/COACTUPC.cbl:L173]} are likewise the caller's own fields.
  *
  * <h2>What this service deliberately does not do</h2>
  * It does not prefix the field label and it does not compose the final operator message. Every message
@@ -116,6 +103,25 @@ import com.carddemo.util.CobolStringUtils;
  * attribute, positions no cursor, sends no map, touches no repository and performs no monetary
  * arithmetic.
  *
+ * <h2>Every width is a byte width</h2>
+ * The eight-character cascade input field, the two ten-character linkage parameters and the
+ * eighty-character result area are all {@code PIC X(n)} declarations, and a {@code PIC X(n)} field
+ * reserves <em>n bytes</em>. So every width check and every truncation in this class is performed on the
+ * value's {@code StandardCharsets.US_ASCII} encoded image, never on a {@code String} character count. A
+ * value carrying a character that the single-byte character set cannot represent is <strong>rejected
+ * before it is encoded</strong> with an {@code IllegalArgumentException}, because such a character
+ * encodes to more than one byte: a ten-character value would then be eleven bytes wide and would overrun
+ * the eighty-byte area that both callers overlay as four plus eleven plus four plus sixty-one, silently
+ * shifting the severity code and the message number that the two-level acceptance test reads. Rejecting
+ * before the encode is what makes the refusal exact, since {@code String.getBytes} would otherwise
+ * substitute a question mark and leave a field of the right width holding the wrong content.
+ *
+ * <p>Only representability is gated. Control bytes are deliberately not rejected, because the cascade
+ * tests its input field against {@code LOW-VALUES} at {@code [app/cpy/CSUTLDPY.cpy:L30]}, so a
+ * null-filled field is a legitimate legacy state the cascade must still be able to observe. Once a value
+ * has passed the gate it carries exactly one byte per character, which is what makes the character-index
+ * slicing of the year, month and day positions further down byte-faithful rather than merely plausible.
+ *
  * <h2>Thread safety</h2>
  * Stateless singleton. Every flag, every parsed field and every accumulated message lives in a
  * per-invocation state object, so concurrent requests cannot observe each other's validation state.
@@ -126,12 +132,10 @@ public final class DateValidationService {
     /** Logger for this service; the legacy diagnostic channel was {@code DISPLAY}. */
     private static final Logger LOG = LoggerFactory.getLogger(DateValidationService.class);
 
-    // =================================================================================================
     // The two-level acceptance test. Both comparisons are against four-character literals.
     // [app/cbl/CORPT00C.cbl:L396] to [app/cbl/CORPT00C.cbl:L406] and [app/cbl/CORPT00C.cbl:L416] to
     // [app/cbl/CORPT00C.cbl:L426]; mirrored at [app/cbl/COTRN02C.cbl:L397] and
     // [app/cbl/COTRN02C.cbl:L417].
-    // =================================================================================================
 
     /**
      * Severity code that the callers accept outright: the four characters {@code 0000}.
@@ -147,23 +151,27 @@ public final class DateValidationService {
      * Message number that the callers accept even when the severity is non-zero: the four characters
      * {@code 2513}.
      *
-     * <p>This exemption is not arbitrary. The feedback token for
-     * {@code 88 FC-UNSUPP-RANGE} at {@code [app/cbl/CSUTLDTC.cbl:L66]} carries {@code 0x09D1} in its
+     * <p>This exemption is not arbitrary. The feedback token bound to the condition name
+     * {@code FC-UNSUPP-RANGE} at {@code [app/cbl/CSUTLDTC.cbl:L66]} carries {@code 0x09D1} in its
      * message-number halfword, and {@code 0x09D1} is decimal 2513. The exempted condition is therefore
      * exactly "the date lies outside the range the Language Environment date services support", which
      * both callers chose to tolerate. Dropping the exemption would reject dates the legacy accepts.
      */
     private static final String TOLERATED_MESSAGE_NUMBER = "2513";
 
-    // =================================================================================================
     // Field widths, all read from the record layouts rather than assumed.
-    // =================================================================================================
 
     /** Width of the cascade input field {@code WS-EDIT-DATE-CCYYMMDD}, {@code [app/cpy/CSUTLDWY.cpy:L4]}. */
     private static final int CCYYMMDD_WIDTH = 8;
 
     /** Width of {@code LS-DATE} and {@code LS-DATE-FORMAT}, {@code [app/cbl/CSUTLDTC.cbl:L84]}. */
     private static final int LINKAGE_TEXT_WIDTH = 10;
+
+    /** Name of the first linkage parameter {@code LS-DATE}, {@code [app/cbl/CSUTLDTC.cbl:L84]}. */
+    private static final String LS_DATE_FIELD = "LS-DATE";
+
+    /** Name of the second linkage parameter {@code LS-DATE-FORMAT}, {@code [app/cbl/CSUTLDTC.cbl:L85]}. */
+    private static final String LS_DATE_FORMAT_FIELD = "LS-DATE-FORMAT";
 
     /** Width of {@code WS-SEVERITY} and of {@code WS-MSG-NO}, {@code [app/cbl/CSUTLDTC.cbl:L43]}. */
     private static final int CODE_WIDTH = 4;
@@ -187,18 +195,53 @@ public final class DateValidationService {
     /** Width of the two-character month and day slices, {@code [app/cpy/CSUTLDWY.cpy:L16]}. */
     private static final int MONTH_DAY_WIDTH = 2;
 
+    /**
+     * Highest code unit the single-byte character set of the legacy fields can represent.
+     *
+     * <p>Every width above is a {@code PIC X(n)} <em>byte</em> reservation, not a character count, so
+     * every width check and every truncation in this class is performed on the
+     * {@code StandardCharsets.US_ASCII} encoded image. A value carrying a code unit above this bound
+     * cannot occupy the byte count its field reserves &mdash; a single such character encodes to more
+     * than one byte, so a ten-character value can be eleven bytes wide and would overrun the
+     * eighty-byte result area that both callers overlay.
+     *
+     * <p>Such a value is therefore rejected <em>before</em> it is encoded, and that ordering is the
+     * point: {@code String.getBytes} substitutes a question mark for anything the charset cannot
+     * represent, so encoding first and measuring afterwards would silently produce a field of the
+     * right width holding the wrong content, and the substituted byte would be indistinguishable from
+     * a question mark that was genuinely present.
+     *
+     * <p>Only representability is gated here. Control bytes are <strong>not</strong> rejected, because
+     * the cascade tests its input field against {@code LOW-VALUES} at
+     * {@code [app/cpy/CSUTLDPY.cpy:L30]}, so a null-filled field is a legitimate legacy state that the
+     * cascade must still be able to observe.
+     */
+    private static final char MAX_SINGLE_BYTE_CHARACTER = 0x7F;
+
     // =================================================================================================
-    // Literal fillers of the 80-character result block. Each carries the padding its PIC declares,
-    // because the padding occupies result-block positions.
+    // Literal fillers of the 80-character result block. Each carries the padding its declared width
+    // implies, because that padding occupies result-block positions.
     // =================================================================================================
 
-    /** {@code FILLER PIC X(11) VALUE 'Mesg Code:'} at {@code [app/cbl/CSUTLDTC.cbl:L45]}: ten characters in eleven. */
+    /**
+     * The message-code label of the result block, an unnamed filler eleven bytes wide carrying a
+     * ten-character literal, at {@code [app/cbl/CSUTLDTC.cbl:L45]}: ten characters in eleven, so one
+     * trailing space belongs to the field.
+     */
     private static final String MESSAGE_CODE_LABEL = "Mesg Code: ";
 
-    /** {@code FILLER PIC X(09) VALUE 'TstDate:'} at {@code [app/cbl/CSUTLDTC.cbl:L51]}: eight characters in nine. */
+    /**
+     * The tested-date label of the result block, an unnamed filler nine bytes wide carrying an
+     * eight-character literal, at {@code [app/cbl/CSUTLDTC.cbl:L51]}: eight characters in nine, so one
+     * trailing space belongs to the field.
+     */
     private static final String TESTED_DATE_LABEL = "TstDate: ";
 
-    /** {@code FILLER PIC X(10) VALUE 'Mask used:'} at {@code [app/cbl/CSUTLDTC.cbl:L54]}: exactly ten characters. */
+    /**
+     * The mask-used label of the result block, an unnamed filler ten bytes wide carrying a
+     * ten-character literal, at {@code [app/cbl/CSUTLDTC.cbl:L54]}: exactly ten characters, so the
+     * field carries no padding.
+     */
     private static final String MASK_USED_LABEL = "Mask used:";
 
     /** The single-space fillers at {@code [app/cbl/CSUTLDTC.cbl:L48]}, {@code L50}, {@code L53} and {@code L56}. */
@@ -207,12 +250,10 @@ public final class DateValidationService {
     /** The three-space trailing filler at {@code [app/cbl/CSUTLDTC.cbl:L57]}. */
     private static final String TRAILING_FILLER = "   ";
 
-    // =================================================================================================
     // The ten result texts of the outcome selection at [app/cbl/CSUTLDTC.cbl:L128] to [L149].
     // Reproduced character for character, including the internal and trailing padding that the source
     // literals carry: the comment at [app/cbl/CSUTLDTC.cbl:L126] states that the receiving field is
     // fifteen characters, and several literals are written out to that full width.
-    // =================================================================================================
 
     /**
      * Text for the all-zero feedback token, {@code [app/cbl/CSUTLDTC.cbl:L130]}.
@@ -221,7 +262,7 @@ public final class DateValidationService {
      * {@code [app/cbl/CSUTLDTC.cbl:L62]} is {@code FC-INVALID-DATE}, which reads backwards: an all-zero
      * Language-Environment feedback token signals <em>success</em>. The token semantics govern and the
      * text is correct, so this constant and the outcome that selects it are named for success. The
-     * original condition name is recorded here so the traceability row stays findable.
+     * original condition name is recorded here so the mapping stays findable under it.
      */
     private static final String TEXT_DATE_IS_VALID = "Date is valid";
 
@@ -252,7 +293,6 @@ public final class DateValidationService {
     /** Text of the tenth clause, {@code WHEN OTHER}, at {@code [app/cbl/CSUTLDTC.cbl:L148]}. */
     private static final String TEXT_DATE_IS_INVALID = "Date is invalid";
 
-    // =================================================================================================
     // The thirteen cascade message suffixes, reproduced byte for byte.
     //
     // Every one of them is the tail of a STRING statement whose head is the trimmed field label, so the
@@ -260,7 +300,6 @@ public final class DateValidationService {
     // irregular across the set - three suffixes open with " : ", two with ": ", four with ":" alone, one
     // with no colon at all and one closes with a trailing space. That irregularity is the source's, it
     // is externally observable on the account-update screen, and it is reproduced rather than tidied.
-    // =================================================================================================
 
     /** Suffix at {@code [app/cpy/CSUTLDPY.cpy:L37]}, emitted when the year slice is blank. */
     private static final String MESSAGE_YEAR_NOT_SUPPLIED = " : Year must be supplied.";
@@ -333,36 +372,40 @@ public final class DateValidationService {
     /** The empty accumulated message, standing for the all-spaces state of the caller's message field. */
     private static final String NO_RETURN_MESSAGE = "";
 
-    // =================================================================================================
     // Calendar constants, every one of them a condition-name value read from
     // app/cpy/CSUTLDWY.cpy rather than from general knowledge.
-    // =================================================================================================
 
-    /** {@code 88 THIS-CENTURY VALUE 20} at {@code [app/cpy/CSUTLDWY.cpy:L9]}. */
+    /** Value of the condition name {@code THIS-CENTURY}, which is 20, {@code [app/cpy/CSUTLDWY.cpy:L9]}. */
     private static final int THIS_CENTURY = 20;
 
-    /** {@code 88 LAST-CENTURY VALUE 19} at {@code [app/cpy/CSUTLDWY.cpy:L10]}. */
+    /** Value of the condition name {@code LAST-CENTURY}, which is 19, {@code [app/cpy/CSUTLDWY.cpy:L10]}. */
     private static final int LAST_CENTURY = 19;
 
-    /** Lower bound of {@code 88 WS-VALID-MONTH VALUES 1 THROUGH 12}, {@code [app/cpy/CSUTLDWY.cpy:L19]}. */
+    /**
+     * Lower bound of the condition name {@code WS-VALID-MONTH}, which spans 1 through 12,
+     * {@code [app/cpy/CSUTLDWY.cpy:L19]}.
+     */
     private static final int FIRST_MONTH = 1;
 
     /** Upper bound of the same condition name. */
     private static final int LAST_MONTH = 12;
 
-    /** {@code 88 WS-FEBRUARY VALUE 2} at {@code [app/cpy/CSUTLDWY.cpy:L24]}. */
+    /** Value of the condition name {@code WS-FEBRUARY}, which is 2, {@code [app/cpy/CSUTLDWY.cpy:L24]}. */
     private static final int FEBRUARY = 2;
 
-    /** Lower bound of {@code 88 WS-VALID-DAY VALUES 1 THROUGH 31}, {@code [app/cpy/CSUTLDWY.cpy:L28]}. */
+    /**
+     * Lower bound of the condition name {@code WS-VALID-DAY}, which spans 1 through 31,
+     * {@code [app/cpy/CSUTLDWY.cpy:L28]}.
+     */
     private static final int FIRST_DAY = 1;
 
-    /** Upper bound of the same condition name, and the value of {@code 88 WS-DAY-31}. */
+    /** Upper bound of the same condition name, and the value of the condition name {@code WS-DAY-31}. */
     private static final int DAY_31 = 31;
 
-    /** {@code 88 WS-DAY-30 VALUE 30} at {@code [app/cpy/CSUTLDWY.cpy:L31]}. */
+    /** Value of the condition name {@code WS-DAY-30}, which is 30, {@code [app/cpy/CSUTLDWY.cpy:L31]}. */
     private static final int DAY_30 = 30;
 
-    /** {@code 88 WS-DAY-29 VALUE 29} at {@code [app/cpy/CSUTLDWY.cpy:L32]}. */
+    /** Value of the condition name {@code WS-DAY-29}, which is 29, {@code [app/cpy/CSUTLDWY.cpy:L32]}. */
     private static final int DAY_29 = 29;
 
     /**
@@ -377,11 +420,21 @@ public final class DateValidationService {
     /** Sentinel returned by the numeric-view reader when a slice is not composed of ASCII digits. */
     private static final int NOT_NUMERIC = -1;
 
-    /** The single value of {@code 88 WS-EDIT-DATE-IS-VALID}, expressed per flag byte: {@code LOW-VALUES}. */
+    /**
+     * The single value of the condition name {@code WS-EDIT-DATE-IS-VALID}, expressed per flag byte:
+     * the low-value byte.
+     */
     private static final char LOW_VALUE = '\u0000';
 
     /** The space character, used for the {@code SPACES} comparisons and for {@code PIC X} padding. */
     private static final char SPACE = ' ';
+
+    /**
+     * The same space as a single encoded byte, used to pad a short sender into a {@code PIC X(n)}
+     * receiving field. Padding is applied to the encoded image rather than to the character sequence,
+     * so the field is filled to its declared byte count.
+     */
+    private static final byte SPACE_BYTE = (byte) SPACE;
 
     // =================================================================================================
     // The Language Environment substitution. CALL "CEEDAYS" at [app/cbl/CSUTLDTC.cbl:L116] is replaced
@@ -391,7 +444,6 @@ public final class DateValidationService {
     // The year field is the era-independent uuuu rather than yyyy. Under STRICT resolution a yyyy
     // pattern demands an era, which the legacy masks do not carry, so yyyy would fail on every input.
     // The locale is pinned to ROOT so that no ambient default can alter digit or separator handling.
-    // =================================================================================================
 
     /** Pattern for {@code DateFormat#YYYY_MM_DD}, the hyphenated ten-character mask. */
     private static final String HYPHENATED_PATTERN = "uuuu-MM-dd";
@@ -431,42 +483,38 @@ public final class DateValidationService {
         // No collaborator and no state: every value the service needs is a constant or an argument.
     }
 
-    // =================================================================================================
     // NESTED CONTRACT TYPES
-    // =================================================================================================
 
     /**
      * State of one of the three date-field flags of {@code WS-EDIT-DATE-FLGS},
      * {@code [app/cpy/CSUTLDWY.cpy:L43]} through {@code [app/cpy/CSUTLDWY.cpy:L57]}.
      *
-     * <p>The legacy group is three one-character flags &mdash; year, month and day &mdash; and each
-     * carries the same three condition names: valid, not valid, and blank. The one-character image of
-     * each state is part of the contract because the account-update program copies the whole
-     * three-character group into per-field save areas, for example at
-     * {@code [app/cbl/COACTUPC.cbl:L1482]}, and then tests the copy.
+     * <p>The legacy group is three one-character flags &mdash; year, month and day &mdash; each carrying
+     * the same three condition names: valid, not valid, and blank. The one-character image of each state is
+     * part of the contract because the account-update program copies the whole three-character group into
+     * per-field save areas, for example at {@code [app/cbl/COACTUPC.cbl:L1482]}, and then tests the copy.
+     * The two failure states are not interchangeable: a blank field and a present-but-wrong field are
+     * reported differently, which is what lets the screen distinguish a missing entry from an invalid one.
      *
-     * <p>Two distinct failure states exist and they are not interchangeable: a blank field and a
-     * present-but-wrong field are reported differently, which is what lets the screen distinguish a
-     * missing entry from an invalid one.
      */
     public enum DateEditFlag {
 
         /**
          * The field passed its stage. Condition name {@code FLG-YEAR-ISVALID} and its month and day
-         * peers, {@code VALUE LOW-VALUES} at {@code [app/cpy/CSUTLDWY.cpy:L47]}.
+         * peers, whose value is the low-value byte, at {@code [app/cpy/CSUTLDWY.cpy:L47]}.
          */
         VALID(LOW_VALUE),
 
         /**
-         * The field was supplied but failed. Condition name {@code FLG-YEAR-NOT-OK} and peers,
-         * {@code VALUE '0'} at {@code [app/cpy/CSUTLDWY.cpy:L48]}. Three of these side by side spell the
-         * all-invalid group value that the head paragraph writes.
+         * The field was supplied but failed. Condition name {@code FLG-YEAR-NOT-OK} and peers, whose
+         * value is the single character {@code 0}, at {@code [app/cpy/CSUTLDWY.cpy:L48]}. Three of these
+         * side by side spell the all-invalid group value that the head paragraph writes.
          */
         NOT_OK('0'),
 
         /**
-         * The field was not supplied at all. Condition name {@code FLG-YEAR-BLANK} and peers,
-         * {@code VALUE 'B'} at {@code [app/cpy/CSUTLDWY.cpy:L49]}.
+         * The field was not supplied at all. Condition name {@code FLG-YEAR-BLANK} and peers, whose
+         * value is the single character {@code B}, at {@code [app/cpy/CSUTLDWY.cpy:L49]}.
          */
         BLANK('B');
 
@@ -496,15 +544,15 @@ public final class DateValidationService {
      * Outcome of the cascade: the three per-stage flags, the input-error indicator and the accumulated
      * return message.
      *
-     * <p><strong>There is deliberately no overall verdict here.</strong> The reasoning is set out on the
-     * enclosing class: the cascade has no reachable statement that declares a date good, so a synthesised
-     * boolean would report a state the legacy cannot produce. A caller that needs the legacy group test
-     * performs it the way the account-update program performs it &mdash; on the copied flag group, as at
-     * {@code [app/cbl/COACTUPC.cbl:L1538]} followed by {@code [app/cbl/COACTUPC.cbl:L1539]} &mdash; by
-     * inspecting the three flags this record exposes.
+     * <p><strong>There is deliberately no overall verdict here.</strong> The cascade has no reachable
+     * statement that declares a date good, so a synthesised boolean would report a state the legacy cannot
+     * produce. A caller that needs the legacy group test performs it the way the account-update program
+     * does &mdash; on the copied flag group, {@code [app/cbl/COACTUPC.cbl:L1538]} followed by
+     * {@code [app/cbl/COACTUPC.cbl:L1539]} &mdash; by inspecting the three flags this record exposes.
      *
-     * @param inputError    whether this edit signalled the caller's input-error condition,
-     *                      {@code 88 INPUT-ERROR VALUE '1'} at {@code [app/cbl/COACTUPC.cbl:L173]}. The
+     * @param inputError    whether this edit signalled the caller's input-error condition, whose
+     *                      condition name is {@code INPUT-ERROR} and whose value is the single
+     *                      character {@code 1}, at {@code [app/cbl/COACTUPC.cbl:L173]}. The
      *                      flag itself belongs to the caller, which accumulates it across every field on
      *                      the screen; this component reports what this edit contributed
      * @param yearFlag      state of {@code WS-EDIT-YEAR-FLG}, {@code [app/cpy/CSUTLDWY.cpy:L46]}
@@ -555,17 +603,18 @@ public final class DateValidationService {
      *
      * <p>The first nine correspond to the nine condition names at {@code [app/cbl/CSUTLDTC.cbl:L62]}
      * through {@code [app/cbl/CSUTLDTC.cbl:L70]}; the tenth stands for the {@code WHEN OTHER} clause at
-     * {@code [app/cbl/CSUTLDTC.cbl:L147]}. Declaration order is the evaluation order, and evaluation
-     * order is contractual because the source stops at the first matching clause.
+     * {@code [app/cbl/CSUTLDTC.cbl:L147]}. Declaration order is the evaluation order, and evaluation order
+     * is contractual because the source stops at the first matching clause.
      *
      * <p><strong>Severity and message number are decoded from the feedback tokens, not invented.</strong>
      * The token is subdivided at {@code [app/cbl/CSUTLDTC.cbl:L71]} through
      * {@code [app/cbl/CSUTLDTC.cbl:L73]} into a severity halfword followed by a message-number halfword,
-     * and the subprogram moves both into the result block at {@code [app/cbl/CSUTLDTC.cbl:L123]} and
+     * and both are moved into the result block at {@code [app/cbl/CSUTLDTC.cbl:L123]} and
      * {@code [app/cbl/CSUTLDTC.cbl:L124]}. Reading the two halfwords out of each declared token yields
-     * severity zero with message number zero for the success token, and severity three with the message
+     * severity zero with message number zero for the success token and severity three with the message
      * numbers below for the eight failure tokens. Those numbers are what make the callers' {@code 2513}
      * exemption meaningful and testable, so they are carried rather than discarded.
+     *
      */
     public enum DateFeedback {
 
@@ -589,7 +638,7 @@ public final class DateValidationService {
          * Fourth clause, {@code FC-INVALID-ERA} at {@code [app/cbl/CSUTLDTC.cbl:L65]}.
          *
          * <p>Not producible by either mask this estate transmits, because neither carries an era field.
-         * The constant exists because the clause exists and the traceability row must resolve.
+         * The constant exists because the clause exists and every clause must map to a named value.
          */
         INVALID_ERA(3, 2509),
 
@@ -676,11 +725,10 @@ public final class DateValidationService {
      * parameter.
      *
      * <p>The block is declared at {@code [app/cbl/CSUTLDTC.cbl:L42]} through
-     * {@code [app/cbl/CSUTLDTC.cbl:L57]} and is thirteen elementary items whose widths sum to exactly
-     * eighty: a four-character severity code, an eleven-character label, a four-character message
-     * number, a space, the fifteen-character outcome text, a space, a nine-character label, the
-     * ten-character tested date, a space, a ten-character label, the ten-character mask, a space and
-     * three trailing spaces.
+     * {@code [app/cbl/CSUTLDTC.cbl:L57]} as thirteen elementary items whose widths sum to exactly eighty:
+     * a four-character severity code, an eleven-character label, a four-character message number, a space,
+     * the fifteen-character outcome text, a space, a nine-character label, the ten-character tested date,
+     * a space, a ten-character label, the ten-character mask, a space and three trailing spaces.
      *
      * <p><strong>Severity and message number are individually addressable, because that is exactly what
      * the callers test.</strong> Both callers overlay the block as four plus eleven plus four plus
@@ -739,11 +787,17 @@ public final class DateValidationService {
         }
 
         /**
-         * Renders the whole block as exactly eighty characters.
+         * Renders the whole block at exactly eighty encoded bytes.
          *
          * <p>Field order and every literal filler follow the declaration, so the returned value is what
          * the legacy third parameter carries. The label fillers keep the padding their {@code PIC}
          * declares, since that padding occupies block positions.
+         *
+         * <p>The width guarantee is a byte guarantee, because {@code LS-RESULT PIC X(80)} reserves
+         * eighty bytes. Every component was gated for single-byte representability when this record was
+         * constructed and every literal filler here is a single-byte constant, so the returned string
+         * carries one byte per character: re-encoding it yields the same eighty bytes, and a character
+         * index into it is also a byte offset.
          *
          * <p><strong>Source anomaly recorded here.</strong> The subprogram writes the tested date into
          * the block twice: once from the clean linkage parameter at {@code [app/cbl/CSUTLDTC.cbl:L108]},
@@ -755,9 +809,9 @@ public final class DateValidationService {
          * length prefix has no meaning once the variable-string convention is gone. The anomaly is
          * recorded rather than reproduced.
          *
-         * @return the eighty-character result block
-         * @throws IllegalStateException if the assembled block is not exactly eighty characters, which
-         *                               can only mean the renderer drifted from the record layout
+         * @return the result block, exactly eighty encoded bytes wide
+         * @throws IllegalStateException if the assembled block is not exactly eighty encoded bytes,
+         *                               which can only mean the renderer drifted from the record layout
          */
         public String render() {
             final String block = severityCode
@@ -773,10 +827,11 @@ public final class DateValidationService {
                     + maskUsed
                     + SINGLE_SPACE
                     + TRAILING_FILLER;
-            if (block.length() != RESULT_BLOCK_WIDTH) {
+            final int encodedWidth = encodedByteWidth(block);
+            if (encodedWidth != RESULT_BLOCK_WIDTH) {
                 throw new IllegalStateException("the rendered result block must be exactly "
-                        + RESULT_BLOCK_WIDTH + " characters to fill LS-RESULT, but ["
-                        + block + "] is " + block.length());
+                        + RESULT_BLOCK_WIDTH + " encoded bytes to fill LS-RESULT, but measures "
+                        + encodedWidth);
             }
             return block;
         }
@@ -788,27 +843,45 @@ public final class DateValidationService {
          * block position twenty, immediately after the message number, so it opens with the single-space
          * filler and then carries the outcome text.
          *
-         * @return exactly sixty-one characters
+         * <p>The caller's overlay is a byte overlay onto an eighty-byte area, so the slice is taken from
+         * the encoded image at a byte offset rather than from the character sequence at a character
+         * index. The two coincide for a block that has passed the representability gate, and taking the
+         * slice in bytes is what keeps that coincidence a consequence of the contract rather than an
+         * assumption the reader has to supply.
+         *
+         * @return exactly sixty-one bytes, the tail of the eighty-byte block
          */
         public String messageSegment() {
-            return render().substring(RESULT_BLOCK_WIDTH - MESSAGE_SEGMENT_WIDTH);
+            final byte[] block = render().getBytes(StandardCharsets.US_ASCII);
+            return new String(block, RESULT_BLOCK_WIDTH - MESSAGE_SEGMENT_WIDTH,
+                    MESSAGE_SEGMENT_WIDTH, StandardCharsets.US_ASCII);
         }
 
         /**
-         * Enforces one component width.
+         * Enforces one component width, measured in encoded bytes.
+         *
+         * <p>The width a {@code PIC X(n)} component declares is a byte reservation, so the check is made
+         * on the encoded image and not on the character count. Representability is gated first, because
+         * a value the charset cannot carry has no byte width its field can hold; the diagnostic for that
+         * case names the position and the numeric code unit rather than echoing the character, so an
+         * unexpected value cannot inject content into a downstream log record.
          *
          * @param value the component value
-         * @param width the width the record layout declares
+         * @param width the width the record layout declares, in bytes
          * @param name  the component name, for the failure message
          * @throws NullPointerException     if {@code value} is {@code null}
-         * @throws IllegalArgumentException if {@code value} is not exactly {@code width} characters
+         * @throws IllegalArgumentException if {@code value} carries a character the single-byte charset
+         *                                  cannot represent, or is not exactly {@code width} encoded
+         *                                  bytes
          */
         private static void requireWidth(final String value, final int width, final String name) {
             Objects.requireNonNull(value, name + " must not be null");
-            if (value.length() != width) {
+            requireSingleByteRepresentable(value, name);
+            final int encodedWidth = encodedByteWidth(value);
+            if (encodedWidth != width) {
                 throw new IllegalArgumentException(name + " must be exactly " + width
-                        + " characters to fill its result-block positions, but [" + value + "] is "
-                        + value.length());
+                        + " encoded bytes to fill its result-block positions, but measures "
+                        + encodedWidth);
             }
         }
     }
@@ -829,9 +902,9 @@ public final class DateValidationService {
         FALL_THROUGH,
 
         /**
-         * {@code GO TO EDIT-DATE-CCYYMMDD-EXIT} was taken, at {@code [app/cpy/CSUTLDPY.cpy:L225]},
-         * {@code [app/cpy/CSUTLDPY.cpy:L240]}, {@code [app/cpy/CSUTLDPY.cpy:L270]} or
-         * {@code [app/cpy/CSUTLDPY.cpy:L277]}.
+         * A jump straight to the exit paragraph of the whole range, {@code EDIT-DATE-CCYYMMDD-EXIT},
+         * was taken, at {@code [app/cpy/CSUTLDPY.cpy:L225]}, {@code [app/cpy/CSUTLDPY.cpy:L240]},
+         * {@code [app/cpy/CSUTLDPY.cpy:L270]} or {@code [app/cpy/CSUTLDPY.cpy:L277]}.
          */
         GO_TO_RANGE_EXIT
     }
@@ -840,18 +913,17 @@ public final class DateValidationService {
      * Per-invocation working storage for one run of the cascade.
      *
      * <p>The legacy equivalent is a group of fields in {@code app/cpy/CSUTLDWY.cpy} that lives in the
-     * calling program's working storage and is therefore reused across every date the program edits.
-     * Holding it here, created fresh on entry and discarded on exit, is what makes this service a
-     * stateless singleton: two concurrent requests cannot see each other's flags or message.
+     * calling program's working storage and is reused across every date the program edits. Holding it
+     * here, created fresh on entry and discarded on exit, is what makes this service a stateless
+     * singleton: two concurrent requests cannot see each other's flags or message.
      *
      * <p>The six character slices are immutable because the cascade never writes to the input field. The
-     * numeric views the level-88 range tests read are not held as fields at all: they are redefinitions
-     * of the very same bytes ({@code [app/cpy/CSUTLDWY.cpy:L17]} and
-     * {@code [app/cpy/CSUTLDWY.cpy:L26]}), so they are computed from the slice on demand. That also makes
-     * the two {@code COMPUTE} statements at {@code [app/cpy/CSUTLDPY.cpy:L127]} and
-     * {@code [app/cpy/CSUTLDPY.cpy:L171]} what they actually are &mdash; value-preserving assignments of a
-     * redefinition from its own storage &mdash; while the numeric test that guards each of them, which
-     * does have observable effect, is reproduced in full.
+     * numeric views the level-88 range tests read are not held as fields at all: they are redefinitions of
+     * the very same bytes ({@code [app/cpy/CSUTLDWY.cpy:L17]} and {@code [app/cpy/CSUTLDWY.cpy:L26]}), so
+     * they are computed from the slice on demand. That also makes the two {@code COMPUTE} statements at
+     * {@code [app/cpy/CSUTLDPY.cpy:L127]} and {@code [app/cpy/CSUTLDPY.cpy:L171]} what they actually are
+     * &mdash; value-preserving assignments of a redefinition from its own storage &mdash; while the
+     * numeric test guarding each of them, which does have observable effect, is reproduced in full.
      */
     private static final class CascadeState {
 
@@ -938,9 +1010,7 @@ public final class DateValidationService {
         }
     }
 
-    // =================================================================================================
     // ENTRY POINT ONE: the copybook cascade.
-    // =================================================================================================
 
     /**
      * Validates a {@code CCYYMMDD} date through the copybook cascade, starting from a blank accumulated
@@ -953,7 +1023,10 @@ public final class DateValidationService {
      *                      legacy move does, so a shorter value is space padded on the right and a longer
      *                      one is truncated on the right. Must not be {@code null}
      * @return the flags, the input-error indicator and the message this edit produced
-     * @throws NullPointerException if {@code candidateDate} is {@code null}
+     * @throws NullPointerException     if {@code candidateDate} is {@code null}
+     * @throws IllegalArgumentException if {@code candidateDate} carries a character the single-byte
+     *                                  character set of the legacy fields cannot represent, since such
+     *                                  a value cannot occupy the byte width the field reserves
      */
     public DateEditResult validateCcyymmddDate(final String candidateDate) {
         return validateCcyymmddDate(candidateDate, NO_RETURN_MESSAGE);
@@ -962,31 +1035,30 @@ public final class DateValidationService {
     /**
      * Validates a {@code CCYYMMDD} date through the copybook cascade.
      *
-     * <p>Reproduces {@code PERFORM EDIT-DATE-CCYYMMDD THRU EDIT-DATE-CCYYMMDD-EXIT}, the range from
-     * {@code [app/cpy/CSUTLDPY.cpy:L18]} to {@code [app/cpy/CSUTLDPY.cpy:L329]}, as performed at
+     * <p>Reproduces the paragraph range from {@code EDIT-DATE-CCYYMMDD} through to its own exit
+     * paragraph, spanning {@code [app/cpy/CSUTLDPY.cpy:L18]} to {@code [app/cpy/CSUTLDPY.cpy:L329]},
+     * as performed at
      * {@code [app/cbl/COACTUPC.cbl:L1480]}, {@code [app/cbl/COACTUPC.cbl:L1492]},
      * {@code [app/cbl/COACTUPC.cbl:L1505]} and {@code [app/cbl/COACTUPC.cbl:L1536]}.
      *
-     * <p><strong>This is an ordered cascade, not five independent checks.</strong> The head paragraph
-     * validates nothing whatsoever, so the range's behaviour is entirely in the paragraphs it falls
-     * through: the year stage, then the month stage, then the day stage, then the combined
-     * day/month/year stage, then the Language-Environment stage. Each stage keeps its own early exit, so
-     * a failure short-circuits where the legacy short-circuits &mdash; and note that a stage failing does
-     * <em>not</em> abandon the range: the year stage's early exit lands on the month stage, which is why
-     * a blank year and a bad month are both reported on the same pass.
-     *
-     * <p>The accumulated message follows the first-wins rule the source implements: each stage writes its
-     * suffix only while the message is still blank, so the earliest failure keeps the message even though
-     * later stages continue to set their flags. That rule is why the caller's message field is passed in
-     * rather than assumed empty &mdash; in the account-update program it is shared by every field on the
-     * screen.
+     * <p><strong>An ordered cascade, not five independent checks.</strong> Each stage keeps its own early
+     * exit, so a failure short-circuits where the legacy short-circuits - and a failing stage does
+     * <em>not</em> abandon the range: the year stage's early exit lands on the month stage, which is why a
+     * blank year and a bad month are both reported on the same pass. The accumulated message follows the
+     * source's first-wins rule: each stage writes its suffix only while the message is still blank, so the
+     * earliest failure keeps the message even though later stages continue to set their flags. That rule is
+     * why the caller's message field is passed in rather than assumed empty - in the account-update program
+     * it is shared by every field on the screen.
      *
      * @param candidateDate        the candidate date, moved to the eight-character input field; must not
      *                             be {@code null}
      * @param currentReturnMessage the caller's accumulated message on entry; empty stands for the blank
      *                             state that lets a stage claim the message. Must not be {@code null}
      * @return the flags, the input-error indicator and the accumulated message
-     * @throws NullPointerException if either argument is {@code null}
+     * @throws NullPointerException     if either argument is {@code null}
+     * @throws IllegalArgumentException if {@code candidateDate} carries a character the single-byte
+     *                                  character set of the legacy fields cannot represent, since such
+     *                                  a value cannot occupy the byte width the field reserves
      */
     public DateEditResult validateCcyymmddDate(final String candidateDate,
                                                final String currentReturnMessage) {
@@ -1027,7 +1099,9 @@ public final class DateValidationService {
      * @param currentDate   the current date the check compares against; must not be {@code null}
      * @return the flags, the input-error indicator and the message this edit produced
      * @throws NullPointerException     if either argument is {@code null}
-     * @throws IllegalArgumentException if the candidate is not a resolvable calendar date
+     * @throws IllegalArgumentException if the candidate is not a resolvable calendar date, or carries a
+     *                                  character the single-byte character set of the legacy fields
+     *                                  cannot represent
      */
     public DateEditResult validateDateOfBirth(final String candidateDate, final LocalDate currentDate) {
         return validateDateOfBirth(candidateDate, currentDate, NO_RETURN_MESSAGE);
@@ -1036,25 +1110,22 @@ public final class DateValidationService {
     /**
      * Applies the date-of-birth reasonableness check.
      *
-     * <p>Reproduces {@code PERFORM EDIT-DATE-OF-BIRTH THRU EDIT-DATE-OF-BIRTH-EXIT}, the range from
-     * {@code [app/cpy/CSUTLDPY.cpy:L341]} to {@code [app/cpy/CSUTLDPY.cpy:L370]}, as performed at
+     * <p>Reproduces the paragraph range from {@code EDIT-DATE-OF-BIRTH} through to its own exit
+     * paragraph, spanning {@code [app/cpy/CSUTLDPY.cpy:L341]} to {@code [app/cpy/CSUTLDPY.cpy:L370]},
+     * as performed at
      * {@code [app/cbl/COACTUPC.cbl:L1540]}. <strong>This range sits outside the main cascade</strong>
-     * &mdash; the {@code THRU} span of the main range ends at
+     * &mdash; the span of the main range ends at
      * {@code [app/cpy/CSUTLDPY.cpy:L329]}, before this paragraph begins &mdash; and it is invoked in its
      * own right, so it is a separate entry point rather than a sixth cascade stage.
      *
      * <p><strong>Entry precondition.</strong> The account-update program performs this range only after
-     * the main cascade has returned and only when the copied flag group still reads as valid, at
+     * the main cascade returns and only while the copied flag group still reads as valid,
      * {@code [app/cbl/COACTUPC.cbl:L1538]} and {@code [app/cbl/COACTUPC.cbl:L1539]}. The three flags
-     * therefore start valid here, and the candidate is expected to be a resolvable calendar date: the
-     * legacy converts it with an integer-of-date function at {@code [app/cpy/CSUTLDPY.cpy:L346]}, which
-     * has no defined result for a value the main cascade would have rejected.
-     *
-     * <p>The current date replaces {@code FUNCTION CURRENT-DATE} at
-     * {@code [app/cpy/CSUTLDPY.cpy:L343]} and is supplied by the caller rather than read from a system
-     * clock here. The account-update program already owns the current-date work fields, from the
-     * date-and-time copybook every online program includes, so the current date is the caller's to
-     * provide; passing it keeps this service pure and its date arithmetic reproducible.
+     * therefore start valid and the candidate is expected to be a resolvable calendar date: the legacy
+     * converts it with an integer-of-date function at {@code [app/cpy/CSUTLDPY.cpy:L346]}, which has no
+     * defined result for a value the main cascade would have rejected. The current date replaces
+     * {@code FUNCTION CURRENT-DATE} at {@code [app/cpy/CSUTLDPY.cpy:L343]} and is supplied by the caller
+     * rather than read from a clock here, keeping this service pure and its date arithmetic reproducible.
      *
      * @param candidateDate        the candidate date of birth as a {@code CCYYMMDD} image; must not be
      *                             {@code null}
@@ -1063,7 +1134,9 @@ public final class DateValidationService {
      * @return the flags, the input-error indicator and the accumulated message
      * @throws NullPointerException     if any argument is {@code null}
      * @throws IllegalArgumentException if the candidate is not a resolvable calendar date, which means
-     *                                  the documented entry precondition was not met
+     *                                  the documented entry precondition was not met, or carries a
+     *                                  character the single-byte character set of the legacy fields
+     *                                  cannot represent
      */
     public DateEditResult validateDateOfBirth(final String candidateDate,
                                               final LocalDate currentDate,
@@ -1086,38 +1159,38 @@ public final class DateValidationService {
         return result;
     }
 
-    // =================================================================================================
     // ENTRY POINT TWO: the callable subprogram.
-    // =================================================================================================
 
     /**
-     * Validates a date against a format mask, reproducing {@code CALL 'CSUTLDTC'}.
+     * Validates a date against a format mask, reproducing a static invocation of the subprogram
+     * {@code CSUTLDTC}.
      *
-     * <p>This is the second and entirely separate entry point. It reproduces the subprogram's procedure
-     * division, {@code [app/cbl/CSUTLDTC.cbl:L88]} through {@code [app/cbl/CSUTLDTC.cbl:L102]}: clear the
-     * result block, clear the tested-date field, perform the main paragraph through its exit, then move
-     * the result block to the third linkage parameter. The four genuine call sites are
+     * <p>The second and entirely separate entry point, reproducing the subprogram's procedure division,
+     * {@code [app/cbl/CSUTLDTC.cbl:L88]} through {@code [app/cbl/CSUTLDTC.cbl:L102]}: clear the result
+     * block, clear the tested-date field, perform the main paragraph through its exit, then move the
+     * result block to the third linkage parameter. The four genuine call sites are
      * {@code [app/cbl/COTRN02C.cbl:L393]}, {@code [app/cbl/COTRN02C.cbl:L413]},
-     * {@code [app/cbl/CORPT00C.cbl:L392]} and {@code [app/cbl/CORPT00C.cbl:L412]}.
-     *
-     * <p>The legacy third parameter is an output area the caller allocates and blanks before the call. In
-     * Java the natural equivalent of an output parameter is a return value, so the result block is
-     * returned as a typed object rather than written into an argument; its renderer reproduces the
-     * eighty-character form when a caller needs the raw block.
+     * {@code [app/cbl/CORPT00C.cbl:L392]} and {@code [app/cbl/CORPT00C.cbl:L412]}. The legacy third
+     * parameter is an output area the caller blanks before the call; in Java the equivalent is a return
+     * value, so the block is returned as a typed object whose renderer reproduces the eighty-character
+     * form when a caller needs the raw bytes.
      *
      * @param candidateDate the date to test; moved to the ten-character first linkage parameter, so a
      *                      shorter value is space padded on the right. Must not be {@code null}
      * @param dateFormat    the format mask, which is the second linkage parameter; must not be
      *                      {@code null}
      * @return the typed result block, with severity and message number individually addressable
-     * @throws NullPointerException if either argument is {@code null}
+     * @throws NullPointerException     if either argument is {@code null}
+     * @throws IllegalArgumentException if {@code candidateDate} carries a character the single-byte
+     *                                  character set of the legacy fields cannot represent, since such
+     *                                  a value cannot occupy the byte width the field reserves
      */
     public SubprogramResult validateDate(final String candidateDate, final DateFormat dateFormat) {
         Objects.requireNonNull(candidateDate,
                 "candidateDate must not be null: an absent field is not a blank field");
         Objects.requireNonNull(dateFormat, "dateFormat must not be null");
 
-        final String testedDate = moveToLinkageTextField(candidateDate);
+        final String testedDate = moveToLinkageTextField(candidateDate, LS_DATE_FIELD);
         final String maskUsed = dateFormat.getValue();
 
         final DateFeedback feedback = a000Main(testedDate, dateFormat);
@@ -1134,30 +1207,35 @@ public final class DateValidationService {
      * Validates a date against a raw format mask, resolving the mask before delegating.
      *
      * <p>Offered because both callers hold the mask in a ten-character work field rather than as a typed
-     * value: {@code WS-DATE-FORMAT PIC X(10) VALUE 'YYYY-MM-DD'} at {@code [app/cbl/CORPT00C.cbl:L72]}
-     * and identically at {@code [app/cbl/COTRN02C.cbl:L60]}.
+     * value: {@code WS-DATE-FORMAT PIC X(10) VALUE 'YYYY-MM-DD'} at {@code [app/cbl/CORPT00C.cbl:L72]} and
+     * identically at {@code [app/cbl/COTRN02C.cbl:L60]}.
      *
      * <p>A mask the estate never transmits is reported as a bad picture string rather than guessed at.
-     * Substituting one of the two real masks would validate the date against the wrong picture and return
-     * a confidently wrong verdict, so the unresolved case produces the outcome whose feedback condition
-     * means exactly "the picture string could not be used", with its non-zero severity and its
-     * message number that is not the tolerated one, so the two-level acceptance test rejects it.
+     * Substituting one of the two real masks would validate against the wrong picture and return a
+     * confidently wrong verdict, so the unresolved case yields the feedback condition meaning "the picture
+     * string could not be used", whose non-zero severity and non-tolerated message number make the
+     * two-level acceptance test reject it.
      *
      * @param candidateDate the date to test; must not be {@code null}
      * @param formatMask    the raw mask value, moved to the ten-character second linkage parameter; must
      *                      not be {@code null}
      * @return the typed result block
-     * @throws NullPointerException if either argument is {@code null}
+     * @throws NullPointerException     if either argument is {@code null}
+     * @throws IllegalArgumentException if {@code candidateDate} carries a character the single-byte
+     *                                  character set of the legacy fields cannot represent, since such
+     *                                  a value cannot occupy the byte width the field reserves
+     *                                  The same applies to {@code formatMask}, which is moved to the
+     *                                  second linkage parameter
      */
     public SubprogramResult validateDate(final String candidateDate, final String formatMask) {
         Objects.requireNonNull(candidateDate,
                 "candidateDate must not be null: an absent field is not a blank field");
         Objects.requireNonNull(formatMask, "formatMask must not be null");
 
-        final String maskUsed = moveToLinkageTextField(formatMask);
+        final String maskUsed = moveToLinkageTextField(formatMask, LS_DATE_FORMAT_FIELD);
         final Optional<DateFormat> resolved = DateFormat.fromValue(maskUsed);
         if (resolved.isEmpty()) {
-            final String testedDate = moveToLinkageTextField(candidateDate);
+            final String testedDate = moveToLinkageTextField(candidateDate, LS_DATE_FIELD);
             LOG.warn("Unrecognised date-format mask [{}]; reporting a bad picture string", maskUsed);
             return buildResult(DateFeedback.BAD_PICTURE_STRING, testedDate, maskUsed);
         }
@@ -1167,25 +1245,18 @@ public final class DateValidationService {
     /**
      * The two-level acceptance test the four genuine call sites apply to the result block.
      *
-     * <p>Reproduced from {@code [app/cbl/CORPT00C.cbl:L396]} through {@code [app/cbl/CORPT00C.cbl:L406]}
-     * and {@code [app/cbl/CORPT00C.cbl:L416]} through {@code [app/cbl/CORPT00C.cbl:L426]}, and mirrored
-     * at {@code [app/cbl/COTRN02C.cbl:L397]} and {@code [app/cbl/COTRN02C.cbl:L417]}. All four sites are
-     * identical, which is why the test lives here once instead of being written out in the transaction-add
-     * and report-request services.
+     * <p>Reproduced from {@code [app/cbl/CORPT00C.cbl:L396]} through
+     * {@code [app/cbl/CORPT00C.cbl:L406]} and {@code [app/cbl/CORPT00C.cbl:L416]} through
+     * {@code [app/cbl/CORPT00C.cbl:L426]}, and mirrored at {@code [app/cbl/COTRN02C.cbl:L397]} and
+     * {@code [app/cbl/COTRN02C.cbl:L417]}. All four sites are identical, so the test lives here once
+     * instead of being written out in each calling service.
      *
-     * <p>The test has two levels and they must both be kept:
-     * <ol>
-     *   <li>if the four-character severity code is {@code 0000}, accept outright;</li>
-     *   <li>otherwise, if the four-character message number is <em>not</em> {@code 2513}, reject;</li>
-     *   <li>otherwise accept silently &mdash; <strong>a non-zero severity carrying message number
-     *       {@code 2513} is accepted.</strong></li>
-     * </ol>
-     *
-     * <p>Three things about it are easy to get wrong and are therefore stated explicitly. Both
-     * comparisons are against four-character strings, not integers, so neither field is parsed. The
-     * exemption is not dead weight: 2513 is the decoded message number of the unsupported-range
-     * condition, so dropping it would reject dates the legacy accepts. And the two levels do not collapse
-     * into one comparison, because acceptance can arrive by either route.
+     * <p>Both levels must be kept: severity {@code 0000} is accepted outright; otherwise a message number
+     * that is <em>not</em> {@code 2513} is rejected; otherwise the result is accepted silently, so
+     * <strong>a non-zero severity carrying message number {@code 2513} is accepted</strong>. Both
+     * comparisons are against four-character strings, not integers, so neither field is parsed, and the
+     * two levels do not collapse into one comparison because acceptance can arrive by either route. See
+     * {@code TOLERATED_MESSAGE_NUMBER} for why the exemption is not dead weight.
      *
      * @param result the result block returned by either {@code validateDate} overload; must not be
      *               {@code null}
@@ -1207,24 +1278,22 @@ public final class DateValidationService {
         return true;
     }
 
-    // =================================================================================================
     // app/cbl/CSUTLDTC.cbl - the subprogram's two paragraphs.
-    // =================================================================================================
 
     /**
      * {@code A000-MAIN}, {@code [app/cbl/CSUTLDTC.cbl:L103]}.
      *
      * <p>The legacy paragraph copies the two linkage values into Language-Environment variable strings,
      * zeroes the Lilian output, calls the date service at {@code [app/cbl/CSUTLDTC.cbl:L116]}, moves the
-     * severity and message-number halfwords out of the returned feedback token, and then selects the
-     * result text with the ten-clause evaluation at {@code [app/cbl/CSUTLDTC.cbl:L128]}.
+     * severity and message-number halfwords out of the returned feedback token, and selects the result
+     * text with the ten-clause evaluation at {@code [app/cbl/CSUTLDTC.cbl:L128]}.
      *
      * <p>The date service call is the one construct that cannot be carried across, so it is replaced by
      * strict {@code java.time} parsing. The substitution is behaviour preserving only because strict
-     * resolution refuses to normalise: a 30th of February is rejected rather than rolled into March.
-     * Because the substituted parser reports a single failure rather than a feedback token, the failures
-     * it can distinguish are classified here, in a fixed order, onto the feedback conditions whose
-     * meanings match. Each step is annotated with why that condition is the right one.
+     * resolution refuses to normalise: a 30th of February is rejected rather than rolled into March. The
+     * substituted parser reports a single failure rather than a feedback token, so the failures it can
+     * distinguish are classified onto the matching feedback conditions in a fixed order, each annotated
+     * with why that condition is the right one.
      *
      * @param testedDate the ten-character date, already moved to the linkage width
      * @param dateFormat the mask, which selects the pattern and therefore the digit positions
@@ -1245,7 +1314,12 @@ public final class DateValidationService {
         // masks this estate transmits describe ten positions or fewer, so a mask can never overrun the
         // field. Insufficient data is nevertheless the correct outcome if it ever did, because that is
         // precisely the condition for a value too short to satisfy the picture.
-        if (testedDate.length() < maskLength) {
+        //
+        // The comparison is made in encoded bytes, like every other width comparison in this class,
+        // because the field it measures is a byte reservation. The value reached here through the move
+        // into LS-DATE, so it has already passed the representability gate and its byte width and
+        // character count coincide; measuring in bytes keeps that a consequence of the contract.
+        if (encodedByteWidth(testedDate) < maskLength) {
             return DateFeedback.INSUFFICIENT_DATA;
         }
         final String subject = testedDate.substring(0, maskLength);
@@ -1299,20 +1373,18 @@ public final class DateValidationService {
      *
      * <p>The paragraph's only statement is {@code EXIT}, which in COBOL is a documentary no-operation
      * marking the end of a performed range. It is translated as an empty method, and invoked, so that the
-     * traceability matrix can cite a class and method for the row and so that the performed range in
+     * paragraph-level mapping resolves to a named class and method, and so that the performed range in
      * {@code validateDate} reads as the source reads. It is not a stub: there is nothing to implement.
      */
     private static void a000MainExit() {
         // EXIT is a no-operation. The range ends here.
     }
 
-    // =================================================================================================
     // app/cpy/CSUTLDPY.cpy - the fourteen cascade paragraphs, in source order.
     //
     // These are instance methods because they are members of the range the instance entry points drive,
     // and because the Language-Environment stage re-enters the subprogram entry point on this same
-    // component. Every one of them carries its verified source line so a traceability row can cite it.
-    // =================================================================================================
+    // component. Every one of them carries its verified source line so the mapping can cite it.
 
     /**
      * {@code EDIT-DATE-CCYYMMDD}, {@code [app/cpy/CSUTLDPY.cpy:L18]} &mdash; the head paragraph.
@@ -1393,14 +1465,11 @@ public final class DateValidationService {
      *
      * <p>Three checks in source order, each exiting to {@code [app/cpy/CSUTLDPY.cpy:L145]}: supplied, then
      * within one to twelve, then numeric. <strong>The range test precedes the numeric test</strong>, which
-     * looks inverted but is not observable: both failure branches, at
-     * {@code [app/cpy/CSUTLDPY.cpy:L119]} and {@code [app/cpy/CSUTLDPY.cpy:L136]}, emit the same message
-     * and set the same flag. The order is preserved as written regardless.
-     *
-     * <p>The range test reads the numeric redefinition of the same two bytes,
-     * {@code [app/cpy/CSUTLDWY.cpy:L17]}, whose condition name enumerates one through twelve at
-     * {@code [app/cpy/CSUTLDWY.cpy:L19]}. A slice that is not two digits cannot hold any of those values,
-     * so it fails the range test and takes the first of the two identical branches.
+     * looks inverted but is not observable: both failure branches, {@code [app/cpy/CSUTLDPY.cpy:L119]} and
+     * {@code [app/cpy/CSUTLDPY.cpy:L136]}, emit the same message and set the same flag. The order is
+     * preserved as written regardless. The range test reads the numeric redefinition of the same two
+     * bytes, {@code [app/cpy/CSUTLDWY.cpy:L17]}, whose condition name enumerates one through twelve, so a
+     * slice that is not two digits fails it and takes the first of the two identical branches.
      *
      * @param state the per-invocation working storage
      */
@@ -1507,23 +1576,20 @@ public final class DateValidationService {
     /**
      * {@code EDIT-DAY-MONTH-YEAR}, {@code [app/cpy/CSUTLDPY.cpy:L209]} &mdash; cascade stage four.
      *
-     * <p>The three field stages validate each slice in isolation; this stage is the only one that judges
-     * the combination, so it is where a 31st of April and a 29th of February in a common year are caught.
-     * Its three failure branches jump to the exit of the <strong>whole range</strong> at
-     * {@code [app/cpy/CSUTLDPY.cpy:L329]}, not to a stage exit, so a combination failure skips the
-     * Language-Environment stage entirely.
+     * <p>The only stage that judges the combination, so it is where a 31st of April and a 29th of February
+     * in a common year are caught. Its three failure branches jump to the exit of the <strong>whole
+     * range</strong> at {@code [app/cpy/CSUTLDPY.cpy:L329]}, not to a stage exit, so a combination failure
+     * skips the Language-Environment stage entirely.
      *
      * <p><strong>The leap-year decision keeps the source's two-branch shape.</strong> The source chooses a
-     * divisor first &mdash; four hundred when the year within the century is zero, four otherwise, at
+     * divisor first &mdash; four hundred when the year within the century is zero, four otherwise,
      * {@code [app/cpy/CSUTLDPY.cpy:L245]} through {@code [app/cpy/CSUTLDPY.cpy:L249]} &mdash; then divides
-     * and tests the remainder at {@code [app/cpy/CSUTLDPY.cpy:L251]} through
-     * {@code [app/cpy/CSUTLDPY.cpy:L256]}. A library leap-year predicate would agree on the answer for
-     * every year this estate accepts, and is still not substituted: the branch structure is what the
-     * traceability row cites and what branch coverage measures, and the divisor selection is the part a
-     * reader must be able to find.
-     *
-     * <p>The closing guard at {@code [app/cpy/CSUTLDPY.cpy:L274]} is reproduced verbatim. See
-     * {@code editDateLe} for what that guard means for the stage it admits.
+     * and tests the remainder, {@code [app/cpy/CSUTLDPY.cpy:L251]} through
+     * {@code [app/cpy/CSUTLDPY.cpy:L256]}. A library predicate would agree on every year this estate
+     * accepts and is still not substituted: the branch structure is what the paragraph-level mapping
+     * records and what branch coverage measures, and the divisor selection is the part a reader must be
+     * able to find. The closing guard at {@code [app/cpy/CSUTLDPY.cpy:L274]} is reproduced verbatim; see
+     * {@code editDateLe} for what it means for the stage it admits.
      *
      * @param state the per-invocation working storage
      * @return whether a range-level jump was taken
@@ -1598,40 +1664,28 @@ public final class DateValidationService {
     /**
      * {@code EDIT-DATE-LE}, {@code [app/cpy/CSUTLDPY.cpy:L284]} &mdash; cascade stage five.
      *
-     * <p>The stage's own comment at {@code [app/cpy/CSUTLDPY.cpy:L286]} describes its purpose: a last
-     * resort for a bad date that slipped past every edit above. It clears the result block, moves the
-     * compact mask, invokes the subprogram at {@code [app/cpy/CSUTLDPY.cpy:L293]}, and on a non-zero
-     * severity sets the input-error condition, clears all three flags and builds a message that quotes
-     * both the severity and the message number.
+     * <p>A last resort for a bad date that slipped past every edit above. It clears the result block,
+     * moves the compact mask, invokes the subprogram at {@code [app/cpy/CSUTLDPY.cpy:L293]}, and on a
+     * non-zero severity sets the input-error condition, clears all three flags and builds a message
+     * quoting both the severity and the message number.
      *
      * <p><strong>Anomaly: this stage is unreachable in the shipped estate, and that shapes the whole
      * public interface.</strong> Entry is gated by the guard at {@code [app/cpy/CSUTLDPY.cpy:L274]}, which
      * admits the stage only while the three-byte flag group still reads as low values; the head paragraph
      * writes the all-invalid value into that group before any stage runs, and the migration analysis
      * records the guard as never satisfied, so the jump at {@code [app/cpy/CSUTLDPY.cpy:L277]} always
-     * leaves the range. Two consequences follow and both are load bearing: the embedded
-     * {@code CALL 'CSUTLDTC'} at {@code [app/cpy/CSUTLDPY.cpy:L293]} never executes, so the cascade never
+     * leaves the range. Two consequences follow and both are load bearing: the embedded invocation of
+     * {@code CSUTLDTC} at {@code [app/cpy/CSUTLDPY.cpy:L293]} never executes, so the cascade never
      * actually invokes the subprogram; and the valid-marking statement at
      * {@code [app/cpy/CSUTLDPY.cpy:L327]} is unreachable with it, so the cascade can only accumulate
      * failures and never declares a date good. That is why {@code DateEditResult} reports flags and a
      * message rather than a verdict.
      *
-     * <p>The method is kept, implemented in full, and invoked from the range in its source position. It is
-     * not deleted, because the traceability matrix carries a row for it; and the guard is not "fixed",
-     * because reproducing the legacy's reachability exactly is the point. Only three references to this
-     * paragraph exist anywhere in the estate &mdash; this definition, its own jump at
-     * {@code [app/cpy/CSUTLDPY.cpy:L315]} and its exit paragraph &mdash; so no other caller can reach it
-     * either.
-     *
-     * <p><strong>What "reproduced rather than forced" means here, precisely.</strong> The guard is a test
-     * of the whole three-byte group, so on a literal reading it opens exactly when all three field stages
-     * have cleared their own flag &mdash; which is why this translation evaluates the group rather than
-     * hard-wiring either answer. Neither outcome is imposed: the guard is asked the same question the
-     * source asks it, of the same three flags, at the same point in the range. Java reachability therefore
-     * equals COBOL reachability under every flag state, and if the migration analysis's finding is right
-     * this method never runs, while if some flag combination does open the guard the behaviour is the
-     * behaviour the legacy would have had. Forcing the analysis's conclusion into the control flow would
-     * have been the one choice that could diverge from the source.
+     * <p>The method is kept, implemented in full and invoked in its source position, because every legacy
+     * paragraph maps to a named method. The guard is evaluated as a test of the whole three-byte group,
+     * exactly as written, rather than hard-wired to either answer, so Java reachability equals COBOL
+     * reachability under every flag state. Forcing a conclusion into the control flow would have been the
+     * one choice that could diverge.
      *
      * @param state the per-invocation working storage
      */
@@ -1658,19 +1712,18 @@ public final class DateValidationService {
     /**
      * {@code EDIT-DATE-LE-EXIT}, {@code [app/cpy/CSUTLDPY.cpy:L323]}.
      *
-     * <p><strong>This exit paragraph is not empty.</strong> It carries two sentences: the no-operation
-     * {@code EXIT} at {@code [app/cpy/CSUTLDPY.cpy:L324]}, and then a second sentence at
+     * <p><strong>This exit paragraph is not empty.</strong> It carries the no-operation {@code EXIT} at
+     * {@code [app/cpy/CSUTLDPY.cpy:L324]} and then a second sentence at
      * {@code [app/cpy/CSUTLDPY.cpy:L327]} that sets the group-level valid condition, writing all three
      * flags back to low values in one statement.
      *
-     * <p><strong>Second anomaly.</strong> The comment at {@code [app/cpy/CSUTLDPY.cpy:L326]} asserts that
-     * arriving here means every edit was cleared. That is false on one path: the severity failure inside
-     * the stage jumps <em>to</em> this paragraph at {@code [app/cpy/CSUTLDPY.cpy:L315]}, so a failed
-     * Language-Environment check would still have its three flags overwritten as valid while the
-     * input-error condition stayed set. The contradiction is never observed for the same reason the stage
-     * is never entered, and it is reproduced rather than silently corrected: correcting it would invent a
-     * behaviour, and it is precisely the kind of latent defect that a future reader who "fixes" the guard
-     * needs to know about.
+     * <p><strong>Anomaly reproduced, not corrected.</strong> The comment at
+     * {@code [app/cpy/CSUTLDPY.cpy:L326]} asserts that arriving here means every edit was cleared, which
+     * is false on one path: the severity failure jumps <em>to</em> this paragraph at
+     * {@code [app/cpy/CSUTLDPY.cpy:L315]}, so a failed Language-Environment check would still have its
+     * three flags overwritten as valid while the input-error condition stayed set. Never observed, for the
+     * same reason the stage is never entered; carried as written because a future reader who "fixes" the
+     * guard needs to know it is there.
      *
      * @param state the per-invocation working storage
      */
@@ -1693,17 +1746,14 @@ public final class DateValidationService {
     /**
      * {@code EDIT-DATE-OF-BIRTH}, {@code [app/cpy/CSUTLDPY.cpy:L341]}.
      *
-     * <p>A reasonableness check rather than a format check: the source's comment block at
-     * {@code [app/cpy/CSUTLDPY.cpy:L336]} explains that time travel was unavailable at the time of
-     * writing, so a date of birth in the future is refused. The comparison at
-     * {@code [app/cpy/CSUTLDPY.cpy:L350]} is strict, so <strong>today's date is itself refused</strong>;
-     * only a date strictly in the past passes. The commented-out duration-based alternative at
-     * {@code [app/cpy/CSUTLDPY.cpy:L351]} is left inactive, as the source leaves it.
+     * <p>A reasonableness check rather than a format check: a date of birth in the future is refused, and
+     * the comparison at {@code [app/cpy/CSUTLDPY.cpy:L350]} is strict, so <strong>today's date is itself
+     * refused</strong>. The commented-out duration-based alternative at
+     * {@code [app/cpy/CSUTLDPY.cpy:L351]} stays inactive, as the source leaves it.
      *
-     * <p>On failure all three flags are cleared, at {@code [app/cpy/CSUTLDPY.cpy:L357]} through
-     * {@code [app/cpy/CSUTLDPY.cpy:L359]}, even though only one of them &mdash; none, strictly &mdash; is
-     * at fault: the date is well formed and merely unreasonable. That is the source's behaviour and the
-     * screen depends on it to highlight the whole field group.
+     * <p>On failure all three flags are cleared, {@code [app/cpy/CSUTLDPY.cpy:L357]} through
+     * {@code [app/cpy/CSUTLDPY.cpy:L359]}, even though the date is well formed and merely unreasonable.
+     * The screen depends on that to highlight the whole field group.
      *
      * @param state       the per-invocation working storage
      * @param currentDate the current date, standing in for the current-date intrinsic function
@@ -1732,13 +1782,11 @@ public final class DateValidationService {
         // EXIT is a no-operation. The date-of-birth range ends here.
     }
 
-    // =================================================================================================
     // PRIVATE HELPERS
     //
     // Each one reproduces a single COBOL primitive: a fixed-width move, a class or condition-name test,
     // a redefinition read, or the outcome-text selection. They are kept separate from the paragraph
     // methods so that a paragraph method reads as its paragraph reads.
-    // =================================================================================================
 
     /**
      * Selects the outcome text, reproducing the ten-clause evaluation at
@@ -1791,7 +1839,7 @@ public final class DateValidationService {
         return new SubprogramResult(feedback,
                 severityCode,
                 messageNumber,
-                padOrTruncate(resultText(feedback), RESULT_TEXT_WIDTH),
+                padOrTruncate(resultText(feedback), RESULT_TEXT_WIDTH, "WS-RESULT"),
                 testedDate,
                 maskUsed);
     }
@@ -1874,21 +1922,29 @@ public final class DateValidationService {
      * {@code [app/cpy/CSUTLDWY.cpy:L4]}.
      *
      * @param value the sending value
-     * @return exactly eight characters
+     * @return exactly eight encoded bytes
+     * @throws IllegalArgumentException if the sender carries a character the single-byte charset cannot
+     *                                  represent
      */
     private static String moveToCcyymmddField(final String value) {
-        return padOrTruncate(value, CCYYMMDD_WIDTH);
+        return padOrTruncate(value, CCYYMMDD_WIDTH, "WS-EDIT-DATE-CCYYMMDD");
     }
 
     /**
      * Reproduces a move into one of the two ten-character linkage text fields,
      * {@code [app/cbl/CSUTLDTC.cbl:L84]} and {@code [app/cbl/CSUTLDTC.cbl:L85]}.
      *
-     * @param value the sending value
-     * @return exactly ten characters
+     * <p>The field name is supplied by the caller because the two linkage parameters are distinct
+     * fields at the same width, and a rejection has to say which of them was overrun.
+     *
+     * @param value     the sending value
+     * @param fieldName the linkage field being filled, for the failure diagnostic
+     * @return exactly ten encoded bytes
+     * @throws IllegalArgumentException if the sender carries a character the single-byte charset cannot
+     *                                  represent
      */
-    private static String moveToLinkageTextField(final String value) {
-        return padOrTruncate(value, LINKAGE_TEXT_WIDTH);
+    private static String moveToLinkageTextField(final String value, final String fieldName) {
+        return padOrTruncate(value, LINKAGE_TEXT_WIDTH, fieldName);
     }
 
     /**
@@ -1898,22 +1954,77 @@ public final class DateValidationService {
      * spaces on the right, and a longer one loses its <em>rightmost</em> excess. That is the opposite of
      * the right-justified receiver the menu programs use, so the two must not be confused.
      *
-     * @param value the sending value
-     * @param width the receiving field's width
-     * @return exactly {@code width} characters
+     * <p><strong>The move is performed on the encoded image, not on the character sequence.</strong> A
+     * receiving field declares a byte count, so measuring and truncating by character count would leave
+     * a field whose byte width is wrong for any sender outside the single-byte range &mdash; and the
+     * eighty-byte result area that both callers overlay would then overrun. Representability is gated
+     * first, so the value cannot be transcoded silently, and the returned string is pure single-byte
+     * content: re-encoding it yields exactly {@code width} bytes, which is what makes the character
+     * slicing performed downstream on these fields byte-faithful.
+     *
+     * @param value     the sending value
+     * @param width     the receiving field's width in bytes
+     * @param fieldName the legacy field name, for the failure diagnostic
+     * @return exactly {@code width} encoded bytes
+     * @throws IllegalArgumentException if the sender carries a character the single-byte charset cannot
+     *                                  represent
      */
-    private static String padOrTruncate(final String value, final int width) {
-        if (value.length() == width) {
+    private static String padOrTruncate(final String value, final int width, final String fieldName) {
+        requireSingleByteRepresentable(value, fieldName);
+        final byte[] encoded = value.getBytes(StandardCharsets.US_ASCII);
+        if (encoded.length == width) {
             return value;
         }
-        if (value.length() > width) {
-            return value.substring(0, width);
+        final byte[] field = new byte[width];
+        final int copied = Math.min(encoded.length, width);
+        System.arraycopy(encoded, 0, field, 0, copied);
+        for (int position = copied; position < width; position++) {
+            field[position] = SPACE_BYTE;
         }
-        final StringBuilder padded = new StringBuilder(width).append(value);
-        while (padded.length() < width) {
-            padded.append(SPACE);
+        return new String(field, StandardCharsets.US_ASCII);
+    }
+
+    /**
+     * Refuses a value the single-byte character set of the legacy fields cannot carry.
+     *
+     * <p>The scan runs before any encode, and that ordering is the whole point of the method:
+     * {@code String.getBytes} substitutes a question mark for an unmappable character, so encoding first
+     * and inspecting afterwards cannot tell a substituted byte from a question mark that was genuinely
+     * sent. The loop bound is a character count used purely to walk the value; the width authority is
+     * always the encoded length.
+     *
+     * <p>The diagnostic reports the position and the numeric code unit and never the character itself,
+     * so a rejected value cannot place its own content into a message that a caller may log.
+     *
+     * @param value     the value to scan
+     * @param fieldName the legacy field name, for the failure diagnostic
+     * @throws IllegalArgumentException if any character lies above the single-byte bound
+     */
+    private static void requireSingleByteRepresentable(final String value, final String fieldName) {
+        for (int index = 0; index < value.length(); index++) {
+            final char candidate = value.charAt(index);
+            if (candidate > MAX_SINGLE_BYTE_CHARACTER) {
+                throw new IllegalArgumentException(fieldName
+                        + " carries a character the single-byte character set of the legacy fields"
+                        + " cannot represent, at position " + index + " (code unit "
+                        + (int) candidate + "); a fixed-width field reserves bytes, so such a value"
+                        + " cannot occupy its declared width and must never be transcoded silently");
+            }
         }
-        return padded.toString();
+    }
+
+    /**
+     * Measures a value as encoded bytes in the single-byte character set of the legacy fields.
+     *
+     * <p>Every width assertion in this class goes through here, so no width is ever asserted in
+     * {@code String} characters or against the platform default charset. The value must already have
+     * passed the representability gate, otherwise the measurement would count substituted bytes.
+     *
+     * @param value the value to measure
+     * @return the number of bytes the value occupies when encoded
+     */
+    private static int encodedByteWidth(final String value) {
+        return value.getBytes(StandardCharsets.US_ASCII).length;
     }
 
     /**
@@ -1948,7 +2059,8 @@ public final class DateValidationService {
     }
 
     /**
-     * Reproduces a {@code STRING ... INTO WS-RETURN-MSG} guarded by the message-off condition, the shape
+     * Reproduces a concatenating store into the return-message field {@code WS-RETURN-MSG}, guarded by
+     * the message-off condition: the shape
      * that every one of the cascade's message branches uses, for example at
      * {@code [app/cpy/CSUTLDPY.cpy:L34]} through {@code [app/cpy/CSUTLDPY.cpy:L40]}.
      *

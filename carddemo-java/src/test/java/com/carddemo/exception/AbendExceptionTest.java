@@ -32,78 +32,46 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Unit tests for {@link AbendException}, the single Java type that replaces the entire abend
- * surface of the legacy CardDemo estate.
+ * Unit tests for {@link AbendException}, the single Java type that replaces the entire abend surface
+ * of the legacy CardDemo estate.
  *
- * <h2>What is under test</h2>
+ * <p>Thirteen legacy sites terminate abnormally and all thirteen map onto this one type. Nine sit on
+ * the batch tier, one per batch program, each a static call to the Language Environment abort routine
+ * {@code CEE3ABD} inside a paragraph named {@code 9999-ABEND-PROGRAM} that first sets a numeric
+ * abend code of 999: {@code CBACT01C}, {@code CBACT02C}, {@code CBACT03C}, {@code CBACT04C},
+ * {@code CBCUS01C}, {@code CBTRN01C}, {@code CBTRN02C}, {@code CBTRN03C} and {@code CBSTM03A}. Four
+ * sit on the online tier as CICS abend commands carrying the four-character code 9999, each
+ * immediately preceded by the CICS abend-handler deregistration: {@code COACTUPC},
+ * {@code COACTVWC}, {@code COCRDSLC} and {@code COCRDUPC}. The fifth member of that stylistic
+ * family, {@code COCRDLIC}, has its inclusion of the abend work area commented out and so carries no
+ * abend context of its own. Nine plus four is the complete surface, which is why one exception type
+ * suffices. These counts are documentation only and are deliberately not asserted: no legacy source
+ * is on the test classpath, and none may be reproduced in this module.
  *
- * <p>Thirteen legacy sites terminate abnormally and all thirteen map onto this one type. Nine sit
- * on the batch tier, one per batch program, each a static call to the Language Environment abort
- * routine {@code CEE3ABD} inside a paragraph named {@code 9999-ABEND-PROGRAM} that first sets a
- * numeric abend code of 999: {@code CBACT01C}, {@code CBACT02C}, {@code CBACT03C},
- * {@code CBACT04C}, {@code CBCUS01C}, {@code CBTRN01C}, {@code CBTRN02C}, {@code CBTRN03C} and
- * {@code CBSTM03A}. Four sit on the online tier as CICS abend commands carrying the
- * four-character code 9999, each immediately preceded by the CICS abend-handler deregistration:
- * {@code COACTUPC}, {@code COACTVWC}, {@code COCRDSLC} and {@code COCRDUPC}. Those four are
- * confined to the five-program family {@code COACTUPC}, {@code COACTVWC}, {@code COCRDLIC},
- * {@code COCRDSLC} and {@code COCRDUPC}; the fifth member, {@code COCRDLIC}, belongs to the
- * family stylistically but has its inclusion of the abend work area commented out and therefore
- * carries no abend context of its own. Nine plus four is the complete surface, which is why one
- * exception type suffices and no second one is introduced. These counts are recorded here as
- * documentation only and are deliberately not asserted: no legacy source is on the test
- * classpath, and none may be reproduced in this module.
- *
- * <h2>The 134-character context</h2>
- *
- * <p>The legacy abend work area is a group of exactly four character fields, every one of them
- * initialised to spaces, and the tests below treat their widths as the contract:
- *
- * <ul>
- *   <li>{@code ABEND-CODE}, four characters, exposed by {@link AbendException#code()}</li>
- *   <li>{@code ABEND-CULPRIT}, eight characters, exposed by {@link AbendException#culprit()}</li>
- *   <li>{@code ABEND-REASON}, fifty characters, exposed by {@link AbendException#reason()}</li>
- *   <li>{@code ABEND-MSG}, seventy-two characters, exposed by the inherited
- *       {@link Throwable#getMessage()}</li>
- * </ul>
- *
- * <p>Four plus eight plus fifty plus seventy-two is 134, so
+ * <p>The legacy abend work area is a group of exactly four character fields, every one initialised
+ * to spaces, and these tests treat their widths as the contract: {@code ABEND-CODE} four characters
+ * ({@link AbendException#code()}), {@code ABEND-CULPRIT} eight ({@link AbendException#culprit()}),
+ * {@code ABEND-REASON} fifty ({@link AbendException#reason()}) and {@code ABEND-MSG} seventy-two,
+ * carried by the inherited {@link Throwable#getMessage()} rather than duplicated into a field of its
+ * own. Four plus eight plus fifty plus seventy-two is 134, so
  * {@link AbendException#CONTEXT_LENGTH} is asserted both against that total and against the
- * arithmetic sum of the four width constants. Asserting the sum as well as the literal is the
- * strongest single check in this class: it means a later edit to any one width cannot silently
- * desynchronise the total.
+ * arithmetic sum of the four width constants - the strongest single check in this class, because it
+ * means a later edit to any one width cannot silently desynchronise the total.
  *
- * <p>The fourth component is intentionally not duplicated into a field of its own. It is carried
- * by the inherited {@code Throwable} message, so these tests read it with
- * {@link Throwable#getMessage()} and never look for an accessor that does not exist.
- *
- * <h2>Faithful over idiomatic</h2>
- *
- * <p>Several behaviours here would look wrong to a reader who expected idiomatic Java, and each
- * is deliberate. The default operator message keeps its trailing full stop and stays in upper
- * case because that is how the legacy literal reads. The batch abend code is three characters
+ * <p><strong>Faithful over idiomatic.</strong> Several assertions would look wrong to a reader
+ * expecting idiomatic Java. The default operator message keeps its trailing full stop and stays in
+ * upper case because that is how the legacy literal reads. The batch abend code is three characters
  * while the online abend code is four, because the first comes from a numeric move and the second
  * from a four-character command literal; the asymmetry is asserted on purpose so that nobody
- * "normalises" the two to match. Values are left-justified and padded on the right, never on the
- * left, because that is how a legacy character field holds a short value. An over-length value is
- * rejected rather than truncated, which is the one place this translation is deliberately
- * stricter than the mainframe: a legacy move would have truncated in silence, and a truncated
- * abend context is a lost diagnostic.
+ * normalises the two to match. Values are left-justified and padded on the right, never on the left,
+ * because that is how a legacy character field holds a short value. An over-length value is rejected
+ * rather than truncated, and absence becomes the empty string rather than the text "null"; both are
+ * recorded divergences - decision log entries D-06 and D-07 - rather than local judgements.
  *
- * <h2>Documented source anomaly</h2>
- *
- * <p>The copybook that declares the abend work area carries an internal banner comment naming the
- * file {@code CABENDD.CPY}, which disagrees with the member name that actually exists,
- * {@code CSMSG02Y.cpy}. The copybook is also written in the older sequence-numbered layout, with
- * numbers occupying the first six columns. Both observations are recorded, neither is corrected:
- * the legacy tree is the parity baseline and stays byte-identical.
- *
- * <h2>Provenance</h2>
- *
- * <p>Behaviour verified against the CardDemo mainframe estate at commit SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. That stamp is cited here purely as
- * provenance for this class as a whole; it is not universal across the estate and is never
- * asserted, per member or otherwise.
+ * <p>The copybook declaring the abend work area carries an internal banner comment naming the file
+ * {@code CABENDD.CPY}, which disagrees with the member that actually exists, {@code CSMSG02Y.cpy},
+ * and is written in the older sequence-numbered layout. Both observations are row 17 of the source
+ * anomaly register; neither is corrected, because the legacy tree is the parity baseline.
  */
 @DisplayName("AbendException: the 134-character legacy abend context")
 class AbendExceptionTest {
@@ -601,11 +569,8 @@ class AbendExceptionTest {
         void constructionFailsInsteadOfTruncating() {
             String reasonOneTooLong = "R".repeat(AbendException.REASON_LENGTH + 1);
 
-            // Faithful over idiomatic, inverted deliberately and for one reason only. A legacy
-            // move into a shorter field truncates in silence; this translation refuses instead,
-            // because a truncated abend context is a lost diagnostic and losing a diagnostic at
-            // the moment of termination is the one legacy behaviour worth improving upon. The
-            // refusal is therefore a documented divergence, not an oversight.
+            // A legacy move into a shorter field truncates in silence; this translation refuses
+            // instead. The divergence is decision log entry D-06, not a local judgement.
             assertThatThrownBy(() -> new AbendException(CODE_IN_RANGE, CULPRIT_IN_RANGE,
                     reasonOneTooLong, MESSAGE_IN_RANGE))
                     .as("no instance is produced at all, so no caller can ever observe a silently"
@@ -850,4 +815,3 @@ class AbendExceptionTest {
         }
     }
 }
-

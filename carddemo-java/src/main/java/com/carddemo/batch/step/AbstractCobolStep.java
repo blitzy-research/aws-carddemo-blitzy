@@ -38,32 +38,66 @@ import org.springframework.batch.repeat.RepeatStatus;
  * close, diagnostic and abend skeleton that every batch program of the AWS CardDemo mainframe estate
  * repeats verbatim.
  *
- * <h2>What this class replaces</h2>
+ * <p><strong>What this class replaces.</strong> Ten batch programs share one structure, and
+ * {@code app/cbl/CBACT01C.cbl} shows the whole of it: the program body (lines 70 to 87) announces its
+ * own start, performs the open paragraphs, loops until an end-of-file flag flips, performs the close
+ * paragraphs, announces its own end and returns. The other nine differ only in which files they open
+ * and what they do with a record. Three families of paragraph are absorbed here: the <strong>open</strong>
+ * paragraphs numbered {@code 0000-} through {@code 0500-}, which arm a sentinel, open a file,
+ * normalise the resulting status and either continue or abend; the <strong>read</strong> paragraph
+ * numbered {@code 1000-}, which reads one record, normalises the status three ways and either
+ * continues, terminates the loop normally or abends; and the <strong>close</strong> paragraphs
+ * numbered {@code 9000-} through {@code 9500-}, which mirror the open paragraphs exactly. Beneath them
+ * sit the two diagnostic paragraphs every program carries &mdash; the status display and the abort
+ * routine, each named one way in six programs and another way in two (decision log entry D-41) &mdash;
+ * and both are reproduced in that order, because the order is the contract.
  *
- * <p>Ten batch programs share one structure. Reading {@code app/cbl/CBACT01C.cbl} is enough to see
- * the whole of it, and the other nine differ only in which files they open and what they do with a
- * record. The program body (lines 70 to 87) announces its own start, performs the open paragraphs,
- * loops until an end-of-file flag flips, performs the close paragraphs, announces its own end and
- * returns. Around that body sit three families of paragraph, and it is those three families that
- * this class absorbs:</p>
+ * <p><strong>The I/O state model has two levels and neither may be collapsed into the other.</strong>
+ * The legacy programs <strong>never branch on the raw two-byte file status</strong>; they normalise it
+ * into a coarser signed integer first and branch on that. {@code app/cbl/CBACT01C.cbl} lines 92 to 116
+ * is the exemplar: raw {@code 00} moves 0 into {@code APPL-RESULT}, raw {@code 10} moves 16 and every
+ * other value moves 12, after which the code tests the two level-88 names declared on that item,
+ * {@code APPL-AOK} at 0 (line 62) and {@code APPL-EOF} at 16 (line 63). End of file sets the loop's
+ * termination flag and is an entirely normal outcome; the remaining branch displays a diagnostic,
+ * moves the raw status into a display field, displays it and abends. Both levels are modelled here:
+ * {@link FileStatus} owns the raw two-character vocabulary and stops there, {@link IoOutcome} owns the
+ * coarse tri-state and carries the exact {@code APPL-RESULT} value each outcome corresponds to, and
+ * {@link IoResult} keeps the raw status alongside the record for as long as it takes to diagnose a
+ * failure. Collapsing the model would be a defect rather than a simplification: nine of the ten
+ * programs terminate their read loop on raw {@code 10}, so folding that into an error would turn every
+ * successful job into an abend, while treating {@code 10} as end of file outside a read would swallow a
+ * genuine failure &mdash; which is why {@link IoOperation} records that only the read may legitimately
+ * report it. Recorded as decision log entry D-21.
  *
- * <ul>
- *   <li>the <strong>open</strong> paragraphs, numbered {@code 0000-} through {@code 0500-}, which
- *       arm a sentinel, open a file, normalise the resulting status and either continue or abend;
- *   <li>the <strong>read</strong> paragraph, numbered {@code 1000-}, which reads one record,
- *       normalises the status three ways and either continues, terminates the loop normally or
- *       abends;
- *   <li>the <strong>close</strong> paragraphs, numbered {@code 9000-} through {@code 9500-}, which
- *       mirror the open paragraphs exactly.
- * </ul>
+ * <p><strong>Diagnose first, abend second.</strong> {@code 9999-ABEND-PROGRAM}
+ * ({@code app/cbl/CBACT01C.cbl} lines 169 to 173) displays {@code ABENDING PROGRAM}, sets a timing
+ * field and an abend code, and only then calls the Language Environment abort routine; every failure
+ * site reaching it has already displayed its own error text and the raw status. An operator reading a
+ * Java log must see the same ordering. {@link AbendException} holds no logger and states that ordering
+ * is the caller's contract, and this class is that caller:
+ * {@link #abendOnIoFailure(IoOperation, String, String)} logs the operation, the resource and the raw
+ * two-byte status, then logs the abend announcement, and only then constructs the exception. Nothing on
+ * that path may be reordered, and the exception must never be asked to log on its own behalf.
  *
- * <p>Underneath them sit the two diagnostic paragraphs every program carries: the status display
- * ({@code 9910-DISPLAY-IO-STATUS}, named {@code Z-DISPLAY-IO-STATUS} in {@code CBCUS01C} and
- * {@code CBTRN01C}) and the abort routine ({@code 9999-ABEND-PROGRAM}, named
- * {@code Z-ABEND-PROGRAM} in those same two programs). Both are reproduced here, in that order,
- * because the order is the contract. See <em>Diagnose first, abend second</em> below.</p>
+ * <p><strong>One source defect is deliberately not propagated.</strong> A close paragraph in
+ * {@code app/cbl/CBTRN02C.cbl} displays another file's status than the one whose close it just found to
+ * have failed (anomaly 30 of the source anomaly register). It cannot be reproduced here: the status
+ * travels from the failing operation to the diagnostic as a parameter rather than through a shared
+ * display field, so reporting the wrong resource's status is structurally impossible.
  *
- * <h2>The two-level I/O state model, and why it is two levels</h2>
+ * <p><strong>Where this template stops.</strong> Two categories of legacy I/O fall outside it and are
+ * supported without being absorbed. The first is <strong>per-call-site status acceptance</strong>: a
+ * handful of sites accept a status the canonical cascade rejects, and widening the cascade for everyone
+ * would silently convert real errors into successes in the other fifty-odd sites (decision log entry
+ * D-22), so such a site normalises for itself through {@link #normaliseStatus(IoOperation, String)} and,
+ * when it decides the status is terminal, reaches the same ordered diagnostic through
+ * {@link #abendOnIoFailure(IoOperation, String, String)}; neither the cascade nor the ordering is ever
+ * duplicated. The second is {@code app/cbl/CBSTM03A.CBL}, which is not a read loop but a hand-rolled
+ * dispatcher holding a data-definition name in a work field and jumping backwards to its start
+ * paragraph after each phase (lines 760 to 761 and 849 to 852). No open-read-close skeleton can express
+ * re-entry into a dispatcher after a state change, so that program is translated as an explicit state
+ * machine elsewhere; its individual I/O operations are still ordinary guarded operations and may use
+ * the helpers here.
  *
  * <p>The single most important thing to understand before touching this class is that the legacy
  * programs <strong>never branch on the raw two-byte file status</strong>. They normalise it into a
@@ -102,6 +136,30 @@ import org.springframework.batch.repeat.RepeatStatus;
  * the resource and the raw two-byte status, then logs the abend announcement, and only then
  * constructs the exception. Nothing on that path may be reordered, and the exception must never be
  * asked to log on its own behalf.</p>
+ *
+ * <h2>An abend is terminal: the close paragraphs never run after it</h2>
+ *
+ * <p>{@code CALL 'CEE3ABD'} does not return. The Language Environment abort routine ends the enclave,
+ * so the {@code PERFORM 9000-ACCTFILE-CLOSE} that follows the read loop at
+ * {@code app/cbl/CBACT01C.cbl} line 83 is never reached once any guarded operation has abended, and
+ * neither is the {@code DISPLAY 'END OF EXECUTION OF PROGRAM ...'} at line 85. The same holds for every
+ * batch program in the estate: an open failure, a read failure, a write failure and even a close failure
+ * each end the run where they stand. The last thing an operator sees is the failing operation's error
+ * text, its raw status and {@code ABENDING PROGRAM}.</p>
+ *
+ * <p>The failure path here reproduces that exactly. {@link #closeResources()} -- the observable close
+ * family, whose members arm the sentinel, normalise the reported status, emit a
+ * {@code ERROR CLOSING ...} diagnostic and abend in their own right -- is invoked on the completing path
+ * <strong>only</strong>. Invoking it after a failure would emit close diagnostics the legacy never
+ * emits, could announce a second abend for a different resource, and would report a status for an
+ * operation the legacy never attempted.</p>
+ *
+ * <p>What the legacy did not have to do, and a JVM does, is give back the handles it holds: on z/OS the
+ * abending task's data sets were released by the operating system when the enclave ended, whereas this
+ * process outlives the failed step. That obligation is met by {@link #releaseResources()}, a
+ * <em>non-observable</em> primitive that exists purely as a runtime adaptation. It normalises no status,
+ * emits no legacy diagnostic, never abends, and is documented so that no future change turns it back
+ * into a second close sequence.</p>
  *
  * <h2>Documented source defect: do not propagate it</h2>
  *
@@ -161,11 +219,12 @@ import org.springframework.batch.repeat.RepeatStatus;
  * <p>Translated from the CardDemo mainframe estate at commit SHA
  * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL, JCL, BMS, copybook or CICS
- * resource text is reproduced in this module: the legacy source is cited by member, paragraph, field
- * and line number, and never transcribed. Nothing in this class reads the legacy tree at runtime.</p>
+ * resource text is transcribed in this file: the legacy source is cited by member, paragraph, field,
+ * condition name and line number, and its statements are described rather than quoted. Nothing in
+ * this class reads the legacy tree at runtime.</p>
  *
  * @param <R> the record type the concrete step's read paragraph delivers, corresponding to the record
- *            the legacy {@code READ ... INTO} statement moved into working storage
+ *            the legacy read paragraph moved into working storage
  */
 public abstract class AbstractCobolStep<R> implements Tasklet {
 
@@ -173,12 +232,11 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
      * Diagnostic channel for the whole batch step tier, replacing the console display statements that
      * were the estate's only instrumentation.
      *
-     * <p>Named for this class rather than for the concrete subclass, deliberately: the logger is
-     * {@code static}, so it cannot vary per instance, and every message it emits carries the legacy
-     * program name as a field, which identifies the originating step unambiguously. The
-     * {@code com.carddemo} logger level configured in {@code application.yml} covers this category
-     * hierarchically, and the JSON encoder configured in {@code logback-spring.xml} renders it as
-     * structured output.</p>
+     * <p>Named for this class rather than for the concrete subclass because the logger is
+     * {@code static} and cannot vary per instance; every message carries the legacy program name as a
+     * field, which identifies the originating step unambiguously. The {@code com.carddemo} level in
+     * {@code application.yml} covers this category hierarchically and {@code logback-spring.xml} renders
+     * it as structured output.</p>
      */
     private static final Logger LOGGER = LoggerFactory.getLogger(AbstractCobolStep.class);
 
@@ -219,8 +277,9 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
     /**
      * Width of the batch timestamp image, in bytes.
      *
-     * <p>The estate declares the field as {@code PIC X(26)} and its subordinate redefinition sums to
-     * the same figure: four year digits, three separators, two month digits, two day digits, two hour
+     * <p>The estate declares the field as a fixed twenty-six-byte alphanumeric item, and its
+     * subordinate redefinition sums to the same figure: four year digits, three separators, two month
+     * digits, two day digits, two hour
      * digits, three separators, two minute digits, two second digits, two hundredths digits and a
      * four-character tail ({@code app/cbl/CBTRN02C.cbl} lines 159 to 174).</p>
      */
@@ -295,8 +354,10 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
     /**
      * Time source behind the batch timestamp.
      *
-     * <p>Injected rather than read from a static so that a test can pin an instant and assert the
-     * rendered image exactly.</p>
+     * <p>Always injected, never manufactured here and never read from a static, so that the emitted
+     * timestamp image cannot depend on the regional settings of the host the job runs on and so that
+     * a test can pin an instant and assert the rendered image exactly. In the application this is the
+     * single UTC clock published by {@code com.carddemo.config.JpaAuditConfig#systemClock()}.</p>
      */
     private final Clock clock;
 
@@ -505,14 +566,16 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
     }
 
     /**
-     * What one legacy {@code READ ... INTO} delivered: the raw two-byte status, and the record moved
+     * What one legacy read of an input file delivered: the raw two-byte status, and the record moved
      * into working storage when there was one.
      *
      * <p>The two travel together because the coarse outcome alone cannot be diagnosed. Keeping the raw
-     * status attached until the diagnostic has been emitted is precisely what
-     * {@code MOVE ACCTFILE-STATUS TO IO-STATUS} did before displaying it, and it is what lets this
-     * template avoid the defect at {@code app/cbl/CBTRN02C.cbl} line 649, where a shared display field
-     * allowed one file's status to be reported for another file's failure.</p>
+     * status attached until the diagnostic has been emitted is precisely what the account-file reader
+     * does when it copies that file's own status field into the shared display field immediately
+     * before invoking the display paragraph, at {@code app/cbl/CBACT01C.cbl} lines 111 and 112 and
+     * again at 145 and 163. It is also what lets this template avoid the defect at
+     * {@code app/cbl/CBTRN02C.cbl} line 649, where that shared display field allowed one file's
+     * status to be reported for another file's failure.</p>
      *
      * @param <T>       the record type
      * @param rawStatus the two-character {@code FILE STATUS} the read reported, never {@code null}
@@ -592,27 +655,7 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
     }
 
     /**
-     * Creates a step against the platform's default-zone clock.
-     *
-     * <p>The legacy timestamp routine reads {@code FUNCTION CURRENT-DATE}, which returns local civil
-     * time rather than an instant, so the default-zone clock is the faithful equivalent and is
-     * constructed explicitly here rather than reached through a static call buried in the timestamp
-     * code. Prefer {@link #AbstractCobolStep(String, MeterRegistry, Clock)} wherever the clock is
-     * available as a bean or needs pinning in a test.</p>
-     *
-     * @param programName   the legacy batch program this step stands in for, for example
-     *                      {@code CBACT01C}; at most {@value AbendException#CULPRIT_LENGTH}
-     *                      characters, because it doubles as the abend culprit
-     * @param meterRegistry the registry the lifecycle timer is registered with
-     * @throws NullPointerException     if either argument is {@code null}
-     * @throws IllegalArgumentException if {@code programName} is blank or too long
-     */
-    protected AbstractCobolStep(final String programName, final MeterRegistry meterRegistry) {
-        this(programName, meterRegistry, Clock.systemDefaultZone());
-    }
-
-    /**
-     * Creates a step with every collaborator supplied.
+     * Creates a step with every collaborator supplied. This is the only constructor, deliberately.
      *
      * <p>Constructor injection only: there is no setter, no field injection and no mutable
      * collaborator anywhere on this class. The program name is validated here, at construction, rather
@@ -620,10 +663,41 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
      * {@link AbendException} rejects an over-long culprit by throwing. Validating late would let the
      * abend path fail on its own argument and mask the input or output failure that provoked it.</p>
      *
-     * @param programName   the legacy batch program this step stands in for; at most
-     *                      {@value AbendException#CULPRIT_LENGTH} characters
+     * <p>There is deliberately no convenience constructor that manufactures a clock. The time source
+     * is always supplied, and in the application it is the single UTC clock published by
+     * {@code com.carddemo.config.JpaAuditConfig#systemClock()}. A constructor that defaulted to
+     * {@link Clock#systemDefaultZone()} would silently bypass that bean and make the emitted
+     * timestamp image depend on the regional settings of whichever host the job happened to run on,
+     * which would break the byte-for-byte output contract that
+     * {@link #currentBatchTimestamp()} exists to honour. The zone is part of that contract: it
+     * matches the time zone the persistence layer is configured with, so a bounded
+     * {@value #BATCH_TIMESTAMP_LENGTH}-character timestamp reads back exactly as it was written.
+     * A test supplies a fixed clock through this same parameter, so pinning an instant needs no
+     * different wiring from production.</p>
+     *
+     * <p><strong>The clock is mandatory and is never defaulted.</strong> An earlier convenience
+     * constructor supplied {@link Clock#systemDefaultZone()} on the subclass's behalf, and that was
+     * wrong on three counts at once. It bypassed the single clock bean the application publishes, so
+     * two parts of one run could read time from two different sources and disagree about the zone.
+     * It made the zone a property of the host rather than of the deployment, so the same batch run
+     * produced different timestamps on two machines. And it made a step's timestamps unpinnable, so a
+     * test could assert nothing about them beyond their shape. Requiring the clock puts the zone
+     * decision in exactly one place - the clock bean, which this module publishes as a UTC clock - and
+     * makes every timestamp this class emits reproducible.</p>
+     *
+     * <p>That single decision is also where the legacy semantics live. The legacy timestamp routine
+     * reads {@code FUNCTION CURRENT-DATE}, which returns local civil time rather than an instant, so
+     * the civil-time reading is preserved by formatting {@link java.time.LocalDateTime} from the
+     * supplied clock; which civil time that is - the deployment's or the host's - is settled once by
+     * the clock bean and recorded in {@code docs/decision-log.md}, not scattered across subclasses.</p>
+     *
+     * @param programName   the legacy batch program this step stands in for, for example
+     *                      {@code CBACT01C}; at most {@value AbendException#CULPRIT_LENGTH}
+     *                      characters, because it doubles as the abend culprit
      * @param meterRegistry the registry the lifecycle timer is registered with
-     * @param clock         the time source behind {@link #currentBatchTimestamp()}
+     * @param clock         the time source behind {@link #currentBatchTimestamp()}; the managed UTC
+     *                      clock in the application, a fixed clock in a test, and never the platform
+     *                      default zone
      * @throws NullPointerException     if any argument is {@code null}
      * @throws IllegalArgumentException if {@code programName} is blank or longer than the legacy
      *                                  culprit field
@@ -645,35 +719,37 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
      * themselves:</p>
      *
      * <ol>
-     *   <li>the start announcement, replacing {@code DISPLAY 'START OF EXECUTION OF PROGRAM ...'}
-     *       (line 71), a literal that all eight programs carrying it use identically;
+     *   <li>the start announcement, replacing the opening display of the program's own start-of-run
+     *       message (line 71), whose wording all eight programs carrying it use identically;
      *   <li>{@link #openResources()}, replacing the {@code 0000-} through {@code 0500-} open
      *       paragraphs performed in declaration order;
-     *   <li>the read loop, replacing {@code PERFORM UNTIL END-OF-FILE = 'Y'} (lines 74 to 81), which
-     *       calls {@link #readNextRecord()} and hands each delivered record to
+     *   <li>the read loop, replacing the loop that repeats until the end-of-file flag is set (lines
+     *       74 to 81), which calls {@link #readNextRecord()} and hands each delivered record to
      *       {@link #processRecord(Object)};
      *   <li>{@link #closeResources()}, replacing the {@code 9000-} through {@code 9500-} close
      *       paragraphs;
      *   <li>the completion diagnostic, replacing the end-of-run displays such as the processed count
      *       at {@code app/cbl/CBTRN02C.cbl} line 227;
-     *   <li>the end announcement, replacing {@code DISPLAY 'END OF EXECUTION OF PROGRAM ...'}
-     *       (line 85).
+     *   <li>the end announcement, replacing the closing display of the program's own end-of-run
+     *       message (line 85).
      * </ol>
      *
      * <p>The loop is the legacy loop, not a rewrite of it. A read that reports end of file terminates
      * it normally and is neither logged as an error nor allowed to throw; a read that reports any other
      * non-success status has already abended inside {@link #readNextRecord()}'s guarded helper before
      * control returns here. Only a record the read actually delivered is processed, which is the inner
-     * {@code IF END-OF-FILE = 'N'} test at line 77.</p>
+     * guard at line 77 that re-tests the end-of-file flag after the read paragraph returns.</p>
      *
      * <p>Every counter and flag the loop needs is a local variable, so two executions of the same step
      * instance cannot interfere, and the whole lifecycle is timed once, on both the completing and the
      * abending path, with the outcome distinguished by a tag.</p>
      *
-     * <p>On failure the original exception always propagates. If the failure arrived before the close
-     * sequence was entered, the close sequence is attempted exactly once so that resources are
-     * released; a failure of that attempt is attached to the original as a suppressed exception and
-     * logged, never substituted for it.</p>
+     * <p>Phases four, five and six belong to the completing path alone. A failure is terminal, because
+     * the Language Environment abort routine the legacy calls does not return, so the close family, the
+     * completion diagnostic and the end announcement are all skipped exactly as they are skipped on the
+     * mainframe. The original exception always propagates unchanged; the only work done on the way out is
+     * {@link #releaseResources()}, the non-observable handle release that has no legacy antecedent and
+     * emits no legacy diagnostic.</p>
      *
      * @return what this execution observed
      * @throws AbendException if any guarded operation reported a terminal status, after the diagnostic
@@ -685,7 +761,6 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
         LOGGER.info("START OF EXECUTION OF PROGRAM {} - {}", this.programName, startedAt);
 
         long recordsRead = 0L;
-        boolean closeSequenceEntered = false;
         try {
             openResources();
 
@@ -701,12 +776,9 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
                 }
             }
 
-            closeSequenceEntered = true;
             closeResources();
         } catch (RuntimeException primary) {
-            if (!closeSequenceEntered) {
-                releaseAfterFailure(primary);
-            }
+            releaseAfterFailure(primary);
             recordExecutionTime(sample, OUTCOME_ABENDED);
             LOGGER.error("EXECUTION OF PROGRAM {} TERMINATED ABNORMALLY AFTER {} RECORD(S) READ",
                     this.programName, recordsRead);
@@ -726,13 +798,10 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
      *
      * <p>A legacy batch program processes a whole file in one invocation, so the lifecycle is
      * whole-file rather than chunk-oriented and completes in a single pass: the returned status is
-     * always {@code FINISHED} and this method never asks to be called again.</p>
-     *
-     * <p>Neither parameter is consulted. There is no partial contribution to report, because the
-     * lifecycle either completes in full or abends; and there is no need to reach into the chunk
-     * context for identity, because the step's identity is the legacy program name supplied at
-     * construction. Step-level timing is recorded by {@link #run()} itself and by the framework's own
-     * step instrumentation.</p>
+     * always {@code FINISHED} and this method never asks to be called again. Neither parameter is
+     * consulted &mdash; there is no partial contribution to report because the lifecycle either
+     * completes in full or abends, and the step's identity is the legacy program name supplied at
+     * construction rather than anything in the chunk context.</p>
      *
      * <p>This class constructs no step and no job. Step construction belongs to the job configurations
      * in the parent package, which own the step name, the transaction manager and the job repository.
@@ -755,14 +824,12 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
      * Opens every resource this step reads or writes, in the order the legacy opened them.
      *
      * <p>Replaces the open paragraph family: {@code 0000-ACCTFILE-OPEN} alone in
-     * {@code app/cbl/CBACT01C.cbl} (lines 133 to 149), and up to six paragraphs performed in sequence
-     * in the larger programs, such as {@code 0000-DALYTRAN-OPEN} through {@code 0500-TCATBALF-OPEN} in
+     * {@code app/cbl/CBACT01C.cbl} (lines 133 to 149), and up to six paragraphs performed in sequence in
+     * the larger programs, such as {@code 0000-DALYTRAN-OPEN} through {@code 0500-TCATBALF-OPEN} in
      * {@code app/cbl/CBTRN02C.cbl} (lines 195 to 200). Order is preserved because the legacy preserved
-     * it.</p>
-     *
-     * <p>Perform each open through {@link #openResource(String, IoAction)} so that the sentinel, the
-     * normalisation and the ordered diagnostic are applied uniformly. An implementation must not
-     * swallow a failure: a failed open abends, exactly as it did on the mainframe.</p>
+     * it. Perform each open through {@link #openResource(String, IoAction)} so that the sentinel, the
+     * normalisation and the ordered diagnostic are applied uniformly, and never swallow a failure: a
+     * failed open abends, exactly as it did on the mainframe.</p>
      */
     protected abstract void openResources();
 
@@ -770,16 +837,15 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
      * Reads the next record from the driving file.
      *
      * <p>Replaces the read paragraph, numbered {@code 1000-} in every batch program, for example
-     * {@code 1000-ACCTFILE-GET-NEXT} in {@code app/cbl/CBACT01C.cbl} (lines 92 to 116) and
-     * {@code 1000-DALYTRAN-GET-NEXT} in {@code app/cbl/CBTRN02C.cbl} (lines 345 to 369). Reads of
-     * secondary files performed while handling a record belong in
-     * {@link #processRecord(Object)}, not here, because the legacy performed them from the loop body
-     * rather than from the read paragraph.</p>
+     * {@code 1000-ACCTFILE-GET-NEXT} in {@code app/cbl/CBACT01C.cbl} (lines 92 to 116). Reads of
+     * secondary files performed while handling a record belong in {@link #processRecord(Object)}, not
+     * here, because the legacy performed them from the loop body rather than from the read
+     * paragraph.</p>
      *
-     * <p>Implement it by delegating to {@link #readRecord(String, IoAction)}, which returns exactly
-     * this shape: a record when the read reported success, and nothing when it reported end of file.
-     * A non-success, non-at-end status never returns at all, because the helper has already emitted
-     * the diagnostic and abended.</p>
+     * <p>Implement it by delegating to {@link #readRecord(String, IoAction)}, which returns exactly this
+     * shape: a record when the read reported success, and nothing when it reported end of file. A
+     * non-success, non-at-end status never returns at all, because the helper has already emitted the
+     * diagnostic and abended.</p>
      *
      * @return the record the read delivered, or an empty {@link Optional} at end of file; never
      *         {@code null}
@@ -789,15 +855,13 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
     /**
      * Handles one record the read delivered.
      *
-     * <p>Replaces the body of the legacy read loop, which differs in every program and is the only
-     * part of the lifecycle that does: the file-print programs display the record
-     * ({@code app/cbl/CBACT01C.cbl} line 78), the posting program validates and either posts or writes
-     * a reject ({@code app/cbl/CBTRN02C.cbl} lines 206 to 216), and the extract program looks up the
-     * cross-reference and the account ({@code app/cbl/CBTRN01C.cbl} lines 169 to 184).</p>
-     *
-     * <p>Called once per delivered record, in file order, on the calling thread. Any secondary read,
-     * write or update the record requires is performed from here through the guarded helpers, which is
-     * how a write failure reaches the same ordered diagnostic as a read failure.</p>
+     * <p>Replaces the body of the legacy read loop, which differs in every program and is the only part
+     * of the lifecycle that does: the file-print programs display the record, the posting program
+     * validates and either posts or writes a reject, and the extract program looks up the
+     * cross-reference and the account. Called once per delivered record, in file order, on the calling
+     * thread. Any secondary read, write or update the record requires is performed from here through the
+     * guarded helpers, which is how a write failure reaches the same ordered diagnostic as a read
+     * failure.</p>
      *
      * @param record the record the read delivered, never {@code null}
      */
@@ -811,13 +875,43 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
      * in the larger programs, such as {@code 9000-DALYTRAN-CLOSE} through {@code 9500-TCATBALF-CLOSE}
      * in {@code app/cbl/CBTRN02C.cbl} (lines 221 to 226).</p>
      *
-     * <p>Perform each close through {@link #closeResource(String, IoAction)}. Two calls are possible
-     * in one execution only in the sense that this method is invoked either on the normal path or on
-     * the failure path, never both, so an implementation does not need to guard against a double
-     * close; it should, however, tolerate being called when an earlier open did not complete, because
-     * that is the situation the failure path is for.</p>
+     * <p>Perform each close through {@link #closeResource(String, IoAction)}. This method is invoked at
+     * most once per execution and <strong>only on the completing path</strong>, because an abend is
+     * terminal on the mainframe and the close paragraphs that follow the read loop are unreachable once
+     * any guarded operation has failed. An implementation therefore never has to guard against a double
+     * close, and never has to tolerate being called with an open that did not complete: after a failure
+     * the template calls {@link #releaseResources()} instead, which is not this method.</p>
      */
     protected abstract void closeResources();
+
+    /**
+     * Gives back any handle this process holds, without producing anything an operator could mistake for
+     * legacy behaviour.
+     *
+     * <p>Called by the template <strong>only after a failure</strong>, exactly once, and never on the
+     * completing path, where {@link #closeResources()} has already run. It exists solely as a runtime
+     * adaptation: an abending mainframe task had its data sets released by the operating system when the
+     * enclave ended, whereas this JVM process outlives the failed step and would otherwise leak whatever
+     * the step opened for itself.</p>
+     *
+     * <p><strong>An override must remain non-observable.</strong> It must not call
+     * {@link #closeResource(String, IoAction)} or any other guarded helper, must not normalise a status,
+     * must not emit a legacy diagnostic and must not abend, because the legacy performs no operation at
+     * all at this point and every one of those actions would fabricate one. It should release only what
+     * the step itself opened -- a stream, a channel, a reader it constructed -- and should tolerate being
+     * called when an earlier open never completed, since that is precisely the situation it exists for.
+     * Any exception it does raise is attached to the original failure as a suppressed exception rather
+     * than replacing it.</p>
+     *
+     * <p>The default releases nothing, which is correct for the common case: a step whose reads and
+     * writes go through a Spring Data repository, or through a framework-managed item stream, holds no
+     * handle that this template owns. The default records that fact at debug level so a failure
+     * investigation can tell "nothing to release" apart from "release was never reached".</p>
+     */
+    protected void releaseResources() {
+        LOGGER.debug("PROGRAM {} HOLDS NO HANDLE OF ITS OWN TO RELEASE AFTER FAILURE",
+                this.programName);
+    }
 
     /**
      * Performs one guarded {@code OPEN}.
@@ -924,17 +1018,13 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
      * acting on the result.
      *
      * <p>Exposed for the handful of sites that accept a status the canonical cascade rejects and must
-     * therefore decide for themselves: {@code app/cbl/CBACT04C.cbl} line 422 and
-     * {@code app/cbl/CBTRN02C.cbl} line 481 accept a record-not-found status alongside success, and
-     * {@code app/cbl/CBACT04C.cbl} line 436 branches on it alone to fall back to the default
-     * disclosure group. Such a site normalises here, applies its own acceptance rule, and reaches the
-     * terminal path through {@link #abendOnIoFailure(IoOperation, String, String)} when it decides the
-     * status is fatal. Neither the cascade nor the diagnostic ordering is ever duplicated.</p>
-     *
-     * <p>The cascade order is taken literally from {@code app/cbl/CBACT01C.cbl} lines 94 to 103:
-     * success first, at end second and only for a read, failure otherwise. An unrecognised code is a
-     * failure, and no path here depends on the two codes {@link FileStatus} documents but the estate
-     * never compares.</p>
+     * therefore decide for themselves (decision log entry D-22). Such a site normalises here, applies
+     * its own acceptance rule, and reaches the terminal path through
+     * {@link #abendOnIoFailure(IoOperation, String, String)} when it decides the status is fatal;
+     * neither the cascade nor the diagnostic ordering is ever duplicated. The cascade order is taken
+     * literally from {@code app/cbl/CBACT01C.cbl} lines 94 to 103: success first, at end second and
+     * only for a read, failure otherwise. An unrecognised code is a failure, and no path here depends on
+     * a code {@link FileStatus} documents but the estate never compares.</p>
      *
      * @param operation the kind of operation the status came from, which decides whether an at-end
      *                  status is legitimate
@@ -988,6 +1078,23 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
      * <p>Reproduces {@code Z-GET-DB2-FORMAT-TIMESTAMP}, which appears identically in
      * {@code app/cbl/CBTRN02C.cbl} (lines 692 to 705) and {@code app/cbl/CBACT04C.cbl} (lines 613 to
      * 626). Reads the injected clock, so a test can pin the instant and assert the image exactly.</p>
+     *
+     * <h4>The timestamp policy, stated once</h4>
+     *
+     * <p>The legacy routine builds its image from the current-date intrinsic, which on the mainframe
+     * returns <em>civil</em> time rather than an instant. The faithful equivalent is therefore a civil
+     * date and time, which is what this method renders &mdash; but the zone it is rendered in is
+     * <strong>the zone of the injected clock, and nothing else</strong>. That clock is the single UTC
+     * clock published by {@code JpaAuditConfig#systemClock()}, whose zone matches the time zone the
+     * persistence layer is configured with in {@code application.yml}, so a bounded
+     * twenty-six-character timestamp column reads back exactly as it was written.</p>
+     *
+     * <p>There is deliberately no second zone anywhere in the batch tier: no platform-default zone,
+     * no per-step zone, no host-derived zone and no property that would let a deployment introduce
+     * one. One explicitly configured zone, reached only through the injected clock, is what makes the
+     * emitted bytes a function of the input alone rather than of the machine the job happened to run
+     * on. If a business zone other than UTC is ever required, it is changed on that one bean and
+     * every consumer follows, which is the whole point of having exactly one.</p>
      *
      * @return the image, exactly {@value #BATCH_TIMESTAMP_LENGTH} bytes when encoded as US-ASCII
      */
@@ -1074,15 +1181,11 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
     /**
      * Runs an operation and translates a failure to complete into the terminal path.
      *
-     * <p>This is where the pre-operation sentinel earns its place. The legacy arms
-     * {@link #APPL_RESULT_PENDING} before an open, a write and a close so that an operation which
-     * never reports a status leaves behind a value matching neither condition name and therefore falls
-     * through to the terminal branch. An exception is that same condition expressed in Java: no status
-     * was produced, so none can be normalised, so the armed value stands and the operation is
-     * terminal. The armed value is reported in the diagnostic, which is how an operator tells a failed
-     * operation apart from one that reported a bad status.</p>
-     *
-     * <p>An abend already raised further down is rethrown untouched, so a nested guarded operation is
+     * <p>This is where the pre-operation sentinel earns its place. An exception is the Java expression
+     * of an operation that never reported a status: none was produced, so none can be normalised, the
+     * armed value stands and the operation is terminal. The armed value is reported in the diagnostic,
+     * which is how an operator tells a failed operation apart from one that reported a bad status. An
+     * abend already raised further down is rethrown untouched, so a nested guarded operation is
      * diagnosed exactly once and its original raw status is never overwritten by an outer frame.</p>
      *
      * @param <V>       what the operation reports
@@ -1199,23 +1302,30 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
     }
 
     /**
-     * Releases resources after a failure without letting a second failure replace the first.
+     * Gives back the handles this process holds after a failure, without letting that work become
+     * observable and without letting a second failure replace the first.
      *
-     * <p>The legacy never reached its close paragraphs after an abend, because the abort routine ended
-     * the task and the operating system released the data sets. A Java process outlives the failure and
-     * must release its own resources, so the close sequence is attempted once here. Any failure of that
-     * attempt is attached to the original as a suppressed exception and logged as a warning: the
-     * original propagates unchanged, and the secondary failure is still visible rather than
-     * discarded.</p>
+     * <p>This is the whole of the failure path's cleanup, and it deliberately does <strong>not</strong>
+     * call {@link #closeResources()}. The legacy never reached its close paragraphs after an abend
+     * ({@code CALL 'CEE3ABD'} does not return, so {@code app/cbl/CBACT01C.cbl} line 83 is unreachable
+     * once any guarded operation has failed), and the close family is observable: each of its members
+     * normalises a status, can emit {@code ERROR CLOSING ...} and can announce a second abend. Running it
+     * here would fabricate diagnostics for operations the legacy never attempted.</p>
+     *
+     * <p>{@link #releaseResources()} is the non-observable substitute and is the only runtime adaptation
+     * on this path. Should an implementation nevertheless fail while releasing, that failure is attached
+     * to the original as a suppressed exception and logged as a warning under a message that cannot be
+     * mistaken for a legacy close diagnostic: the original propagates unchanged, and the secondary
+     * failure is still visible rather than discarded.</p>
      *
      * @param primary the failure that ended the lifecycle and that must propagate
      */
     private void releaseAfterFailure(final RuntimeException primary) {
         try {
-            closeResources();
+            releaseResources();
         } catch (RuntimeException secondary) {
             primary.addSuppressed(secondary);
-            LOGGER.warn("SECONDARY FAILURE RELEASING RESOURCES OF PROGRAM {}; RETAINED AS SUPPRESSED",
+            LOGGER.warn("SECONDARY FAILURE RELEASING HANDLES OF PROGRAM {}; RETAINED AS SUPPRESSED",
                     this.programName, secondary);
         }
     }

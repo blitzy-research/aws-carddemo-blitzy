@@ -24,63 +24,38 @@ import org.springframework.stereotype.Service;
  * Immutable catalog of the shared, fixed-width screen text that the legacy CICS estate carried in
  * copybooks rather than in a message table.
  *
- * <h2>Provenance</h2>
- * Translated from the AWS CardDemo z/OS mainframe application at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy authorities are:
- * <ul>
- *   <li>{@code app/cpy/CSMSG01Y.cpy} &mdash; 24 lines; Apache header on lines 1-16, followed by the
- *       {@code 01 CCDA-COMMON-MESSAGES} group with two {@code PIC X(50)} elementary items. This is the
- *       primary authority for this class.</li>
- *   <li>{@code app/cpy/COTTL01Y.cpy} &mdash; the {@code 01 CCDA-SCREEN-TITLE} group with three
- *       {@code PIC X(40)} elementary items.</li>
- * </ul>
- * No COBOL source is read at runtime and no COBOL statement is reproduced here; only member names, field
- * names, field widths and the external-contract text itself are carried across.
+ * <p><strong>One singleton, not seventeen copies.</strong> {@code CSMSG01Y} is textually included by all 17
+ * online COBOL programs, so the legacy estate declared the same two messages seventeen times over. Together
+ * with {@code COCOM01Y}, {@code COTTL01Y} and {@code CSDAT01Y} &mdash; each likewise included by all 17
+ * &mdash; that is 68 textual inclusions, collapsed by this migration into four injected singletons. This
+ * class is one of the four: it replaces the 17 inclusions of {@code CSMSG01Y} and also hosts the
+ * {@code COTTL01Y} screen titles so those 17 collapse to a single declaration as well. Collaborating
+ * services inject this bean and call an accessor; the {@code public static final} constants expose the same
+ * values so a caller that is not itself a Spring bean can reference them without a container.
  *
- * <h2>Why this is a Spring singleton and not seventeen copies</h2>
- * {@code CSMSG01Y} is textually included by <strong>all 17</strong> online COBOL programs, so the legacy
- * estate declared the same two messages seventeen times over. Together with {@code COCOM01Y},
- * {@code COTTL01Y} and {@code CSDAT01Y} &mdash; each likewise included by all 17 online programs &mdash;
- * that is 68 textual inclusions, which this migration collapses into four injected singletons. This class
- * is one of those four: it replaces the 17 textual inclusions of {@code CSMSG01Y}, and it also hosts the
- * {@code COTTL01Y} screen titles so that those 17 inclusions collapse to a single declaration as well.
+ * <p><strong>Fixed widths are an external contract.</strong> Every value published here is padded to the
+ * width its COBOL {@code PIC} clause declares, and that width is part of the 3270 screen contract rather
+ * than incidental whitespace, so no value may ever be shortened or whitespace-normalised by this class or
+ * by any caller. The only string operation applied is the padding described below. A source detail worth
+ * recording: in {@code CSMSG01Y} each literal as written is 49 characters long while the field receiving it
+ * is declared {@code PIC X(50)}; COBOL left-justifies and space-fills, so the runtime field content is 50
+ * characters. This class materialises the <em>field</em> content at its declared width rather than the
+ * shorter source literal, and derives the padding arithmetically so the discrepancy cannot be
+ * re-introduced by hand-counting spaces.
  *
- * <p>Collaborating services obtain the text by injecting this bean and calling an accessor, which is what
- * keeps a single declaration authoritative. The {@code public static final} constants are exposed for the
- * same values so that a caller which is not itself a Spring bean &mdash; a fixed-width record assertion,
- * for example &mdash; can reference them without a container.</p>
- *
- * <h2>Fixed widths are an external contract</h2>
- * Every value published here is padded to the width its COBOL {@code PIC} clause declares, and that width
- * is part of the 3270 screen contract rather than incidental whitespace. Values must therefore never be
- * shortened or whitespace-normalised, by this class or by any caller. This class performs no whitespace
- * normalisation of any kind: the only string operation it applies is the padding described below.
- *
- * <p>A source detail worth recording: in {@code CSMSG01Y} each literal as written in the copybook is 49
- * characters long while the field that receives it is declared {@code PIC X(50)}. COBOL left-justifies a
- * short alphanumeric value and space-fills it to the declared width, so the runtime field content is 50
- * characters. This class therefore materialises the <em>field</em> content at its declared width rather
- * than the shorter source literal, and it derives the padding arithmetically so the discrepancy cannot be
- * re-introduced by hand-counting spaces.</p>
- *
- * <h2>Where the two common messages are consumed</h2>
- * In {@code app/cbl/COSGN00C.cbl} (transaction {@code CC00}) the exit-key path places the thank-you text
- * into the {@code WS-MESSAGE PIC X(80)} work field and sends plain text <em>without</em> raising the error
- * flag, whereas the unmapped-attention-key path raises the error flag <em>first</em> and only then places
- * the invalid-key text and re-sends the sign-on screen. The invalid-key text is shared far more widely: it
- * is the default arm of the attention-key decision in the canonical main paragraph common to all 17 online
+ * <p><strong>Where the two common messages are consumed.</strong> In {@code app/cbl/COSGN00C.cbl}
+ * (transaction {@code CC00}) the exit-key path places the thank-you text into the
+ * {@code WS-MESSAGE PIC X(80)} work field and sends plain text <em>without</em> raising the error flag,
+ * whereas the unmapped-attention-key path raises the error flag <em>first</em> and only then places the
+ * invalid-key text and re-sends the sign-on screen. The invalid-key text is shared far more widely: it is
+ * the default arm of the attention-key decision in the canonical main paragraph common to all 17 online
  * programs, as {@code app/cbl/COBIL00C.cbl} also shows.
  *
- * <p>This class supplies text only. Error-flag state, cursor positioning, screen transmission and routing
- * belong to the individual online services and to the navigation service, and field-level error decoration
- * belongs to the presentation DTO layer. No message here takes runtime substitution parameters; messages
- * that a single program composes for itself stay with the service that owns them.</p>
- *
- * <h2>Thread safety</h2>
- * Stateless and effectively immutable. Every field is {@code private static final} or {@code public static
- * final}, every published value is an immutable {@code String} or an unmodifiable {@code Map}, and there is
- * no setter and no mutable state of any kind, so the singleton is safe for concurrent use.
+ * <p>This class supplies text only: error-flag state, cursor positioning, screen transmission and routing
+ * belong to the individual online services and the navigation service, and field-level error decoration to
+ * the presentation DTO layer. No message here takes runtime substitution parameters. Stateless and
+ * effectively immutable &mdash; every field is static final, every published value an immutable
+ * {@code String} or unmodifiable {@code Map} &mdash; so the singleton is safe for concurrent use.
  */
 @Service
 public final class MessageCatalogService {
@@ -325,16 +300,15 @@ public final class MessageCatalogService {
      * declares.
      *
      * <p>Padding is derived arithmetically from the declared width so that no space in this source file is
-     * ever counted by eye, and the returned value is exactly {@code width} characters by construction. That
-     * is why no runtime assertion is used to confirm the width: assertions are disabled by default in a
-     * normal JVM launch and would therefore guarantee nothing.</p>
+     * ever counted by eye, and the returned value is exactly {@code width} characters by construction. No
+     * runtime assertion confirms the width, because assertions are disabled by default in a normal JVM launch
+     * and would guarantee nothing.
      *
-     * <p>Two failure modes are rejected eagerly, during class initialisation, so that either surfaces as
-     * the bean failing to load rather than as wrong bytes on a screen or in a fixed-width record. Text
-     * longer than its declared width is a contract violation rather than something to truncate, because
-     * silently shortening screen text would corrupt the field layout. Null text means a catalog entry was
-     * initialised from a field declared later in this class, which Java would otherwise resolve to null
-     * silently; naming that explicitly is what keeps a static-initialisation-order mistake from shipping.</p>
+     * <p>Two failure modes are rejected eagerly, during class initialisation, so either surfaces as the bean
+     * failing to load rather than as wrong bytes on a screen. Text longer than its declared width is a
+     * contract violation rather than something to truncate, because silently shortening screen text would
+     * corrupt the field layout. Null text means a catalog entry was initialised from a field declared later
+     * in this class, which Java would otherwise resolve to null silently.
      *
      * @param text  the visible text to pad; must not be {@code null}
      * @param width the declared field width to pad up to

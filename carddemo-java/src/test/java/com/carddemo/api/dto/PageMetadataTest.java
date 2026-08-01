@@ -42,43 +42,53 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * Unit test for {@link PageMetadata}, the browse-cursor contract shared by the three paginated
  * CardDemo screens.
  *
- * <p><strong>What this test pins.</strong></p>
- *
  * <p>{@link PageMetadata} is the REST projection of the CICS browse protocol the legacy screens use
  * to walk a key-sequenced cluster: position the browse at a record key, walk forward, walk backward,
- * release. Five properties of that protocol are contractual rather than incidental, and each is
+ * release. Six properties of that protocol are contractual rather than incidental, and each is
  * asserted below against the legacy member that establishes it.</p>
  * <ol>
- *   <li><strong>Three screen row counts, one per paginated screen.</strong> Each was proven by a
- *       different mechanism in a different member, and each is asserted here against its own
- *       independent arithmetic rather than against either of the other two.</li>
+ *   <li><strong>Three screen row counts, one per paginated screen</strong>, each proven by a
+ *       different mechanism in a different member and each asserted against its own independent
+ *       arithmetic rather than against either of the other two.</li>
  *   <li><strong>No aggregate row figure of any kind.</strong> The legacy browse never counts a
  *       cluster; it discovers that a further page exists by attempting one more read and observing
- *       the outcome. The two conditions the screens actually know are carried as the separate flags
- *       {@link PageMetadata#hasMorePages()} and {@link PageMetadata#hasPreviousPages()}.</li>
+ *       the outcome, so the two conditions the screens actually know are carried as the separate
+ *       flags {@link PageMetadata#hasMorePages()} and {@link PageMetadata#hasPreviousPages()}.</li>
  *   <li><strong>An opaque textual cursor, never a numeric offset.</strong> The legacy programs
  *       retain a record key across a pseudo-conversational turn and restart the browse from it, so
  *       leading zeros, embedded characters and padding all have to survive untouched.</li>
+ *   <li><strong>Two boundary cursors, both live at once.</strong> Each paginated screen retains the
+ *       key of the first row on the page <em>and</em> the key of the last row, as two adjacent
+ *       fields of one commarea group, and repositions on whichever one the operator's attention key
+ *       calls for - the first key for the preceding page, the last key for the following one. The
+ *       card list declares {@code WS-CA-FIRST-CARDKEY} and {@code WS-CA-LAST-CARDKEY} at
+ *       {@code app/cbl/COCRDLIC.cbl} lines 230 to 235, each a 16-character card number followed by
+ *       an 11-digit account identifier; the transaction list declares
+ *       {@code CDEMO-CT00-TRNID-FIRST} and {@code CDEMO-CT00-TRNID-LAST} as 16-character siblings at
+ *       {@code app/cbl/COTRN00C.cbl} lines 63 and 64; the user list declares
+ *       {@code CDEMO-CU00-USRID-FIRST} and {@code CDEMO-CU00-USRID-LAST} as 8-character siblings at
+ *       {@code app/cbl/COUSR00C.cbl} lines 68 and 69. A page in the middle of a browse can be paged
+ *       either way and therefore needs both, which is asserted in
+ *       {@link BoundaryCursorPairContract}. The two are an ordered pair rather than a set: swapping
+ *       them yields a different value, and that is asserted too.</li>
  *   <li><strong>A textual page indicator whose width differs by screen.</strong> The card-list map
  *       declares a three-character alphanumeric field named {@code PAGENO}; the transaction-list and
  *       user-list maps each declare an eight-character alphanumeric field named {@code PAGENUM}.
  *       Neither width is normalised to the other and neither becomes numeric.</li>
- *   <li><strong>Exactly two browse directions.</strong> One per CICS browse verb, with no third
+ *   <li><strong>Exactly two browse directions</strong>, one per CICS browse verb, with no third
  *       constant and no default, because the legacy programs always branch on an explicit attention
  *       key.</li>
  * </ol>
  *
- * <p><strong>Screen row counts and their independent derivations.</strong></p>
- *
- * <p>The three counts are asserted in {@link ScreenRowCountContract}. Nothing in this file derives
- * one count from another, and the two counts that happen to be equal are asserted against two
- * separate constants using two separate legacy arithmetics:</p>
+ * <p>The three counts are asserted in {@link ScreenRowCountContract}. Nothing here derives one count
+ * from another, and the two counts that happen to be equal are asserted against two separate
+ * constants using two separate legacy arithmetics:</p>
  * <ul>
  *   <li><strong>Card list, seven rows.</strong> {@code app/cbl/COCRDLIC.cbl} declares a
  *       196-character all-rows screen area at line 253, redefined at line 255 as a table of seven
  *       occurrences whose element is 28 characters wide - an 11-character account identifier, a
- *       16-character card number and a 1-character status indicator at lines 258 to 260. The
- *       product 28 by 7 accounts for all 196 characters, so the count follows from two independently
+ *       16-character card number and a 1-character status indicator at lines 258 to 260 - so the
+ *       product 28 by 7 accounts for all 196 characters and the count follows from two independently
  *       declared widths. A second witness is the screen-line counter at lines 177 and 178, whose
  *       declared value is 7, and a third is the backward fill counter seeded at that value plus one
  *       at lines 1284 and 1285 and decremented to zero.</li>
@@ -86,59 +96,42 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  *       count <em>purely from loop bounds</em>: the row-clearing loop is bounded at ten on line 290,
  *       the row index is reset to one on line 295, and the row-filling loop on line 297 stops once
  *       the index reaches eleven. There is no row table in that program at all - its single
- *       {@code OCCURS} clause, on line 89, is the communication-area redefinition that depends on
- *       the inbound area length and has nothing to do with screen rows. A future reader who looks
- *       for a table and finds none must not conclude the constant is unfounded, which is why the
- *       arithmetic on the two loop bounds is asserted explicitly below.</li>
+ *       {@code OCCURS} clause, on line 89, is the communication-area redefinition and has nothing to
+ *       do with screen rows - so a future reader who looks for a table and finds none must not
+ *       conclude the constant is unfounded, which is why the arithmetic on the two loop bounds is
+ *       asserted explicitly below.</li>
  *   <li><strong>User list, ten rows.</strong> {@code app/cbl/COUSR00C.cbl} declares the screen row
  *       group {@code USER-REC} as a genuine table of ten occurrences at lines 56 and 57, whose
  *       element sums to 48 characters across its five data fields and two fillers - a different
- *       mechanism from the transaction count above.</li>
+ *       mechanism again.</li>
  * </ul>
+ * <p>Each of those figures is a legacy screen shape rather than a knob: changing any of them would
+ * put a different number of rows in front of an operator, which is a visible behavioural change and
+ * not a configuration adjustment.</p>
  *
- * <p>Every one of those figures is a legacy screen shape. Changing any of them would put a different
- * number of rows in front of an operator, which is a visible behavioural change and not a
- * configuration adjustment. Not one of them is a knob to be turned: each is the shape of a screen,
- * and each is asserted below as exactly that.</p>
+ * <p><strong>Scope.</strong> This is a pure in-process unit test. It starts no application context,
+ * opens no database connection, provisions no container, reads no file and touches no network,
+ * because the type under test is an immutable record whose only dependencies are two validation
+ * annotations and {@code java.util.Objects}. It performs no introspection either: immutability, the
+ * constant declarations and the absence of a mutator are established by what this source is able to
+ * compile and by observable behaviour, never by interrogating class metadata at run time. The type
+ * under test names no web, persistence or data-access abstraction and neither does this test, so no
+ * paging abstraction from any framework appears in the imports above.</p>
  *
- * <p><strong>Scope of this test.</strong></p>
- *
- * <p>This is a pure in-process unit test. It starts no application context, opens no database
- * connection, provisions no container, reads no file and touches no network: the type under test is
- * an immutable record whose only dependencies are two validation annotations and
- * {@code java.util.Objects}, so a plain JVM is the whole of its required environment. It also
- * performs no introspection of any kind - the immutability, the constant declarations and the
- * absence of a mutator are established by what this source is able to compile and by observable
- * behaviour, never by interrogating class metadata at run time.</p>
- *
- * <p>The type under test names no web, persistence or data-access abstraction, and neither does this
- * test. No paging abstraction from any framework appears in the imports above; the whole paging
- * contract is defined by the legacy screens.</p>
- *
- * <p><strong>Expectations are derived, never echoed.</strong></p>
- *
- * <p>Every expected value below is a literal typed out in this source and traceable to a measured
- * legacy fact. No expectation is produced by calling the type under test, no assertion compares a
- * computed value with a second evaluation of the same computation, and where an equality expectation
- * involves two instances the two instances are constructed independently.</p>
- *
- * <p><strong>Provenance.</strong></p>
- *
- * <p>Legacy estate read at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The stamp is cited here as
- * prose provenance only: it is never declared as a constant and never asserted against a member,
- * because the estate does not carry it uniformly. No line of legacy source text is reproduced
- * anywhere in this file - only member names, field names, record widths, field counts and line
- * numbers, which are metadata about the estate rather than content from it.</p>
+ * <p><strong>Expectations are derived, never echoed.</strong> Every expected value below is a literal
+ * typed out in this source and follows from a measured legacy fact. No expectation is produced by
+ * calling the type under test, no assertion compares a computed value with a second evaluation of the
+ * same computation, and where an equality expectation involves two instances the two instances are
+ * constructed independently. No line of legacy source text is reproduced anywhere in this file - only
+ * member names, field names, record widths, field counts and line numbers.</p>
  */
+@DisplayName("PageMetadata :: browse-cursor contract of the three paginated screens")
 class PageMetadataTest {
 
-    // ---------------------------------------------------------------------------------------------
     // Legacy geometry, declared here so that every assertion below reads against a named figure
     // whose origin is stated. Each constant is a width, a count or a loop bound measured from one
     // named legacy member. None of them is derived from a constant of the type under test, so an
     // assertion that relates the two is a genuine cross-check rather than a restatement.
-    // ---------------------------------------------------------------------------------------------
 
     /**
      * Width of the account identifier inside one card-list screen row: legacy field
@@ -260,30 +253,51 @@ class PageMetadataTest {
      */
     private static final int LIST_MAP_INDICATOR_WIDTH = 8;
 
-    // ---------------------------------------------------------------------------------------------
     // Synthetic sample values. Every one is invented for this test and identifies nothing real. Not
     // one of them authenticates anything, and no legacy sign-on literal appears in this file.
-    // ---------------------------------------------------------------------------------------------
 
     /**
-     * Card-list style browse key at the widest legacy key width: a 16-character card number of
-     * leading zeros followed by an 11-digit account identifier, 27 characters in total. Chosen so
-     * that one value exercises the widest key and the leading-zero requirement together.
+     * Card-list style key of the <em>last</em> row on a page, at the widest legacy key width: a
+     * 16-character card number of leading zeros followed by an 11-digit account identifier, 27
+     * characters in total. Chosen so that one value exercises the widest key and the leading-zero
+     * requirement together. This is the value the legacy card list retains in its LAST key group and
+     * repositions on when the operator asks for the following page.
      */
-    private static final String CARD_COMPOSITE_CURSOR = "0000000000000042" + "00000000011";
+    private static final String CARD_LAST_CURSOR = "0000000000000042" + "00000000011";
 
     /**
-     * Transaction-list style browse key: a 16-character identifier carrying fifteen leading zeros.
-     * A numeric reading of this value would collapse it to two characters, which is precisely what
-     * must not happen.
+     * Card-list style key of the <em>first</em> row on the same page, at the same 27-character width
+     * and deliberately a different value from {@link #CARD_LAST_CURSOR}, so that an assertion which
+     * confused the two boundaries would fail rather than pass by coincidence. This is the value the
+     * legacy card list retains in its FIRST key group and repositions on for the preceding page.
      */
-    private static final String TRANSACTION_CURSOR = "0000000000000042";
+    private static final String CARD_FIRST_CURSOR = "0000000000000036" + "00000000011";
 
     /**
-     * User-list style browse key: an 8-character synthetic user identifier. Deliberately not
-     * all-numeric, so that a cursor which could not be parsed as a number at all is exercised too.
+     * Transaction-list style key of the <em>last</em> row on a page: a 16-character identifier
+     * carrying fifteen leading zeros. A numeric reading of this value would collapse it to two
+     * characters, which is precisely what must not happen.
      */
-    private static final String USER_CURSOR = "USRT0001";
+    private static final String TRANSACTION_LAST_CURSOR = "0000000000000042";
+
+    /**
+     * Transaction-list style key of the <em>first</em> row on the same page, at the same 16-character
+     * width and a different value, for the reason given on {@link #CARD_FIRST_CURSOR}.
+     */
+    private static final String TRANSACTION_FIRST_CURSOR = "0000000000000033";
+
+    /**
+     * User-list style key of the <em>last</em> row on a page: an 8-character synthetic user
+     * identifier. Deliberately not all-numeric, so that a cursor which could not be parsed as a
+     * number at all is exercised too.
+     */
+    private static final String USER_LAST_CURSOR = "USRT0001";
+
+    /**
+     * User-list style key of the <em>first</em> row on the same page, at the same 8-character width
+     * and a different value, and likewise not all-numeric.
+     */
+    private static final String USER_FIRST_CURSOR = "USRA0009";
 
     /**
      * Card-list style page indicator at the three-character map width, right-justified with two
@@ -313,10 +327,16 @@ class PageMetadataTest {
      *
      * <p>Property inclusion is applied through the value-and-content form rather than the older
      * single-argument form, because the latter is deprecated and this module compiles with warnings
-     * promoted to errors. For a record of six scalar components only the value part is observable.
+     * promoted to errors. For a record of seven scalar components only the value part is observable.
      * The plain-decimal setting has no observable effect on this record either, since it carries no
      * decimal component; it is configured anyway so that the mapper is a faithful stand-in for the
      * module's own and cannot drift from it.</p>
+     *
+     * <p>"Cannot drift" is enforced outside this file. {@link ApplicationJsonContractTest} obtains
+     * the mapper from a real context that has read the module's {@code application.yml}, asserts the
+     * same four behaviours against it, and compares its output with a mapper built exactly as this
+     * one is - so an edit to that file fails there instead of quietly making this stand-in
+     * unrepresentative.</p>
      */
     private static final ObjectMapper WIRE_MAPPER = wireMapper();
 
@@ -479,7 +499,8 @@ class PageMetadataTest {
             PageMetadata cardListPage =
                     PageMetadata.forward(
                             PageMetadata.CARD_LIST_PAGE_SIZE,
-                            CARD_COMPOSITE_CURSOR,
+                            CARD_FIRST_CURSOR,
+                            CARD_LAST_CURSOR,
                             true,
                             false,
                             CARD_MAP_INDICATOR);
@@ -494,7 +515,8 @@ class PageMetadataTest {
             PageMetadata transactionListPage =
                     PageMetadata.forward(
                             PageMetadata.TRANSACTION_LIST_PAGE_SIZE,
-                            TRANSACTION_CURSOR,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
                             true,
                             false,
                             LIST_MAP_INDICATOR);
@@ -509,7 +531,8 @@ class PageMetadataTest {
             PageMetadata userListPage =
                     PageMetadata.backward(
                             PageMetadata.USER_LIST_PAGE_SIZE,
-                            USER_CURSOR,
+                            USER_FIRST_CURSOR,
+                            USER_LAST_CURSOR,
                             false,
                             true,
                             LIST_MAP_INDICATOR);
@@ -523,13 +546,28 @@ class PageMetadataTest {
         void oneContractServesAllThreeScreens() {
             PageMetadata cardListPage =
                     PageMetadata.forward(
-                            PageMetadata.CARD_LIST_PAGE_SIZE, CARD_COMPOSITE_CURSOR, true, false, CARD_MAP_INDICATOR);
+                            PageMetadata.CARD_LIST_PAGE_SIZE,
+                            CARD_FIRST_CURSOR,
+                            CARD_LAST_CURSOR,
+                            true,
+                            false,
+                            CARD_MAP_INDICATOR);
             PageMetadata transactionListPage =
                     PageMetadata.forward(
-                            PageMetadata.TRANSACTION_LIST_PAGE_SIZE, TRANSACTION_CURSOR, true, false, LIST_MAP_INDICATOR);
+                            PageMetadata.TRANSACTION_LIST_PAGE_SIZE,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            true,
+                            false,
+                            LIST_MAP_INDICATOR);
             PageMetadata userListPage =
                     PageMetadata.forward(
-                            PageMetadata.USER_LIST_PAGE_SIZE, USER_CURSOR, true, false, LIST_MAP_INDICATOR);
+                            PageMetadata.USER_LIST_PAGE_SIZE,
+                            USER_FIRST_CURSOR,
+                            USER_LAST_CURSOR,
+                            true,
+                            false,
+                            LIST_MAP_INDICATOR);
 
             assertThat(
                             List.of(
@@ -541,8 +579,8 @@ class PageMetadataTest {
             // The two ten-row screens agree on the row figure and differ on the key they browse,
             // which is exactly the shape the legacy estate has: a 16-character transaction
             // identifier against an 8-character user identifier.
-            assertThat(transactionListPage.cursorKey()).hasSize(TRANSACTION_KEY_WIDTH);
-            assertThat(userListPage.cursorKey()).hasSize(USER_KEY_WIDTH);
+            assertThat(transactionListPage.nextCursorKey()).hasSize(TRANSACTION_KEY_WIDTH);
+            assertThat(userListPage.nextCursorKey()).hasSize(USER_KEY_WIDTH);
         }
 
         @Test
@@ -552,7 +590,13 @@ class PageMetadataTest {
             // Nothing substitutes one of the three screen figures for what the caller supplied, and
             // nothing here is clamped or rounded up to a screen shape.
             PageMetadata singleRowPage =
-                    PageMetadata.forward(1, TRANSACTION_CURSOR, true, false, LIST_MAP_INDICATOR);
+                    PageMetadata.forward(
+                            1,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            true,
+                            false,
+                            LIST_MAP_INDICATOR);
 
             assertThat(singleRowPage.pageSize()).isEqualTo(1);
             assertThat(singleRowPage.pageSize()).isNotEqualTo(PageMetadata.CARD_LIST_PAGE_SIZE);
@@ -569,13 +613,37 @@ class PageMetadataTest {
         @DisplayName("all four combinations of the two exhaustion flags are representable")
         void allFourFlagCombinationsAreRepresentable() {
             PageMetadata onlyPage =
-                    PageMetadata.forward(10, TRANSACTION_CURSOR, false, false, LIST_MAP_INDICATOR);
+                    PageMetadata.forward(
+                            10,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            false,
+                            false,
+                            LIST_MAP_INDICATOR);
             PageMetadata firstOfSeveral =
-                    PageMetadata.forward(10, TRANSACTION_CURSOR, true, false, LIST_MAP_INDICATOR);
+                    PageMetadata.forward(
+                            10,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            true,
+                            false,
+                            LIST_MAP_INDICATOR);
             PageMetadata lastOfSeveral =
-                    PageMetadata.forward(10, TRANSACTION_CURSOR, false, true, LIST_MAP_INDICATOR);
+                    PageMetadata.forward(
+                            10,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            false,
+                            true,
+                            LIST_MAP_INDICATOR);
             PageMetadata middleOfSeveral =
-                    PageMetadata.forward(10, TRANSACTION_CURSOR, true, true, LIST_MAP_INDICATOR);
+                    PageMetadata.forward(
+                            10,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            true,
+                            true,
+                            LIST_MAP_INDICATOR);
 
             assertThat(onlyPage.hasMorePages()).isFalse();
             assertThat(onlyPage.hasPreviousPages()).isFalse();
@@ -593,14 +661,24 @@ class PageMetadataTest {
         void theTwoFlagsAreIndependentOfOneAnother() {
             PageMetadata moreFollows =
                     PageMetadata.forward(
-                            PageMetadata.CARD_LIST_PAGE_SIZE, CARD_COMPOSITE_CURSOR, true, false, CARD_MAP_INDICATOR);
+                            PageMetadata.CARD_LIST_PAGE_SIZE,
+                            CARD_FIRST_CURSOR,
+                            CARD_LAST_CURSOR,
+                            true,
+                            false,
+                            CARD_MAP_INDICATOR);
             PageMetadata somethingPrecedes =
                     PageMetadata.forward(
-                            PageMetadata.CARD_LIST_PAGE_SIZE, CARD_COMPOSITE_CURSOR, false, true, CARD_MAP_INDICATOR);
+                            PageMetadata.CARD_LIST_PAGE_SIZE,
+                            CARD_FIRST_CURSOR,
+                            CARD_LAST_CURSOR,
+                            false,
+                            true,
+                            CARD_MAP_INDICATOR);
 
             // Only the two flags differ, and flipping one does not move the other.
             assertThat(moreFollows).isNotEqualTo(somethingPrecedes);
-            assertThat(moreFollows.cursorKey()).isEqualTo(somethingPrecedes.cursorKey());
+            assertThat(moreFollows.nextCursorKey()).isEqualTo(somethingPrecedes.nextCursorKey());
             assertThat(moreFollows.pageSize()).isEqualTo(somethingPrecedes.pageSize());
             assertThat(moreFollows.hasMorePages()).isNotEqualTo(somethingPrecedes.hasMorePages());
             assertThat(moreFollows.hasPreviousPages())
@@ -608,23 +686,25 @@ class PageMetadataTest {
         }
 
         @Test
-        @DisplayName("the wire shape carries exactly six named properties, none of them an aggregate "
+        @DisplayName("the wire shape carries exactly seven named properties, none of them an aggregate "
                 + "row figure the legacy browse never had")
         void theWireShapeCarriesNoAggregateRowFigure() throws JsonProcessingException {
             Map<String, Object> wire =
                     wireProperties(
                             PageMetadata.forward(
                                     PageMetadata.TRANSACTION_LIST_PAGE_SIZE,
-                                    TRANSACTION_CURSOR,
+                                    TRANSACTION_FIRST_CURSOR,
+                                    TRANSACTION_LAST_CURSOR,
                                     true,
                                     true,
                                     LIST_MAP_INDICATOR));
 
-            assertThat(wire).hasSize(6);
+            assertThat(wire).hasSize(7);
             assertThat(wire.keySet())
                     .containsExactly(
                             "pageSize",
-                            "cursorKey",
+                            "previousCursorKey",
+                            "nextCursorKey",
                             "direction",
                             "hasMorePages",
                             "hasPreviousPages",
@@ -644,7 +724,7 @@ class PageMetadataTest {
     }
 
     @Nested
-    @DisplayName("The cursor is opaque text, never a numeric offset")
+    @DisplayName("Each boundary cursor is opaque text, never a numeric offset")
     class CursorKeyContract {
 
         @Test
@@ -652,9 +732,20 @@ class PageMetadataTest {
                 + "collapsed to its numeric value")
         void leadingZeroCursorRoundTripsUnchanged() {
             PageMetadata page =
-                    PageMetadata.forward(10, TRANSACTION_CURSOR, true, false, LIST_MAP_INDICATOR);
+                    PageMetadata.forward(
+                            10,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            true,
+                            false,
+                            LIST_MAP_INDICATOR);
 
-            assertThat(page.cursorKey())
+            assertThat(page.previousCursorKey())
+                    .isEqualTo("0000000000000033")
+                    .hasSize(TRANSACTION_KEY_WIDTH)
+                    .startsWith("0")
+                    .isNotEqualTo("33");
+            assertThat(page.nextCursorKey())
                     .isEqualTo("0000000000000042")
                     .hasSize(TRANSACTION_KEY_WIDTH)
                     .startsWith("0")
@@ -666,9 +757,17 @@ class PageMetadataTest {
         void cardCompositeCursorCrossesAtTwentySevenCharacters() {
             PageMetadata page =
                     PageMetadata.backward(
-                            PageMetadata.CARD_LIST_PAGE_SIZE, CARD_COMPOSITE_CURSOR, true, true, CARD_MAP_INDICATOR);
+                            PageMetadata.CARD_LIST_PAGE_SIZE,
+                            CARD_FIRST_CURSOR,
+                            CARD_LAST_CURSOR,
+                            true,
+                            true,
+                            CARD_MAP_INDICATOR);
 
-            assertThat(page.cursorKey()).hasSize(27);
+            // Both retained key groups are declared with the same two components at the same two
+            // widths, so both boundaries cross at the same 27 characters.
+            assertThat(page.previousCursorKey()).hasSize(27);
+            assertThat(page.nextCursorKey()).hasSize(27);
             assertThat(CARD_KEY_CARD_NUMBER_WIDTH + CARD_KEY_ACCOUNT_ID_WIDTH).isEqualTo(27);
         }
 
@@ -689,12 +788,14 @@ class PageMetadataTest {
             PageMetadata page =
                     PageMetadata.forward(
                             PageMetadata.USER_LIST_PAGE_SIZE,
-                            USER_CURSOR,
+                            USER_FIRST_CURSOR,
+                            USER_LAST_CURSOR,
                             false,
                             true,
                             LIST_MAP_INDICATOR_TRAILING);
 
-            assertThat(page.cursorKey()).isEqualTo("USRT0001").hasSize(USER_KEY_WIDTH);
+            assertThat(page.previousCursorKey()).isEqualTo("USRA0009").hasSize(USER_KEY_WIDTH);
+            assertThat(page.nextCursorKey()).isEqualTo("USRT0001").hasSize(USER_KEY_WIDTH);
         }
 
         @Test
@@ -703,9 +804,15 @@ class PageMetadataTest {
         void cursorPaddingSurvivesOnBothSides() {
             String paddedKey = "  0000042       ";
 
-            PageMetadata page = PageMetadata.forward(10, paddedKey, true, true, LIST_MAP_INDICATOR);
+            PageMetadata page =
+                    PageMetadata.forward(10, paddedKey, paddedKey, true, true, LIST_MAP_INDICATOR);
 
-            assertThat(page.cursorKey())
+            assertThat(page.previousCursorKey())
+                    .isEqualTo("  0000042       ")
+                    .hasSize(TRANSACTION_KEY_WIDTH)
+                    .startsWith("  ")
+                    .endsWith("       ");
+            assertThat(page.nextCursorKey())
                     .isEqualTo("  0000042       ")
                     .hasSize(TRANSACTION_KEY_WIDTH)
                     .startsWith("  ")
@@ -717,9 +824,10 @@ class PageMetadataTest {
                 + "key yet")
         void nullCursorIsAcceptedOnTheFirstTurn() {
             PageMetadata page =
-                    PageMetadata.forward(PageMetadata.CARD_LIST_PAGE_SIZE, null, true, false, null);
+                    PageMetadata.forward(PageMetadata.CARD_LIST_PAGE_SIZE, null, null, true, false, null);
 
-            assertThat(page.cursorKey()).isNull();
+            assertThat(page.previousCursorKey()).isNull();
+            assertThat(page.nextCursorKey()).isNull();
             assertThat(page.hasMorePages()).isTrue();
         }
 
@@ -729,10 +837,12 @@ class PageMetadataTest {
         void accessorHandsBackTheSuppliedInstance() {
             String suppliedKey = "0".repeat(15).concat("7");
 
-            PageMetadata page = PageMetadata.forward(10, suppliedKey, false, false, null);
+            PageMetadata page =
+                    PageMetadata.forward(10, suppliedKey, suppliedKey, false, false, null);
 
-            assertThat(page.cursorKey()).isSameAs(suppliedKey);
-            assertThat(page.cursorKey()).isEqualTo("0000000000000007");
+            assertThat(page.previousCursorKey()).isSameAs(suppliedKey);
+            assertThat(page.nextCursorKey()).isSameAs(suppliedKey);
+            assertThat(page.nextCursorKey()).isEqualTo("0000000000000007");
         }
 
         @Test
@@ -741,9 +851,241 @@ class PageMetadataTest {
         void overWideCursorIsStoredVerbatim() {
             String overWideKey = "X".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH + 1);
 
-            PageMetadata page = PageMetadata.forward(10, overWideKey, false, false, null);
+            PageMetadata page =
+                    PageMetadata.forward(10, overWideKey, overWideKey, false, false, null);
 
-            assertThat(page.cursorKey()).isEqualTo(overWideKey).hasSize(28);
+            assertThat(page.previousCursorKey()).isEqualTo(overWideKey).hasSize(28);
+            assertThat(page.nextCursorKey()).isEqualTo(overWideKey).hasSize(28);
+        }
+    }
+
+    @Nested
+    @DisplayName("Two boundary cursors, because every paginated screen retains a first key and a last "
+            + "key at the same time")
+    class BoundaryCursorPairContract {
+
+        @Test
+        @DisplayName("a page in the middle of a browse carries both boundary keys at once, with "
+                + "different values, which is the case a single cursor component could not represent")
+        void aMidBrowsePageCarriesBothBoundaryKeysAtOnce() {
+            // Both availability flags true is the middle of a browse: the operator can page either
+            // way, so the legacy has both its FIRST and its LAST field populated and either attention
+            // key is live. One cursor component could hold only one of the two.
+            PageMetadata midBrowse =
+                    PageMetadata.forward(
+                            PageMetadata.TRANSACTION_LIST_PAGE_SIZE,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            true,
+                            true,
+                            LIST_MAP_INDICATOR);
+
+            assertThat(midBrowse.hasMorePages()).isTrue();
+            assertThat(midBrowse.hasPreviousPages()).isTrue();
+            assertThat(midBrowse.previousCursorKey()).isEqualTo("0000000000000033");
+            assertThat(midBrowse.nextCursorKey()).isEqualTo("0000000000000042");
+            assertThat(midBrowse.previousCursorKey()).isNotEqualTo(midBrowse.nextCursorKey());
+        }
+
+        @Test
+        @DisplayName("the first page of a browse carries only the forward key, the final page only the "
+                + "backward key, and each absence lines up with its own availability flag")
+        void theFirstAndFinalPagesEachCarryOnlyTheKeyTheyCanStillUse() {
+            PageMetadata firstPage =
+                    PageMetadata.forward(
+                            PageMetadata.TRANSACTION_LIST_PAGE_SIZE,
+                            null,
+                            TRANSACTION_LAST_CURSOR,
+                            true,
+                            false,
+                            LIST_MAP_INDICATOR);
+            PageMetadata finalPage =
+                    PageMetadata.forward(
+                            PageMetadata.TRANSACTION_LIST_PAGE_SIZE,
+                            TRANSACTION_FIRST_CURSOR,
+                            null,
+                            false,
+                            true,
+                            LIST_MAP_INDICATOR);
+
+            assertThat(firstPage.hasPreviousPages()).isFalse();
+            assertThat(firstPage.previousCursorKey()).isNull();
+            assertThat(firstPage.nextCursorKey()).isEqualTo("0000000000000042");
+
+            assertThat(finalPage.hasMorePages()).isFalse();
+            assertThat(finalPage.nextCursorKey()).isNull();
+            assertThat(finalPage.previousCursorKey()).isEqualTo("0000000000000033");
+        }
+
+        @Test
+        @DisplayName("the direction does not decide which key is present, so a page reached by walking "
+                + "backward still reports the key a forward walk would restart from")
+        void theDirectionDoesNotDecideWhichKeyIsPresent() {
+            PageMetadata reachedByWalkingForward =
+                    PageMetadata.forward(
+                            PageMetadata.USER_LIST_PAGE_SIZE,
+                            USER_FIRST_CURSOR,
+                            USER_LAST_CURSOR,
+                            true,
+                            true,
+                            LIST_MAP_INDICATOR);
+            PageMetadata reachedByWalkingBackward =
+                    PageMetadata.backward(
+                            PageMetadata.USER_LIST_PAGE_SIZE,
+                            USER_FIRST_CURSOR,
+                            USER_LAST_CURSOR,
+                            true,
+                            true,
+                            LIST_MAP_INDICATOR);
+
+            assertThat(reachedByWalkingForward.previousCursorKey()).isEqualTo("USRA0009");
+            assertThat(reachedByWalkingForward.nextCursorKey()).isEqualTo("USRT0001");
+            assertThat(reachedByWalkingBackward.previousCursorKey()).isEqualTo("USRA0009");
+            assertThat(reachedByWalkingBackward.nextCursorKey()).isEqualTo("USRT0001");
+            assertThat(reachedByWalkingForward.direction())
+                    .isNotEqualTo(reachedByWalkingBackward.direction());
+        }
+
+        @Test
+        @DisplayName("neither key is derived from the other: swapping the two produces a different "
+                + "value, so the pair is ordered and not a set")
+        void neitherKeyIsDerivedFromTheOther() {
+            PageMetadata asAssembled =
+                    PageMetadata.forward(
+                            PageMetadata.TRANSACTION_LIST_PAGE_SIZE,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            true,
+                            true,
+                            LIST_MAP_INDICATOR);
+            PageMetadata withTheBoundariesSwapped =
+                    PageMetadata.forward(
+                            PageMetadata.TRANSACTION_LIST_PAGE_SIZE,
+                            TRANSACTION_LAST_CURSOR,
+                            TRANSACTION_FIRST_CURSOR,
+                            true,
+                            true,
+                            LIST_MAP_INDICATOR);
+
+            assertThat(asAssembled).isNotEqualTo(withTheBoundariesSwapped);
+            assertThat(asAssembled.previousCursorKey())
+                    .isEqualTo(withTheBoundariesSwapped.nextCursorKey());
+            assertThat(asAssembled.nextCursorKey())
+                    .isEqualTo(withTheBoundariesSwapped.previousCursorKey());
+        }
+
+        @Test
+        @DisplayName("all three screens supply their two keys at their own single width - 27 and 27 for "
+                + "the card list, 16 and 16 for the transaction list, 8 and 8 for the user list")
+        void allThreeScreensSupplyTheirTwoKeysAtTheirOwnSingleWidth() {
+            PageMetadata cardListPage =
+                    PageMetadata.forward(
+                            PageMetadata.CARD_LIST_PAGE_SIZE,
+                            CARD_FIRST_CURSOR,
+                            CARD_LAST_CURSOR,
+                            true,
+                            true,
+                            CARD_MAP_INDICATOR);
+            PageMetadata transactionListPage =
+                    PageMetadata.forward(
+                            PageMetadata.TRANSACTION_LIST_PAGE_SIZE,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            true,
+                            true,
+                            LIST_MAP_INDICATOR);
+            PageMetadata userListPage =
+                    PageMetadata.forward(
+                            PageMetadata.USER_LIST_PAGE_SIZE,
+                            USER_FIRST_CURSOR,
+                            USER_LAST_CURSOR,
+                            true,
+                            true,
+                            LIST_MAP_INDICATOR);
+
+            assertThat(cardListPage.previousCursorKey())
+                    .hasSize(CARD_KEY_CARD_NUMBER_WIDTH + CARD_KEY_ACCOUNT_ID_WIDTH);
+            assertThat(cardListPage.nextCursorKey())
+                    .hasSize(CARD_KEY_CARD_NUMBER_WIDTH + CARD_KEY_ACCOUNT_ID_WIDTH);
+            assertThat(transactionListPage.previousCursorKey()).hasSize(TRANSACTION_KEY_WIDTH);
+            assertThat(transactionListPage.nextCursorKey()).hasSize(TRANSACTION_KEY_WIDTH);
+            assertThat(userListPage.previousCursorKey()).hasSize(USER_KEY_WIDTH);
+            assertThat(userListPage.nextCursorKey()).hasSize(USER_KEY_WIDTH);
+        }
+
+        @Test
+        @DisplayName("one declared bound governs both keys, because every screen declares its first "
+                + "and last field at identical widths")
+        void oneDeclaredBoundGovernsBothKeys() {
+            // 27 and 27, 16 and 16, 8 and 8: the per-screen pair is always equal, so a second bound
+            // would be a second name for the same number.
+            assertThat(CARD_KEY_CARD_NUMBER_WIDTH + CARD_KEY_ACCOUNT_ID_WIDTH)
+                    .isEqualTo(PageMetadata.CURSOR_KEY_MAX_LENGTH);
+            assertThat(TRANSACTION_KEY_WIDTH).isLessThan(PageMetadata.CURSOR_KEY_MAX_LENGTH);
+            assertThat(USER_KEY_WIDTH).isLessThan(PageMetadata.CURSOR_KEY_MAX_LENGTH);
+        }
+
+        @Test
+        @DisplayName("both keys cross the wire under their own property names, adjacent and in "
+                + "declaration order, so a client can tell the two boundaries apart")
+        void bothKeysCrossTheWireUnderTheirOwnNames() throws JsonProcessingException {
+            Map<String, Object> wire =
+                    wireProperties(
+                            PageMetadata.backward(
+                                    PageMetadata.CARD_LIST_PAGE_SIZE,
+                                    CARD_FIRST_CURSOR,
+                                    CARD_LAST_CURSOR,
+                                    true,
+                                    true,
+                                    CARD_MAP_INDICATOR));
+
+            assertThat(List.copyOf(wire.keySet()).subList(0, 3))
+                    .containsExactly("pageSize", "previousCursorKey", "nextCursorKey");
+            assertThat(wire)
+                    .containsEntry("previousCursorKey", "000000000000003600000000011")
+                    .containsEntry("nextCursorKey", "000000000000004200000000011");
+        }
+
+        @Test
+        @DisplayName("only the absent key is omitted from the wire, so a first page still publishes "
+                + "the forward key a client needs to page down")
+        void onlyTheAbsentKeyIsOmittedFromTheWire() throws JsonProcessingException {
+            Map<String, Object> firstPageWire =
+                    wireProperties(
+                            PageMetadata.forward(
+                                    PageMetadata.TRANSACTION_LIST_PAGE_SIZE,
+                                    null,
+                                    TRANSACTION_LAST_CURSOR,
+                                    true,
+                                    false,
+                                    LIST_MAP_INDICATOR));
+
+            assertThat(firstPageWire)
+                    .doesNotContainKey("previousCursorKey")
+                    .containsEntry("nextCursorKey", "0000000000000042");
+            assertThat(firstPageWire).hasSize(6);
+        }
+
+        @Test
+        @DisplayName("a round trip through JSON keeps the two boundaries on their own sides, never "
+                + "transposing or merging them")
+        void aRoundTripKeepsTheTwoBoundariesOnTheirOwnSides() throws JsonProcessingException {
+            PageMetadata original =
+                    PageMetadata.backward(
+                            PageMetadata.USER_LIST_PAGE_SIZE,
+                            USER_FIRST_CURSOR,
+                            USER_LAST_CURSOR,
+                            true,
+                            true,
+                            LIST_MAP_INDICATOR_TRAILING);
+
+            PageMetadata restored =
+                    WIRE_MAPPER.readValue(
+                            WIRE_MAPPER.writeValueAsString(original), PageMetadata.class);
+
+            assertThat(restored).isEqualTo(original).isNotSameAs(original);
+            assertThat(restored.previousCursorKey()).isEqualTo("USRA0009");
+            assertThat(restored.nextCursorKey()).isEqualTo("USRT0001");
         }
     }
 
@@ -757,7 +1099,12 @@ class PageMetadataTest {
         void threeCharacterIndicatorRoundTripsUntrimmed() {
             PageMetadata page =
                     PageMetadata.forward(
-                            PageMetadata.CARD_LIST_PAGE_SIZE, CARD_COMPOSITE_CURSOR, true, false, CARD_MAP_INDICATOR);
+                            PageMetadata.CARD_LIST_PAGE_SIZE,
+                            CARD_FIRST_CURSOR,
+                            CARD_LAST_CURSOR,
+                            true,
+                            false,
+                            CARD_MAP_INDICATOR);
 
             assertThat(page.displayedPageNumber())
                     .isEqualTo("  1")
@@ -770,10 +1117,21 @@ class PageMetadataTest {
                 + "trailing spaces alike")
         void eightCharacterIndicatorRoundTripsUntrimmed() {
             PageMetadata zeroFilled =
-                    PageMetadata.forward(10, TRANSACTION_CURSOR, true, false, LIST_MAP_INDICATOR);
+                    PageMetadata.forward(
+                            10,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            true,
+                            false,
+                            LIST_MAP_INDICATOR);
             PageMetadata spaceFilled =
                     PageMetadata.forward(
-                            10, TRANSACTION_CURSOR, true, false, LIST_MAP_INDICATOR_TRAILING);
+                            10,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            true,
+                            false,
+                            LIST_MAP_INDICATOR_TRAILING);
 
             assertThat(zeroFilled.displayedPageNumber())
                     .isEqualTo("00000007")
@@ -790,10 +1148,20 @@ class PageMetadataTest {
         void theTwoMapWidthsAreNeverNormalisedToOneAnother() {
             PageMetadata cardListPage =
                     PageMetadata.forward(
-                            PageMetadata.CARD_LIST_PAGE_SIZE, CARD_COMPOSITE_CURSOR, true, false, CARD_MAP_INDICATOR);
+                            PageMetadata.CARD_LIST_PAGE_SIZE,
+                            CARD_FIRST_CURSOR,
+                            CARD_LAST_CURSOR,
+                            true,
+                            false,
+                            CARD_MAP_INDICATOR);
             PageMetadata transactionListPage =
                     PageMetadata.forward(
-                            PageMetadata.TRANSACTION_LIST_PAGE_SIZE, TRANSACTION_CURSOR, true, false, LIST_MAP_INDICATOR);
+                            PageMetadata.TRANSACTION_LIST_PAGE_SIZE,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            true,
+                            false,
+                            LIST_MAP_INDICATOR);
 
             assertThat(CARD_MAP_INDICATOR_WIDTH).isNotEqualTo(LIST_MAP_INDICATOR_WIDTH);
             assertThat(cardListPage.displayedPageNumber()).hasSize(3);
@@ -805,7 +1173,12 @@ class PageMetadataTest {
         void indicatorIsTextRatherThanANumber() {
             PageMetadata page =
                     PageMetadata.backward(
-                            PageMetadata.CARD_LIST_PAGE_SIZE, CARD_COMPOSITE_CURSOR, false, true, "N/A");
+                            PageMetadata.CARD_LIST_PAGE_SIZE,
+                            CARD_FIRST_CURSOR,
+                            CARD_LAST_CURSOR,
+                            false,
+                            true,
+                            "N/A");
 
             assertThat(page.displayedPageNumber())
                     .isEqualTo("N/A")
@@ -816,10 +1189,16 @@ class PageMetadataTest {
         @DisplayName("a null indicator is accepted, and navigation still works because the cursor is "
                 + "the authoritative state")
         void nullIndicatorIsAcceptedWhileTheCursorRemainsAuthoritative() {
-            PageMetadata page = PageMetadata.backward(10, TRANSACTION_CURSOR, true, true, null);
+            PageMetadata page = PageMetadata.backward(
+                    10,
+                    TRANSACTION_FIRST_CURSOR,
+                    TRANSACTION_LAST_CURSOR,
+                    true,
+                    true,
+                    null);
 
             assertThat(page.displayedPageNumber()).isNull();
-            assertThat(page.cursorKey()).isEqualTo("0000000000000042");
+            assertThat(page.nextCursorKey()).isEqualTo("0000000000000042");
         }
 
         @Test
@@ -829,7 +1208,13 @@ class PageMetadataTest {
             String overWideIndicator = "9".repeat(PageMetadata.DISPLAYED_PAGE_NUMBER_MAX_LENGTH + 1);
 
             PageMetadata page =
-                    PageMetadata.forward(10, TRANSACTION_CURSOR, false, false, overWideIndicator);
+                    PageMetadata.forward(
+                            10,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            false,
+                            false,
+                            overWideIndicator);
 
             assertThat(PageMetadata.DISPLAYED_PAGE_NUMBER_MAX_LENGTH)
                     .isEqualTo(8)
@@ -877,7 +1262,8 @@ class PageMetadataTest {
             PageMetadata page =
                     PageMetadata.forward(
                             PageMetadata.TRANSACTION_LIST_PAGE_SIZE,
-                            TRANSACTION_CURSOR,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
                             true,
                             false,
                             LIST_MAP_INDICATOR);
@@ -892,7 +1278,8 @@ class PageMetadataTest {
             PageMetadata page =
                     PageMetadata.backward(
                             PageMetadata.TRANSACTION_LIST_PAGE_SIZE,
-                            TRANSACTION_CURSOR,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
                             false,
                             true,
                             LIST_MAP_INDICATOR);
@@ -905,9 +1292,21 @@ class PageMetadataTest {
                 + "identical")
         void aBackwardPageIsDistinguishableFromAForwardPage() {
             PageMetadata forwardPage =
-                    PageMetadata.forward(10, TRANSACTION_CURSOR, true, true, LIST_MAP_INDICATOR);
+                    PageMetadata.forward(
+                            10,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            true,
+                            true,
+                            LIST_MAP_INDICATOR);
             PageMetadata backwardPage =
-                    PageMetadata.backward(10, TRANSACTION_CURSOR, true, true, LIST_MAP_INDICATOR);
+                    PageMetadata.backward(
+                            10,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            true,
+                            true,
+                            LIST_MAP_INDICATOR);
 
             assertThat(forwardPage.direction()).isNotEqualTo(backwardPage.direction());
             assertThat(forwardPage).isNotEqualTo(backwardPage);
@@ -915,7 +1314,7 @@ class PageMetadataTest {
             // Everything except the direction agrees, which is what makes the direction the single
             // distinguishing component rather than a by-product of some other difference.
             assertThat(forwardPage.pageSize()).isEqualTo(backwardPage.pageSize());
-            assertThat(forwardPage.cursorKey()).isEqualTo(backwardPage.cursorKey());
+            assertThat(forwardPage.nextCursorKey()).isEqualTo(backwardPage.nextCursorKey());
             assertThat(forwardPage.displayedPageNumber())
                     .isEqualTo(backwardPage.displayedPageNumber());
         }
@@ -932,7 +1331,8 @@ class PageMetadataTest {
             PageMetadata backwardPage =
                     PageMetadata.backward(
                             TRANSACTION_BACKWARD_FILL_SEED,
-                            TRANSACTION_CURSOR,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
                             true,
                             true,
                             LIST_MAP_INDICATOR);
@@ -951,7 +1351,8 @@ class PageMetadataTest {
                             () ->
                                     new PageMetadata(
                                             10,
-                                            TRANSACTION_CURSOR,
+                                            TRANSACTION_FIRST_CURSOR,
+                                            TRANSACTION_LAST_CURSOR,
                                             null,
                                             true,
                                             false,
@@ -966,7 +1367,8 @@ class PageMetadataTest {
                             wireProperties(
                                     PageMetadata.forward(
                                             PageMetadata.CARD_LIST_PAGE_SIZE,
-                                            CARD_COMPOSITE_CURSOR,
+                                            CARD_FIRST_CURSOR,
+                                            CARD_LAST_CURSOR,
                                             true,
                                             false,
                                             CARD_MAP_INDICATOR)))
@@ -975,7 +1377,8 @@ class PageMetadataTest {
                             wireProperties(
                                     PageMetadata.backward(
                                             PageMetadata.CARD_LIST_PAGE_SIZE,
-                                            CARD_COMPOSITE_CURSOR,
+                                            CARD_FIRST_CURSOR,
+                                            CARD_LAST_CURSOR,
                                             false,
                                             true,
                                             CARD_MAP_INDICATOR)))
@@ -995,6 +1398,7 @@ class PageMetadataTest {
                     new PageMetadata(
                             10,
                             "0000000000000042",
+                            "0000000000000042",
                             PageMetadata.PagingDirection.FORWARD,
                             true,
                             false,
@@ -1002,6 +1406,7 @@ class PageMetadataTest {
             PageMetadata second =
                     new PageMetadata(
                             10,
+                            "0000000000000042",
                             "0000000000000042",
                             PageMetadata.PagingDirection.FORWARD,
                             true,
@@ -1012,21 +1417,46 @@ class PageMetadataTest {
         }
 
         @Test
-        @DisplayName("each of the six components participates in equality on its own")
-        void eachOfTheSixComponentsParticipatesInEquality() {
+        @DisplayName("each of the seven components participates in equality on its own, the two "
+                + "boundary cursors independently of one another")
+        void eachOfTheSevenComponentsParticipatesInEquality() {
             PageMetadata.PagingDirection forward = PageMetadata.PagingDirection.FORWARD;
             PageMetadata.PagingDirection backward = PageMetadata.PagingDirection.BACKWARD;
             PageMetadata reference =
-                    new PageMetadata(10, TRANSACTION_CURSOR, forward, true, false, LIST_MAP_INDICATOR);
+                    new PageMetadata(
+                            10,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            forward,
+                            true,
+                            false,
+                            LIST_MAP_INDICATOR);
 
             assertThat(reference)
                     .isNotEqualTo(
                             new PageMetadata(
-                                    7, TRANSACTION_CURSOR, forward, true, false, LIST_MAP_INDICATOR));
+                                    7,
+                                    TRANSACTION_FIRST_CURSOR,
+                                    TRANSACTION_LAST_CURSOR,
+                                    forward,
+                                    true,
+                                    false,
+                                    LIST_MAP_INDICATOR));
             assertThat(reference)
                     .isNotEqualTo(
                             new PageMetadata(
                                     10,
+                                    "0000000000000043",
+                                    TRANSACTION_LAST_CURSOR,
+                                    forward,
+                                    true,
+                                    false,
+                                    LIST_MAP_INDICATOR));
+            assertThat(reference)
+                    .isNotEqualTo(
+                            new PageMetadata(
+                                    10,
+                                    TRANSACTION_FIRST_CURSOR,
                                     "0000000000000043",
                                     forward,
                                     true,
@@ -1035,25 +1465,56 @@ class PageMetadataTest {
             assertThat(reference)
                     .isNotEqualTo(
                             new PageMetadata(
-                                    10, TRANSACTION_CURSOR, backward, true, false, LIST_MAP_INDICATOR));
+                                    10,
+                                    TRANSACTION_FIRST_CURSOR,
+                                    TRANSACTION_LAST_CURSOR,
+                                    backward,
+                                    true,
+                                    false,
+                                    LIST_MAP_INDICATOR));
             assertThat(reference)
                     .isNotEqualTo(
                             new PageMetadata(
-                                    10, TRANSACTION_CURSOR, forward, false, false, LIST_MAP_INDICATOR));
+                                    10,
+                                    TRANSACTION_FIRST_CURSOR,
+                                    TRANSACTION_LAST_CURSOR,
+                                    forward,
+                                    false,
+                                    false,
+                                    LIST_MAP_INDICATOR));
             assertThat(reference)
                     .isNotEqualTo(
                             new PageMetadata(
-                                    10, TRANSACTION_CURSOR, forward, true, true, LIST_MAP_INDICATOR));
+                                    10,
+                                    TRANSACTION_FIRST_CURSOR,
+                                    TRANSACTION_LAST_CURSOR,
+                                    forward,
+                                    true,
+                                    true,
+                                    LIST_MAP_INDICATOR));
             assertThat(reference)
                     .isNotEqualTo(
-                            new PageMetadata(10, TRANSACTION_CURSOR, forward, true, false, "00000008"));
+                            new PageMetadata(
+                                    10,
+                                    TRANSACTION_FIRST_CURSOR,
+                                    TRANSACTION_LAST_CURSOR,
+                                    forward,
+                                    true,
+                                    false,
+                                    "00000008"));
         }
 
         @Test
         @DisplayName("equality is self-consistent and refuses both null and a foreign type")
         void equalityIsSelfConsistentAndRefusesNullAndForeignTypes() {
             PageMetadata page =
-                    PageMetadata.forward(10, TRANSACTION_CURSOR, true, false, LIST_MAP_INDICATOR);
+                    PageMetadata.forward(
+                            10,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            true,
+                            false,
+                            LIST_MAP_INDICATOR);
 
             assertThat(page).isEqualTo(page);
             assertThat(page).isNotEqualTo(null);
@@ -1061,14 +1522,16 @@ class PageMetadataTest {
         }
 
         @Test
-        @DisplayName("all six accessors hand back exactly what construction was given")
-        void allSixAccessorsHandBackWhatConstructionWasGiven() {
+        @DisplayName("all seven accessors hand back exactly what construction was given")
+        void allSevenAccessorsHandBackWhatConstructionWasGiven() {
+            String firstCursor = "USRA".concat("0008");
             String cursor = "USRT".concat("0002");
             String indicator = "0000001".concat("2");
 
             PageMetadata page =
                     new PageMetadata(
                             PageMetadata.USER_LIST_PAGE_SIZE,
+                            firstCursor,
                             cursor,
                             PageMetadata.PagingDirection.BACKWARD,
                             false,
@@ -1076,7 +1539,8 @@ class PageMetadataTest {
                             indicator);
 
             assertThat(page.pageSize()).isEqualTo(10);
-            assertThat(page.cursorKey()).isSameAs(cursor).isEqualTo("USRT0002");
+            assertThat(page.previousCursorKey()).isSameAs(firstCursor).isEqualTo("USRA0008");
+            assertThat(page.nextCursorKey()).isSameAs(cursor).isEqualTo("USRT0002");
             assertThat(page.direction()).isSameAs(PageMetadata.PagingDirection.BACKWARD);
             assertThat(page.hasMorePages()).isFalse();
             assertThat(page.hasPreviousPages()).isTrue();
@@ -1086,11 +1550,14 @@ class PageMetadataTest {
         @Test
         @DisplayName("no component is defaulted, normalised, padded, trimmed or case folded")
         void noComponentIsDefaultedNormalisedOrCaseFolded() {
+            String mixedCaseFirstCursor = "uSRa0004";
             String mixedCaseCursor = "usrT0003";
 
-            PageMetadata page = PageMetadata.forward(10, mixedCaseCursor, false, false, " 4 ");
+            PageMetadata page =
+                    PageMetadata.forward(10, mixedCaseFirstCursor, mixedCaseCursor, false, false, " 4 ");
 
-            assertThat(page.cursorKey()).isEqualTo("usrT0003").isNotEqualTo("USRT0003");
+            assertThat(page.previousCursorKey()).isEqualTo("uSRa0004").isNotEqualTo("USRA0004");
+            assertThat(page.nextCursorKey()).isEqualTo("usrT0003").isNotEqualTo("USRT0003");
             assertThat(page.displayedPageNumber())
                     .isEqualTo(" 4 ")
                     .hasSize(CARD_MAP_INDICATOR_WIDTH)
@@ -1102,13 +1569,28 @@ class PageMetadataTest {
         void instancesBehaveAsValuesInASet() {
             PageMetadata cardListPage =
                     PageMetadata.forward(
-                            PageMetadata.CARD_LIST_PAGE_SIZE, CARD_COMPOSITE_CURSOR, true, false, CARD_MAP_INDICATOR);
+                            PageMetadata.CARD_LIST_PAGE_SIZE,
+                            CARD_FIRST_CURSOR,
+                            CARD_LAST_CURSOR,
+                            true,
+                            false,
+                            CARD_MAP_INDICATOR);
             PageMetadata transactionListPage =
                     PageMetadata.forward(
-                            PageMetadata.TRANSACTION_LIST_PAGE_SIZE, TRANSACTION_CURSOR, true, false, LIST_MAP_INDICATOR);
+                            PageMetadata.TRANSACTION_LIST_PAGE_SIZE,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            true,
+                            false,
+                            LIST_MAP_INDICATOR);
             PageMetadata userListPage =
                     PageMetadata.backward(
-                            PageMetadata.USER_LIST_PAGE_SIZE, USER_CURSOR, false, true, LIST_MAP_INDICATOR);
+                            PageMetadata.USER_LIST_PAGE_SIZE,
+                            USER_FIRST_CURSOR,
+                            USER_LAST_CURSOR,
+                            false,
+                            true,
+                            LIST_MAP_INDICATOR);
 
             Set<PageMetadata> distinct = Set.of(cardListPage, transactionListPage, userListPage);
 
@@ -1117,6 +1599,7 @@ class PageMetadataTest {
                     .contains(
                             new PageMetadata(
                                     PageMetadata.USER_LIST_PAGE_SIZE,
+                                    "USRA0009",
                                     "USRT0001",
                                     PageMetadata.PagingDirection.BACKWARD,
                                     false,
@@ -1128,12 +1611,19 @@ class PageMetadataTest {
         @DisplayName("the diagnostic representation names the type and every component")
         void diagnosticRepresentationNamesTheTypeAndEveryComponent() {
             PageMetadata page =
-                    PageMetadata.backward(10, TRANSACTION_CURSOR, false, true, LIST_MAP_INDICATOR);
+                    PageMetadata.backward(
+                            10,
+                            TRANSACTION_FIRST_CURSOR,
+                            TRANSACTION_LAST_CURSOR,
+                            false,
+                            true,
+                            LIST_MAP_INDICATOR);
 
             assertThat(page.toString())
                     .startsWith("PageMetadata[")
                     .contains("pageSize=10")
-                    .contains("cursorKey=0000000000000042")
+                    .contains("previousCursorKey=0000000000000033")
+                    .contains("nextCursorKey=0000000000000042")
                     .contains("direction=BACKWARD")
                     .contains("hasMorePages=false")
                     .contains("hasPreviousPages=true")
@@ -1147,15 +1637,16 @@ class PageMetadataTest {
     class JsonWireContract {
 
         @Test
-        @DisplayName("a fully populated forward page serialises to the six properties in declaration "
+        @DisplayName("a fully populated forward page serialises to the seven properties in declaration "
                 + "order, values untouched")
-        void fullyPopulatedForwardPageSerialisesToSixOrderedProperties()
+        void fullyPopulatedForwardPageSerialisesToSevenOrderedProperties()
                 throws JsonProcessingException {
             Map<String, Object> wire =
                     wireProperties(
                             PageMetadata.forward(
                                     PageMetadata.CARD_LIST_PAGE_SIZE,
-                                    CARD_COMPOSITE_CURSOR,
+                                    CARD_FIRST_CURSOR,
+                                    CARD_LAST_CURSOR,
                                     true,
                                     false,
                                     CARD_MAP_INDICATOR));
@@ -1163,14 +1654,16 @@ class PageMetadataTest {
             assertThat(wire.keySet())
                     .containsExactly(
                             "pageSize",
-                            "cursorKey",
+                            "previousCursorKey",
+                            "nextCursorKey",
                             "direction",
                             "hasMorePages",
                             "hasPreviousPages",
                             "displayedPageNumber");
             assertThat(wire)
                     .containsEntry("pageSize", 7)
-                    .containsEntry("cursorKey", "000000000000004200000000011")
+                    .containsEntry("previousCursorKey", "000000000000003600000000011")
+                    .containsEntry("nextCursorKey", "000000000000004200000000011")
                     .containsEntry("direction", "FORWARD")
                     .containsEntry("hasMorePages", true)
                     .containsEntry("hasPreviousPages", false)
@@ -1183,12 +1676,15 @@ class PageMetadataTest {
             Map<String, Object> wire =
                     wireProperties(
                             PageMetadata.forward(
-                                    PageMetadata.CARD_LIST_PAGE_SIZE, null, true, false, null));
+                                    PageMetadata.CARD_LIST_PAGE_SIZE, null, null, true, false, null));
 
             assertThat(wire).hasSize(4);
             assertThat(wire.keySet())
                     .containsExactly("pageSize", "direction", "hasMorePages", "hasPreviousPages");
-            assertThat(wire).doesNotContainKey("cursorKey").doesNotContainKey("displayedPageNumber");
+            assertThat(wire)
+                    .doesNotContainKey("previousCursorKey")
+                    .doesNotContainKey("nextCursorKey")
+                    .doesNotContainKey("displayedPageNumber");
         }
 
         @Test
@@ -1196,7 +1692,8 @@ class PageMetadataTest {
                 + "field this contract does not consume")
         void unknownInboundPropertyIsTolerated() throws JsonProcessingException {
             String inbound =
-                    "{\"pageSize\":10,\"cursorKey\":\"0000000000000042\","
+                    "{\"pageSize\":10,\"previousCursorKey\":\"0000000000000033\","
+                            + "\"nextCursorKey\":\"0000000000000042\","
                             + "\"direction\":\"BACKWARD\",\"hasMorePages\":false,"
                             + "\"hasPreviousPages\":true,\"displayedPageNumber\":\"00000007\","
                             + "\"screenTitleEcho\":\"unused\"}";
@@ -1207,6 +1704,7 @@ class PageMetadataTest {
                     .isEqualTo(
                             new PageMetadata(
                                     10,
+                                    "0000000000000033",
                                     "0000000000000042",
                                     PageMetadata.PagingDirection.BACKWARD,
                                     false,
@@ -1221,7 +1719,8 @@ class PageMetadataTest {
             PageMetadata original =
                     PageMetadata.backward(
                             PageMetadata.CARD_LIST_PAGE_SIZE,
-                            CARD_COMPOSITE_CURSOR,
+                            CARD_FIRST_CURSOR,
+                            CARD_LAST_CURSOR,
                             true,
                             true,
                             CARD_MAP_INDICATOR);
@@ -1231,9 +1730,12 @@ class PageMetadataTest {
 
             assertThat(restored).isEqualTo(original).isNotSameAs(original);
             assertThat(restored.pageSize()).isEqualTo(7);
-            assertThat(restored.cursorKey())
+            assertThat(restored.previousCursorKey())
+                    .isEqualTo("000000000000003600000000011")
+                    .hasSize(PageMetadata.CURSOR_KEY_MAX_LENGTH);
+            assertThat(restored.nextCursorKey())
                     .isEqualTo("000000000000004200000000011")
-                    .hasSize(27);
+                    .hasSize(PageMetadata.CURSOR_KEY_MAX_LENGTH);
             assertThat(restored.displayedPageNumber())
                     .isEqualTo("  1")
                     .hasSize(CARD_MAP_INDICATOR_WIDTH);
@@ -1250,7 +1752,8 @@ class PageMetadataTest {
                     wireProperties(
                             PageMetadata.forward(
                                     PageMetadata.CARD_LIST_PAGE_SIZE,
-                                    CARD_COMPOSITE_CURSOR,
+                                    CARD_FIRST_CURSOR,
+                                    CARD_LAST_CURSOR,
                                     true,
                                     false,
                                     CARD_MAP_INDICATOR));
@@ -1258,7 +1761,8 @@ class PageMetadataTest {
                     wireProperties(
                             PageMetadata.forward(
                                     PageMetadata.USER_LIST_PAGE_SIZE,
-                                    USER_CURSOR,
+                                    USER_FIRST_CURSOR,
+                                    USER_LAST_CURSOR,
                                     true,
                                     false,
                                     LIST_MAP_INDICATOR_TRAILING));
@@ -1274,27 +1778,30 @@ class PageMetadataTest {
     class ConstructionGuardContract {
 
         @Test
-        @DisplayName("both text components may be absent, and construction says nothing about it")
-        void bothTextComponentsMayBeAbsent() {
+        @DisplayName("all three text components may be absent, and construction says nothing about it")
+        void allThreeTextComponentsMayBeAbsent() {
             PageMetadata page =
                     new PageMetadata(
                             PageMetadata.CARD_LIST_PAGE_SIZE,
+                            null,
                             null,
                             PageMetadata.PagingDirection.FORWARD,
                             false,
                             false,
                             null);
 
-            assertThat(page.cursorKey()).isNull();
+            assertThat(page.previousCursorKey()).isNull();
+            assertThat(page.nextCursorKey()).isNull();
             assertThat(page.displayedPageNumber()).isNull();
         }
 
         @Test
         @DisplayName("an empty cursor and an empty indicator cross construction untouched")
         void emptyTextComponentsCrossConstructionUntouched() {
-            PageMetadata page = PageMetadata.forward(10, "", true, false, "");
+            PageMetadata page = PageMetadata.forward(10, "", "", true, false, "");
 
-            assertThat(page.cursorKey()).isEmpty();
+            assertThat(page.previousCursorKey()).isEmpty();
+            assertThat(page.nextCursorKey()).isEmpty();
             assertThat(page.displayedPageNumber()).isEmpty();
         }
 
@@ -1306,12 +1813,13 @@ class PageMetadataTest {
             // reporting exactly one field. A declarative shape or presence rule evaluated during
             // construction would fire in annotation order instead and could report several at once,
             // so construction deliberately evaluates none: it guards the direction and nothing else.
-            assertThatCode(() -> PageMetadata.forward(10, "** ?? //", false, false, "* *"))
+            assertThatCode(() -> PageMetadata.forward(10, "** ?? //", "** ?? //", false, false, "* *"))
                     .doesNotThrowAnyException();
 
-            PageMetadata page = PageMetadata.forward(10, "** ?? //", false, false, "* *");
+            PageMetadata page = PageMetadata.forward(10, "** ?? //", "** ?? //", false, false, "* *");
 
-            assertThat(page.cursorKey()).isEqualTo("** ?? //");
+            assertThat(page.previousCursorKey()).isEqualTo("** ?? //");
+            assertThat(page.nextCursorKey()).isEqualTo("** ?? //");
             assertThat(page.displayedPageNumber()).isEqualTo("* *");
         }
 
@@ -1328,6 +1836,7 @@ class PageMetadataTest {
                                     new PageMetadata(
                                             0,
                                             null,
+                                            null,
                                             PageMetadata.PagingDirection.BACKWARD,
                                             false,
                                             false,
@@ -1335,7 +1844,7 @@ class PageMetadataTest {
                     .doesNotThrowAnyException();
 
             assertThatNullPointerException()
-                    .isThrownBy(() -> new PageMetadata(0, "", null, false, false, ""))
+                    .isThrownBy(() -> new PageMetadata(0, "", "", null, false, false, ""))
                     .withMessage("direction must be supplied explicitly");
         }
     }

@@ -24,126 +24,66 @@ import java.util.Objects;
  * CardDemo application. It carries exactly one summary message alongside {@code N}
  * independent <em>per-field</em> error states.
  *
- * <h2>Legacy antecedent</h2>
+ * <p>The 3270 presentation layer had no error object at all: it decorated the individual input
+ * fields of a map in place, through the parameterized {@code PROCEDURE DIVISION} macro
+ * {@code app/cpy/CSSETATY.cpy}, whose executable body is lines 18 to 27. The body fires when a
+ * field's validation flag is either not-OK or blank - two different operator mistakes that the
+ * legacy screen told apart - writing an error highlight into the field's indicator sub-field in
+ * both states and, in the blank state only, additionally writing a marker character over the
+ * displayed value. Both edits are 3270 rendering mechanisms with no REST analogue, so this type
+ * exposes the two <em>states</em> ({@link FieldState#INVALID} and {@link FieldState#MISSING})
+ * and discards the mechanisms entirely: it holds no highlight value, indicator byte, flag
+ * character, map coordinate or terminal presentation detail of any kind.
+ * {@link FieldErrorDecorator} documents the macro translation in full.
  *
- * <p>The 3270 presentation layer had no error object at all. It decorated the individual
- * input fields of a map in place, through the parameterized {@code PROCEDURE DIVISION}
- * macro {@code app/cpy/CSSETATY.cpy}. Lines 17-27 of that member are the whole macro;
- * lines 18-27 are its executable body and are the authority for this type. Line 17 is a
- * corrupted descriptive line - it trails off into an unrelated screen field name - so the
- * body, not the commentary, was translated. The macro takes three substitution tokens: the
- * validation flag to test, the screen field to decorate, and the map to decorate it on.
+ * <p>The macro is expanded exactly 39 times in {@code app/cbl/COACTUPC.cbl}, between lines 3208
+ * and 3432, so 39 fields bound the universe of entries this body can carry.
+ * {@code app/bms/COACTUP.bms} corroborates the set: the map defines 43 unprotected input fields,
+ * all 39 decorated identifiers are among them, and the four unprotected-but-undecorated fields
+ * are {@code ACCTSID}, {@code AADDGRP}, {@code ACSTNUM} and {@code ACSGOVT}, for which no entry
+ * may ever be invented. Two of the 39 - the middle name (line 3345) and the second address line
+ * (line 3369) - are decorated but never validated, and nothing in this type implies otherwise
+ * (decision log entry D-34).
  *
- * <p>The body has exactly three semantic properties, and all three are encoded here:
- *
- * <ol>
- *   <li><b>Two distinct states, not one boolean</b> (lines 18-19). The macro fires when the
- *       field's validation flag is either <em>not-OK</em> or <em>blank</em>. Those are two
- *       different operator mistakes and the legacy screen told them apart.</li>
- *   <li><b>A re-entry gate</b> (line 20). The macro fires only when the program-context
- *       re-enter condition is set, so field-level errors were <em>absent</em> on a first
- *       submission and appeared only once the operator had re-submitted the screen.</li>
- *   <li><b>Two different in-place edits of the map</b> (lines 21-26). In both states the
- *       macro writes an error highlight value into the field's indicator sub-field, which
- *       is the {@link FieldState#INVALID} case. In the blank state <em>only</em>, it
- *       additionally writes a single-character flag into the field's displayed-value
- *       position, overwriting whatever was on the screen, which is the
- *       {@link FieldState#MISSING} case.</li>
- * </ol>
- *
- * <p>Both of those edits are 3270 rendering mechanisms with no REST analogue. This type
- * therefore exposes the two <em>states</em> and discards the mechanisms entirely: it holds
- * no highlight value, no indicator byte, no flag character, no overwritten display value,
- * no map coordinate and no terminal presentation detail of any kind.
- *
- * <h2>The 39 decorated fields</h2>
- *
- * <p>The macro is expanded exactly 39 times in {@code app/cbl/COACTUPC.cbl}, between lines
- * 3208 and 3432, always against the same map, with 39 distinct validation flags and 39
- * distinct screen field identifiers. {@code app/bms/COACTUP.bms} was parsed to corroborate
- * the expansion set: that map defines 43 unprotected input fields, every one of the 39
- * decorated identifiers is among them, and the four unprotected-but-undecorated fields are
- * {@code ACCTSID}, {@code AADDGRP}, {@code ACSTNUM} and {@code ACSGOVT}. No decoration
- * entry may be invented for those four.
- *
- * <p>Four source oddities in that range were verified and are recorded so a future reader
- * does not "fix" this contract by trusting the wrong half of the source:
+ * <p><strong>Contract rules.</strong>
  *
  * <ul>
- *   <li>A hand-written equivalent of the macro sits commented out just above the first
- *       expansion, at lines 3198-3205 within the banner that starts at line 3196. It is
- *       inactive and stays inactive.</li>
- *   <li>Three descriptive lines are mislabelled. Line 3375 names one field but introduces
- *       the postal-code expansion, and lines 3426 and 3431 are a transposed pair. Following
- *       the substitution tokens rather than the commentary gives the correct final two
- *       mappings: primary-cardholder decorates {@code ACSPFLG} and the electronic-transfer
- *       account identifier decorates {@code ACSEFTC}.</li>
- *   <li>The expansion sequence itself is irregular: the state field is expanded between the
- *       two address lines, and the postal code is expanded ahead of city and country. That
- *       sequence is described exactly as it is, and this type imposes no sequence of its
- *       own on {@link #fieldErrors()}.</li>
- *   <li>Two of the 39 fields are decorated but never actually validated - the source says
- *       so directly at line 3345 for the middle name and at line 3369 for the second
- *       address line. Nothing in this type implies that either field is validated, and no
- *       constraint may be attached to them anywhere in the request contract.</li>
- * </ul>
- *
- * <h2>Contract rules</h2>
- *
- * <ul>
- *   <li><b>No collapse.</b> The per-field states must never be flattened into a single
- *       overall boolean, a single message string or an "is valid" flag. A client that is
- *       told only "this field is wrong" cannot tell the operator whether to supply a value
- *       or to correct one.</li>
- *   <li><b>The state enum is duplicated on purpose.</b> The validation-failure carrier in
- *       the {@code com.carddemo.exception} package declares its own structurally identical
- *       two-constant state type. The two are structurally identical by design and
- *       semantically identical by contract, and the duplication is deliberate: the layering
- *       of this module forbids {@code api.dto} from depending on the failure-carrier
- *       package. The module's global failure handler, which sits one level up in
- *       {@code com.carddemo.api}, is the component that translates a caught validation
- *       failure into an instance of this type - the translation happens there, never here.
- *       Do not "de-duplicate" the two enums; doing so inverts the dependency direction and
- *       breaks the build's layer discipline.</li>
- *   <li><b>The re-entry gate is not evaluated here.</b> Whether field errors may be
- *       populated at all is decided by the service, from the re-enter condition echoed back
- *       in {@code NavigationContext}. This type only has to be constructible with no field
- *       errors whatsoever, which is what {@link #ErrorResponse(String)} is for.</li>
+ *   <li><b>No collapse.</b> The per-field states must never be flattened into a single overall
+ *       boolean, a single message string or an "is valid" flag. A client told only "this field
+ *       is wrong" cannot tell the operator whether to supply a value or to correct one.</li>
+ *   <li><b>The state enum is duplicated on purpose.</b> The validation-failure carrier in the
+ *       {@code com.carddemo.exception} package declares its own structurally identical
+ *       two-constant state type. The duplication is deliberate: the module's layering forbids
+ *       {@code api.dto} from depending on the failure-carrier package, and the global failure
+ *       handler one level up in {@code com.carddemo.api} owns the translation. De-duplicating
+ *       the two enums would invert the dependency direction.</li>
+ *   <li><b>The re-entry gate is not evaluated here.</b> Whether field errors may be populated
+ *       at all is decided by the service from the re-enter condition echoed back on
+ *       {@link NavigationContext}; this type only has to be constructible with no field errors
+ *       whatsoever, which is what {@link #ErrorResponse(String)} is for (decision log entry
+ *       D-33).</li>
  *   <li><b>Sanitized by construction.</b> No component of this type, and no component of
- *       {@link FieldError}, may ever carry stack detail, a failure class name, an internal
- *       file path, a SQL fragment, a schema or table name, a secret, a password or a
- *       password digest.</li>
+ *       {@link FieldError}, may ever carry stack detail, a failure class name, an internal file
+ *       path, a SQL fragment, a schema or table name, a secret, a password or a password
+ *       digest.</li>
  *   <li><b>This type is the error body.</b> The standard problem-detail representation is
  *       deliberately switched off for this module - {@code application.yml} declares no
- *       problem-detail setting at all - so this type is neither a wrapper for it nor a
- *       stand-in that will later be replaced by it.</li>
- *   <li><b>Nothing is trimmed.</b> Values are carried exactly as supplied. Legacy
- *       fixed-width screen and record fields are space-significant, so no component is
- *       trimmed, case-folded or truncated, and no length constraint is imposed. A single
- *       maximum length would in any case be arbitrary here: the estate's summary message
- *       widths differ per screen and per catalog entry.</li>
+ *       problem-detail setting at all - so this type is neither a wrapper for it nor a stand-in
+ *       to be replaced by it.</li>
+ *   <li><b>Nothing is trimmed.</b> Values are carried exactly as supplied. Legacy fixed-width
+ *       screen and record fields are space-significant, so no component is trimmed, case-folded
+ *       or truncated, and no length constraint is imposed - a single maximum would in any case
+ *       be arbitrary, because the estate's summary message widths differ per screen and per
+ *       catalog entry.</li>
  * </ul>
  *
- * <h2>Wire contract</h2>
- *
- * <p>The module configures {@code jackson.default-property-inclusion: non_null} globally,
- * which omits {@code null} values and nothing else. Combined with the normalization in the
- * canonical constructor this fixes the payload shape:
- *
- * <ul>
- *   <li>{@code fieldErrors} is <em>always</em> present, and is emitted as an empty array
- *       when there are no field errors. A client never has to test it for {@code null}.</li>
- *   <li>{@code message} is omitted when absent.</li>
- *   <li>{@code focusScreenFieldId} is omitted when absent.</li>
- * </ul>
- *
- * <p>Instances are deeply immutable and therefore safe to share across threads.
- *
- * <h2>Provenance</h2>
- *
- * <p>Behaviour cited, never transcribed, from the CardDemo COBOL estate at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
+ * <p><strong>Wire contract.</strong> The module configures
+ * {@code jackson.default-property-inclusion: non_null} globally, which omits {@code null}
+ * values and nothing else. Combined with the normalization in the canonical constructor that
+ * fixes the payload shape: {@code fieldErrors} is always present and is emitted as an empty
+ * array when there are none, so a client never has to test it for {@code null}, while
+ * {@code message} and {@code focusScreenFieldId} are omitted when absent. Instances are deeply
+ * immutable and therefore safe to share across threads.
  *
  * @param message            the single summary message for the whole response, or
  *                           {@code null} when there is none. The legacy screens showed one
@@ -277,7 +217,7 @@ public record ErrorResponse(String message,
      * @param fieldName      the name of the field in the request contract, for example the
      *                       property a client sent. Mandatory.
      * @param screenFieldId  the legacy screen field identifier, carried as an opaque label
-     *                       so that a response stays traceable to the map it derives from.
+     *                       so that a response can be correlated with the map it derives from.
      *                       It is a label and nothing more - it is not a byte, not a
      *                       coordinate and not a terminal presentation value - and a client
      *                       may ignore it entirely. Mandatory.
@@ -298,7 +238,7 @@ public record ErrorResponse(String message,
          *
          * <p>{@code fieldName}, {@code screenFieldId} and {@code state} are all load-bearing:
          * without the name a client cannot locate the field, without the identifier the
-         * entry loses its traceability to the legacy map, and without the state the client
+         * entry cannot be correlated with the legacy map, and without the state the client
          * cannot tell the operator whether to supply a value or to correct one. Failing here
          * is preferable to emitting an entry a client cannot act on.
          *

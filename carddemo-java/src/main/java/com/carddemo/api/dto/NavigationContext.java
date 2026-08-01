@@ -27,135 +27,91 @@ import java.util.Optional;
  *
  * <p>The legacy antecedent is the group {@code CARDDEMO-COMMAREA} declared at
  * {@code app/cpy/COCOM01Y.cpy} line 19 and textually included by all seventeen online COBOL
- * programs, which is the joint-highest copybook fan-out in the estate. The area is a fixed 160
- * bytes, and summing the sixteen elementary field widths cited on the components below accounts for
- * every one of them: 4 + 8 + 4 + 8 + 8 + 1 + 1 + 9 + 25 + 25 + 25 + 11 + 1 + 16 + 7 + 7 = 160.
- * There is no filler anywhere in the layout and therefore nothing omitted here. All sixteen fields
- * are modelled, in declaration order, across the five groups the copybook declares: general
- * information (line 20), customer information (line 32), account information (line 37), card
- * information (line 40) and the trailing screen-state group (line 42).</p>
+ * programs, the joint-highest copybook fan-out in the estate. The area is a fixed 160 bytes, and
+ * summing the sixteen elementary field widths cited on the components below accounts for every one
+ * of them: 4 + 8 + 4 + 8 + 8 + 1 + 1 + 9 + 25 + 25 + 25 + 11 + 1 + 16 + 7 + 7 = 160. There is no
+ * filler anywhere in the layout and therefore nothing omitted here. All sixteen fields are modelled,
+ * in declaration order, across the five groups the copybook declares: general information (line 20),
+ * customer information (line 32), account information (line 37), card information (line 40) and the
+ * trailing screen-state group (line 42).</p>
  *
- * <h2>This is echoed request state, not a server session</h2>
+ * <p><strong>This is echoed request state, not a server session.</strong> A CICS pseudo-conversation
+ * ends each turn by returning to the terminal and is re-entered on the next one with the
+ * communication area handed back, so the area is the whole of the state that survives between turns.
+ * The REST translation keeps that shape exactly: the server returns this state in a response body,
+ * the client holds it, and the client sends it back on the next call. There is consequently no
+ * server-side session behind this type - no servlet session, no session-scoped attribute, no
+ * server-side cache and no sticky routing - which is what makes every endpoint independently
+ * testable. An instance is a value: never stored, never mutated, never shared as writable state, and
+ * the two derivation methods below return new instances.
  *
- * <p>A CICS pseudo-conversation ends each turn by returning to the terminal and is re-entered on the
- * next one with the communication area handed back to it, so the area is the whole of the state that
- * survives between turns. The REST translation keeps that shape exactly: the server returns this
- * state in a response body, the client holds it, and the client sends it back on the next call.</p>
+ * <p><strong>The four routing components are declarative only.</strong> The estate dispatches program
+ * to program with twenty-five transfer-control commands and re-arms the next turn with nineteen
+ * return-with-transaction commands; all of them become route constants returned in response bodies,
+ * so the client drives the next call and the server forwards nothing. The transaction-id and
+ * program-name components are therefore data recording where a turn came from and where the previous
+ * turn said it was going: sign-on stamps its own transaction id and program name into the area at
+ * {@code app/cbl/COSGN00C.cbl} lines 224 and 225 before handing control on. This record accordingly
+ * declares <strong>no route table, no route constant and no dispatch method</strong>; route constants
+ * belong to the service layer, and placing them here would put navigation decisions in a
+ * data-transfer type and invert the layering. {@link #administrator()} is a predicate over an echoed
+ * value: it reports a condition and selects nothing.
  *
- * <p>There is consequently <strong>no server-side session of any kind</strong> behind this type
- * &mdash; no servlet session, no session-scoped attribute, no server-side cache of an instance and
- * no sticky routing. That is what makes every endpoint independently testable: a test constructs the
- * state it wants and calls one endpoint, exactly as the legacy screen would have arrived carrying
- * it. An instance is a value: it is never stored, never mutated and never shared as writable state.
- * The two derivation methods below return new instances and change nothing.</p>
- *
- * <h2>The four routing components are declarative only</h2>
- *
- * <p>The estate dispatches program to program with twenty-five transfer-control commands and re-arms
- * the next turn with nineteen return-with-transaction commands. All of them become route constants
- * returned in response bodies, so the client drives the next call and the server forwards nothing.
- * The transaction-id and program-name components here are therefore <em>data recording where a turn
- * came from and where the previous turn said it was going</em>, and nothing more: sign-on stamps its
- * own transaction id and its own program name into the area at {@code app/cbl/COSGN00C.cbl} lines
- * 224 and 225 before handing control on.</p>
- *
- * <p>This record accordingly declares <strong>no route table, no route constant and no dispatch
- * method</strong>. Route constants are owned by {@code com.carddemo.service.NavigationService};
- * placing them here would put navigation decisions in a data-transfer type and invert the layering.
- * {@link #administrator()} is a predicate over an echoed value, not a routing decision: it reports a
- * condition and selects nothing.</p>
- *
- * <h2>Identifiers are text, never numbers</h2>
- *
- * <p>The customer identifier (line 33, nine digits), the account identifier (line 38, eleven digits)
- * and the card number (line 41, sixteen digits) are declared numeric in the copybook, yet all three
- * are <strong>identifiers with contractual leading zeros and fixed external widths</strong>, so all
- * three are carried as {@code String}. Coercing any of them to a numeric Java type would silently
+ * <p><strong>Identifiers are text, never numbers.</strong> The customer identifier (line 33, nine
+ * digits), the account identifier (line 38, eleven digits) and the card number (line 41, sixteen
+ * digits) are declared numeric in the copybook, yet all three are identifiers with contractual
+ * leading zeros and fixed external widths, so all three are carried as {@code String}. A nine-
+ * character customer identifier of {@code "000000042"} must round-trip as those exact nine
+ * characters and never as {@code 42}; an eleven-character account identifier of
+ * {@code "00000000001"} must never become {@code "1"}. Coercing any of them to a numeric type would
  * discard leading zeros and shorten the external width, and that width is compared directly by the
- * byte-equivalence acceptance criterion.</p>
+ * byte-equivalence acceptance criterion. These are also the genuine business keys of the estate,
+ * never surrogates, so nothing here is generated, renumbered or reformatted.
  *
- * <p>Concretely: a nine-character customer identifier of {@code "000000042"} must round-trip as those
- * exact nine characters and never as {@code 42}; an eleven-character account identifier of
- * {@code "00000000001"} must never become {@code "1"}; and a sixteen-digit card number stays textual
- * rather than becoming a value whose numeric identity invites arithmetic it never had. These are
- * also the genuine business keys of the estate, never surrogates, so nothing here is generated,
- * renumbered or reformatted.</p>
+ * <p><strong>An unrecognised user type is accepted, never rejected.</strong> The user-type field
+ * (line 26) carries two condition names: the administrator value {@code A} at line 27 and the
+ * standard-user value {@code U} at line 28. Sign-on moves the persisted type into the area at
+ * {@code app/cbl/COSGN00C.cbl} line 227, tests the administrator condition at line 230, and supplies
+ * an <strong>unconditional</strong> alternative at line 235 that closes at line 240. That
+ * alternative is not a second test of the standard-user condition: there is no third branch and no
+ * error path, so every value other than the administrator code reaches the main menu, including a
+ * character the estate never declared. Two consequences follow. The component is the raw
+ * one-character code rather than {@link UserType}, because holding the enum directly would erase an
+ * unrecognised byte at construction and the client would echo back something different from what it
+ * received. Resolution is a derived, non-throwing projection: {@link #resolvedUserType()} delegates
+ * to the lookup on {@link UserType}, which returns an empty result rather than raising for an
+ * absent, blank, over-long or undeclared code and applies no case fold, so construction from a
+ * legacy record whose type character is neither {@code A} nor {@code U} always succeeds. A throwing
+ * lookup or a membership constraint would abort a sign-on that the legacy program completes.
  *
- * <h2>An unrecognised user type is accepted, never rejected</h2>
+ * <p><strong>The enter and re-enter flag gates field-error decoration.</strong> The program-context
+ * field (line 29) is a single digit with two condition names, first entry at line 30 and re-entry at
+ * line 31, and is modelled as the nested {@link ProgramContext} enum because the digit is an
+ * artefact of the fixed-width area while the two named states are the contract. The flag is
+ * behaviourally load-bearing: field-level error decoration is applied only on re-entry, so per-field
+ * errors are absent on a first submission and appear only when the same screen is submitted again
+ * (decision log entry D-33). {@link ErrorResponse} deliberately does not evaluate that gate and
+ * leaves it to the service, which reads it from here. An absent value is first entry, matching
+ * sign-on setting the digit to zero at {@code app/cbl/COSGN00C.cbl} line 228.
  *
- * <p>The user-type field (line 26) carries two condition names: {@code CDEMO-USRTYP-ADMIN}, the
- * administrator value {@code A}, at line 27 and {@code CDEMO-USRTYP-USER}, the standard-user value
- * {@code U}, at line 28. Sign-on moves the persisted type into
- * the area at {@code app/cbl/COSGN00C.cbl} line 227, tests the administrator condition at line 230,
- * and supplies an <strong>unconditional</strong> alternative at line 235 that closes at line 240.
- * That alternative is not a second test of the standard-user condition: there is no third branch and
- * no error path, so <em>every</em> value other than the administrator code reaches the main menu,
- * including a character the estate never declared.</p>
+ * <p><strong>Nothing is validated, defaulted or normalised here.</strong> There is no canonical
+ * constructor because there is nothing for one to do: every component may legitimately be
+ * {@code null}, an entirely empty area is a real state, and it routes to sign-on unconditionally.
+ * Values cross this boundary byte for byte and are never trimmed, padded, case-folded, stripped,
+ * canonicalised or re-formatted. Legacy fixed-width fields are space-padded and that padding is
+ * contract, which matters most for the three twenty-five-character customer names and the two
+ * seven-character screen-state names. The only constraint used is a maximum length, which measures
+ * and never alters, so leading and trailing spaces survive validation untouched. No presence,
+ * pattern, character-class or numeric range constraint appears anywhere: each would reject input the
+ * legacy system accepts, and Bean Validation reports violations in an unspecified order, which would
+ * replace the source-ordered message cascades that belong to the services.
  *
- * <p>Two design decisions follow, and both are deliberate.</p>
- *
- * <ul>
- *   <li><strong>The component is the raw one-character code, not the enum.</strong> Holding
- *       {@link UserType} directly would erase an unrecognised byte at construction, because there is
- *       no constant to hold it in; the client would then echo back something different from what it
- *       received. Carrying the raw character preserves the round trip exactly.</li>
- *   <li><strong>Resolution is a derived, non-throwing projection.</strong> {@link #resolvedUserType()}
- *       delegates to the lookup on {@link UserType}, which returns an empty result rather than
- *       raising for an absent, blank, over-long or undeclared code, and applies no case fold. So
- *       <strong>constructing this record from a legacy record whose type character is neither
- *       {@code A} nor {@code U} always succeeds</strong>, and no constraint on the component rejects
- *       it. A throwing lookup or a membership constraint would abort a sign-on that the legacy
- *       program completes. Faithful beats idiomatic.</li>
- * </ul>
- *
- * <h2>The enter and re-enter flag gates field-error decoration</h2>
- *
- * <p>The program-context field (line 29) is a single digit with two condition names: first entry at
- * line 30 and re-entry at line 31. It is modelled as the nested {@link ProgramContext} enum rather
- * than as a digit, because the digit itself is an artefact of the fixed-width area while the two
- * named states are the contract.</p>
- *
- * <p>The flag is behaviourally load-bearing rather than informational: field-level error decoration
- * is applied only on re-entry, so per-field errors are <em>absent on a first submission and appear
- * only when the same screen is submitted again</em>. {@code ErrorResponse} deliberately does not
- * evaluate that gate and leaves it to the service, which reads it from here. An absent value is
- * first entry, which matches sign-on setting the digit to zero at {@code app/cbl/COSGN00C.cbl} line
- * 228 before it hands control to a menu.</p>
- *
- * <h2>Nothing is validated, defaulted or normalised here</h2>
- *
- * <p>There is no canonical constructor because there is nothing for one to do. Every component may
- * legitimately be {@code null}: an entirely empty area is a real state, and it routes to sign-on
- * unconditionally. Values cross this boundary byte for byte and are <strong>never trimmed, padded,
- * upper-cased, lower-cased, stripped, canonicalised or re-formatted</strong>. Legacy fixed-width
- * fields are space-padded and that padding is contract, which matters most for the three
- * twenty-five-character customer names and the two seven-character screen-state names, all of which
- * must survive unchanged. The eight-character user identifier is likewise carried exactly as
- * received.</p>
- *
- * <p>The only constraint used is a maximum length, which measures and never alters, so leading and
- * trailing spaces survive validation untouched. No presence, pattern, character-class or numeric
- * range constraint appears anywhere: each would reject input the legacy system accepts, and Bean
- * Validation additionally reports violations in an unspecified order, which would replace the
- * source-ordered message cascades that belong to the services.</p>
- *
- * <h2>Only two of these facts become signed token claims</h2>
- *
- * <p>{@code com.carddemo.config.JwtTokenProvider} carries exactly two of the values below as signed
- * claims: the eight-character user identifier and the one-character user type. Everything else in
- * this record is client-echoed state and must never enter a token &mdash; no selection identifier, no
- * route, no program name and no screen name. There is no credential component here and none may ever
- * be added: sign-on carries the operator's secret in its own request type, and the user-security
- * table stores only a hash of it.</p>
- *
- * <h2>Provenance</h2>
- *
- * <p>Translated from the AWS CardDemo z/OS mainframe estate at checkout SHA
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, the stamp carried in the trailer comment of
- * the source copybook at line 46. The estate under {@code app/} is read-only reference and remains
- * byte-identical: it is cited here by member name, group name, field name, field width, condition
- * value and line number only, and no COBOL text is reproduced.</p>
+ * <p><strong>Only two of these values may ever become signed token claims</strong> - the
+ * eight-character user identifier and the one-character user type. Everything else here is
+ * client-echoed state and must never enter a token: no selection identifier, no route, no program
+ * name and no screen name. There is no credential component and none may be added; sign-on carries
+ * the operator's secret in its own request type, and the user-security table stores only a password
+ * digest.
  *
  * @param fromTransactionId the transaction the turn arrived from, from {@code CDEMO-FROM-TRANID}
  *     ({@code PIC X(04)}, four characters, line 21). Stamped by the sending program with its own
@@ -238,6 +194,19 @@ public record NavigationContext(
         @Size(max = NavigationContext.MAP_NAME_LENGTH) String lastMapset) {
 
     /**
+     * Fixed stand-in emitted by {@link #toString()} in place of each identifying component.
+     *
+     * <p>A constant rather than any transformation of the value, so nothing about a redacted component
+     * - not its length, not a prefix or suffix, not a digest - can be recovered from a stringified
+     * instance. A partial mask was rejected deliberately: a truncated primary account number is still
+     * cardholder data, and a digest of a nine-character identifier is trivially reversible by
+     * enumeration.
+     *
+     * <p>Private because it is a rendering detail and not part of the navigation contract.</p>
+     */
+    private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
+
+    /**
      * Width in characters of a CICS transaction identifier: 4.
      *
      * <p>The legacy width of {@code CDEMO-FROM-TRANID} at {@code app/cpy/COCOM01Y.cpy} line 21 and of
@@ -248,90 +217,71 @@ public record NavigationContext(
     public static final int TRANSACTION_ID_LENGTH = 4;
 
     /**
-     * Width in characters of a program name: 8.
-     *
-     * <p>The legacy width of {@code CDEMO-FROM-PROGRAM} at {@code app/cpy/COCOM01Y.cpy} line 22 and of
-     * {@code CDEMO-TO-PROGRAM} at line 24, shared for the same reason as
-     * {@link #TRANSACTION_ID_LENGTH}. Declared separately from {@link #USER_ID_LENGTH} even though
-     * the two values are equal, because a program name and a user identifier are unrelated fields
-     * whose widths coincide by accident; neither is derived from the other. The bound only measures.
-     * </p>
+     * Width in characters of a program name: 8 - the legacy width of
+     * {@code CDEMO-FROM-PROGRAM} at {@code app/cpy/COCOM01Y.cpy} line 22 and of
+     * {@code CDEMO-TO-PROGRAM} at line 24. Declared separately from {@link #USER_ID_LENGTH} even
+     * though the values are equal, because a program name and a user identifier are unrelated
+     * fields whose widths coincide by accident; neither is derived from the other.
      */
     public static final int PROGRAM_NAME_LENGTH = 8;
 
     /**
-     * Width in characters of the signed-on user identifier: 8.
-     *
-     * <p>The legacy width of {@code CDEMO-USER-ID} at {@code app/cpy/COCOM01Y.cpy} line 25, matching
-     * the eight-character user-id field of the credential record {@code app/cpy/CSUSR01Y.cpy}.
-     * Declared separately from {@link #PROGRAM_NAME_LENGTH} for the reason given there. The bound
-     * only measures: the identifier is never trimmed and never case-folded.</p>
+     * Width in characters of the signed-on user identifier: 8 - the legacy width of
+     * {@code CDEMO-USER-ID} at {@code app/cpy/COCOM01Y.cpy} line 25, matching the user-id field of
+     * the credential record {@code app/cpy/CSUSR01Y.cpy}. Declared separately from
+     * {@link #PROGRAM_NAME_LENGTH} for the reason given there.
      */
     public static final int USER_ID_LENGTH = 8;
 
     /**
-     * Width in characters of the raw user-type code: 1.
-     *
-     * <p>The legacy width of {@code CDEMO-USER-TYPE} at {@code app/cpy/COCOM01Y.cpy} line 26. The
-     * bound measures length only and deliberately does <em>not</em> restrict the value to the two
-     * declared condition values at lines 27 and 28, because an undeclared single character is
-     * accepted and routed by the legacy program rather than rejected.</p>
+     * Width in characters of the raw user-type code: 1 - the legacy width of
+     * {@code CDEMO-USER-TYPE} at {@code app/cpy/COCOM01Y.cpy} line 26. The bound deliberately does
+     * <em>not</em> restrict the value to the two condition values at lines 27 and 28, because an
+     * undeclared single character is accepted and routed by the legacy program rather than rejected.
      */
     public static final int USER_TYPE_LENGTH = 1;
 
     /**
-     * Width in characters of the customer identifier: 9.
-     *
-     * <p>The legacy width of {@code CDEMO-CUST-ID} at {@code app/cpy/COCOM01Y.cpy} line 33. The field
-     * is declared numeric there, but it crosses this boundary as text so its leading zeros and its
-     * nine-character external width survive; this constant is that external width.</p>
+     * Width in characters of the customer identifier: 9 - the legacy width of
+     * {@code CDEMO-CUST-ID} at {@code app/cpy/COCOM01Y.cpy} line 33, declared numeric there and
+     * carried as text here so its leading zeros and external width survive.
      */
     public static final int CUSTOMER_ID_LENGTH = 9;
 
     /**
-     * Width in characters of each customer name part: 25.
-     *
-     * <p>The legacy width of {@code CDEMO-CUST-FNAME}, {@code CDEMO-CUST-MNAME} and
-     * {@code CDEMO-CUST-LNAME} at {@code app/cpy/COCOM01Y.cpy} lines 34, 35 and 36, which are all
-     * declared at the same width as three parts of one name. The legacy fields are space-padded to
-     * this width and the padding is contract, so the bound measures and never trims.</p>
+     * Width in characters of each customer name part: 25 - the legacy width of
+     * {@code CDEMO-CUST-FNAME}, {@code CDEMO-CUST-MNAME} and {@code CDEMO-CUST-LNAME} at
+     * {@code app/cpy/COCOM01Y.cpy} lines 34, 35 and 36. The legacy fields are space-padded to this
+     * width and the padding is contract.
      */
     public static final int CUSTOMER_NAME_LENGTH = 25;
 
     /**
-     * Width in characters of the account identifier: 11.
-     *
-     * <p>The legacy width of {@code CDEMO-ACCT-ID} at {@code app/cpy/COCOM01Y.cpy} line 38. Declared
-     * numeric there and carried as text here so its leading zeros and its eleven-character external
-     * width survive; this constant is that external width.</p>
+     * Width in characters of the account identifier: 11 - the legacy width of
+     * {@code CDEMO-ACCT-ID} at {@code app/cpy/COCOM01Y.cpy} line 38, declared numeric there and
+     * carried as text here so its leading zeros and external width survive.
      */
     public static final int ACCOUNT_ID_LENGTH = 11;
 
     /**
-     * Width in characters of the raw account-status code: 1.
-     *
-     * <p>The legacy width of {@code CDEMO-ACCT-STATUS} at {@code app/cpy/COCOM01Y.cpy} line 39. As
-     * with the user type, the bound measures length only and does not restrict the value, because the
-     * status is echoed rather than interpreted by this type.</p>
+     * Width in characters of the raw account-status code: 1 - the legacy width of
+     * {@code CDEMO-ACCT-STATUS} at {@code app/cpy/COCOM01Y.cpy} line 39. As with the user type the
+     * bound does not restrict the value, because the status is echoed rather than interpreted here.
      */
     public static final int ACCOUNT_STATUS_LENGTH = 1;
 
     /**
-     * Width in characters of the card number: 16.
-     *
-     * <p>The legacy width of {@code CDEMO-CARD-NUM} at {@code app/cpy/COCOM01Y.cpy} line 41. Declared
-     * numeric there and carried as text here: sixteen digits are an identifier rather than a
-     * quantity, and the external width is contractual.</p>
+     * Width in characters of the card number: 16 - the legacy width of
+     * {@code CDEMO-CARD-NUM} at {@code app/cpy/COCOM01Y.cpy} line 41, declared numeric there and
+     * carried as text here because sixteen digits are an identifier rather than a quantity.
      */
     public static final int CARD_NUMBER_LENGTH = 16;
 
     /**
-     * Width in characters of a screen name and of a screen-group name: 7.
-     *
-     * <p>The legacy width of {@code CDEMO-LAST-MAP} at {@code app/cpy/COCOM01Y.cpy} line 43 and of
-     * {@code CDEMO-LAST-MAPSET} at line 44, which are declared at the same width and always travel
-     * together. These are names only: no screen geometry, attribute or control value is modelled by
-     * this type. The bound measures and never trims, so trailing padding survives.</p>
+     * Width in characters of a screen name and of a screen-group name: 7 - the legacy width of
+     * {@code CDEMO-LAST-MAP} at {@code app/cpy/COCOM01Y.cpy} line 43 and of
+     * {@code CDEMO-LAST-MAPSET} at line 44, which always travel together. These are names only: no
+     * screen geometry, attribute or control value is modelled by this type.
      */
     public static final int MAP_NAME_LENGTH = 7;
 
@@ -398,7 +348,7 @@ public record NavigationContext(
      *
      * <p>This is a predicate over echoed data, <strong>not a routing decision</strong>: it returns a
      * boolean, selects no destination and performs no dispatch. Which route an administrator or a
-     * non-administrator is sent to is owned by {@code com.carddemo.service.NavigationService}.</p>
+     * non-administrator is sent to belongs to the service layer.</p>
      *
      * @return {@code true} if and only if the carried code is the administrator code
      */
@@ -501,6 +451,61 @@ public record NavigationContext(
                 cardNumber,
                 lastMap,
                 lastMapset);
+    }
+
+    /**
+     * Returns a diagnostic representation carrying the navigation state and redacting the identity and
+     * account state that travels beside it.
+     *
+     * <p><strong>Why the implicit record rendering could not stand.</strong> A record's generated
+     * {@code toString()} prints every component. Seven of the sixteen here are regulated: the customer
+     * identifier, the three customer name parts, the account identifier and the card number - a
+     * primary account number - together with the signed-on identity. Because this type is echoed on
+     * every online turn, it is the single most frequently stringified object in the online tier, so a
+     * default rendering would have put cardholder data into a log line on every screen transition.
+     *
+     * <p><strong>What is retained, and why it is safe.</strong> The whole diagnostic value of this type
+     * is the transition it describes, and none of that is regulated: the originating and destination
+     * transaction identifiers and program names, the first-entry or re-entry state, the last map and
+     * mapset, the one-character user-type code and the one-character account-status code. Those nine
+     * components answer the questions a navigation trace is read to answer - which screen handed off to
+     * which, on a first submission or a re-submission, in which role - and none of them identifies a
+     * person, an account or a card. The two single-character codes are behavioural state rather than
+     * identity: neither can be resolved to a subject without the identifiers, which are withheld.
+     *
+     * <p><strong>What is withheld, and why the signed-on identifier is not.</strong> The customer
+     * identifier, the three name parts, the account identifier and the card number are replaced by a
+     * fixed placeholder - never truncated, never masked in part, never hashed, because a partial
+     * primary account number is still cardholder data and a hash of a nine-digit identifier is
+     * trivially reversible. The signed-on user identifier is retained: it is an operator credential
+     * subject rather than a cardholder attribute, it is what makes a navigation trace attributable at
+     * all, and it is the same value the sign-on request contract retains in its own redacted rendering.
+     *
+     * <p>{@code equals} and {@code hashCode} remain as the record contract generates them. They compare
+     * every component and emit nothing, so echoed state still compares correctly across a turn.
+     *
+     * @return the transition state, with every identifying component replaced by a fixed placeholder
+     */
+    @Override
+    public String toString() {
+        return "NavigationContext["
+                + "fromTransactionId=" + fromTransactionId
+                + ", fromProgram=" + fromProgram
+                + ", toTransactionId=" + toTransactionId
+                + ", toProgram=" + toProgram
+                + ", userId=" + userId
+                + ", userType=" + userType
+                + ", programContext=" + programContext
+                + ", customerId=" + REDACTION_PLACEHOLDER
+                + ", customerFirstName=" + REDACTION_PLACEHOLDER
+                + ", customerMiddleName=" + REDACTION_PLACEHOLDER
+                + ", customerLastName=" + REDACTION_PLACEHOLDER
+                + ", accountId=" + REDACTION_PLACEHOLDER
+                + ", accountStatus=" + accountStatus
+                + ", cardNumber=" + REDACTION_PLACEHOLDER
+                + ", lastMap=" + lastMap
+                + ", lastMapset=" + lastMapset
+                + "]";
     }
 
     /**
