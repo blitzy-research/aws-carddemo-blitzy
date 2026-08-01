@@ -34,18 +34,33 @@
 -- They exist so that the eight validation gates can be executed locally against a real database with
 -- no mainframe and no production system in the loop. They are deliberately unavailable to production.
 --
--- HOW THAT MUST BE ENFORCED, because the file layout alone cannot enforce it:
---   All four migrations - V1, V2, V3 and V4 - are physically FLAT in this one db/migration directory.
---   No subdirectory is created here, so a directory-scoped Flyway `locations` list cannot separate the
---   seeds from the schema: any deployment that scans this directory sees V3 and V4 as well as V1
---   and V2. Production must therefore filter by VERSION rather than by location, and the supported
---   way to do that is to pin the migration target:
+-- HOW THAT IS ENFORCED - control 1, LOCATION, which is the delivered mechanism:
+--   The migrations are NOT flat. They occupy two class-path locations on purpose, and this file
+--   sits in the second one:
 --
---       spring.flyway.target=2            (preferred - applies V1 and V2, stops before this file)
+--       db/migration    V1__create_schema.sql, V2__create_indexes.sql
+--                       listed by application.yml, and restated by every overlay including
+--                       application-prod.yml, so a production migration reaches V2 and stops there
+--       db/seed         V3__seed_reference_data.sql (this file), V4__seed_user_security.sql
+--                       listed ONLY by application-local.yml and application-test.yml
 --
---   An equivalent version-aware or filename-aware filter is acceptable; a location list alone is not.
---   A production deployment that applies this file has seeded sample personal data and, through
---   V4__seed_user_security.sql, seeded logins. Treat a V3 row in production as an incident.
+--   Production never lists db/seed, so a production migration cannot see this file at all. The
+--   exclusion is structural rather than conditional: there is no flag to leave in the wrong
+--   position and no version to forget to pin. Keep every seed script under db/seed and out of
+--   db/migration - moving one across that line is the single edit that would defeat the control.
+--
+-- HOW THAT IS ENFORCED - control 2, VERSION PIN, defence in depth for a deployment that builds its
+-- own location list from the source tree rather than reading the shipped profiles:
+--
+--       spring.flyway.target=2            (applies V1 and V2, stops before this file)
+--
+--   An equivalent version-aware or filename-aware filter is equally acceptable. This control is
+--   redundant with control 1 under the shipped configuration, and is stated so that a deployment
+--   which scans directories generically still has a supported way to stop at the schema.
+--
+--   A deployment that applies this file has seeded sample personal data, and one that also applies
+--   V4__seed_user_security.sql has seeded ten known logins. Treat a V3 row in production as an
+--   incident, not as a configuration preference.
 --
 -- -------------------------------------------------------------------------------------------------
 -- PROVENANCE

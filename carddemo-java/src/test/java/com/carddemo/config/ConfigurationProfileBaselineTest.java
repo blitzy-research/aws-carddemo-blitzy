@@ -769,15 +769,17 @@ final class ConfigurationProfileBaselineTest {
      * merged environment as well as against each document, because inheritance is what a running
      * application resolves and a per-document reading cannot answer an inheritance question.</p>
      *
-     * <p>The second is truthfulness. The documents previously described the seed location as supplying
-     * sample rows and sign-on identities and referred to a migration reaching a version the delivered
-     * scripts do not reach: the location is declared and carries no script, so a migration ends earlier
-     * than the text implied. Correcting the text is not durable on its own, because the correction
-     * becomes wrong again the moment a script is added - which is the point at which nobody is reading
-     * these comments. So the claim is asserted against the delivered scripts rather than against a
-     * second copy of itself: {@link #everyDocumentCitesTheHighestDeliveredVersion()} reads the highest
-     * version present under either location and requires both documents to cite that number, so adding
-     * a migration fails the build until the text catches up.</p>
+     * <p>The second is truthfulness. The documents once described the seed location as supplying sample
+     * rows and sign-on identities while it carried no script at all, and referred to a migration
+     * reaching a version the delivered scripts did not reach. Correcting that text was never durable on
+     * its own, because a correction goes stale the moment a script is added or removed - which is
+     * precisely the moment nobody is reading these comments. So the claim is asserted against the
+     * delivered scripts rather than against a second copy of itself: {@link
+     * #everyDocumentCitesTheHighestDeliveredVersion(String)} reads the highest version present under
+     * either location and requires every document that states how far a migration goes to cite that
+     * number, so changing the delivered set fails the build until the text catches up. The seed location
+     * now carries both the reference-data script and the sign-on-identity script, and the documents say
+     * so; the mechanism is what keeps that sentence true rather than the sentence itself.</p>
      */
     @Nested
     @DisplayName("the documented migration set is the migration set that ships")
@@ -823,8 +825,8 @@ final class ConfigurationProfileBaselineTest {
         }
 
         @Test
-        @DisplayName("the schema location carries the delivered migrations and the seed location is "
-                + "declared while carrying none, which is the state the documents must describe")
+        @DisplayName("the schema location carries the schema migrations and the seed location carries "
+                + "the seeds, which is the split the documents must describe")
         void theDeliveredScriptsAreTheOnesTheDocumentsName() {
             assertThat(versionedScriptsIn(MIGRATION_FOLDER))
                     .as("the schema and its indexes are the delivered set; a script added here without "
@@ -833,10 +835,11 @@ final class ConfigurationProfileBaselineTest {
                     .containsExactly("V1__create_schema.sql", "V2__create_indexes.sql");
 
             assertThat(versionedScriptsIn(SEED_FOLDER))
-                    .as("the reference seed is written into a place production already cannot see, "
-                            + "because production lists the schema location alone; a seed script added "
-                            + "to the schema location instead would reach a production migration")
-                    .containsExactly("V3__seed_reference_data.sql");
+                    .as("both seeds are written into a place production already cannot see, because "
+                            + "production lists the schema location alone; either one placed in the "
+                            + "schema location instead would reach a production migration, and for the "
+                            + "sign-on seed that would mean ten known identities in production")
+                    .containsExactly("V3__seed_reference_data.sql", "V4__seed_user_security.sql");
         }
 
         @ParameterizedTest(name = "{0} cites the version its migrations actually reach")
@@ -855,12 +858,16 @@ final class ConfigurationProfileBaselineTest {
         }
 
         @Test
-        @DisplayName("no document describes the seed location as already supplying rows, which is the "
-                + "overstatement being removed")
-        void noDocumentDescribesTheSeedsAsAlreadySupplied() {
+        @DisplayName("no document reintroduces the superseded seed wording, so the durable version "
+                + "claim stays the single place a document says how far a migration goes")
+        void noDocumentReintroducesTheSupersededSeedWording() {
             for (final String document : List.of(SHARED, LOCAL, PRODUCTION, TEST)) {
                 assertThat(rawTextOf(document))
-                        .as("%s must not describe rows the seed location does not yet carry", document)
+                        .as("%s must name the seed scripts it carries and cite the delivered version "
+                                + "through the claim asserted above, not through an inventory line that "
+                                + "names no script or a free-form statement about the version a "
+                                + "migration reaches - those are the phrasings that went stale silently",
+                                document)
                         .doesNotContain("db/seed        sample rows")
                         .doesNotContain("reach V4")
                         .doesNotContain("reaches V4");

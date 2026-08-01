@@ -190,7 +190,10 @@ spring:
   #   classpath:db/seed        reference rows and sign-on identities -> local and test ONLY
   #                            V3__seed_reference_data.sql  the nine measured ASCII reference
   #                                                         datasets, 626 rows across nine tables
-  #                            so a migration currently ends at V3 under this overlay and at V2 under
+  #                            V4__seed_user_security.sql   the ten sign-on identities, five
+  #                                                         administrative and five standard, each
+  #                                                         credential stored only as a hash
+  #                            so a migration currently ends at V4 under this overlay and at V2 under
   #                            production, which does not list this location.
   #
   # The production overlay lists classpath:db/migration alone, so production migrates schema and
