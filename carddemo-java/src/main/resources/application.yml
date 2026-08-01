@@ -136,9 +136,11 @@ spring:
   # application-test.yml add for themselves and application-prod.yml never does. That is what keeps
   # reference rows and seeded sign-on identities out of a production migration.
   #
-  # The two scripts named above are the whole delivered set; db/seed carries none yet, so a migration
-  # currently ends at V2 in every profile. The separation is nonetheless in force already, which is
-  # the point of establishing it before there is anything to separate.
+  # The two scripts named above are the whole delivered set for this location, so a migration reaches
+  # V2 under every profile including production. db/seed now carries V3__seed_reference_data.sql, so
+  # a migration currently ends at V3 under the local and test overlays, which list that location, and
+  # at V2 under production, which never does. The separation is therefore load-bearing rather than
+  # anticipatory: the reference rows exist and production still cannot reach them.
   #
   # Version 11 of the migration tool resolves PostgreSQL support from a separate artefact declared
   # beside flyway-core in pom.xml; without it the build still succeeds and the application then

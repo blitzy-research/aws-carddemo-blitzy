@@ -833,10 +833,10 @@ final class ConfigurationProfileBaselineTest {
                     .containsExactly("V1__create_schema.sql", "V2__create_indexes.sql");
 
             assertThat(versionedScriptsIn(SEED_FOLDER))
-                    .as("the location is declared in advance so that the first seed script is written "
-                            + "into a place production already cannot see; until one is, a migration "
-                            + "reaches no further than the schema location takes it")
-                    .isEmpty();
+                    .as("the reference seed is written into a place production already cannot see, "
+                            + "because production lists the schema location alone; a seed script added "
+                            + "to the schema location instead would reach a production migration")
+                    .containsExactly("V3__seed_reference_data.sql");
         }
 
         @ParameterizedTest(name = "{0} cites the version its migrations actually reach")

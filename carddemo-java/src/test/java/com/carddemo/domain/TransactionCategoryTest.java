@@ -16,743 +16,945 @@
  */
 package com.carddemo.domain;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import com.carddemo.domain.id.TransactionCategoryId;
-import com.carddemo.support.SchemaColumnCatalog;
-import com.carddemo.support.SeededRecordFixture;
-
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.ObjectStreamClass;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 /**
- * Verifies {@link TransactionCategory}, the sixty-byte transaction-category reference record.
+ * Unit test for {@link TransactionCategory}, the 60-byte transaction-category reference row, and for
+ * its two-part 6-byte composite key {@link TransactionCategoryId}.
  *
- * <p><strong>The layout being preserved.</strong> {@code app/cpy/CVTRA04Y.cpy} declares a sixty-byte
- * record in four parts, the first two of which the copybook groups under a single key name: a two-byte
- * transaction type, a four-byte category, a fifty-byte description and a four-byte filler. The cluster
- * definition at {@code app/jcl/TRANCATG.jcl} confirms the arithmetic independently with
- * {@code KEYS(6 0)} and {@code RECORDSIZE(60 60)}: two plus four is the six-byte key, and the key starts
- * at the front of the record. A category is therefore identified only in the context of a type, and the
- * seeded data bears that out — the same category number appears under several types with a different
- * meaning each time.
+ * <p><strong>Provenance.</strong> Legacy checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
+ * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} (2022-07-19). That stamp is recorded here
+ * as documentation only and is never asserted against a source member, because it is not universal
+ * across the estate.
  *
- * <p><strong>Why the four-byte category has to stay a character field.</strong> The copybook types the
- * category as numeric and every seeded value carries leading zeros, running from {@code 0001} to
- * {@code 0005}. Stored as an integer, the first would come back as a one, the stored key would no longer
- * be the six bytes the record image carries, and the composite lookup would miss. The suite proves the
- * leading zeros survive.
+ * <p><strong>Independent oracle.</strong> Every expected value in this suite was hand-derived from the
+ * legacy copybook {@code CVTRA04Y}, from the {@code TRANCATG} cluster definition, and from the seeded
+ * reference fixture, then written here as a literal constant. No expectation is computed by calling a
+ * method on the classes under test, nothing is snapshotted from their output, and no assertion compares
+ * a value with itself. The hand-derived geometry is:
  *
- * <p><strong>Why the seeded pairing is load-bearing rather than decorative.</strong> The interest run
- * stamps its synthesised transactions with a type of {@code 01} and a category literal of {@code 05},
- * moved into a four-digit numeric field, which right-justifies and zero-fills it to {@code 0005}. That
- * pair has to resolve in this reference file or the posted interest would carry a category no lookup could
- * explain — and it does resolve, to the row the estate seeds for exactly that purpose. The suite asserts
- * the zero-fill and the resolution, and additionally asserts that every type code appearing here is one
- * the transaction-type reference file declares, which is a cross-file check neither file can satisfy
- * alone.
+ * <table border="1">
+ *   <caption>Verified layout of the 60-byte transaction-category record</caption>
+ *   <tr><th>Field</th><th>Zero-based offset</th><th>Width</th></tr>
+ *   <tr><td>key group (2 components)</td><td>0</td><td>6</td></tr>
+ *   <tr><td>transaction type code</td><td>0</td><td>2</td></tr>
+ *   <tr><td>transaction category code</td><td>2</td><td>4</td></tr>
+ *   <tr><td>category description</td><td>6</td><td>50</td></tr>
+ *   <tr><td>trailing filler, unmapped</td><td>56</td><td>4</td></tr>
+ * </table>
  *
- * <p><strong>Deliberately not asserted.</strong> Nothing here reads the reference table through a
- * repository or joins it to a transaction; that belongs to the repository integration tests.
+ * <p>2 + 4 + 50 + 4 = 60, and the cluster definition corroborates the key independently by declaring a
+ * key length of 6 at offset 0 on a 60-byte record.
+ *
+ * <p><strong>Name collision one: the key group name is overloaded in the legacy source.</strong> The
+ * copybook behind this entity names its key group with the same COBOL group name used by the separate
+ * transaction-category-balance copybook, yet the two keys are structurally unrelated. This key has two
+ * components totalling 6 bytes at offsets 0 and 2. The other has three components totalling 17 bytes at
+ * offsets 0, 11 and 13, leading with an 11-digit account identifier this key does not contain at all, so
+ * the 6-byte key is not a prefix, sub-key or reusable fragment of the 17-byte one and the two align at
+ * no offset. This suite asserts the 6-byte sum and asserts that 6 is not 17. The balance key class is
+ * deliberately never imported or referenced here; the two key classes share no supertype beyond
+ * {@link Object} and none may be introduced.
+ *
+ * <p><strong>Name collision two: two different 60-byte layouts coexist.</strong> The transaction-type
+ * reference record is also 60 bytes, but it is 2 + 50 + 8 with its description at offset 2 and 8 filler
+ * bytes, against this record's 2 + 4 + 50 + 4 with its description at offset 6 and 4 filler bytes. A
+ * record length therefore cannot distinguish the two, and the filler widths differ by only four bytes.
+ * Accordingly this suite never assembles or compares a whole 60-byte record image and never infers a
+ * layout from content: record-image assembly and offset slicing belong to the fixed-width record mapper
+ * in the utility layer, and importing that mapper here would make it the oracle for its own layout.
+ *
+ * <p><strong>Also distinct from the transaction-type key.</strong> The first key component of this
+ * entity carries the legacy {@code -CD} suffix; the transaction-type table's single-column key does not.
+ * The two are not interchangeable.
+ *
+ * <p><strong>Scope.</strong> A pure unit test. It starts no application context, opens no database or
+ * network connection, reads no file, and uses no container, no mocking and no reflection. Column names,
+ * declared lengths and nullability are deliberately not verified here: that mapping layer is verified in
+ * the integration tier against a real database by schema validation at startup, which also proves the
+ * identifier-class-to-entity field name and type correspondence.
+ *
+ * @see TransactionCategory
+ * @see TransactionCategoryId
  */
-@DisplayName("TransactionCategory — the sixty-byte transaction-category reference record")
+@DisplayName("TransactionCategory and its 6-byte two-part composite key")
 class TransactionCategoryTest {
 
-    /** Relational table the entity maps to. */
-    private static final String TABLE = "transaction_category";
+    // ------------------------------------------------------------------------------------------
+    // Hand-derived layout constants. These ARE the oracle: each was read off the copybook and the
+    // cluster definition by hand, never produced by the code under test.
+    // ------------------------------------------------------------------------------------------
 
-    /** {@code RECORDSIZE(60 60)} in the cluster definition. */
-    private static final int RECORD_WIDTH = 60;
+    /** Width of the transaction type code, key component 1, at offset 0. */
+    private static final int TYPE_CD_WIDTH = 2;
 
-    /** {@code KEYS(6 0)} — key length. */
+    /** Width of the transaction category code, key component 2, at offset 2. */
+    private static final int CAT_CD_WIDTH = 4;
+
+    /** Width of the category description at offset 6. */
+    private static final int DESC_WIDTH = 50;
+
+    /** Declared key length of this record's key group, corroborated by the cluster definition. */
     private static final int KEY_WIDTH = 6;
 
-    /** The four copybook widths, in declaration order. */
-    private static final List<Integer> COPYBOOK_WIDTHS = List.of(2, 4, 50, 4);
-
-    /** Zero-based offset of the transaction type. */
-    private static final int OFFSET_TYPE = 0;
-
-    /** Zero-based offset of the category. */
-    private static final int OFFSET_CATEGORY = 2;
-
-    /** Zero-based offset of the description. */
-    private static final int OFFSET_DESCRIPTION = 6;
-
-    /** Zero-based offset of the filler. */
-    private static final int OFFSET_FILLER = 56;
-
-    /** Width of the unmapped trailing filler. */
-    private static final int FILLER_WIDTH = 4;
-
-    /** Seeded records. */
-    private static final int SEEDED_RECORDS = 18;
-
-    /** Distinct type codes the seed uses. */
-    private static final int SEEDED_TYPE_CODES = 7;
-
-    /** Distinct category codes the seed uses. */
-    private static final int SEEDED_CATEGORY_CODES = 5;
-
-    /** The type code the interest run stamps on every transaction it synthesises. */
-    private static final String INTEREST_TYPE_CODE = "01";
-
-    /** The category literal the interest run moves into a four-digit numeric field. */
-    private static final String INTEREST_CATEGORY_LITERAL = "05";
-
-    /** The migration's transaction-category table, parsed once. */
-    private static final SchemaColumnCatalog SCHEMA = SchemaColumnCatalog.load();
-
-    /** The seeded category reference file, loaded once at its declared width. */
-    private static final SeededRecordFixture SEED =
-            SeededRecordFixture.load("trancatg.txt", RECORD_WIDTH);
-
-    /** The seeded type reference file, loaded for the cross-file check only. */
-    private static final SeededRecordFixture TYPE_SEED =
-            SeededRecordFixture.load("trantype.txt", RECORD_WIDTH);
-
     /**
-     * The eighteen seeded rows, transcribed from the estate's reference data in file order as
-     * type, category and description.
+     * Declared key length of the <em>other</em> legacy key group that shares this one's COBOL group
+     * name: three components, 11 + 2 + 4, on the transaction-category-balance record. Held here only so
+     * the suite can assert the two lengths differ. The balance key class itself is never referenced.
      */
-    private static final List<String[]> SEEDED_CATEGORIES = List.of(
-            new String[] {"01", "0001", "Regular Sales Draft"},
-            new String[] {"01", "0002", "Regular Cash Advance"},
-            new String[] {"01", "0003", "Convenience Check Debit"},
-            new String[] {"01", "0004", "ATM Cash Advance"},
-            new String[] {"01", "0005", "Interest Amount"},
-            new String[] {"02", "0001", "Cash payment"},
-            new String[] {"02", "0002", "Electronic payment"},
-            new String[] {"02", "0003", "Check payment"},
-            new String[] {"03", "0001", "Credit to Account"},
-            new String[] {"03", "0002", "Credit to Purchase balance"},
-            new String[] {"03", "0003", "Credit to Cash balance"},
-            new String[] {"04", "0001", "Zero dollar authorization"},
-            new String[] {"04", "0002", "Online purchase authorization"},
-            new String[] {"04", "0003", "Travel booking authorization"},
-            new String[] {"05", "0001", "Refund credit"},
-            new String[] {"06", "0001", "Fraud reversal"},
-            new String[] {"06", "0002", "Non-fraud reversal"},
-            new String[] {"07", "0001", "Sales draft credit adjustment"});
+    private static final int OTHER_SAME_NAMED_KEY_WIDTH = 17;
+
+    /** Seeded row taken from the reference fixture: transaction type code of the first record. */
+    private static final String ROW_A_TYPE_CD = "01";
+
+    /** Seeded row taken from the reference fixture: category code of the first record. */
+    private static final String ROW_A_CAT_CD = "0001";
+
+    /** Seeded row taken from the reference fixture: description text of the first record, 19 characters. */
+    private static final String ROW_A_DESC = "Regular Sales Draft";
+
+    /** Seeded row taken from the reference fixture: transaction type code of the last record. */
+    private static final String ROW_B_TYPE_CD = "07";
+
+    /** Seeded row taken from the reference fixture: category code of the last record. */
+    private static final String ROW_B_CAT_CD = "0001";
 
     /**
-     * Reads one seeded record's transaction type.
+     * Seeded row taken from the reference fixture: description text of the last record, exactly 29
+     * characters and deliberately mixed case, with lower-case letters opening its second, third and
+     * fourth words. It is reproduced verbatim and never title-cased.
      *
-     * @param ordinal the one-based record ordinal
-     * @return the two-byte transaction type
+     * <p>Context only, asserted nowhere in this suite: 29 is also the width the downstream report
+     * formatter truncates a description to, which makes this particular value sit exactly on that
+     * boundary. Truncation is the report formatter's concern, so nothing here truncates anything.
      */
-    private static String seededType(final int ordinal) {
-        return SEED.field(ordinal, OFFSET_TYPE, COPYBOOK_WIDTHS.get(0));
-    }
+    private static final String ROW_B_DESC = "Sales draft credit adjustment";
 
     /**
-     * Reads one seeded record's category.
+     * The first seeded description at its full external width: 19 characters of text followed by 31
+     * spaces, which is 50. The arithmetic is hand-derived and is self-checked by an assertion on the
+     * encoded byte length of this very constant.
+     */
+    private static final String ROW_A_DESC_PADDED = ROW_A_DESC + " ".repeat(31);
+
+    /**
+     * The last seeded description at its full external width: 29 characters of text followed by 21
+     * spaces, which is 50.
+     */
+    private static final String ROW_B_DESC_PADDED = ROW_B_DESC + " ".repeat(21);
+
+    /**
+     * A title-cased rewriting of the last seeded description, present purely as a negative expectation.
+     * The stored value must never fold to this.
+     */
+    private static final String ROW_B_DESC_TITLE_CASED = "Sales Draft Credit Adjustment";
+
+    /**
+     * The zero-suppressed rendering of a four-digit category code. The legacy field is left zero-filled
+     * and is mapped to a bounded character column rather than a numeric one, so this value must never be
+     * interchangeable with the zero-filled form.
+     */
+    private static final String CAT_CD_ZERO_SUPPRESSED = "1";
+
+    /** The version identifier the key class declares for serialization. */
+    private static final long DECLARED_SERIAL_VERSION_UID = 1L;
+
+    /**
+     * Reaches the key class's {@code protected} no-argument constructor the way the persistence provider
+     * does, using nothing but plain Java inheritance.
      *
-     * @param ordinal the one-based record ordinal
-     * @return the four-byte category
-     */
-    private static String seededCategory(final int ordinal) {
-        return SEED.field(ordinal, OFFSET_CATEGORY, COPYBOOK_WIDTHS.get(1));
-    }
-
-    /**
-     * Reads one seeded record's description, at its blank-filled fifty-byte width.
+     * <p><strong>Why this exists.</strong> An identifier class must offer a no-argument constructor for
+     * the provider to instantiate before it populates the components, which is precisely why the key is
+     * a plain class and not a compact data carrier - a record cannot supply one. That constructor is
+     * declared {@code protected} and the key class lives in a different package from this test, so a
+     * direct {@code new} of it does not compile here. This is a documented divergence from the contract
+     * summary this suite was written against, which assumed the constructor would be reachable
+     * directly; the constructor as actually written is protected, and the code compiled against is the
+     * code as written.
      *
-     * @param ordinal the one-based record ordinal
-     * @return the fifty-byte description
-     */
-    private static String seededDescription(final int ordinal) {
-        return SEED.field(ordinal, OFFSET_DESCRIPTION, COPYBOOK_WIDTHS.get(2));
-    }
-
-    /**
-     * Builds the entity one seeded record describes.
+     * <p>A subclass may invoke a protected superclass constructor through {@code super()} across package
+     * boundaries, so the {@code super()} call below both proves at compile time that the no-argument
+     * constructor exists and executes it at run time. No reflection of any kind is involved: there is no
+     * reflective member access and no dynamic class lookup by name anywhere in this file. The class is {@code final} so that no constructor here can leak a partly
+     * built instance, and it declares its own serialization version identifier because it inherits
+     * serializability and the build compiles with all lint categories promoted to errors.
      *
-     * @param ordinal the one-based record ordinal
-     * @return the reference row the record describes
+     * <p>To be explicit about what is deliberately absent: this file performs no reflective member
+     * access, no reflective instantiation and no dynamic class lookup by name anywhere. The
+     * introspection package is never imported and the module's zero budget for low-level introspection
+     * is therefore untouched by this suite.
      */
-    private static TransactionCategory categoryFromSeed(final int ordinal) {
-        return new TransactionCategory(
-                seededType(ordinal), seededCategory(ordinal), seededDescription(ordinal));
-    }
+    private static final class ProviderInstantiatedKey extends TransactionCategoryId {
 
-    /**
-     * Returns the description the seed carries for one type-and-category pair.
-     *
-     * @param type     the two-byte transaction type
-     * @param category the four-byte category
-     * @return the trimmed description, or {@code null} when the pair is not seeded
-     */
-    private static String seededDescriptionFor(final String type, final String category) {
-        for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-            if (seededType(ordinal).equals(type) && seededCategory(ordinal).equals(category)) {
-                return seededDescription(ordinal).strip();
-            }
+        /** Explicit version identifier; inherited serializability would otherwise raise a warning. */
+        private static final long serialVersionUID = 1L;
+
+        /** Invokes the protected no-argument constructor of the key class under test. */
+        ProviderInstantiatedKey() {
+            super();
         }
-        return null;
     }
 
-    /**
-     * Returns the four-digit category the interest run's two-character literal becomes when it is moved
-     * into a four-digit numeric field, which right-justifies the literal and zero-fills the left.
-     *
-     * @return the zero-filled four-character category
-     */
-    private static String zeroFilledInterestCategory() {
-        return "0".repeat(COPYBOOK_WIDTHS.get(1) - INTEREST_CATEGORY_LITERAL.length())
-                + INTEREST_CATEGORY_LITERAL;
-    }
-
-    // RECORD LAYOUT
-
-    /**
-     * Verifies the copybook geometry the entity has to honour.
-     */
     @Nested
-    @DisplayName("record layout")
-    class RecordLayout {
+    @DisplayName("Record geometry: the key is 2 + 4 bytes at offset 0 of a 60-byte record")
+    class RecordGeometry {
 
         @Test
-        @DisplayName("the four copybook widths sum to the sixty bytes the cluster declares")
-        void theWidthsSumToTheRecordSize() {
-            assertThat(COPYBOOK_WIDTHS).hasSize(4);
-            assertThat(COPYBOOK_WIDTHS.stream().mapToInt(Integer::intValue).sum())
-                    .isEqualTo(RECORD_WIDTH);
+        @DisplayName("the two key component widths sum to the declared key length of 6, which the "
+                + "cluster definition corroborates by declaring a key length of 6 at offset 0")
+        void keyComponentWidthsSumToSix() {
+            assertThat(TYPE_CD_WIDTH + CAT_CD_WIDTH).isEqualTo(KEY_WIDTH);
+            assertThat(KEY_WIDTH).isEqualTo(6);
         }
 
         @Test
-        @DisplayName("each field begins where the preceding widths leave off")
-        void eachFieldBeginsWhereThePrecedingWidthsLeaveOff() {
-            final List<Integer> offsets =
-                    List.of(OFFSET_TYPE, OFFSET_CATEGORY, OFFSET_DESCRIPTION, OFFSET_FILLER);
-
-            int running = 0;
-            for (int index = 0; index < COPYBOOK_WIDTHS.size(); index++) {
-                assertThat(offsets.get(index))
-                        .as("offset of field %d", index)
-                        .isEqualTo(running);
-                running += COPYBOOK_WIDTHS.get(index);
-            }
-
-            assertThat(running).isEqualTo(RECORD_WIDTH);
+        @DisplayName("the 6-byte key is not the 17-byte key that shares its COBOL group name, so the "
+                + "two same-named legacy key groups are never conflated")
+        void sixByteKeyIsNotTheSeventeenByteKeyOfTheSameName() {
+            // COLLISION ONE. The other group of the same name has three components, 11 + 2 + 4 = 17,
+            // and leads with an 11-digit account identifier absent from this key, so it cannot be a
+            // prefix of, or aligned with, this one at any offset. Only the two lengths are compared;
+            // the other key's class is deliberately not referenced anywhere in this file.
+            assertThat(KEY_WIDTH).isNotEqualTo(OTHER_SAME_NAMED_KEY_WIDTH);
+            assertThat(OTHER_SAME_NAMED_KEY_WIDTH).isEqualTo(11 + TYPE_CD_WIDTH + CAT_CD_WIDTH);
+            assertThat(KEY_WIDTH).isLessThan(OTHER_SAME_NAMED_KEY_WIDTH);
         }
 
         @Test
-        @DisplayName("the first two fields form the six-byte key the cluster declares, so a category is "
-                + "identified only in the context of a type")
-        void theFirstTwoFieldsFormTheKey() {
-            assertThat(COPYBOOK_WIDTHS.get(0) + COPYBOOK_WIDTHS.get(1)).isEqualTo(KEY_WIDTH);
-            assertThat(OFFSET_DESCRIPTION)
-                    .as("the key runs from the front of the record to where the description begins")
-                    .isEqualTo(KEY_WIDTH);
+        @DisplayName("the hand-derived padded descriptions are exactly 50 encoded bytes, which "
+                + "self-checks the oracle's own padding arithmetic")
+        void handDerivedPaddedDescriptionsAreFiftyBytes() {
+            assertThat(ROW_A_DESC_PADDED.getBytes(StandardCharsets.US_ASCII)).hasSize(DESC_WIDTH);
+            assertThat(ROW_B_DESC_PADDED.getBytes(StandardCharsets.US_ASCII)).hasSize(DESC_WIDTH);
         }
 
         @Test
-        @DisplayName("the trailing four bytes are filler and are mapped to no column")
-        void theTrailingBytesAreFillerAndUnmapped() {
-            assertThat(COPYBOOK_WIDTHS.get(3)).isEqualTo(FILLER_WIDTH);
-            assertThat(OFFSET_FILLER + FILLER_WIDTH).isEqualTo(RECORD_WIDTH);
-            assertThat(SCHEMA.columnNames(TABLE)).hasSize(COPYBOOK_WIDTHS.size() - 1);
-        }
-
-        @Test
-        @DisplayName("the filler is the same width as the category, so a mapper that mistook one for the "
-                + "other would still measure sixty bytes and has to be caught by offset instead")
-        void theFillerAndCategoryShareAWidth() {
-            assertThat(FILLER_WIDTH).isEqualTo(COPYBOOK_WIDTHS.get(1));
-            assertThat(OFFSET_FILLER).isNotEqualTo(OFFSET_CATEGORY);
+        @DisplayName("the last seeded description is exactly 29 encoded bytes before padding, the "
+                + "boundary value the estate happens to seed")
+        void theLastSeededDescriptionIsTwentyNineBytes() {
+            assertThat(ROW_B_DESC.getBytes(StandardCharsets.US_ASCII)).hasSize(29);
+            assertThat(ROW_A_DESC.getBytes(StandardCharsets.US_ASCII)).hasSize(19);
         }
     }
 
-    // SCHEMA AGREEMENT
-
-    /**
-     * Verifies that the deployed migration describes the layout the copybook does.
-     */
     @Nested
-    @DisplayName("schema agreement")
-    class SchemaAgreement {
+    @DisplayName("Entity construction and access: three attributes in copybook order")
+    class EntityConstructionAndAccess {
 
         @Test
-        @DisplayName("the table declares the three mapped columns in copybook order")
-        void theTableDeclaresTheMappedColumnsInCopybookOrder() {
-            assertThat(SCHEMA.columnNames(TABLE))
-                    .containsExactly("tran_type_cd", "tran_cat_cd", "tran_cat_type_desc");
+        @DisplayName("the all-args constructor takes the two key components in key order then the "
+                + "description, and every argument reaches its own accessor")
+        void allArgsConstructorRoundTripsAllThreeAttributes() {
+            final TransactionCategory row =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
+
+            assertThat(row.getTranTypeCd()).isEqualTo(ROW_A_TYPE_CD);
+            assertThat(row.getTranCatCd()).isEqualTo(ROW_A_CAT_CD);
+            assertThat(row.getTranCatTypeDesc()).isEqualTo(ROW_A_DESC_PADDED);
         }
 
         @Test
-        @DisplayName("every mapped column matches its copybook width")
-        void everyMappedColumnMatchesItsCopybookWidth() {
-            final List<String> columns = SCHEMA.columnNames(TABLE);
+        @DisplayName("the two key components do not swap, which a 2-byte and a 4-byte value make "
+                + "detectable in a positional constructor call")
+        void theKeyComponentsDoNotSwapPositions() {
+            final TransactionCategory row =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
 
-            for (int index = 0; index < columns.size(); index++) {
-                assertThat(SCHEMA.declaredWidth(TABLE, columns.get(index)))
-                        .as("declared width of %s", columns.get(index))
-                        .isEqualTo(COPYBOOK_WIDTHS.get(index));
-            }
+            // Differing widths are what make a transposition visible at all: a 2-byte value cannot
+            // silently occupy the 4-byte slot.
+            assertThat(row.getTranTypeCd()).hasSize(TYPE_CD_WIDTH);
+            assertThat(row.getTranCatCd()).hasSize(CAT_CD_WIDTH);
+            assertThat(row.getTranTypeCd()).isNotEqualTo(row.getTranCatCd());
         }
 
         @Test
-        @DisplayName("the category column is character rather than integer, so a code of 0001 keeps its "
-                + "leading zeros and the stored key still matches the record image")
-        void theCategoryColumnIsCharacterSoLeadingZerosSurvive() {
-            assertThat(SCHEMA.declaredType(TABLE, "tran_cat_cd")).isEqualTo("VARCHAR(4)");
+        @DisplayName("all three setters replace the attribute each names and store the value verbatim, "
+                + "because the copybook fields are plain character data with no normalisation")
+        void allThreeSettersRoundTrip() {
+            final TransactionCategory row =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
 
-            assertThat(seededCategory(1)).startsWith("000").hasSize(COPYBOOK_WIDTHS.get(1));
-            assertThat(Integer.toString(Integer.parseInt(seededCategory(1))))
-                    .as("an integer column would have stored this code without its leading zeros")
-                    .isNotEqualTo(seededCategory(1));
+            row.setTranTypeCd(ROW_B_TYPE_CD);
+            row.setTranCatCd(ROW_B_CAT_CD);
+            row.setTranCatTypeDesc(ROW_B_DESC_PADDED);
+
+            assertThat(row.getTranTypeCd()).isEqualTo(ROW_B_TYPE_CD);
+            assertThat(row.getTranCatCd()).isEqualTo(ROW_B_CAT_CD);
+            assertThat(row.getTranCatTypeDesc()).isEqualTo(ROW_B_DESC_PADDED);
         }
 
         @Test
-        @DisplayName("the primary key is both key components in copybook order, and no surrogate or "
-                + "version column exists")
-        void thePrimaryKeyIsBothComponentsInOrder() {
-            assertThat(SCHEMA.primaryKeyColumns(TABLE))
-                    .containsExactly("tran_type_cd", "tran_cat_cd");
-            assertThat(SCHEMA.columnNames(TABLE))
-                    .doesNotContain("id", "transaction_category_id", "version");
+        @DisplayName("the persistence provider's no-arg constructor yields a row with all three "
+                + "attributes absent, ready to be populated after instantiation")
+        void theNoArgConstructorYieldsAnAllNullRow() {
+            // The entity's no-argument constructor is declared protected, and this test class sits in
+            // the SAME package as the entity, so plain Java package access reaches it directly.
+            // This is same-package visibility and explicitly NOT reflection: no introspection type,
+            // no dynamic class lookup by name and no reflective member access appears in this file.
+            final TransactionCategory row = new TransactionCategory();
+
+            assertThat(row.getTranTypeCd()).isNull();
+            assertThat(row.getTranCatCd()).isNull();
+            assertThat(row.getTranCatTypeDesc()).isNull();
         }
 
         @Test
-        @DisplayName("every column is declared not null, so no row can carry an absent description")
-        void everyColumnIsDeclaredNotNull() {
-            for (final String column : SCHEMA.columnNames(TABLE)) {
-                assertThat(SCHEMA.isNullable(TABLE, column))
-                        .as("nullability of %s", column)
-                        .isFalse();
-            }
+        @DisplayName("both seeded reference rows round-trip, including the pair that shares a category "
+                + "code across two different type codes")
+        void bothSeededRowsRoundTrip() {
+            final TransactionCategory first =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
+            final TransactionCategory last =
+                    new TransactionCategory(ROW_B_TYPE_CD, ROW_B_CAT_CD, ROW_B_DESC_PADDED);
+
+            assertThat(first.getTranTypeCd()).isEqualTo("01");
+            assertThat(first.getTranCatCd()).isEqualTo("0001");
+            assertThat(first.getTranCatTypeDesc()).isEqualTo(ROW_A_DESC_PADDED);
+
+            assertThat(last.getTranTypeCd()).isEqualTo("07");
+            assertThat(last.getTranCatCd()).isEqualTo("0001");
+            assertThat(last.getTranCatTypeDesc()).isEqualTo(ROW_B_DESC_PADDED);
+
+            // The same category code under two different type codes describes two different things,
+            // which is exactly why the key needs both components.
+            assertThat(first.getTranCatCd()).isEqualTo(last.getTranCatCd());
+            assertThat(first.getTranTypeCd()).isNotEqualTo(last.getTranTypeCd());
+            assertThat(first.getTranCatTypeDesc()).isNotEqualTo(last.getTranCatTypeDesc());
+        }
+
+        @Test
+        @DisplayName("every attribute may be set back to absent, because the entity validates nothing "
+                + "and the copybook imposes no presence rule on a character field")
+        void everyAttributeMayBeSetBackToNull() {
+            final TransactionCategory row =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
+
+            row.setTranTypeCd(null);
+            row.setTranCatCd(null);
+            row.setTranCatTypeDesc(null);
+
+            assertThat(row.getTranTypeCd()).isNull();
+            assertThat(row.getTranCatCd()).isNull();
+            assertThat(row.getTranCatTypeDesc()).isNull();
         }
     }
 
-    // CONSTRUCTION AND ACCESS
-
-    /**
-     * Verifies that every field the constructor takes is the field the accessor returns.
-     */
     @Nested
-    @DisplayName("construction and access")
-    class ConstructionAndAccess {
+    @DisplayName("Fixed-width carriage: 2 / 4 / 50 encoded bytes, stored exactly as supplied")
+    class EntityFixedWidthCarriage {
 
         @Test
-        @DisplayName("every constructor argument reaches its own accessor")
-        void everyConstructorArgumentReachesItsAccessor() {
-            final TransactionCategory category =
-                    new TransactionCategory("01", "0005", "Interest Amount");
+        @DisplayName("the three attributes carry exactly 2, 4 and 50 encoded bytes, measured on the "
+                + "encoded form rather than on a character count")
+        void theThreeAttributesCarryTheirDeclaredByteWidths() {
+            final TransactionCategory row =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
 
-            assertThat(category.getTranTypeCd()).isEqualTo("01");
-            assertThat(category.getTranCatCd()).isEqualTo("0005");
-            assertThat(category.getTranCatTypeDesc()).isEqualTo("Interest Amount");
+            // Byte widths, not character counts: the legacy record is a fixed-width byte image, so the
+            // encoded length is the quantity the layout actually constrains.
+            assertThat(row.getTranTypeCd().getBytes(StandardCharsets.US_ASCII))
+                    .hasSize(TYPE_CD_WIDTH);
+            assertThat(row.getTranCatCd().getBytes(StandardCharsets.US_ASCII))
+                    .hasSize(CAT_CD_WIDTH);
+            assertThat(row.getTranCatTypeDesc().getBytes(StandardCharsets.US_ASCII))
+                    .hasSize(DESC_WIDTH);
         }
 
         @Test
-        @DisplayName("the type and the category do not swap, which their shared leading zero could "
-                + "otherwise conceal")
-        void theTypeAndCategoryDoNotSwap() {
-            final TransactionCategory category = categoryFromSeed(1);
+        @DisplayName("the 4-digit category code keeps its leading zeros, because the zero-filled "
+                + "legacy field is mapped to a bounded character column and never to a numeric type")
+        void theCategoryCodeKeepsItsLeadingZeros() {
+            final TransactionCategory row =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
 
-            assertThat(category.getTranTypeCd()).hasSize(COPYBOOK_WIDTHS.get(0));
-            assertThat(category.getTranCatCd()).hasSize(COPYBOOK_WIDTHS.get(1));
-            assertThat(category.getTranTypeCd()).isNotEqualTo(category.getTranCatCd());
+            assertThat(row.getTranCatCd()).isEqualTo("0001");
+            assertThat(row.getTranCatCd().getBytes(StandardCharsets.US_ASCII))
+                    .hasSize(CAT_CD_WIDTH);
+
+            // Were the code stored as a number, "0001" would come back rendering as 1, the 6-byte key
+            // image would no longer reconstruct from its two components, and the composite lookup
+            // would miss. So 1 must never stand where 0001 belongs.
+            assertThat(row.getTranCatCd()).isNotEqualTo(CAT_CD_ZERO_SUPPRESSED);
         }
 
         @Test
-        @DisplayName("every mutator replaces exactly the field it names")
-        void everyMutatorReplacesTheFieldItNames() {
-            final TransactionCategory category = categoryFromSeed(1);
+        @DisplayName("the 2-byte type code keeps its own leading zero for the same reason")
+        void theTypeCodeKeepsItsLeadingZero() {
+            final TransactionCategory row =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
 
-            category.setTranTypeCd("07");
-            category.setTranCatCd("0001");
-            category.setTranCatTypeDesc("Sales draft credit adjustment");
-
-            assertThat(category.getTranTypeCd()).isEqualTo("07");
-            assertThat(category.getTranCatCd()).isEqualTo("0001");
-            assertThat(category.getTranCatTypeDesc()).isEqualTo("Sales draft credit adjustment");
+            assertThat(row.getTranTypeCd()).isEqualTo("01");
+            assertThat(row.getTranTypeCd()).isNotEqualTo(CAT_CD_ZERO_SUPPRESSED);
         }
 
         @Test
-        @DisplayName("the persistence constructor leaves every field absent")
-        void thePersistenceConstructorLeavesEveryFieldAbsent() {
-            final TransactionCategory category = new TransactionCategory();
+        @DisplayName("a mixed-case description survives verbatim and is never folded to title case, "
+                + "because the seeded text is stored exactly as the estate holds it")
+        void aMixedCaseDescriptionSurvivesVerbatim() {
+            final TransactionCategory row =
+                    new TransactionCategory(ROW_B_TYPE_CD, ROW_B_CAT_CD, ROW_B_DESC);
 
-            assertThat(category.getTranTypeCd()).isNull();
-            assertThat(category.getTranCatCd()).isNull();
-            assertThat(category.getTranCatTypeDesc()).isNull();
+            assertThat(row.getTranCatTypeDesc()).isEqualTo(ROW_B_DESC);
+            assertThat(row.getTranCatTypeDesc().getBytes(StandardCharsets.US_ASCII))
+                    .isEqualTo(ROW_B_DESC.getBytes(StandardCharsets.US_ASCII));
+            assertThat(row.getTranCatTypeDesc()).isNotEqualTo(ROW_B_DESC_TITLE_CASED);
         }
 
         @Test
-        @DisplayName("a description at the full fifty-byte width survives intact")
-        void aFullWidthDescriptionSurvivesIntact() {
-            final String widest = "D".repeat(COPYBOOK_WIDTHS.get(2));
+        @DisplayName("trailing space padding to the 50-byte external width survives, because trimming "
+                + "would destroy padding the fixed-width output contract depends on")
+        void trailingSpacePaddingSurvives() {
+            final TransactionCategory row =
+                    new TransactionCategory(ROW_B_TYPE_CD, ROW_B_CAT_CD, ROW_B_DESC_PADDED);
 
-            assertThat(new TransactionCategory("01", "0001", widest).getTranCatTypeDesc())
-                    .isEqualTo(widest)
-                    .hasSize(COPYBOOK_WIDTHS.get(2));
+            assertThat(row.getTranCatTypeDesc().getBytes(StandardCharsets.US_ASCII))
+                    .isEqualTo(ROW_B_DESC_PADDED.getBytes(StandardCharsets.US_ASCII));
+            assertThat(row.getTranCatTypeDesc()).isEqualTo(ROW_B_DESC_PADDED);
+
+            // A trimming, stripping or normalising mutator would collapse the padded form onto the
+            // unpadded one. It must not.
+            assertThat(row.getTranCatTypeDesc()).isNotEqualTo(ROW_B_DESC);
+            assertThat(row.getTranCatTypeDesc()).hasSize(DESC_WIDTH);
+        }
+
+        @Test
+        @DisplayName("a description supplied through the setter is padded no more and trimmed no less "
+                + "than one supplied through the constructor")
+        void theSetterAppliesNoPaddingAndNoTrimming() {
+            final TransactionCategory row = new TransactionCategory();
+
+            row.setTranCatTypeDesc(ROW_A_DESC);
+            assertThat(row.getTranCatTypeDesc()).isEqualTo(ROW_A_DESC);
+            assertThat(row.getTranCatTypeDesc()).hasSize(19);
+
+            row.setTranCatTypeDesc(ROW_A_DESC_PADDED);
+            assertThat(row.getTranCatTypeDesc()).isEqualTo(ROW_A_DESC_PADDED);
+            assertThat(row.getTranCatTypeDesc()).hasSize(DESC_WIDTH);
         }
     }
 
-    // SEEDED REFERENCE DATA
-
-    /**
-     * Verifies the eighteen seeded reference rows against a transcription of the estate's own data.
-     */
     @Nested
-    @DisplayName("seeded reference data")
-    class SeededReferenceData {
+    @DisplayName("Entity identity: the composite key alone decides equality")
+    class EntityIdentity {
 
         @Test
-        @DisplayName("the seed carries eighteen records at the declared sixty-byte width")
-        void theSeedCarriesEighteenRecords() {
-            assertThat(SEED.recordCount()).isEqualTo(SEEDED_RECORDS);
-            assertThat(SEED.recordWidth()).isEqualTo(RECORD_WIDTH);
-            assertThat(SEED.impliedByteCount()).isEqualTo(SEEDED_RECORDS * (RECORD_WIDTH + 1));
+        @DisplayName("two rows sharing both key components are equal and hash alike even when their "
+                + "descriptions differ, because only the key group identifies a record")
+        void sameKeyDifferentDescriptionMeansEqual() {
+            final TransactionCategory one =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
+            final TransactionCategory other =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_B_DESC_PADDED);
+
+            assertThat(one.getTranCatTypeDesc()).isNotEqualTo(other.getTranCatTypeDesc());
+            assertThat(one).isEqualTo(other);
+            assertThat(one).hasSameHashCodeAs(other);
         }
 
         @Test
-        @DisplayName("every seeded row matches the transcription of the estate's reference data, in file "
-                + "order")
-        void everySeededRowMatchesTheTranscription() {
-            assertThat(SEEDED_CATEGORIES).hasSize(SEEDED_RECORDS);
+        @DisplayName("a differing type code alone breaks equality, proving key component 1 "
+                + "participates independently")
+        void aDifferingTypeCodeBreaksEquality() {
+            final TransactionCategory one =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
+            final TransactionCategory other =
+                    new TransactionCategory(ROW_B_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
 
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                final String[] expected = SEEDED_CATEGORIES.get(ordinal - 1);
-
-                assertThat(seededType(ordinal)).as("type of record %d", ordinal)
-                        .isEqualTo(expected[0]);
-                assertThat(seededCategory(ordinal)).as("category of record %d", ordinal)
-                        .isEqualTo(expected[1]);
-                assertThat(seededDescription(ordinal).strip())
-                        .as("description of record %d", ordinal)
-                        .isEqualTo(expected[2]);
-            }
+            assertThat(one).isNotEqualTo(other);
         }
 
         @Test
-        @DisplayName("the seed uses seven type codes and five category codes, so the eighteen rows are "
-                + "far fewer than every combination of the two")
-        void theSeedUsesSevenTypesAndFiveCategories() {
-            final List<String> types = new ArrayList<>();
-            final List<String> categories = new ArrayList<>();
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                types.add(seededType(ordinal));
-                categories.add(seededCategory(ordinal));
-            }
+        @DisplayName("a differing category code alone breaks equality, proving key component 2 "
+                + "participates independently")
+        void aDifferingCategoryCodeBreaksEquality() {
+            final TransactionCategory one =
+                    new TransactionCategory(ROW_A_TYPE_CD, "0001", ROW_A_DESC_PADDED);
+            final TransactionCategory other =
+                    new TransactionCategory(ROW_A_TYPE_CD, "0005", ROW_A_DESC_PADDED);
 
-            assertThat(types.stream().distinct().toList()).hasSize(SEEDED_TYPE_CODES);
-            assertThat(categories.stream().distinct().toList()).hasSize(SEEDED_CATEGORY_CODES);
-            assertThat(SEEDED_RECORDS)
-                    .isLessThan(SEEDED_TYPE_CODES * SEEDED_CATEGORY_CODES);
+            assertThat(one).isNotEqualTo(other);
         }
 
         @Test
-        @DisplayName("each type's categories are contiguous from 0001, so no category in a type's range "
-                + "is missing")
-        void eachTypesCategoriesAreContiguousFromOne() {
-            final Map<String, List<String>> byType = new LinkedHashMap<>();
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                byType.computeIfAbsent(seededType(ordinal), key -> new ArrayList<>())
-                        .add(seededCategory(ordinal));
-            }
+        @DisplayName("a zero-suppressed category code does not identify the zero-filled row, so the "
+                + "leading zeros are significant to identity and not only to storage")
+        void aZeroSuppressedCategoryCodeIsADifferentRow() {
+            final TransactionCategory zeroFilled =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
+            final TransactionCategory zeroSuppressed =
+                    new TransactionCategory(ROW_A_TYPE_CD, CAT_CD_ZERO_SUPPRESSED, ROW_A_DESC_PADDED);
 
-            assertThat(byType).hasSize(SEEDED_TYPE_CODES);
-            for (final Map.Entry<String, List<String>> entry : byType.entrySet()) {
-                final List<String> categories = entry.getValue();
-                for (int index = 0; index < categories.size(); index++) {
-                    assertThat(Integer.parseInt(categories.get(index)))
-                            .as("category %d of type %s", index, entry.getKey())
-                            .isEqualTo(index + 1);
-                }
-            }
+            assertThat(zeroFilled).isNotEqualTo(zeroSuppressed);
         }
 
         @Test
-        @DisplayName("the same category number appears under several types with a different meaning each "
-                + "time, which is why the key needs both components")
-        void theSameCategoryNumberMeansDifferentThingsUnderDifferentTypes() {
-            final List<String> meanings = new ArrayList<>();
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                if ("0001".equals(seededCategory(ordinal))) {
-                    meanings.add(seededDescription(ordinal).strip());
-                }
-            }
-
-            assertThat(meanings).hasSize(SEEDED_TYPE_CODES);
-            assertThat(meanings.stream().distinct().toList())
-                    .as("every type gives category 0001 its own meaning")
-                    .hasSize(SEEDED_TYPE_CODES);
-        }
-
-        @Test
-        @DisplayName("every description is distinct, so the eighteen rows carry eighteen meanings")
-        void everyDescriptionIsDistinct() {
-            final List<String> descriptions = new ArrayList<>();
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                descriptions.add(seededDescription(ordinal));
-            }
-
-            assertThat(descriptions.stream().distinct().toList()).hasSize(SEEDED_RECORDS);
-        }
-
-        @Test
-        @DisplayName("every description is blank-filled on the right to fifty bytes rather than trimmed "
-                + "in the record")
-        void everyDescriptionIsBlankFilledToFiftyBytes() {
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                final String description = seededDescription(ordinal);
-
-                assertThat(description)
-                        .as("description of record %d", ordinal)
-                        .hasSize(COPYBOOK_WIDTHS.get(2))
-                        .doesNotStartWith(" ")
-                        .endsWith(" ");
-                assertThat(description.strip()).isNotEmpty();
-            }
-        }
-
-        @Test
-        @DisplayName("every seeded record's trailing filler is numeric zeros rather than blanks, and is "
-                + "carried by no field of the entity")
-        void theSeededFillerIsNumericZeros() {
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                assertThat(SEED.field(ordinal, OFFSET_FILLER, FILLER_WIDTH))
-                        .as("filler of record %d", ordinal)
-                        .isEqualTo("0".repeat(FILLER_WIDTH));
-            }
-        }
-
-        @Test
-        @DisplayName("every type code this file uses is one the transaction-type reference file declares, "
-                + "a cross-file agreement neither file can establish alone")
-        void everyTypeCodeIsDeclaredByTheTypeReferenceFile() {
-            final List<String> declaredTypes = new ArrayList<>();
-            for (int ordinal = 1; ordinal <= TYPE_SEED.recordCount(); ordinal++) {
-                declaredTypes.add(TYPE_SEED.field(ordinal, 0, COPYBOOK_WIDTHS.get(0)));
-            }
-
-            assertThat(declaredTypes).hasSize(SEEDED_TYPE_CODES);
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                assertThat(declaredTypes)
-                        .as("type of category record %d", ordinal)
-                        .contains(seededType(ordinal));
-            }
-        }
-    }
-
-    // THE INTEREST RUN'S SYNTHESISED PAIR
-
-    /**
-     * Verifies the one type-and-category pair the interest run stamps rather than reads.
-     */
-    @Nested
-    @DisplayName("the interest run's synthesised pair")
-    class InterestRunPair {
-
-        @Test
-        @DisplayName("the two-character category literal becomes four digits by right-justified zero "
-                + "fill, which is what moving it into a four-digit numeric field does")
-        void theCategoryLiteralZeroFillsToFourDigits() {
-            assertThat(INTEREST_CATEGORY_LITERAL).hasSize(2);
-            assertThat(zeroFilledInterestCategory())
-                    .isEqualTo("0005")
-                    .hasSize(COPYBOOK_WIDTHS.get(1))
-                    .endsWith(INTEREST_CATEGORY_LITERAL);
-        }
-
-        @Test
-        @DisplayName("the resulting pair resolves in the reference file, so posted interest carries a "
-                + "category a lookup can explain")
-        void theResultingPairResolvesInTheReferenceFile() {
-            assertThat(seededDescriptionFor(INTEREST_TYPE_CODE, zeroFilledInterestCategory()))
-                    .isEqualTo("Interest Amount");
-        }
-
-        @Test
-        @DisplayName("the pair the interest run stamps builds an entity whose key is exactly six bytes")
-        void thePairBuildsASixByteKey() {
-            final TransactionCategory row = new TransactionCategory(
-                    INTEREST_TYPE_CODE, zeroFilledInterestCategory(), "Interest Amount");
-
-            assertThat(row.getTranTypeCd().length() + row.getTranCatCd().length())
-                    .isEqualTo(KEY_WIDTH);
-        }
-
-        @Test
-        @DisplayName("the unfilled literal is not the same key, so omitting the zero fill would miss the "
-                + "reference row entirely")
-        void theUnfilledLiteralIsNotTheSameKey() {
-            assertThat(seededDescriptionFor(INTEREST_TYPE_CODE, INTEREST_CATEGORY_LITERAL))
-                    .as("the two-character literal is not a category the file declares")
-                    .isNull();
-        }
-    }
-
-    // COMPOSITE-KEY IDENTITY
-
-    /**
-     * Verifies that identity is the two-part key and nothing else.
-     */
-    @Nested
-    @DisplayName("composite-key identity")
-    class CompositeKeyIdentity {
-
-        @Test
-        @DisplayName("a row equals itself")
+        @DisplayName("a row equals itself, exercising the identity short-circuit of the equality test")
         void aRowEqualsItself() {
-            final TransactionCategory category = categoryFromSeed(1);
+            final TransactionCategory row =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
 
-            assertThat(category).isEqualTo(category);
-            assertThat(category.hashCode()).isEqualTo(category.hashCode());
+            assertThat(row.equals(row)).isTrue();
+            assertThat(row).hasSameHashCodeAs(row);
         }
 
         @Test
-        @DisplayName("two rows with the same key are equal even when their descriptions differ, because "
-                + "the description is not part of identity")
-        void sameKeyMeansEqualEvenWithADifferentDescription() {
-            final TransactionCategory left =
-                    new TransactionCategory("01", "0005", "Interest Amount");
-            final TransactionCategory right =
-                    new TransactionCategory("01", "0005", "Something else entirely");
+        @DisplayName("a row is unequal to an absent reference and to a foreign type, so neither an "
+                + "absent value nor an unrelated object can ever be mistaken for a category row")
+        void aRowIsUnequalToNullAndToAForeignType() {
+            final TransactionCategory row =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
 
-            assertThat(left).isEqualTo(right);
-            assertThat(right).isEqualTo(left);
-            assertThat(left).hasSameHashCodeAs(right);
-            assertThat(left.getTranCatTypeDesc()).isNotEqualTo(right.getTranCatTypeDesc());
+            assertThat(row.equals(null)).isFalse();
+            assertThat(row.equals("010001")).isFalse();
         }
 
         @Test
-        @DisplayName("changing either key component makes two rows unequal")
-        void changingEitherKeyComponentMakesRowsUnequal() {
-            final TransactionCategory base =
-                    new TransactionCategory("01", "0001", "Regular Sales Draft");
+        @DisplayName("equality is symmetric and transitive across independently built rows carrying "
+                + "the same key")
+        void equalityIsSymmetricAndTransitive() {
+            final TransactionCategory one =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
+            final TransactionCategory two =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
+            final TransactionCategory three =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_B_DESC_PADDED);
 
-            assertThat(base).isNotEqualTo(
-                    new TransactionCategory("02", "0001", "Regular Sales Draft"));
-            assertThat(base).isNotEqualTo(
-                    new TransactionCategory("01", "0002", "Regular Sales Draft"));
+            assertThat(one).isEqualTo(two);
+            assertThat(two).isEqualTo(one);
+            assertThat(two).isEqualTo(three);
+            assertThat(one).isEqualTo(three);
         }
 
         @Test
-        @DisplayName("the eighteen seeded rows produce eighteen distinct keys, so no two rows collide")
-        void theSeededRowsProduceDistinctKeys() {
-            final List<TransactionCategoryId> ids = new ArrayList<>();
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                ids.add(categoryFromSeed(ordinal).toId());
+        @DisplayName("two separate unpopulated rows are equal, because an absent key equals an absent "
+                + "key and the comparison is null-safe on both components")
+        void twoUnpopulatedRowsAreEqual() {
+            // Two DISTINCT instances, bound to named locals so it is unmistakable that this compares
+            // two separate objects rather than an expression with itself. The claim is falsifiable: an
+            // equality test using reference comparison on the components, or one that dereferenced them
+            // without a null guard, would fail here.
+            final TransactionCategory oneEmpty = new TransactionCategory();
+            final TransactionCategory anotherEmpty = new TransactionCategory();
+
+            assertThat(oneEmpty).isNotSameAs(anotherEmpty);
+            assertThat(oneEmpty).isEqualTo(anotherEmpty);
+            assertThat(oneEmpty).hasSameHashCodeAs(anotherEmpty);
+            assertThat(oneEmpty).isNotEqualTo(
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED));
+        }
+
+        @Test
+        @DisplayName("no surrogate identifier exists: identity is the legacy business key itself, so "
+                + "two independently constructed rows carrying the same key are the same row")
+        void noSurrogateIdentifierExists() {
+            // Documenting test. The absence of a surrogate is proved by COMPILE-TIME ABSENCE: this file
+            // never references a generated-identifier accessor of any kind, because none is declared -
+            // such a call would not compile. No reflection is used to look for one.
+            //
+            // Behaviourally, a machine-assigned identifier participating in identity would make two
+            // separately constructed rows unequal even when their business key matched. They are equal,
+            // so nothing beyond the two key components takes part. Keeping the business key as the
+            // identifier is what preserves the record-image-to-row correspondence that byte-parity
+            // verification of the migrated output depends on.
+            final TransactionCategory one =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
+            final TransactionCategory other =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
+
+            assertThat(one).isNotSameAs(other);
+            assertThat(one).isEqualTo(other);
+            assertThat(one).hasSameHashCodeAs(other);
+        }
+
+        @Test
+        @DisplayName("a row stays findable in a hash map after its description has been mutated, "
+                + "because the mutable description is excluded from the hash")
+        void aRowStaysFindableAfterItsDescriptionChanges() {
+            final TransactionCategory row =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
+            final Map<TransactionCategory, String> index = new HashMap<>();
+            index.put(row, ROW_A_DESC);
+
+            row.setTranCatTypeDesc(ROW_B_DESC_PADDED);
+
+            assertThat(index).containsKey(row);
+            assertThat(index.get(row)).isEqualTo(ROW_A_DESC);
+        }
+    }
+
+    @Nested
+    @DisplayName("Key projection: the row hands out its own 2-component key")
+    class ExtractedCompositeKey {
+
+        @Test
+        @DisplayName("the projected key carries the two components in key order and carries no "
+                + "description, because the description is not part of the key group")
+        void theProjectedKeyCarriesBothComponentsInKeyOrder() {
+            final TransactionCategory row =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
+
+            final TransactionCategoryId key = row.toId();
+
+            // Compared against hand-derived literals, never against a value the row computed.
+            assertThat(key.getTranTypeCd()).isEqualTo("01");
+            assertThat(key.getTranCatCd()).isEqualTo("0001");
+            assertThat(key.getTranTypeCd().getBytes(StandardCharsets.US_ASCII))
+                    .hasSize(TYPE_CD_WIDTH);
+            assertThat(key.getTranCatCd().getBytes(StandardCharsets.US_ASCII))
+                    .hasSize(CAT_CD_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the projected key equals one assembled by hand from the same two literals, and "
+                + "does not equal one whose components are transposed")
+        void theProjectedKeyEqualsAHandAssembledKey() {
+            final TransactionCategory row =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
+
+            assertThat(row.toId()).isEqualTo(new TransactionCategoryId("01", "0001"));
+            assertThat(row.toId()).isNotEqualTo(new TransactionCategoryId("0001", "01"));
+        }
+
+        @Test
+        @DisplayName("a fresh key is produced on every call, so no instance is cached and no mutable "
+                + "static state backs the projection")
+        void aFreshKeyIsProducedOnEveryCall() {
+            final TransactionCategory row =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
+
+            final TransactionCategoryId first = row.toId();
+            final TransactionCategoryId second = row.toId();
+
+            assertThat(first).isNotSameAs(second);
+            assertThat(first).isEqualTo(second);
+        }
+
+        @Test
+        @DisplayName("the projection follows a key component replaced after construction")
+        void theProjectionFollowsAMutatedKeyComponent() {
+            final TransactionCategory row =
+                    new TransactionCategory(ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED);
+
+            row.setTranTypeCd(ROW_B_TYPE_CD);
+
+            assertThat(row.toId().getTranTypeCd()).isEqualTo("07");
+            assertThat(row.toId().getTranCatCd()).isEqualTo("0001");
+        }
+
+        @Test
+        @DisplayName("an unpopulated row projects a key with both components absent")
+        void anUnpopulatedRowProjectsAnAbsentKey() {
+            final TransactionCategoryId key = new TransactionCategory().toId();
+
+            assertThat(key.getTranTypeCd()).isNull();
+            assertThat(key.getTranCatCd()).isNull();
+        }
+    }
+
+    @Nested
+    @DisplayName("Diagnostic rendering of the row and of its key")
+    class DiagnosticRendering {
+
+        @Test
+        @DisplayName("the row's diagnostic rendering reveals all three attributes, none of which is a "
+                + "credential or a monetary value needing redaction")
+        void theRowRenderingRevealsAllThreeAttributes() {
+            // DIVERGENCE, noted per the read-the-production-class mandate: the contract summary this
+            // suite was written against said a diagnostic rendering might be absent and should not be
+            // asserted on. Both classes do in fact declare one, so it is exercised here for coverage of
+            // every public member - but deliberately without pinning the exact format. Only the
+            // presence of the hand-derived values is asserted, so a future wording change cannot make
+            // this brittle.
+            final String rendered = new TransactionCategory(
+                    ROW_A_TYPE_CD, ROW_A_CAT_CD, ROW_A_DESC_PADDED).toString();
+
+            assertThat(rendered).isNotNull();
+            assertThat(rendered).contains("01");
+            assertThat(rendered).contains("0001");
+            assertThat(rendered).contains(ROW_A_DESC);
+        }
+
+        @Test
+        @DisplayName("the key's diagnostic rendering reveals both key components and nothing that "
+                + "requires redaction")
+        void theKeyRenderingRevealsBothComponents() {
+            final String rendered = new TransactionCategoryId(ROW_B_TYPE_CD, ROW_B_CAT_CD).toString();
+
+            assertThat(rendered).isNotNull();
+            assertThat(rendered).contains("07");
+            assertThat(rendered).contains("0001");
+        }
+
+        @Test
+        @DisplayName("an unpopulated row and an unpopulated key both render without failing")
+        void unpopulatedInstancesRenderWithoutFailing() {
+            assertThat(new TransactionCategory().toString()).isNotNull();
+            assertThat(new ProviderInstantiatedKey().toString()).isNotNull();
+        }
+    }
+
+    @Nested
+    @DisplayName("Composite key contract: two text components, 2 + 4, compared exactly")
+    class CompositeKeyContract {
+
+        @Test
+        @DisplayName("the all-args constructor binds the 2-byte type code then the 4-byte category "
+                + "code, in the key order the cluster definition fixes")
+        void allArgsConstructorRoundTripsBothComponents() {
+            final TransactionCategoryId key =
+                    new TransactionCategoryId(ROW_A_TYPE_CD, ROW_A_CAT_CD);
+
+            assertThat(key.getTranTypeCd()).isEqualTo("01");
+            assertThat(key.getTranCatCd()).isEqualTo("0001");
+            assertThat(key.getTranTypeCd().getBytes(StandardCharsets.US_ASCII))
+                    .hasSize(TYPE_CD_WIDTH);
+            assertThat(key.getTranCatCd().getBytes(StandardCharsets.US_ASCII))
+                    .hasSize(CAT_CD_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the no-arg constructor the identifier-class contract mandates exists and leaves "
+                + "both components absent")
+        void theNoArgConstructorExistsAndYieldsAbsentComponents() {
+            // An identifier class must offer a no-argument constructor so the persistence provider can
+            // instantiate it before populating the components. That requirement is exactly why this key
+            // is a plain class and NOT a record: a record cannot declare a no-argument constructor
+            // alongside its components.
+            //
+            // The constructor is protected and the key class lives in a neighbouring package, so it
+            // cannot be invoked directly from here - a direct call does not compile. It is reached
+            // instead through a subclass's super() call, which is plain Java inheritance and NOT
+            // reflection. See ProviderInstantiatedKey for the full rationale.
+            final TransactionCategoryId key = new ProviderInstantiatedKey();
+
+            assertThat(key.getTranTypeCd()).isNull();
+            assertThat(key.getTranCatCd()).isNull();
+        }
+
+        @Test
+        @DisplayName("two independently built keys carrying the same components are equal and hash "
+                + "alike, so both components take part in equality")
+        void equalKeysAreEqualAndHashAlike() {
+            final TransactionCategoryId one =
+                    new TransactionCategoryId(ROW_A_TYPE_CD, ROW_A_CAT_CD);
+            final TransactionCategoryId other =
+                    new TransactionCategoryId(ROW_A_TYPE_CD, ROW_A_CAT_CD);
+
+            assertThat(one).isNotSameAs(other);
+            assertThat(one).isEqualTo(other);
+            assertThat(other).isEqualTo(one);
+            assertThat(one).hasSameHashCodeAs(other);
+        }
+
+        @Test
+        @DisplayName("a key equals itself, exercising the identity short-circuit of the equality test")
+        void aKeyEqualsItself() {
+            final TransactionCategoryId key =
+                    new TransactionCategoryId(ROW_A_TYPE_CD, ROW_A_CAT_CD);
+
+            assertThat(key.equals(key)).isTrue();
+        }
+
+        @Test
+        @DisplayName("the type code component participates in equality independently of the category "
+                + "code")
+        void theTypeCodeComponentParticipatesIndependently() {
+            final TransactionCategoryId one =
+                    new TransactionCategoryId(ROW_A_TYPE_CD, ROW_A_CAT_CD);
+            final TransactionCategoryId other =
+                    new TransactionCategoryId(ROW_B_TYPE_CD, ROW_A_CAT_CD);
+
+            // The category component is pinned to the hand-derived literal on BOTH keys first, so the
+            // held-constant precondition rests on the literal rather than on a comparison of two
+            // production calls, and only the type code can account for the inequality below.
+            assertThat(one.getTranCatCd()).isEqualTo("0001");
+            assertThat(other.getTranCatCd()).isEqualTo("0001");
+            assertThat(one.getTranTypeCd()).isEqualTo("01");
+            assertThat(other.getTranTypeCd()).isEqualTo("07");
+            assertThat(one).isNotEqualTo(other);
+        }
+
+        @Test
+        @DisplayName("the category code component participates in equality independently of the type "
+                + "code")
+        void theCategoryCodeComponentParticipatesIndependently() {
+            final TransactionCategoryId one = new TransactionCategoryId(ROW_A_TYPE_CD, "0001");
+            final TransactionCategoryId other = new TransactionCategoryId(ROW_A_TYPE_CD, "0005");
+
+            // Same pinning discipline: the type component is fixed to its literal on both keys, so only
+            // the category code can account for the inequality. Both category values are seeded ones -
+            // 0001 opens the reference file and 0005 is the interest category.
+            assertThat(one.getTranTypeCd()).isEqualTo("01");
+            assertThat(other.getTranTypeCd()).isEqualTo("01");
+            assertThat(one.getTranCatCd()).isEqualTo("0001");
+            assertThat(other.getTranCatCd()).isEqualTo("0005");
+            assertThat(one).isNotEqualTo(other);
+        }
+
+        @Test
+        @DisplayName("a key is unequal to an absent reference and to a foreign type, including the "
+                + "6-character string that spells the very key image it stands for")
+        void aKeyIsUnequalToNullAndToAForeignType() {
+            final TransactionCategoryId key =
+                    new TransactionCategoryId(ROW_A_TYPE_CD, ROW_A_CAT_CD);
+
+            assertThat(key.equals(null)).isFalse();
+            assertThat(key.equals("010001")).isFalse();
+        }
+
+        @Test
+        @DisplayName("leading zeros are significant in the key: the zero-filled category code is a "
+                + "different key from its zero-suppressed rendering")
+        void leadingZerosAreSignificantInTheKey() {
+            final TransactionCategoryId zeroFilled =
+                    new TransactionCategoryId(ROW_A_TYPE_CD, ROW_A_CAT_CD);
+            final TransactionCategoryId zeroSuppressed =
+                    new TransactionCategoryId(ROW_A_TYPE_CD, CAT_CD_ZERO_SUPPRESSED);
+
+            assertThat(zeroFilled).isNotEqualTo(zeroSuppressed);
+            assertThat(zeroSuppressed).isNotEqualTo(zeroFilled);
+        }
+
+        @Test
+        @DisplayName("the zero-filled and zero-suppressed category codes are not interchangeable as "
+                + "map keys, so a lookup on one can never resolve to the other")
+        void theTwoRenderingsAreNotInterchangeableAsMapKeys() {
+            final TransactionCategoryId zeroFilled =
+                    new TransactionCategoryId(ROW_A_TYPE_CD, ROW_A_CAT_CD);
+            final TransactionCategoryId zeroSuppressed =
+                    new TransactionCategoryId(ROW_A_TYPE_CD, CAT_CD_ZERO_SUPPRESSED);
+
+            final Map<TransactionCategoryId, String> index = new HashMap<>();
+            index.put(zeroFilled, ROW_A_CAT_CD);
+            index.put(zeroSuppressed, CAT_CD_ZERO_SUPPRESSED);
+
+            // Two distinct keys occupy two distinct slots. Note that unequal keys are PERMITTED, though
+            // never required, to produce different hash codes, so this suite asserts the map-level
+            // consequence - which holds however the two happen to hash - rather than pinning hash
+            // values that carry no contractual guarantee.
+            assertThat(index).hasSize(2);
+            assertThat(index.get(zeroFilled)).isEqualTo("0001");
+            assertThat(index.get(zeroSuppressed)).isEqualTo("1");
+        }
+
+        @Test
+        @DisplayName("no normalisation is applied anywhere in the key: a component carrying trailing "
+                + "spaces is not equal to the same component without them")
+        void noNormalisationIsAppliedInsideTheKey() {
+            // Proves the constructor, the equality test and the hash all leave a value exactly as
+            // supplied - no trimming, stripping or trailing-space removal of any kind. Widths are
+            // enforced by the schema, never by this class, which is why an over-wide value is simply
+            // carried verbatim here.
+            final TransactionCategoryId spaced = new TransactionCategoryId("01 ", ROW_A_CAT_CD);
+            final TransactionCategoryId unspaced =
+                    new TransactionCategoryId(ROW_A_TYPE_CD, ROW_A_CAT_CD);
+
+            assertThat(spaced).isNotEqualTo(unspaced);
+            assertThat(spaced.getTranTypeCd()).isEqualTo("01 ");
+            assertThat(spaced.getTranTypeCd()).hasSize(3);
+
+            final TransactionCategoryId spacedCategory =
+                    new TransactionCategoryId(ROW_A_TYPE_CD, "0001 ");
+
+            assertThat(spacedCategory).isNotEqualTo(unspaced);
+            assertThat(spacedCategory.getTranCatCd()).isEqualTo("0001 ");
+        }
+
+        @Test
+        @DisplayName("both components are stored verbatim, absent values included, because the key "
+                + "validates nothing")
+        void absentComponentsAreStoredAndReturnedUnchanged() {
+            final TransactionCategoryId noType = new TransactionCategoryId(null, ROW_A_CAT_CD);
+            final TransactionCategoryId noCategory = new TransactionCategoryId(ROW_A_TYPE_CD, null);
+
+            assertThat(noType.getTranTypeCd()).isNull();
+            assertThat(noType.getTranCatCd()).isEqualTo("0001");
+            assertThat(noCategory.getTranTypeCd()).isEqualTo("01");
+            assertThat(noCategory.getTranCatCd()).isNull();
+            assertThat(noType).isNotEqualTo(noCategory);
+        }
+    }
+
+    @Nested
+    @DisplayName("Composite key serialization: an identifier class must be serializable")
+    class CompositeKeySerialization {
+
+        @Test
+        @DisplayName("the key declares an explicit, stable serialization version identifier of 1")
+        void theKeyDeclaresAnExplicitSerialVersionUid() {
+            // java.io.ObjectStreamClass is the sanctioned serialization-metadata API and is NOT
+            // reflection: it does not belong to the introspection package, it performs no member
+            // lookup on behalf of the caller, and using it therefore leaves the module's
+            // zero-reflection position untouched. The expected value is the literal the key class
+            // declares, read by hand.
+            final ObjectStreamClass descriptor = ObjectStreamClass.lookup(TransactionCategoryId.class);
+
+            assertThat(descriptor).isNotNull();
+            assertThat(descriptor.getSerialVersionUID()).isEqualTo(DECLARED_SERIAL_VERSION_UID);
+            assertThat(descriptor.getSerialVersionUID()).isEqualTo(1L);
+        }
+
+        @Test
+        @DisplayName("a key survives a full serialization round trip and deserializes to an equal key, "
+                + "proving serializability is honoured end to end")
+        void aKeySurvivesASerializationRoundTrip() throws IOException, ClassNotFoundException {
+            final TransactionCategoryId original =
+                    new TransactionCategoryId(ROW_A_TYPE_CD, ROW_A_CAT_CD);
+
+            final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            try (ObjectOutputStream out = new ObjectOutputStream(buffer)) {
+                out.writeObject(original);
             }
 
-            assertThat(ids).hasSize(SEEDED_RECORDS);
-            assertThat(ids.stream().distinct().toList()).hasSize(SEEDED_RECORDS);
+            final TransactionCategoryId restored;
+            try (ObjectInputStream in =
+                    new ObjectInputStream(new ByteArrayInputStream(buffer.toByteArray()))) {
+                restored = (TransactionCategoryId) in.readObject();
+            }
+
+            assertThat(restored).isNotSameAs(original);
+            assertThat(restored).isEqualTo(original);
+            assertThat(restored).hasSameHashCodeAs(original);
+            assertThat(restored.getTranTypeCd()).isEqualTo("01");
+            assertThat(restored.getTranCatCd()).isEqualTo("0001");
         }
 
         @Test
-        @DisplayName("a row is unequal to null and to an unrelated type")
-        void aRowIsUnequalToNullAndToAnotherType() {
-            final TransactionCategory category = categoryFromSeed(1);
+        @DisplayName("a round trip preserves the leading zeros of the 4-digit category component, so "
+                + "the 6-byte key image still reconstructs after transport")
+        void aRoundTripPreservesLeadingZeros() throws IOException, ClassNotFoundException {
+            final TransactionCategoryId original = new TransactionCategoryId(ROW_B_TYPE_CD, "0005");
 
-            assertThat(category).isNotEqualTo(null);
-            assertThat(category.equals("010001")).isFalse();
-            assertThat(category).isNotEqualTo(new Object());
-        }
+            final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            try (ObjectOutputStream out = new ObjectOutputStream(buffer)) {
+                out.writeObject(original);
+            }
 
-        @Test
-        @DisplayName("two rows with an absent key are equal, because both keys are absent rather than "
-                + "generated")
-        void twoUnkeyedRowsAreEqual() {
-            assertThat(new TransactionCategory()).isEqualTo(new TransactionCategory());
-            assertThat(new TransactionCategory()).hasSameHashCodeAs(new TransactionCategory());
-        }
-    }
+            final TransactionCategoryId restored;
+            try (ObjectInputStream in =
+                    new ObjectInputStream(new ByteArrayInputStream(buffer.toByteArray()))) {
+                restored = (TransactionCategoryId) in.readObject();
+            }
 
-    // THE EXTRACTED KEY
-
-    /**
-     * Verifies that the entity hands out the same two-part key it is identified by.
-     */
-    @Nested
-    @DisplayName("the extracted key")
-    class ExtractedKey {
-
-        @Test
-        @DisplayName("the extracted key carries the two components in copybook order")
-        void theExtractedKeyCarriesTheComponentsInCopybookOrder() {
-            final TransactionCategoryId id = categoryFromSeed(1).toId();
-
-            assertThat(id.getTranTypeCd()).isEqualTo(seededType(1));
-            assertThat(id.getTranCatCd()).isEqualTo(seededCategory(1));
-        }
-
-        @Test
-        @DisplayName("the extracted key round-trips: rebuilding a row from it yields an equal row")
-        void theExtractedKeyRoundTrips() {
-            final TransactionCategory original = categoryFromSeed(1);
-            final TransactionCategoryId id = original.toId();
-            final TransactionCategory rebuilt =
-                    new TransactionCategory(id.getTranTypeCd(), id.getTranCatCd(), "");
-
-            assertThat(rebuilt).isEqualTo(original);
-            assertThat(rebuilt.toId()).isEqualTo(id);
-        }
-
-        @Test
-        @DisplayName("a key whose components are swapped is a different key, so component order is part "
-                + "of the contract")
-        void aSwappedKeyIsADifferentKey() {
-            final TransactionCategoryId ordered = new TransactionCategoryId("AB", "CD");
-            final TransactionCategoryId swapped = new TransactionCategoryId("CD", "AB");
-
-            assertThat(ordered).isNotEqualTo(swapped);
-        }
-
-        @Test
-        @DisplayName("an unkeyed row hands out a key whose components are both absent")
-        void anUnkeyedRowHandsOutAnEmptyKey() {
-            final TransactionCategoryId id = new TransactionCategory().toId();
-
-            assertThat(id.getTranTypeCd()).isNull();
-            assertThat(id.getTranCatCd()).isNull();
-        }
-    }
-
-    // DIAGNOSTIC REPRESENTATION
-
-    /**
-     * Verifies the diagnostic string.
-     */
-    @Nested
-    @DisplayName("diagnostic representation")
-    class DiagnosticRepresentation {
-
-        @Test
-        @DisplayName("the diagnostic string names the type and all three fields")
-        void theDiagnosticStringNamesTheTypeAndAllThreeFields() {
-            assertThat(new TransactionCategory("01", "0005", "Interest Amount").toString())
-                    .isEqualTo("TransactionCategory[tranTypeCd=01, tranCatCd=0005, "
-                            + "tranCatTypeDesc=Interest Amount]");
-        }
-
-        @Test
-        @DisplayName("the diagnostic string carries the description, so two rows that are equal can "
-                + "still render differently")
-        void equalRowsCanRenderDifferently() {
-            final TransactionCategory left =
-                    new TransactionCategory("01", "0005", "Interest Amount");
-            final TransactionCategory right =
-                    new TransactionCategory("01", "0005", "Something else entirely");
-
-            assertThat(left).isEqualTo(right);
-            assertThat(left.toString()).isNotEqualTo(right.toString());
-        }
-
-        @Test
-        @DisplayName("an unkeyed row renders without failing")
-        void anUnkeyedRowRendersWithoutFailing() {
-            assertThat(new TransactionCategory().toString()).isEqualTo(
-                    "TransactionCategory[tranTypeCd=null, tranCatCd=null, tranCatTypeDesc=null]");
+            assertThat(restored.getTranTypeCd()).isEqualTo("07");
+            assertThat(restored.getTranCatCd()).isEqualTo("0005");
+            assertThat(restored.getTranCatCd().getBytes(StandardCharsets.US_ASCII))
+                    .hasSize(CAT_CD_WIDTH);
+            assertThat(restored.getTranCatCd()).isNotEqualTo("5");
         }
     }
 }

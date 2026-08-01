@@ -18,230 +18,712 @@ package com.carddemo.service;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.awspring.cloud.sqs.operations.SendResult;
 import io.awspring.cloud.sqs.operations.SqsOperations;
-import io.awspring.cloud.sqs.operations.SqsReceiveOptions;
 import io.awspring.cloud.sqs.operations.SqsSendOptions;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.springframework.messaging.Message;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
 import org.springframework.messaging.support.GenericMessage;
 
 import com.carddemo.exception.JobSubmissionException;
 import com.carddemo.util.JclCardImageBuilder;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
 /**
- * Verifies {@link JobSubmissionService}, the estate's only online-to-batch bridge.
+ * Unit tests for {@link JobSubmissionService}, the estate's only online-to-batch bridge.
  *
- * <p>This is an <strong>external interface contract</strong> test. The service replaces the single
- * transient-data-queue write in the whole mainframe estate, reached from the misspelled paragraph
- * {@code WIRTE-JOBSUB-TDQ} at {@code app/cbl/CORPT00C.cbl} line 515, and its obligations are read
- * off two authorities rather than chosen: the card-emitting loop at
- * {@code app/cbl/CORPT00C.cbl} lines 496 to 509, and the {@code TDQUEUE(JOBS)} resource definition
- * at {@code app/csd/CARDDEMO.CSD} lines 499 to 505.
+ * <h2>What is under test, and where its obligations come from</h2>
  *
- * <h2>Why the collaborator is a hand-written recorder rather than a mock</h2>
- *
- * <p>Every obligation under test is a statement about <em>what reached the queue</em>: how many
- * messages, in what order, with what body, in which message group, under which deduplication
- * identifier, and how many attempts were made. A recording double answers all of those directly and,
- * because it implements the whole messaging interface, it also proves a negative the queue
- * definition demands: {@code TYPEFILE(OUTPUT)} makes the destination publish-only, so every receive,
- * poll and batch-send entry point fails the test outright if it is ever reached.
- *
- * <h2>The four attributes that bind this service</h2>
+ * <p>The whole mainframe estate contains exactly one transient-data-queue write, in the
+ * transaction-report request program {@code app/cbl/CORPT00C.cbl} (transaction {@code CR00}). Two
+ * regions of that member are the authority for every assertion here, and both were read directly
+ * rather than inferred.
  *
  * <ul>
- *   <li>{@code RECORDSIZE(80)} with {@code RECORDFORMAT(FIXED)} - one card per message, every body
- *       exactly eighty encoded bytes, never trimmed.</li>
- *   <li>{@code DISPOSITION(MOD)} - writes append, so order is significant and every card of one
- *       submission travels in a single message group. Append also means a repeat submission is
- *       genuinely a second submission, which is what the deduplication tests below pin down.</li>
- *   <li>{@code ERROROPTION(IGNORE)} - a publish failure is logged, stops the remaining cards, and
- *       returns normally rather than propagating.</li>
- *   <li>{@code OPENTIME(INITIAL)} with {@code TYPE(EXTRA)} - the destination pre-exists, so nothing
- *       here creates or describes a queue.</li>
+ *   <li>The card-emitting loop at lines 496 to 509. A loop-control flag is cleared, the guard tests
+ *       the one-based card index against the declared array bound together with the end-of-stream
+ *       and write-error flags, the current card is moved into the eighty-character record, the
+ *       end-of-stream test is made at lines 502 to 505, and the write is performed
+ *       <strong>unconditionally</strong> at line 507.</li>
+ *   <li>The queue-write paragraph at lines 515 to 535. It writes the eighty-character record
+ *       capturing a response and a reason code, continues on a normal response, and on any other
+ *       response writes both codes to its diagnostic channel, raises the write-error flag, places a
+ *       fixed failure literal in the screen message field and re-sends the screen. It never abends
+ *       and never aborts the transaction.</li>
  * </ul>
+ *
+ * <p>The paragraph name is misspelled in the source. That misspelling is a source anomaly carried in
+ * the anomaly register rather than corrected, and it is deliberately not reproduced in any Java
+ * identifier: the paragraph is misspelled, the method is not.
+ *
+ * <h2>The queue attributes that bind this service</h2>
+ *
+ * <p>The destination is declared in {@code app/csd/CARDDEMO.CSD} at lines 499 to 505. Four of its
+ * attributes are contractual rather than incidental, and each one is asserted below.
+ *
+ * <ul>
+ *   <li>{@code RECORDSIZE(80)} with {@code RECORDFORMAT(FIXED)} - one card is one message and every
+ *       body is exactly eighty encoded bytes, space padded and never trimmed.</li>
+ *   <li>{@code BLOCKFORMAT(UNBLOCKED)} - cards are published one at a time rather than concatenated
+ *       into a single payload.</li>
+ *   <li>{@code DISPOSITION(MOD)} - writes append, so order is significant; every card of one
+ *       submission travels in a single first-in-first-out message group.</li>
+ *   <li>{@code ERROROPTION(IGNORE)} - a publish failure is logged, the remaining cards are not sent,
+ *       and control returns normally. Nothing is rethrown.</li>
+ * </ul>
+ *
+ * <h2>Scope boundary: this file reaches nothing outside the JVM</h2>
+ *
+ * <p>The interface-contract gate for this bridge is discharged by <strong>draining a real
+ * emulated first-in-first-out queue</strong> and asserting the full ordered sequence of seventeen
+ * eighty-byte messages against what actually arrived. <strong>That obligation belongs to the sibling
+ * integration and end-to-end test tree and must not be attempted here.</strong> This is a surefire
+ * unit test: it starts no container, reaches no cloud service, opens no socket, binds no port and
+ * touches no database. It mocks the messaging operations template and asserts the interactions,
+ * which is what makes it fast, hermetic and safe to run on any developer machine.
  *
  * <h2>The oracle is independent by construction</h2>
  *
- * <p>The card count, the card width, the sentinel content, the operator-facing failure text and the
- * deduplication length limit are all hand written here from the legacy authorities and are then
- * asserted against the values the production types publish, so a drift in either direction fails.
- * The only expectation taken from a collaborator is the card sequence itself, which belongs to
- * {@code JclCardImageBuilder} by contract and is verified byte for byte by that class's own test.
+ * <p>Every expected card image below is hand written in this file from the seventeen eighty-byte
+ * card declarations at {@code app/cbl/CORPT00C.cbl} lines 83 to 125, with each pad width spelled out
+ * as an explicit repeat count so a reviewer can check the eighty-column arithmetic without leaving
+ * the file. <strong>The card builder is never called to produce an expectation.</strong> Delegating
+ * to it would make these tests pass against any builder, including a broken one; the two artefacts
+ * are held apart on purpose so that a drift in either is a failure. The only use made of the
+ * builder's published constants is a cross-check that they still agree with the hand-written legacy
+ * figures.
  *
- * <p>Provenance: legacy checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
+ * <p>Provenance: legacy sources read at checkout SHA
+ * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source statement is reproduced
+ * here; the card images are reproduced as the fixed-width payloads the queue receives, which is the
+ * contract under test, and widths, offsets, counts and attribute names are cited as metadata.
  */
-@DisplayName("JobSubmissionService: the estate's only online-to-batch bridge")
+@ExtendWith(MockitoExtension.class)
+@DisplayName("JobSubmissionService: the estate's only online-to-batch bridge, onto a FIFO queue")
 class JobSubmissionServiceTest {
+
+    // ---------------------------------------------------------------------------------------------
+    // Configuration the bean is constructed with. Both values arrive from configuration in
+    // production and neither is a literal in the service, so both are fixed here instead.
+    // ---------------------------------------------------------------------------------------------
 
     /**
      * The canonical destination queue. The first-in-first-out suffix is mandatory: the queue service
-     * rejects a first-in-first-out queue whose name lacks it, and ordering is contractual here.
+     * refuses a first-in-first-out queue whose name lacks it, and ordering is contractual here
+     * because the legacy queue appends on every write.
      */
     private static final String QUEUE_NAME = "JOBS.fifo";
 
     /** The canonical message group that carries one submission's cards in order. */
     private static final String MESSAGE_GROUP_ID = "carddemo-job-submission";
 
-    /** A well-formed start-date slot value. */
+    /** A well-formed ten-character start-date slot value. */
     private static final String START_DATE = "2022-01-01";
 
-    /** A well-formed end-date slot value. */
+    /** A well-formed ten-character end-date slot value. */
     private static final String END_DATE = "2022-07-06";
 
-    /** A second well-formed reporting period, distinct from the first in both slots. */
+    /** A second reporting period, differing from the first in both slots. */
     private static final String OTHER_START_DATE = "2019-11-30";
 
     /** The end date of the second reporting period. */
     private static final String OTHER_END_DATE = "2020-02-29";
 
-    /**
-     * The hand-written card count, from the seventeen eighty-byte entries of the legacy card group
-     * at {@code [app/cbl/CORPT00C.cbl:L83-L125]}. The seventeenth is the sentinel and it is
-     * transmitted, so a complete submission is seventeen messages and never sixteen.
-     */
-    private static final int ORACLE_CARD_COUNT = 17;
+    /** A submission identity a caller would own: non-blank and free of whitespace. */
+    private static final String CALLER_SUBMISSION_ID = "REPORT-REQUEST-0000000001";
+
+    // ---------------------------------------------------------------------------------------------
+    // The independent oracle. Hand written from app/cbl/CORPT00C.cbl lines 83 to 125. Padding is
+    // written as an explicit repeat count so the eighty-column arithmetic is visible: content width
+    // plus pad width is eighty on every line, and a self-check test below proves it.
+    // ---------------------------------------------------------------------------------------------
+
+    /** Card 1 of 17: the job card. Content 48, pad 32. */
+    private static final String ORACLE_JOB_CARD =
+            "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0," + " ".repeat(32);
+
+    /** Card 2 of 17: the notify continuation. Content 17, pad 63. */
+    private static final String ORACLE_NOTIFY_CARD = "// NOTIFY=&SYSUID" + " ".repeat(63);
+
+    /** Cards 3, 5 and 7 of 17: the comment card, which appears three times. Content 3, pad 77. */
+    private static final String ORACLE_COMMENT_CARD = "//*" + " ".repeat(77);
+
+    /** Card 4 of 17: the procedure-library card. Content 46, pad 34. */
+    private static final String ORACLE_JOBLIB_CARD =
+            "//JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')" + " ".repeat(34);
+
+    /** Card 6 of 17: the step card that invokes the reporting procedure. Content 27, pad 53. */
+    private static final String ORACLE_EXEC_PROC_CARD = "//STEP10 EXEC PROC=TRANREPT" + " ".repeat(53);
+
+    /** Card 8 of 17: the symbol-names override card. Content 23, pad 57. */
+    private static final String ORACLE_SYMNAMES_DD_CARD = "//STEP05R.SYMNAMES DD *" + " ".repeat(57);
+
+    /** Card 9 of 17: the card-number sort symbol, zoned decimal at offset 263 for 16. Pad 57. */
+    private static final String ORACLE_CARD_NUMBER_SYMBOL_CARD =
+            "TRAN-CARD-NUM,263,16,ZD" + " ".repeat(57);
+
+    /** Card 10 of 17: the processing-date sort symbol, character at offset 305 for 10. Pad 58. */
+    private static final String ORACLE_PROCESSING_DATE_SYMBOL_CARD =
+            "TRAN-PROC-DT,305,10,CH" + " ".repeat(58);
+
+    /** Cards 13 and 16 of 17: the in-stream terminator, which appears twice. Content 2, pad 78. */
+    private static final String ORACLE_IN_STREAM_TERMINATOR_CARD = "/*" + " ".repeat(78);
+
+    /** Card 14 of 17: the date-parameter override card. Content 23, pad 57. */
+    private static final String ORACLE_DATEPARM_DD_CARD = "//STEP10R.DATEPARM DD *" + " ".repeat(57);
 
     /**
-     * The hand-written record width, from the {@code PIC X(80)} write buffer at
-     * {@code [app/cbl/CORPT00C.cbl:L79]} and the {@code RECORDSIZE(80)} attribute of the queue.
+     * Card 17 of 17: the end-of-stream sentinel. Content 5, pad 75.
+     *
+     * <p>This card <strong>is transmitted</strong>. The legacy loop sets its termination flag at
+     * lines 502 to 505 and only then performs the write at line 507, so the sentinel is the
+     * seventeenth message rather than a marker held back in storage.
      */
-    private static final int ORACLE_CARD_WIDTH = 80;
+    private static final String ORACLE_SENTINEL_CARD = "/*EOF" + " ".repeat(75);
 
-    /** The hand-written sentinel card content, before space padding. */
+    /** The sentinel content before padding, used to prove the padded card carries nothing else. */
     private static final String ORACLE_SENTINEL_CONTENT = "/*EOF";
 
+    /** Card 11's leading literal, ahead of the first date slot. Width 18. */
+    private static final String ORACLE_START_SLOT_PREFIX = "PARM-START-DATE,C'";
+
+    /** Card 11's trailing field: the closing apostrophe then padding. Width 52. */
+    private static final String ORACLE_START_SLOT_SUFFIX = "'" + " ".repeat(51);
+
+    /** Card 12's leading literal, ahead of the second date slot. Width 16. */
+    private static final String ORACLE_END_SLOT_PREFIX = "PARM-END-DATE,C'";
+
+    /** Card 12's trailing field: the closing apostrophe then padding. Width 54. */
+    private static final String ORACLE_END_SLOT_SUFFIX = "'" + " ".repeat(53);
+
+    /** Card 15's one-character separator between the two date slots. Width 1. */
+    private static final String ORACLE_PARAMETER_SLOT_SEPARATOR = " ";
+
+    /** Card 15's trailing field, after the second date slot. Width 59. */
+    private static final String ORACLE_PARAMETER_SLOT_SUFFIX = " ".repeat(59);
+
+    /** The hand-written card count: seventeen, the sentinel included. */
+    private static final int ORACLE_CARD_COUNT = 17;
+
+    /** The hand-written fixed record width, from the queue's own record size. */
+    private static final int ORACLE_CARD_WIDTH = 80;
+
+    /** The hand-written date-slot width: ten characters inside an eighty-column frame. */
+    private static final int ORACLE_SLOT_WIDTH = 10;
+
+    /** The one-based ordinal of the card that carries the first sort-symbol date slot. */
+    private static final int ORACLE_START_SLOT_CARD = 11;
+
+    /** The one-based ordinal of the card that carries the second sort-symbol date slot. */
+    private static final int ORACLE_END_SLOT_CARD = 12;
+
+    /** The one-based ordinal of the parameter card that carries both remaining date slots. */
+    private static final int ORACLE_PARAMETER_SLOT_CARD = 15;
+
+    /** Zero-based offset of the date slot on card 11: prefix 18, slot 10, suffix 52. */
+    private static final int ORACLE_START_SLOT_OFFSET = 18;
+
+    /** Zero-based offset of the date slot on card 12: prefix 16, slot 10, suffix 54. */
+    private static final int ORACLE_END_SLOT_OFFSET = 16;
+
+    /** Zero-based offset of the first date slot on card 15: slot 10, separator 1, slot 10, pad 59. */
+    private static final int ORACLE_PARAMETER_START_SLOT_OFFSET = 0;
+
+    /** Zero-based offset of the second date slot on card 15, after the first slot and separator. */
+    private static final int ORACLE_PARAMETER_END_SLOT_OFFSET = 11;
+
+    /** The hand-written declared bound of the legacy card table, carried as a defensive guard. */
+    private static final int ORACLE_REDEFINE_CARD_BOUND = 1000;
+
+    /** The hand-written concatenated image width: seventeen cards of eighty bytes. */
+    private static final int ORACLE_TOTAL_IMAGE_WIDTH = 1360;
+
     /**
-     * The hand-written operator-facing failure literal, with exactly three trailing dots, from the
-     * queue-write paragraph at {@code [app/cbl/CORPT00C.cbl:L517-L535]}.
+     * The hand-written operator-facing failure literal from line 531, with exactly three separate
+     * full stops rather than one ellipsis character, no trailing space and no further punctuation.
      */
     private static final String ORACLE_FAILURE_TEXT = "Unable to Write TDQ (JOBS)...";
+
+    /** The hand-written legacy queue name, from the resource definition at line 499. */
+    private static final String ORACLE_QUEUE_IDENTITY = "JOBS";
 
     /** The hand-written longest deduplication identifier the queue service accepts. */
     private static final int ORACLE_DEDUPLICATION_ID_MAX_LENGTH = 128;
 
     /** The separator the service places between a submission identity and a card ordinal. */
-    private static final String ORACLE_DEDUPLICATION_ID_SEPARATOR = "-";
+    private static final String ORACLE_ORDINAL_SEPARATOR = "-";
 
-    /** Description carried by the failure the recording double raises, for diagnostic assertions. */
-    private static final String CAUSE_TEXT = "the queue service rejected the card";
-
-    /** Sentinel meaning the recording double never fails a publish. */
-    private static final int NEVER_FAILS = 0;
-
-    /** The one-based ordinal of the first card, matching the one-based legacy card index. */
+    /** The one-based first card ordinal, matching the legacy one-based card index. */
     private static final int FIRST_CARD_ORDINAL = 1;
 
-    /** A mid-stream card ordinal used to prove that a failure stops the remaining cards. */
+    /** A mid-stream ordinal used to prove that a failure stops the cards that follow it. */
     private static final int MID_STREAM_FAILING_ORDINAL = 5;
 
-    /** The empty text a successful submission carries in place of a failure message. */
+    /** Diagnostic text carried by the simulated publish failure. */
+    private static final String CAUSE_TEXT = "the queue service refused the card";
+
+    /** The empty string, used where a blank configured value is under test. */
     private static final String EMPTY_TEXT = "";
 
-    /** The recording collaborator, replaced before each test so no state leaks between them. */
-    private RecordingSqsOperations sqsOperations;
+    // ---------------------------------------------------------------------------------------------
+    // Harness. The messaging operations template is mocked; nothing else is.
+    // ---------------------------------------------------------------------------------------------
 
-    /** The service under test, rebuilt before each test from the canonical configuration. */
+    /**
+     * The mocked messaging operations template. Publishing is the only thing the service is allowed
+     * to do with it: the queue is defined output-only, so any receive would show up as an unverified
+     * interaction and fail the {@code verifyNoMoreInteractions} check every publishing test makes.
+     */
+    @Mock
+    private SqsOperations sqsOperations;
+
+    /**
+     * Captures the fluent configurer the service hands to the template. Replaying each captured
+     * configurer onto a recording options object is the only way to see the body, the message group
+     * and the deduplication identifier, all three of which are part of the preserved contract.
+     */
+    @Captor
+    private ArgumentCaptor<Consumer<SqsSendOptions<String>>> sendConfigurerCaptor;
+
+    /** The service under test, constructed fresh for every test. */
     private JobSubmissionService service;
 
+    /** The service's own logger, which the failure diagnostic is captured from. */
+    private Logger serviceLogger;
+
+    /** Records the diagnostics the service emits while a test runs. */
+    private ListAppender<ILoggingEvent> logRecorder;
+
+    /** The logger's level before this test changed it, restored afterwards. */
+    private Level originalLevel;
+
     @BeforeEach
-    void createServiceOverAFreshRecorder() {
-        this.sqsOperations = new RecordingSqsOperations();
+    void constructServiceAndAttachLogRecorder() {
         this.service = new JobSubmissionService(this.sqsOperations, QUEUE_NAME, MESSAGE_GROUP_ID);
+
+        // The failure diagnostic is an asserted behaviour, so capture must not depend on whatever
+        // level the ambient logging configuration happens to set. The level is pinned for the
+        // duration of the test and restored in the matching teardown.
+        this.serviceLogger = (Logger) LoggerFactory.getLogger(JobSubmissionService.class);
+        this.originalLevel = this.serviceLogger.getLevel();
+        this.logRecorder = new ListAppender<>();
+        this.logRecorder.setContext(this.serviceLogger.getLoggerContext());
+        this.logRecorder.start();
+        this.serviceLogger.addAppender(this.logRecorder);
+        this.serviceLogger.setLevel(Level.INFO);
+    }
+
+    @AfterEach
+    void detachLogRecorder() {
+        this.serviceLogger.detachAppender(this.logRecorder);
+        this.logRecorder.stop();
+        this.serviceLogger.setLevel(this.originalLevel);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Oracle assembly. Hand written; the card builder is never consulted.
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Assembles the expected seventeen-card job image for one reporting period, entirely from the
+     * hand-written literals above.
+     *
+     * @param startDate the ten-character start-date slot value to expect in cards 11 and 15
+     * @param endDate   the ten-character end-date slot value to expect in cards 12 and 15
+     * @return the seventeen expected eighty-byte card images, in the legacy card group's own order
+     */
+    private static List<String> oracleJobImage(final String startDate, final String endDate) {
+        return List.of(
+                ORACLE_JOB_CARD,
+                ORACLE_NOTIFY_CARD,
+                ORACLE_COMMENT_CARD,
+                ORACLE_JOBLIB_CARD,
+                ORACLE_COMMENT_CARD,
+                ORACLE_EXEC_PROC_CARD,
+                ORACLE_COMMENT_CARD,
+                ORACLE_SYMNAMES_DD_CARD,
+                ORACLE_CARD_NUMBER_SYMBOL_CARD,
+                ORACLE_PROCESSING_DATE_SYMBOL_CARD,
+                oracleStartSlotCard(startDate),
+                oracleEndSlotCard(endDate),
+                ORACLE_IN_STREAM_TERMINATOR_CARD,
+                ORACLE_DATEPARM_DD_CARD,
+                oracleParameterSlotCard(startDate, endDate),
+                ORACLE_IN_STREAM_TERMINATOR_CARD,
+                ORACLE_SENTINEL_CARD);
+    }
+
+    /** Card 11: eighteen-character prefix, ten-character slot, fifty-two-character suffix. */
+    private static String oracleStartSlotCard(final String startDate) {
+        return ORACLE_START_SLOT_PREFIX + startDate + ORACLE_START_SLOT_SUFFIX;
+    }
+
+    /** Card 12: sixteen-character prefix, ten-character slot, fifty-four-character suffix. */
+    private static String oracleEndSlotCard(final String endDate) {
+        return ORACLE_END_SLOT_PREFIX + endDate + ORACLE_END_SLOT_SUFFIX;
+    }
+
+    /** Card 15: ten-character slot, one-character separator, ten-character slot, fifty-nine pad. */
+    private static String oracleParameterSlotCard(final String startDate, final String endDate) {
+        return startDate + ORACLE_PARAMETER_SLOT_SEPARATOR + endDate + ORACLE_PARAMETER_SLOT_SUFFIX;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Stubbing and capture helpers.
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * A typed matcher for the fluent send configurer. Written out so the generic argument stays
+     * explicit at every stubbing site: the build compiles with warnings promoted to errors, and an
+     * inline wildcard matcher on a generic messaging interface is the classic way to earn an
+     * unchecked warning here.
+     *
+     * @param <T> the payload type the configurer configures
+     * @return a matcher accepting any configurer for that payload type
+     */
+    private static <T> Consumer<SqsSendOptions<T>> anySendConfigurer() {
+        return any();
+    }
+
+    /**
+     * A plausible accepted-publish outcome. The service reads the message identifier from it for its
+     * per-card diagnostic, so the stub must return a real result rather than a null.
+     */
+    private static SendResult<String> acceptedPublish() {
+        return new SendResult<>(UUID.randomUUID(), QUEUE_NAME,
+                new GenericMessage<>("accepted"), Map.of());
+    }
+
+    /** Stubs the queue to accept every card it is offered. */
+    private void queueAcceptsEveryCard() {
+        when(this.sqsOperations.send(JobSubmissionServiceTest.<String>anySendConfigurer()))
+                .thenReturn(acceptedPublish());
+    }
+
+    /**
+     * Stubs the queue to accept cards until the given one-based ordinal and then to refuse that card
+     * and every later one, which is how a queue that has become unreachable behaves.
+     *
+     * @param failingOrdinal the one-based ordinal of the first card to be refused
+     */
+    private void queueRefusesFromCard(final int failingOrdinal) {
+        final AtomicInteger attempts = new AtomicInteger();
+        when(this.sqsOperations.send(JobSubmissionServiceTest.<String>anySendConfigurer()))
+                .thenAnswer(invocation -> {
+                    if (attempts.incrementAndGet() >= failingOrdinal) {
+                        throw new IllegalStateException(CAUSE_TEXT);
+                    }
+                    return acceptedPublish();
+                });
+    }
+
+    /**
+     * Verifies that exactly the expected number of publishes was attempted, that nothing else was
+     * asked of the messaging template, and replays each captured configurer to recover what the
+     * service asked the queue to send.
+     *
+     * @param expectedAttempts the exact number of publish attempts the contract requires
+     * @return what was recorded for each attempt, in attempt order
+     */
+    private List<RecordedPublish> capturedPublishes(final int expectedAttempts) {
+        verify(this.sqsOperations, times(expectedAttempts))
+                .send(this.sendConfigurerCaptor.capture());
+        verifyNoMoreInteractions(this.sqsOperations);
+
+        final List<RecordedPublish> recorded = new ArrayList<>(expectedAttempts);
+        for (final Consumer<SqsSendOptions<String>> configurer
+                : this.sendConfigurerCaptor.getAllValues()) {
+            final RecordedPublish publish = new RecordedPublish();
+            configurer.accept(publish);
+            recorded.add(publish);
+        }
+        return List.copyOf(recorded);
+    }
+
+    /** Asserts that the messaging template was never asked to publish anything. */
+    private void assertNothingWasPublished() {
+        verify(this.sqsOperations, never()).send(JobSubmissionServiceTest.<String>anySendConfigurer());
+        verifyNoMoreInteractions(this.sqsOperations);
+    }
+
+    /** The bodies of the recorded publishes, in publish order. */
+    private static List<String> payloadsOf(final List<RecordedPublish> recorded) {
+        final List<String> payloads = new ArrayList<>(recorded.size());
+        for (final RecordedPublish publish : recorded) {
+            payloads.add(publish.payload);
+        }
+        return List.copyOf(payloads);
+    }
+
+    /** The deduplication identifiers of the recorded publishes, in publish order. */
+    private static List<String> deduplicationIdsOf(final List<RecordedPublish> recorded) {
+        final List<String> identifiers = new ArrayList<>(recorded.size());
+        for (final RecordedPublish publish : recorded) {
+            identifiers.add(publish.messageDeduplicationId);
+        }
+        return List.copyOf(identifiers);
+    }
+
+    /**
+     * The encoded width of a fixed-width value. Measured on single-byte encoded bytes rather than on
+     * the character count, because the record width is a byte contract and a character count would
+     * silently accept a value that does not fit the record.
+     */
+    private static int encodedWidth(final String value) {
+        return value.getBytes(StandardCharsets.US_ASCII).length;
+    }
+
+    /** The single diagnostic the service records at error level, asserted to be the only one. */
+    private ILoggingEvent onlyErrorDiagnostic() {
+        final List<ILoggingEvent> errors = this.logRecorder.list.stream()
+                .filter(event -> event.getLevel() == Level.ERROR)
+                .toList();
+        assertThat(errors).as("one refused card records exactly one operator diagnostic").hasSize(1);
+        return errors.getFirst();
     }
 
     @Nested
-    @DisplayName("configuration arrives from properties and is validated at construction")
+    @DisplayName("the hand-written oracle is itself eighty columns wide, seventeen cards deep")
+    class OracleSelfCheck {
+
+        @Test
+        @DisplayName("every hand-written expected card is exactly eighty encoded bytes, so the oracle cannot be the thing that is wrong")
+        void everyOracleCardIsExactlyEightyEncodedBytes() {
+            final List<String> oracle = oracleJobImage(START_DATE, END_DATE);
+
+            assertThat(oracle).as("hand-written expected cards").hasSize(ORACLE_CARD_COUNT)
+                    .allSatisfy(card -> assertThat(encodedWidth(card))
+                            .as("encoded width of '%s'", card).isEqualTo(ORACLE_CARD_WIDTH));
+        }
+
+        @Test
+        @DisplayName("the three hand-written frame shapes add up to eighty: eighteen plus ten plus fifty-two, sixteen plus ten plus fifty-four, ten plus one plus ten plus fifty-nine")
+        void theThreeFrameShapesAddUpToEighty() {
+            assertThat(encodedWidth(ORACLE_START_SLOT_PREFIX)).as("card 11 prefix width")
+                    .isEqualTo(ORACLE_START_SLOT_OFFSET);
+            assertThat(encodedWidth(ORACLE_START_SLOT_SUFFIX)).as("card 11 suffix width")
+                    .isEqualTo(ORACLE_CARD_WIDTH - ORACLE_START_SLOT_OFFSET - ORACLE_SLOT_WIDTH);
+            assertThat(encodedWidth(ORACLE_END_SLOT_PREFIX)).as("card 12 prefix width")
+                    .isEqualTo(ORACLE_END_SLOT_OFFSET);
+            assertThat(encodedWidth(ORACLE_END_SLOT_SUFFIX)).as("card 12 suffix width")
+                    .isEqualTo(ORACLE_CARD_WIDTH - ORACLE_END_SLOT_OFFSET - ORACLE_SLOT_WIDTH);
+            assertThat(encodedWidth(ORACLE_PARAMETER_SLOT_SEPARATOR)).as("card 15 separator width")
+                    .isEqualTo(ORACLE_PARAMETER_END_SLOT_OFFSET - ORACLE_SLOT_WIDTH);
+            assertThat(encodedWidth(ORACLE_PARAMETER_SLOT_SUFFIX)).as("card 15 suffix width")
+                    .isEqualTo(ORACLE_CARD_WIDTH - ORACLE_PARAMETER_END_SLOT_OFFSET
+                            - ORACLE_SLOT_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the published contract figures still agree with the hand-written legacy figures, so a drift in either direction fails")
+        void thePublishedFiguresAgreeWithTheLegacyFigures() {
+            assertThat(JclCardImageBuilder.CARD_COUNT).as("published card count")
+                    .isEqualTo(ORACLE_CARD_COUNT);
+            assertThat(JclCardImageBuilder.CARD_IMAGE_WIDTH).as("published card width")
+                    .isEqualTo(ORACLE_CARD_WIDTH);
+            assertThat(JclCardImageBuilder.DATE_SLOT_WIDTH).as("published date-slot width")
+                    .isEqualTo(ORACLE_SLOT_WIDTH);
+            assertThat(JclCardImageBuilder.TOTAL_IMAGE_WIDTH).as("published concatenated width")
+                    .isEqualTo(ORACLE_TOTAL_IMAGE_WIDTH);
+            assertThat(JclCardImageBuilder.OVERSIZED_REDEFINE_CARD_BOUND)
+                    .as("published defensive card bound").isEqualTo(ORACLE_REDEFINE_CARD_BOUND);
+            assertThat(JclCardImageBuilder.EOF_SENTINEL_CARD).as("published sentinel content")
+                    .isEqualTo(ORACLE_SENTINEL_CONTENT);
+            assertThat(JobSubmissionException.RECORD_SIZE).as("published record size")
+                    .isEqualTo(ORACLE_CARD_WIDTH);
+        }
+    }
+
+    @Nested
+    @DisplayName("configuration arrives from properties and is validated when the bean is built")
     class ConstructionContract {
 
         @Test
-        @DisplayName("the destination must name a first-in-first-out queue, because ordering is contractual and a standard queue cannot honour it")
-        void theDestinationMustNameAFifoQueue() {
+        @DisplayName("a destination that is not a first-in-first-out queue is refused at construction, because append ordering cannot be honoured without one")
+        void aNonFifoDestinationIsRefused() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new JobSubmissionService(JobSubmissionServiceTest.this
-                            .sqsOperations, "JOBS", MESSAGE_GROUP_ID))
+                    .isThrownBy(() -> new JobSubmissionService(
+                            JobSubmissionServiceTest.this.sqsOperations, "JOBS",
+                            MESSAGE_GROUP_ID))
                     .withMessageContaining("carddemo.aws.sqs.job-submission-queue")
                     .withMessageContaining(".fifo");
         }
 
-        @Test
-        @DisplayName("an absent or blank queue name fails at construction rather than at the first submission")
-        void anAbsentOrBlankQueueNameFailsAtConstruction() {
-            for (final String unusable : new String[] {null, EMPTY_TEXT, "   "}) {
-                assertThatExceptionOfType(IllegalArgumentException.class)
-                        .as("queue name: " + unusable)
-                        .isThrownBy(() -> new JobSubmissionService(JobSubmissionServiceTest.this
-                                .sqsOperations, unusable, MESSAGE_GROUP_ID))
-                        .withMessageContaining("carddemo.aws.sqs.job-submission-queue")
-                        .withMessageContaining("no default");
-            }
+        @ParameterizedTest(name = "queue name [{0}]")
+        @ValueSource(strings = {EMPTY_TEXT, "   "})
+        @DisplayName("a blank destination fails when the bean is built rather than at the first submission")
+        void aBlankDestinationFailsAtConstruction(final String blankQueueName) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new JobSubmissionService(
+                            JobSubmissionServiceTest.this.sqsOperations, blankQueueName,
+                            MESSAGE_GROUP_ID))
+                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue")
+                    .withMessageContaining("no default");
         }
 
         @Test
-        @DisplayName("an absent or blank message group fails at construction, because append ordering depends on it")
-        void anAbsentOrBlankMessageGroupFailsAtConstruction() {
-            for (final String unusable : new String[] {null, EMPTY_TEXT, "   "}) {
-                assertThatExceptionOfType(IllegalArgumentException.class)
-                        .as("message group: " + unusable)
-                        .isThrownBy(() -> new JobSubmissionService(JobSubmissionServiceTest.this
-                                .sqsOperations, QUEUE_NAME, unusable))
-                        .withMessageContaining("carddemo.aws.sqs.message-group-id")
-                        .withMessageContaining("no default");
-            }
+        @DisplayName("an absent destination fails when the bean is built, because the production profile resolves it from the environment with no fallback")
+        void anAbsentDestinationFailsAtConstruction() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new JobSubmissionService(
+                            JobSubmissionServiceTest.this.sqsOperations, null, MESSAGE_GROUP_ID))
+                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue")
+                    .withMessageContaining("no default");
+        }
+
+        @ParameterizedTest(name = "message group [{0}]")
+        @ValueSource(strings = {EMPTY_TEXT, "   "})
+        @DisplayName("a blank message group fails when the bean is built, because append ordering depends on every card sharing one group")
+        void aBlankMessageGroupFailsAtConstruction(final String blankMessageGroup) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new JobSubmissionService(
+                            JobSubmissionServiceTest.this.sqsOperations, QUEUE_NAME,
+                            blankMessageGroup))
+                    .withMessageContaining("carddemo.aws.sqs.message-group-id")
+                    .withMessageContaining("no default");
         }
 
         @Test
-        @DisplayName("a missing messaging collaborator is rejected deterministically")
-        void aMissingMessagingCollaboratorIsRejected() {
+        @DisplayName("an absent message group fails when the bean is built")
+        void anAbsentMessageGroupFailsAtConstruction() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new JobSubmissionService(
+                            JobSubmissionServiceTest.this.sqsOperations, QUEUE_NAME, null))
+                    .withMessageContaining("carddemo.aws.sqs.message-group-id")
+                    .withMessageContaining("no default");
+        }
+
+        @Test
+        @DisplayName("a missing messaging collaborator is refused deterministically and names the parameter")
+        void aMissingMessagingCollaboratorIsRefused() {
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new JobSubmissionService(null, QUEUE_NAME, MESSAGE_GROUP_ID))
                     .withMessageContaining("sqsOperations");
         }
 
         @Test
-        @DisplayName("the configured destination and message group are the ones every message carries")
-        void theConfiguredNamesAreTheOnesEveryMessageCarries() {
-            JobSubmissionServiceTest.this.service
-                    .submitTransactionReportJob(START_DATE, END_DATE);
+        @DisplayName("the configured destination is the one every one of the seventeen messages is addressed to")
+        void theConfiguredDestinationIsTheOneEveryMessageCarries() {
+            queueAcceptsEveryCard();
 
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.published)
-                    .as("published messages").hasSize(ORACLE_CARD_COUNT)
-                    .allSatisfy(message -> {
-                        assertThat(message.queue()).as("destination queue").isEqualTo(QUEUE_NAME);
-                        assertThat(message.messageGroupId()).as("message group")
-                                .isEqualTo(MESSAGE_GROUP_ID);
-                    });
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            assertThat(capturedPublishes(ORACLE_CARD_COUNT)).as("recorded publishes")
+                    .hasSize(ORACLE_CARD_COUNT)
+                    .allSatisfy(publish -> assertThat(publish.queue).as("destination queue")
+                            .isEqualTo(QUEUE_NAME));
+        }
+
+        @Test
+        @DisplayName("a destination named for the legacy queue identity is honoured unchanged, so the legacy name survives wherever a deployment chooses to use it")
+        void aDestinationNamedForTheLegacyQueueIsHonoured() {
+            final String legacyNamedQueue = JobSubmissionException.DEFAULT_QUEUE_NAME + ".fifo";
+            final JobSubmissionService legacyNamedService = new JobSubmissionService(
+                    JobSubmissionServiceTest.this.sqsOperations, legacyNamedQueue, MESSAGE_GROUP_ID);
+            queueAcceptsEveryCard();
+
+            legacyNamedService.submitTransactionReportJob(START_DATE, END_DATE);
+
+            assertThat(capturedPublishes(ORACLE_CARD_COUNT)).as("recorded publishes")
+                    .allSatisfy(publish -> assertThat(publish.queue).as("destination queue")
+                            .isEqualTo(legacyNamedQueue));
         }
     }
 
     @Nested
-    @DisplayName("a complete submission is seventeen ordered eighty-byte messages, sentinel included")
-    class SeventeenMessageContract {
+    @DisplayName("a complete submission is seventeen ordered eighty-byte messages, one card per message")
+    class SeventeenOrderedMessagesContract {
 
         @Test
-        @DisplayName("a complete submission publishes seventeen messages, one per card, in the card group's own order")
-        void aCompleteSubmissionPublishesSeventeenOrderedMessages() {
-            // The card content is owned by the builder by contract and is verified byte for byte by
-            // that class's own independent oracle, so the obligation asserted here is that this
-            // service publishes exactly that sequence, one card per message, in order.
-            final List<String> expectedCards = JclCardImageBuilder.build(START_DATE, END_DATE);
+        @DisplayName("exactly seventeen publishes are made and nothing else is asked of the messaging template")
+        void exactlySeventeenPublishesAreMade() {
+            queueAcceptsEveryCard();
+
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            assertThat(capturedPublishes(ORACLE_CARD_COUNT)).as("recorded publishes")
+                    .hasSize(ORACLE_CARD_COUNT);
+        }
+
+        @Test
+        @DisplayName("the published bodies are the seventeen hand-written card images, in the legacy card group's own order")
+        void thePublishedBodiesAreTheOracleCardsInOrder() {
+            queueAcceptsEveryCard();
+
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            // Ordered equality, not set membership: the queue is defined append-on-write, so the
+            // sequence itself is the contract.
+            assertThat(payloadsOf(capturedPublishes(ORACLE_CARD_COUNT)))
+                    .as("published bodies in publish order")
+                    .containsExactlyElementsOf(oracleJobImage(START_DATE, END_DATE));
+        }
+
+        @Test
+        @DisplayName("every published body is exactly eighty encoded bytes and keeps its trailing spaces, because the record is fixed width and is never trimmed")
+        void everyPublishedBodyIsExactlyEightyEncodedBytes() {
+            queueAcceptsEveryCard();
+
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            assertThat(capturedPublishes(ORACLE_CARD_COUNT)).as("recorded publishes")
+                    .hasSize(ORACLE_CARD_COUNT)
+                    .allSatisfy(publish -> {
+                        assertThat(encodedWidth(publish.payload)).as("encoded body width")
+                                .isEqualTo(ORACLE_CARD_WIDTH);
+                        assertThat(publish.payload).as("body retains its fixed-width padding")
+                                .isNotEqualTo(publish.payload.stripTrailing());
+                    });
+        }
+
+        @Test
+        @DisplayName("no published body is absent or blank, so no message can reach the batch tier carrying nothing")
+        void noPublishedBodyIsAbsentOrBlank() {
+            queueAcceptsEveryCard();
+
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            assertThat(payloadsOf(capturedPublishes(ORACLE_CARD_COUNT))).as("published bodies")
+                    .hasSize(ORACLE_CARD_COUNT)
+                    .doesNotContainNull()
+                    .allSatisfy(body -> assertThat(body).as("body content").isNotBlank());
+        }
+
+        @Test
+        @DisplayName("the outcome reports seventeen requested, seventeen published, no failure, and is complete rather than partial")
+        void theOutcomeReportsACompleteSubmission() {
+            queueAcceptsEveryCard();
 
             final JobSubmissionService.SubmissionResult result = JobSubmissionServiceTest.this.service
                     .submitTransactionReportJob(START_DATE, END_DATE);
@@ -249,209 +731,381 @@ class JobSubmissionServiceTest {
             assertThat(result.cardsRequested()).as("cards requested").isEqualTo(ORACLE_CARD_COUNT);
             assertThat(result.cardsPublished()).as("cards published").isEqualTo(ORACLE_CARD_COUNT);
             assertThat(result.failed()).as("failure indicator").isFalse();
+            assertThat(result.failureMessage()).as("failure text").isEmpty();
             assertThat(result.complete()).as("complete indicator").isTrue();
             assertThat(result.partial()).as("partial indicator").isFalse();
-            assertThat(payloadsOf(JobSubmissionServiceTest.this.sqsOperations.published))
-                    .as("published payloads in order").containsExactlyElementsOf(expectedCards);
         }
 
         @Test
-        @DisplayName("the sentinel card is transmitted as the seventeenth message, because the legacy sets its end-of-stream flag before the write")
-        void theSentinelCardIsTransmittedLast() {
-            JobSubmissionServiceTest.this.service
-                    .submitTransactionReportJob(START_DATE, END_DATE);
+        @DisplayName("the caller-supplied-identity entry point publishes the same seventeen bodies in the same order, so only the identity differs")
+        void theIdentityBearingEntryPointPublishesTheSameSeventeenBodies() {
+            queueAcceptsEveryCard();
 
-            final List<String> payloads =
-                    payloadsOf(JobSubmissionServiceTest.this.sqsOperations.published);
+            final JobSubmissionService.SubmissionResult result = JobSubmissionServiceTest.this.service
+                    .submitTransactionReportJob(CALLER_SUBMISSION_ID, START_DATE, END_DATE);
 
-            assertThat(payloads).as("published payloads").hasSize(ORACLE_CARD_COUNT);
-            assertThat(payloads.get(ORACLE_CARD_COUNT - 1)).as("the seventeenth message body")
-                    .isEqualTo(oracleCard(ORACLE_SENTINEL_CONTENT));
-            assertThat(payloads.subList(0, ORACLE_CARD_COUNT - 1))
-                    .as("the sixteen messages before the sentinel")
-                    .doesNotContain(oracleCard(ORACLE_SENTINEL_CONTENT));
+            assertThat(result.complete()).as("complete indicator").isTrue();
+            assertThat(payloadsOf(capturedPublishes(ORACLE_CARD_COUNT)))
+                    .as("published bodies in publish order")
+                    .containsExactlyElementsOf(oracleJobImage(START_DATE, END_DATE));
         }
 
         @Test
-        @DisplayName("no eighteenth message is ever sent: the sentinel stops the stream after it has been published")
-        void noEighteenthMessageIsEverSent() {
-            JobSubmissionServiceTest.this.service
-                    .submitTransactionReportJob(START_DATE, END_DATE);
+        @DisplayName("a canonical image handed in directly is published card for card, so the stream publisher and the report path cannot drift apart")
+        void aCanonicalImageHandedInDirectlyIsPublishedCardForCard() {
+            queueAcceptsEveryCard();
 
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.sendCallCount)
-                    .as("publish attempts for one complete submission").isEqualTo(ORACLE_CARD_COUNT);
+            final JobSubmissionService.SubmissionResult result = JobSubmissionServiceTest.this.service
+                    .submitCanonicalJobImage(CALLER_SUBMISSION_ID,
+                            oracleJobImage(START_DATE, END_DATE));
+
+            assertThat(result.complete()).as("complete indicator").isTrue();
+            assertThat(payloadsOf(capturedPublishes(ORACLE_CARD_COUNT)))
+                    .as("published bodies in publish order")
+                    .containsExactlyElementsOf(oracleJobImage(START_DATE, END_DATE));
         }
 
         @Test
-        @DisplayName("every message body is exactly eighty encoded bytes and keeps its trailing spaces, because the record is fixed width")
-        void everyMessageBodyIsExactlyEightyEncodedBytes() {
-            JobSubmissionServiceTest.this.service
-                    .submitTransactionReportJob(START_DATE, END_DATE);
+        @DisplayName("an arbitrary well-formed stream is published card for card by the general stream publisher, one message per card")
+        void anArbitraryWellFormedStreamIsPublishedCardForCard() {
+            queueAcceptsEveryCard();
+            final List<String> stream = List.of(ORACLE_JOB_CARD, ORACLE_NOTIFY_CARD,
+                    ORACLE_SENTINEL_CARD);
 
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.published)
-                    .as("published messages").hasSize(ORACLE_CARD_COUNT)
-                    .allSatisfy(message -> {
-                        assertThat(usAsciiLength(message.payload())).as("payload encoded width")
-                                .isEqualTo(ORACLE_CARD_WIDTH);
-                        assertThat(message.payload()).as("payload trailing spaces")
-                                .isNotEqualTo(message.payload().stripTrailing());
+            final JobSubmissionService.SubmissionResult result = JobSubmissionServiceTest.this.service
+                    .submitJobStream(CALLER_SUBMISSION_ID, stream);
+
+            assertThat(result.cardsRequested()).as("cards requested").isEqualTo(stream.size());
+            assertThat(result.cardsPublished()).as("cards published").isEqualTo(stream.size());
+            assertThat(payloadsOf(capturedPublishes(stream.size())))
+                    .as("published bodies in publish order").containsExactlyElementsOf(stream);
+        }
+
+        @Test
+        @DisplayName("neither a delivery delay nor a message header is ever set, because neither has a legacy antecedent and a delay would add a timing characteristic the migration must not inherit")
+        void neitherADelayNorAHeaderIsEverSet() {
+            queueAcceptsEveryCard();
+
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            assertThat(capturedPublishes(ORACLE_CARD_COUNT)).as("recorded publishes")
+                    .allSatisfy(publish -> {
+                        assertThat(publish.delaySettings).as("delivery delays set").isZero();
+                        assertThat(publish.headerSettings).as("single headers set").isZero();
+                        assertThat(publish.headerMapSettings).as("header maps set").isZero();
                     });
-        }
-
-        @Test
-        @DisplayName("all cards of one submission share one message group, which is what preserves append order end to end")
-        void allCardsShareOneMessageGroup() {
-            JobSubmissionServiceTest.this.service
-                    .submitTransactionReportJob(START_DATE, END_DATE);
-
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.published)
-                    .as("published messages").hasSize(ORACLE_CARD_COUNT)
-                    .extracting(PublishedMessage::messageGroupId)
-                    .containsOnly(MESSAGE_GROUP_ID);
-        }
-
-        @Test
-        @DisplayName("no delay and no message header is ever set, because neither has a legacy antecedent and a delay would introduce a timing characteristic")
-        void noDelayAndNoHeaderIsEverSet() {
-            JobSubmissionServiceTest.this.service
-                    .submitTransactionReportJob(START_DATE, END_DATE);
-
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.delaySecondsCallCount)
-                    .as("delay settings made by the service").isZero();
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.headerCallCount)
-                    .as("message headers set by the service").isZero();
-        }
-
-        @Test
-        @DisplayName("the published card count constant and record width match the hand-written legacy figures")
-        void thePublishedContractFiguresMatchTheLegacyFigures() {
-            assertThat(JclCardImageBuilder.CARD_COUNT).as("published card count")
-                    .isEqualTo(ORACLE_CARD_COUNT);
-            assertThat(JobSubmissionException.RECORD_SIZE).as("published record size")
-                    .isEqualTo(ORACLE_CARD_WIDTH);
-            assertThat(JobSubmissionException.DEFAULT_MESSAGE).as("published failure literal")
-                    .isEqualTo(ORACLE_FAILURE_TEXT);
         }
     }
 
     @Nested
-    @DisplayName("deduplication identity: per submission attempt, never per reporting period")
-    class DeduplicationIdentityContract {
+    @DisplayName("the four ten-character date slots sit at their verified offsets inside an eighty-column frame")
+    class DateSubstitutionSlotContract {
 
         @Test
-        @DisplayName("two submissions of the same reporting period get entirely different identifiers, because the queue appends on write and the legacy re-wrote every card on every pass")
-        void twoSubmissionsOfTheSamePeriodGetDifferentIdentifiers() {
-            // The decisive assertion. The queue is defined DISPOSITION(MOD), which appends
-            // unconditionally, and the legacy submission driver re-writes all seventeen cards on
-            // every pass with no comparison against anything already written. So a second request
-            // for the same reporting period is a second submission and both must reach the queue.
-            // An identity derived from the two dates would instead make every identifier of the
-            // second request identical to the first, and the queue service would discard all
-            // seventeen of its cards inside its own deduplication interval while this service
-            // reported a complete submission - suppression the mainframe never performed.
-            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
-            final List<String> firstAttempt =
-                    deduplicationIdsOf(JobSubmissionServiceTest.this.sqsOperations.published);
+        @DisplayName("the first sort-symbol slot carries the start date at offset eighteen, with an eighteen-character prefix and a fifty-two-character suffix that are byte-identical to the frame")
+        void theFirstSortSymbolSlotCarriesTheStartDate() {
+            queueAcceptsEveryCard();
 
             JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
-            final List<String> bothAttempts =
-                    deduplicationIdsOf(JobSubmissionServiceTest.this.sqsOperations.published);
-            final List<String> secondAttempt =
-                    bothAttempts.subList(ORACLE_CARD_COUNT, bothAttempts.size());
 
-            assertThat(firstAttempt).as("identifiers of the first attempt").hasSize(ORACLE_CARD_COUNT);
-            assertThat(secondAttempt).as("identifiers of the second attempt")
-                    .hasSize(ORACLE_CARD_COUNT);
-            assertThat(secondAttempt).as("the second attempt shares no identifier with the first")
-                    .doesNotContainAnyElementsOf(firstAttempt);
-            assertThat(bothAttempts).as("all thirty-four identifiers of two attempts")
-                    .doesNotHaveDuplicates();
+            final String card = payloadsOf(capturedPublishes(ORACLE_CARD_COUNT))
+                    .get(ORACLE_START_SLOT_CARD - FIRST_CARD_ORDINAL);
+            assertThat(encodedWidth(card)).as("card width").isEqualTo(ORACLE_CARD_WIDTH);
+            assertThat(card.substring(0, ORACLE_START_SLOT_OFFSET)).as("frame prefix")
+                    .isEqualTo(ORACLE_START_SLOT_PREFIX);
+            assertThat(card.substring(ORACLE_START_SLOT_OFFSET,
+                    ORACLE_START_SLOT_OFFSET + ORACLE_SLOT_WIDTH)).as("date slot")
+                    .isEqualTo(START_DATE);
+            assertThat(card.substring(ORACLE_START_SLOT_OFFSET + ORACLE_SLOT_WIDTH))
+                    .as("frame suffix").isEqualTo(ORACLE_START_SLOT_SUFFIX);
         }
 
         @Test
-        @DisplayName("the identity is not derived from the reporting period: no identifier carries either date")
-        void theIdentityIsNotDerivedFromTheReportingPeriod() {
+        @DisplayName("the second sort-symbol slot carries the end date at offset sixteen, with a sixteen-character prefix and a fifty-four-character suffix that are byte-identical to the frame")
+        void theSecondSortSymbolSlotCarriesTheEndDate() {
+            queueAcceptsEveryCard();
+
             JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
 
-            assertThat(deduplicationIdsOf(JobSubmissionServiceTest.this.sqsOperations.published))
-                    .as("identifiers of one submission")
-                    .hasSize(ORACLE_CARD_COUNT);
+            final String card = payloadsOf(capturedPublishes(ORACLE_CARD_COUNT))
+                    .get(ORACLE_END_SLOT_CARD - FIRST_CARD_ORDINAL);
+            assertThat(encodedWidth(card)).as("card width").isEqualTo(ORACLE_CARD_WIDTH);
+            assertThat(card.substring(0, ORACLE_END_SLOT_OFFSET)).as("frame prefix")
+                    .isEqualTo(ORACLE_END_SLOT_PREFIX);
+            assertThat(card.substring(ORACLE_END_SLOT_OFFSET,
+                    ORACLE_END_SLOT_OFFSET + ORACLE_SLOT_WIDTH)).as("date slot")
+                    .isEqualTo(END_DATE);
+            assertThat(card.substring(ORACLE_END_SLOT_OFFSET + ORACLE_SLOT_WIDTH))
+                    .as("frame suffix").isEqualTo(ORACLE_END_SLOT_SUFFIX);
         }
 
         @Test
-        @DisplayName("a minted identity is not a function of the reporting period: the period appears in it as a readable prefix, but the prefix alone never determines it")
-        void theMintedIdentityIsNotAFunctionOfTheReportingPeriod() {
-            // The requirement is that two submissions of the same period get different identities, so
-            // that a legitimate re-submission is appended rather than silently deduplicated away - the
-            // queue this bridge replaces had append disposition, so a repeat was an expected event. A
-            // readable period prefix is retained deliberately because it makes a queue-side identifier
-            // traceable to the request that produced it; the uniqueness comes from the per-submission
-            // nonce that follows it. Both properties are asserted here: the prefix is present, and it
-            // is not the whole identity.
-            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+        @DisplayName("the parameter card carries both remaining slots as ten, one, ten and fifty-nine: start date, single separator, end date, padding")
+        void theParameterCardCarriesBothRemainingSlots() {
+            queueAcceptsEveryCard();
+
             JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
 
-            final List<String> identifiers =
-                    deduplicationIdsOf(JobSubmissionServiceTest.this.sqsOperations.published);
-            final List<String> first = identifiers.subList(0, ORACLE_CARD_COUNT);
-            final List<String> second =
-                    identifiers.subList(ORACLE_CARD_COUNT, identifiers.size());
-
-            assertThat(identifiers).as("identifiers across two attempts at one period")
-                    .hasSize(ORACLE_CARD_COUNT * 2)
-                    .doesNotHaveDuplicates();
-            assertThat(first.get(0)).as("the identity carries the period as a readable prefix")
-                    .startsWith(START_DATE)
-                    .contains(END_DATE);
-            assertThat(second).as("no identifier of a second attempt repeats one of the first")
-                    .doesNotContainAnyElementsOf(first);
-            assertThat(second.get(0)).as("the second attempt shares the prefix and nothing more")
-                    .startsWith(START_DATE)
-                    .isNotEqualTo(first.get(0));
+            final String card = payloadsOf(capturedPublishes(ORACLE_CARD_COUNT))
+                    .get(ORACLE_PARAMETER_SLOT_CARD - FIRST_CARD_ORDINAL);
+            assertThat(encodedWidth(card)).as("card width").isEqualTo(ORACLE_CARD_WIDTH);
+            assertThat(card.substring(ORACLE_PARAMETER_START_SLOT_OFFSET,
+                    ORACLE_PARAMETER_START_SLOT_OFFSET + ORACLE_SLOT_WIDTH))
+                    .as("third date slot").isEqualTo(START_DATE);
+            assertThat(card.substring(ORACLE_PARAMETER_START_SLOT_OFFSET + ORACLE_SLOT_WIDTH,
+                    ORACLE_PARAMETER_END_SLOT_OFFSET)).as("slot separator")
+                    .isEqualTo(ORACLE_PARAMETER_SLOT_SEPARATOR);
+            assertThat(card.substring(ORACLE_PARAMETER_END_SLOT_OFFSET,
+                    ORACLE_PARAMETER_END_SLOT_OFFSET + ORACLE_SLOT_WIDTH))
+                    .as("fourth date slot").isEqualTo(END_DATE);
+            assertThat(card.substring(ORACLE_PARAMETER_END_SLOT_OFFSET + ORACLE_SLOT_WIDTH))
+                    .as("frame suffix").isEqualTo(ORACLE_PARAMETER_SLOT_SUFFIX);
         }
 
         @Test
-        @DisplayName("two submissions of different reporting periods also get different identifiers, so the change is not a special case of one period")
-        void twoSubmissionsOfDifferentPeriodsAlsoGetDifferentIdentifiers() {
-            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+        @DisplayName("changing the reporting period changes exactly the three slot-bearing cards and leaves the other fourteen byte-identical")
+        void changingThePeriodChangesOnlyTheSlotBearingCards() {
+            queueAcceptsEveryCard();
+
             JobSubmissionServiceTest.this.service
                     .submitTransactionReportJob(OTHER_START_DATE, OTHER_END_DATE);
 
-            assertThat(deduplicationIdsOf(JobSubmissionServiceTest.this.sqsOperations.published))
-                    .as("identifiers across two differing periods")
-                    .hasSize(ORACLE_CARD_COUNT * 2)
-                    .doesNotHaveDuplicates();
-        }
+            final List<String> published = payloadsOf(capturedPublishes(ORACLE_CARD_COUNT));
+            final List<String> firstPeriod = oracleJobImage(START_DATE, END_DATE);
+            final List<String> secondPeriod = oracleJobImage(OTHER_START_DATE, OTHER_END_DATE);
 
-        @Test
-        @DisplayName("within one submission the seventeen identifiers share one identity and differ only by their one-based card ordinal")
-        void withinOneSubmissionTheIdentifiersDifferOnlyByOrdinal() {
-            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
-
-            final List<String> identifiers =
-                    deduplicationIdsOf(JobSubmissionServiceTest.this.sqsOperations.published);
-            final String first = identifiers.get(0);
-            final String identity = first.substring(0,
-                    first.lastIndexOf(ORACLE_DEDUPLICATION_ID_SEPARATOR));
-
-            assertThat(identifiers).as("identifiers of one submission").doesNotHaveDuplicates();
+            assertThat(published).as("published bodies for the second period")
+                    .containsExactlyElementsOf(secondPeriod);
             for (int ordinal = FIRST_CARD_ORDINAL; ordinal <= ORACLE_CARD_COUNT; ordinal++) {
-                assertThat(identifiers.get(ordinal - FIRST_CARD_ORDINAL))
-                        .as("identifier of card " + ordinal)
-                        .isEqualTo(identity + ORACLE_DEDUPLICATION_ID_SEPARATOR + ordinal);
+                final String expected = secondPeriod.get(ordinal - FIRST_CARD_ORDINAL);
+                final String otherPeriod = firstPeriod.get(ordinal - FIRST_CARD_ORDINAL);
+                if (ordinal == ORACLE_START_SLOT_CARD || ordinal == ORACLE_END_SLOT_CARD
+                        || ordinal == ORACLE_PARAMETER_SLOT_CARD) {
+                    assertThat(expected).as("slot-bearing card " + ordinal + " tracks the period")
+                            .isNotEqualTo(otherPeriod);
+                } else {
+                    assertThat(expected).as("fixed card " + ordinal + " is period-independent")
+                            .isEqualTo(otherPeriod);
+                }
             }
         }
 
+        @ParameterizedTest(name = "slot value [{0}]")
+        @ValueSource(strings = {"2022-1-1", "22-01-01", "2022-01-01 ", " 2022-01-01", "2022/01/01",
+            "2022-01-011", "2022-01-0"})
+        @DisplayName("a slot value that is not exactly ten characters in the fixed year-month-day shape is refused before any card is published, so the eighty-column frame is never disturbed")
+        void aMisshapedSlotValueIsRefusedBeforeAnythingIsPublished(final String misshapedDate) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .submitTransactionReportJob(misshapedDate, END_DATE));
+
+            assertNothingWasPublished();
+        }
+
         @Test
-        @DisplayName("a minted identity carries no whitespace, because a deduplication identifier may not, and stays well inside the length the queue service accepts")
-        void aMintedIdentityIsTransmissible() {
+        @DisplayName("a slot value naming a day that does not exist is refused before any card is published, so a calendar-invalid period cannot reach the batch tier")
+        void aNonCalendarSlotValueIsRefusedBeforeAnythingIsPublished() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .submitTransactionReportJob(START_DATE, "2021-02-29"));
+
+            assertNothingWasPublished();
+        }
+
+        @Test
+        @DisplayName("a blank slot value is refused before any card is published, so a card can never carry an empty date inside its frame")
+        void aBlankSlotValueIsRefusedBeforeAnythingIsPublished() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .submitTransactionReportJob(" ".repeat(ORACLE_SLOT_WIDTH), END_DATE));
+
+            assertNothingWasPublished();
+        }
+
+        @Test
+        @DisplayName("a slot value carrying the frame's own apostrophe is refused, so no value can break out of a sort character constant")
+        void aSlotValueCarryingAnApostropheIsRefused() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .submitTransactionReportJob("2022-01'01", END_DATE));
+
+            assertNothingWasPublished();
+        }
+
+        @Test
+        @DisplayName("the caller-supplied-identity entry point refuses the same slot values, so the two report paths cannot diverge on validation")
+        void theIdentityBearingEntryPointRefusesTheSameSlotValues() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .submitTransactionReportJob(CALLER_SUBMISSION_ID, "2022-1-1", END_DATE));
+
+            assertNothingWasPublished();
+        }
+    }
+
+    @Nested
+    @DisplayName("the end-of-stream sentinel is transmitted, because the legacy raises its termination flag before the unconditional write")
+    class SentinelCardContract {
+
+        @Test
+        @DisplayName("the seventeenth and final message body is the sentinel card, at eighty bytes and space padded, because the flag is set before the write rather than after")
+        void theFinalMessageBodyIsTheSentinelCard() {
+            queueAcceptsEveryCard();
+
             JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
 
-            assertThat(deduplicationIdsOf(JobSubmissionServiceTest.this.sqsOperations.published))
-                    .as("identifiers of one submission")
+            final List<String> published = payloadsOf(capturedPublishes(ORACLE_CARD_COUNT));
+            final String finalBody = published.get(ORACLE_CARD_COUNT - FIRST_CARD_ORDINAL);
+            assertThat(finalBody).as("the seventeenth message body").isEqualTo(ORACLE_SENTINEL_CARD);
+            assertThat(encodedWidth(finalBody)).as("sentinel encoded width")
+                    .isEqualTo(ORACLE_CARD_WIDTH);
+            assertThat(finalBody).as("sentinel content before its padding")
+                    .startsWith(ORACLE_SENTINEL_CONTENT);
+            assertThat(finalBody.substring(ORACLE_SENTINEL_CONTENT.length()))
+                    .as("sentinel padding")
+                    .isEqualTo(" ".repeat(ORACLE_CARD_WIDTH - ORACLE_SENTINEL_CONTENT.length()));
+        }
+
+        @Test
+        @DisplayName("the sentinel appears exactly once and only as the final message, so no earlier card can truncate the submission")
+        void theSentinelAppearsOnlyOnceAndOnlyLast() {
+            queueAcceptsEveryCard();
+
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            final List<String> published = payloadsOf(capturedPublishes(ORACLE_CARD_COUNT));
+            assertThat(published).as("published bodies")
+                    .filteredOn(ORACLE_SENTINEL_CARD::equals).hasSize(1);
+            assertThat(published.subList(0, ORACLE_CARD_COUNT - FIRST_CARD_ORDINAL))
+                    .as("the sixteen bodies before the sentinel")
+                    .doesNotContain(ORACLE_SENTINEL_CARD);
+        }
+
+        @Test
+        @DisplayName("no eighteenth publish is ever attempted: the sentinel ends the stream only after it has itself been published")
+        void noEighteenthPublishIsEverAttempted() {
+            queueAcceptsEveryCard();
+
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            // times(17) followed by verifyNoMoreInteractions is what makes an eighteenth publish a
+            // failure rather than something the assertions would tolerate.
+            assertThat(capturedPublishes(ORACLE_CARD_COUNT)).as("publish attempts")
+                    .hasSize(ORACLE_CARD_COUNT);
+        }
+
+        @Test
+        @DisplayName("a sentinel reached early ends the stream after it is published, so the cards behind it are never sent")
+        void aSentinelReachedEarlyEndsTheStreamAfterItIsPublished() {
+            queueAcceptsEveryCard();
+            final List<String> stream = List.of(ORACLE_JOB_CARD, ORACLE_SENTINEL_CARD,
+                    ORACLE_NOTIFY_CARD);
+
+            final JobSubmissionService.SubmissionResult result = JobSubmissionServiceTest.this.service
+                    .submitJobStream(CALLER_SUBMISSION_ID, stream);
+
+            assertThat(result.cardsRequested()).as("cards requested").isEqualTo(stream.size());
+            assertThat(result.cardsPublished()).as("cards published").isEqualTo(2);
+            assertThat(result.failed()).as("failure indicator").isFalse();
+            assertThat(result.complete()).as("complete indicator").isFalse();
+            assertThat(result.partial()).as("partial indicator").isFalse();
+            assertThat(payloadsOf(capturedPublishes(2))).as("published bodies")
+                    .containsExactly(ORACLE_JOB_CARD, ORACLE_SENTINEL_CARD);
+        }
+
+        @Test
+        @DisplayName("an all-spaces card ends the stream after being published too, because the legacy combined relation tests spaces as well as the sentinel literal")
+        void anAllSpacesCardAlsoEndsTheStreamAfterBeingPublished() {
+            queueAcceptsEveryCard();
+            final String blankCard = " ".repeat(ORACLE_CARD_WIDTH);
+            final List<String> stream = List.of(ORACLE_JOB_CARD, blankCard, ORACLE_NOTIFY_CARD);
+
+            final JobSubmissionService.SubmissionResult result = JobSubmissionServiceTest.this.service
+                    .submitJobStream(CALLER_SUBMISSION_ID, stream);
+
+            assertThat(result.cardsPublished()).as("cards published").isEqualTo(2);
+            assertThat(payloadsOf(capturedPublishes(2))).as("published bodies")
+                    .containsExactly(ORACLE_JOB_CARD, blankCard);
+        }
+
+        @Test
+        @DisplayName("a canonical image whose sentinel is not the final card is refused before anything is published, so an accepted submission can never be truncated")
+        void aCanonicalImageWithAnEarlySentinelIsRefused() {
+            final List<String> misordered = new ArrayList<>(oracleJobImage(START_DATE, END_DATE));
+            misordered.set(0, ORACLE_SENTINEL_CARD);
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .submitCanonicalJobImage(CALLER_SUBMISSION_ID, misordered))
+                    .withMessageContaining("ends the stream");
+
+            assertNothingWasPublished();
+        }
+
+        @Test
+        @DisplayName("a canonical image with no sentinel at all is refused before anything is published")
+        void aCanonicalImageWithNoSentinelIsRefused() {
+            final List<String> sentinelless = new ArrayList<>(oracleJobImage(START_DATE, END_DATE));
+            sentinelless.set(ORACLE_CARD_COUNT - FIRST_CARD_ORDINAL, ORACLE_COMMENT_CARD);
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .submitCanonicalJobImage(CALLER_SUBMISSION_ID, sentinelless))
+                    .withMessageContaining("end-of-stream card");
+
+            assertNothingWasPublished();
+        }
+
+        @ParameterizedTest(name = "cards offered [{0}]")
+        @ValueSource(ints = {16, 18})
+        @DisplayName("a canonical image that is not exactly seventeen cards is refused before anything is published, in either direction")
+        void aCanonicalImageOfTheWrongLengthIsRefused(final int cardCount) {
+            final List<String> wrongLength = new ArrayList<>(oracleJobImage(START_DATE, END_DATE));
+            if (cardCount < ORACLE_CARD_COUNT) {
+                wrongLength.remove(0);
+            } else {
+                wrongLength.add(0, ORACLE_COMMENT_CARD);
+            }
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .submitCanonicalJobImage(CALLER_SUBMISSION_ID, wrongLength))
+                    .withMessageContaining("canonical job image");
+
+            assertNothingWasPublished();
+        }
+    }
+
+    @Nested
+    @DisplayName("first-in-first-out arguments: one message group for the whole submission, one deduplication identifier per card")
+    class FifoOrderingContract {
+
+        @Test
+        @DisplayName("all seventeen messages carry the same message group identifier, which is what preserves the append order the queue definition specifies")
+        void allSeventeenMessagesShareOneMessageGroup() {
+            queueAcceptsEveryCard();
+
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            assertThat(capturedPublishes(ORACLE_CARD_COUNT)).as("recorded publishes")
                     .hasSize(ORACLE_CARD_COUNT)
+                    .extracting(publish -> publish.messageGroupId)
+                    .containsOnly(MESSAGE_GROUP_ID);
+        }
+
+        @Test
+        @DisplayName("every message carries a deduplication identifier, because a first-in-first-out queue without content-based deduplication requires one")
+        void everyMessageCarriesADeduplicationIdentifier() {
+            queueAcceptsEveryCard();
+
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            assertThat(deduplicationIdsOf(capturedPublishes(ORACLE_CARD_COUNT)))
+                    .as("deduplication identifiers").hasSize(ORACLE_CARD_COUNT)
+                    .doesNotContainNull()
+                    .doesNotHaveDuplicates()
                     .allSatisfy(identifier -> {
-                        assertThat(identifier).as("identifier free of whitespace")
+                        assertThat(identifier).as("identifier content").isNotBlank()
                                 .doesNotContainAnyWhitespaces();
                         assertThat(identifier.length()).as("identifier length")
                                 .isLessThanOrEqualTo(ORACLE_DEDUPLICATION_ID_MAX_LENGTH);
@@ -459,831 +1113,764 @@ class JobSubmissionServiceTest {
         }
 
         @Test
-        @DisplayName("a caller-supplied identity is used verbatim, so the caller decides what two submissions share")
+        @DisplayName("within one submission the seventeen identifiers share one identity and differ only by the one-based card ordinal, so no two cards of a submission collapse")
+        void theIdentifiersDifferOnlyByTheOneBasedOrdinal() {
+            queueAcceptsEveryCard();
+
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            final List<String> identifiers =
+                    deduplicationIdsOf(capturedPublishes(ORACLE_CARD_COUNT));
+            final String first = identifiers.getFirst();
+            final String identity = first.substring(0,
+                    first.lastIndexOf(ORACLE_ORDINAL_SEPARATOR));
+            for (int ordinal = FIRST_CARD_ORDINAL; ordinal <= ORACLE_CARD_COUNT; ordinal++) {
+                assertThat(identifiers.get(ordinal - FIRST_CARD_ORDINAL))
+                        .as("identifier of card " + ordinal)
+                        .isEqualTo(identity + ORACLE_ORDINAL_SEPARATOR + ordinal);
+            }
+        }
+
+        @Test
+        @DisplayName("a caller-supplied identity is used verbatim, so the caller decides which two submissions the queue would treat as one")
         void aCallerSuppliedIdentityIsUsedVerbatim() {
-            final String callerIdentity = "REPORT_REQUEST_0000000001";
+            queueAcceptsEveryCard();
 
             JobSubmissionServiceTest.this.service
-                    .submitTransactionReportJob(callerIdentity, START_DATE, END_DATE);
+                    .submitTransactionReportJob(CALLER_SUBMISSION_ID, START_DATE, END_DATE);
 
             final List<String> expected = new ArrayList<>(ORACLE_CARD_COUNT);
             for (int ordinal = FIRST_CARD_ORDINAL; ordinal <= ORACLE_CARD_COUNT; ordinal++) {
-                expected.add(callerIdentity + ORACLE_DEDUPLICATION_ID_SEPARATOR + ordinal);
+                expected.add(CALLER_SUBMISSION_ID + ORACLE_ORDINAL_SEPARATOR + ordinal);
             }
-
-            assertThat(deduplicationIdsOf(JobSubmissionServiceTest.this.sqsOperations.published))
-                    .as("identifiers under a caller-supplied identity")
-                    .containsExactlyElementsOf(expected);
+            assertThat(deduplicationIdsOf(capturedPublishes(ORACLE_CARD_COUNT)))
+                    .as("deduplication identifiers").containsExactlyElementsOf(expected);
         }
 
         @Test
-        @DisplayName("a caller that supplies the same identity twice is deliberately asking for the repeat to be suppressed, and the identifiers then do repeat")
-        void aCallerMayDeliberatelyRepeatAnIdentity() {
-            // Repeat suppression is not a property of this bridge, because it was not a property of
-            // the queue this bridge replaces. It remains available to whatever owns the request, and
-            // this test records that the choice is the caller's and is made explicitly.
-            final String stableIdentity = "OPERATOR_SUPPLIED_KEY";
+        @DisplayName("two submissions of the same reporting period get entirely different identifiers, because the queue appends on write and the legacy re-wrote every card on every pass")
+        void twoSubmissionsOfTheSamePeriodGetDifferentIdentifiers() {
+            queueAcceptsEveryCard();
 
-            JobSubmissionServiceTest.this.service
-                    .submitTransactionReportJob(stableIdentity, START_DATE, END_DATE);
-            JobSubmissionServiceTest.this.service
-                    .submitTransactionReportJob(stableIdentity, START_DATE, END_DATE);
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
 
             final List<String> identifiers =
-                    deduplicationIdsOf(JobSubmissionServiceTest.this.sqsOperations.published);
+                    deduplicationIdsOf(capturedPublishes(ORACLE_CARD_COUNT * 2));
+            final List<String> firstAttempt = identifiers.subList(0, ORACLE_CARD_COUNT);
+            final List<String> secondAttempt =
+                    identifiers.subList(ORACLE_CARD_COUNT, identifiers.size());
 
-            assertThat(identifiers).as("identifiers across two attempts under one identity")
-                    .hasSize(ORACLE_CARD_COUNT * 2);
-            assertThat(identifiers.subList(ORACLE_CARD_COUNT, identifiers.size()))
-                    .as("the repeated attempt's identifiers")
-                    .containsExactlyElementsOf(identifiers.subList(0, ORACLE_CARD_COUNT));
+            assertThat(identifiers).as("identifiers across two attempts at one period")
+                    .doesNotHaveDuplicates();
+            assertThat(secondAttempt).as("the second attempt shares no identifier with the first")
+                    .doesNotContainAnyElementsOf(firstAttempt);
         }
 
         @Test
-        @DisplayName("a blank identity, or one holding whitespace, is rejected before anything is published")
-        void anUnusableCallerSuppliedIdentityIsRejected() {
+        @DisplayName("an identity that would make the identifier longer than the queue service accepts is refused before anything is published")
+        void anOverlongIdentityIsRefusedBeforeAnythingIsPublished() {
+            final String overlong = "S".repeat(ORACLE_DEDUPLICATION_ID_MAX_LENGTH);
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .submitTransactionReportJob(overlong, START_DATE, END_DATE))
+                    .withMessageContaining(String.valueOf(ORACLE_DEDUPLICATION_ID_MAX_LENGTH));
+
+            assertNothingWasPublished();
+        }
+
+        @ParameterizedTest(name = "identity [{0}]")
+        @ValueSource(strings = {EMPTY_TEXT, "   ", "REPORT REQUEST", "REPORT\tREQUEST"})
+        @DisplayName("an identity that is blank or carries whitespace is refused, because a deduplication identifier may not carry whitespace")
+        void anUnusableIdentityIsRefused(final String unusableIdentity) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .submitTransactionReportJob(unusableIdentity, START_DATE, END_DATE))
+                    .withMessageContaining("submissionId");
+
+            assertNothingWasPublished();
+        }
+
+        @Test
+        @DisplayName("an absent identity is refused deterministically and names the parameter")
+        void anAbsentIdentityIsRefused() {
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> JobSubmissionServiceTest.this.service
                             .submitTransactionReportJob(null, START_DATE, END_DATE))
                     .withMessageContaining("submissionId");
 
-            for (final String unusable : new String[] {EMPTY_TEXT, "   ", "has space", "has\ttab"}) {
-                assertThatExceptionOfType(IllegalArgumentException.class)
-                        .as("identity: '" + unusable + "'")
-                        .isThrownBy(() -> JobSubmissionServiceTest.this.service
-                                .submitTransactionReportJob(unusable, START_DATE, END_DATE))
-                        .withMessageContaining("submissionId");
-            }
-
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.attempted)
-                    .as("publish attempts after a rejected identity").isEmpty();
-        }
-
-        @Test
-        @DisplayName("an identity so long that the first card's identifier would overrun the queue service limit is rejected before anything is published")
-        void anOverlongCallerSuppliedIdentityIsRejected() {
-            // The composed identifier is the identity, a separator and the ordinal, so the first
-            // card alone overruns once the identity reaches the limit less the separator and a
-            // single-digit ordinal.
-            final int overlongLength =
-                    ORACLE_DEDUPLICATION_ID_MAX_LENGTH - ORACLE_DEDUPLICATION_ID_SEPARATOR.length();
-            final String overlongIdentity = "X".repeat(overlongLength);
-
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
-                            .submitTransactionReportJob(overlongIdentity, START_DATE, END_DATE))
-                    .withMessageContaining(String.valueOf(ORACLE_DEDUPLICATION_ID_MAX_LENGTH));
-
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.published)
-                    .as("messages published under an overlong identity").isEmpty();
-        }
-
-        @Test
-        @DisplayName("the single-card entry point rejects a card ordinal below the one-based legacy index")
-        void theSingleCardEntryPointRejectsAnOrdinalBelowOne() {
-            final String card = oracleCard(ORACLE_SENTINEL_CONTENT);
-
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
-                            .writeJobSubmissionQueue("IDENTITY", card, 0))
-                    .withMessageContaining("one-based");
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
-                            .writeJobSubmissionQueue("IDENTITY", card, -1))
-                    .withMessageContaining("one-based");
+            assertNothingWasPublished();
         }
     }
 
     @Nested
-    @DisplayName("a publish failure is non-fatal, stops the remaining cards, and returns normally")
-    class FailureIsNonFatalAndPartial {
+    @DisplayName("a refused publish is non-fatal: it is logged, it stops the remaining cards, and control returns normally")
+    class NonFatalFailureContract {
 
         @Test
-        @DisplayName("a failure on the first card publishes nothing, reports the failure and still returns normally")
-        void aFailureOnTheFirstCardPublishesNothing() {
-            JobSubmissionServiceTest.this.sqsOperations.failOnSendCall(FIRST_CARD_ORDINAL);
+        @DisplayName("a refused card mid-stream lets the submission return normally: no exception escapes, in line with the queue's ignore-on-error attribute")
+        void aRefusedCardLetsTheSubmissionReturnNormally() {
+            queueRefusesFromCard(MID_STREAM_FAILING_ORDINAL);
 
-            final JobSubmissionService.SubmissionResult result = JobSubmissionServiceTest.this.service
-                    .submitTransactionReportJob(START_DATE, END_DATE);
-
-            assertThat(result.cardsRequested()).as("cards requested").isEqualTo(ORACLE_CARD_COUNT);
-            assertThat(result.cardsPublished()).as("cards published").isZero();
-            assertThat(result.failed()).as("failure indicator").isTrue();
-            assertThat(result.partial()).as("partial indicator, nothing having been published")
-                    .isFalse();
-            assertThat(result.complete()).as("complete indicator").isFalse();
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.published)
-                    .as("published messages").isEmpty();
+            assertThatNoException().isThrownBy(() -> JobSubmissionServiceTest.this.service
+                    .submitTransactionReportJob(START_DATE, END_DATE));
         }
 
         @Test
-        @DisplayName("a failure part way through stops the remaining cards, because the legacy write-error flag appears in the emitting loop's own guard")
-        void aFailurePartWayThroughStopsTheRemainingCards() {
-            JobSubmissionServiceTest.this.sqsOperations.failOnSendCall(MID_STREAM_FAILING_ORDINAL);
-
-            final JobSubmissionService.SubmissionResult result = JobSubmissionServiceTest.this.service
-                    .submitTransactionReportJob(START_DATE, END_DATE);
-
-            assertThat(result.cardsRequested()).as("cards requested").isEqualTo(ORACLE_CARD_COUNT);
-            assertThat(result.cardsPublished()).as("cards published before the failing card")
-                    .isEqualTo(MID_STREAM_FAILING_ORDINAL - 1);
-            assertThat(result.failed()).as("failure indicator").isTrue();
-            assertThat(result.partial()).as("partial indicator").isTrue();
-            assertThat(result.complete()).as("complete indicator").isFalse();
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.sendCallCount)
-                    .as("publish attempts, the failing one included")
-                    .isEqualTo(MID_STREAM_FAILING_ORDINAL);
-        }
-
-        @Test
-        @DisplayName("no retry, no backoff and no second attempt: the failing card is attempted exactly once")
-        void noRetryIsEverAttempted() {
-            JobSubmissionServiceTest.this.sqsOperations.failOnSendCall(MID_STREAM_FAILING_ORDINAL);
+        @DisplayName("a card refused as the fifth attempt stops the remaining cards: exactly five publish attempts are made and the twelve cards behind it are never offered")
+        void aRefusedCardStopsTheRemainingCards() {
+            queueRefusesFromCard(MID_STREAM_FAILING_ORDINAL);
 
             JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
 
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.attempted)
-                    .as("publish attempts").hasSize(MID_STREAM_FAILING_ORDINAL);
-            assertThat(deduplicationIdsOf(JobSubmissionServiceTest.this.sqsOperations.attempted))
-                    .as("one attempt per card, none repeated").doesNotHaveDuplicates();
+            final List<String> attempted =
+                    payloadsOf(capturedPublishes(MID_STREAM_FAILING_ORDINAL));
+            assertThat(attempted).as("bodies actually offered to the queue")
+                    .containsExactlyElementsOf(oracleJobImage(START_DATE, END_DATE)
+                            .subList(0, MID_STREAM_FAILING_ORDINAL));
+            assertThat(attempted).as("the sentinel is never reached after a refusal")
+                    .doesNotContain(ORACLE_SENTINEL_CARD);
         }
 
         @Test
-        @DisplayName("a publish failure never propagates, because the queue is defined ignore-on-error and the legacy transaction completed normally after a failed write")
-        void aPublishFailureNeverPropagates() {
-            JobSubmissionServiceTest.this.sqsOperations.failOnSendCall(FIRST_CARD_ORDINAL);
+        @DisplayName("no refused card is ever offered a second time: every attempt carries a distinct card ordinal, so the refused card is not retried")
+        void noRefusedCardIsEverOfferedASecondTime() {
+            queueRefusesFromCard(MID_STREAM_FAILING_ORDINAL);
 
-            assertThatCode(() -> JobSubmissionServiceTest.this.service
-                    .submitTransactionReportJob(START_DATE, END_DATE))
-                    .as("a failed submission").doesNotThrowAnyException();
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            final List<RecordedPublish> attempts = capturedPublishes(MID_STREAM_FAILING_ORDINAL);
+            // A card's identity is its ordinal, not its text: the legacy stream carries three
+            // byte-identical comment cards, so duplicate bodies are correct and only duplicate
+            // ordinals would betray a re-send of the card the queue had already refused.
+            assertThat(deduplicationIdsOf(attempts)).as("card identities offered to the queue")
+                    .hasSize(MID_STREAM_FAILING_ORDINAL).doesNotHaveDuplicates();
+            assertThat(payloadsOf(attempts)).as("bodies offered to the queue")
+                    .hasSize(MID_STREAM_FAILING_ORDINAL);
         }
 
         @Test
-        @DisplayName("the failure text handed back is the frozen operator literal and carries no diagnostic detail, which belongs in the log")
-        void theFailureTextIsTheFrozenOperatorLiteral() {
-            JobSubmissionServiceTest.this.sqsOperations.failOnSendCall(MID_STREAM_FAILING_ORDINAL);
+        @DisplayName("the outcome reports the refusal to the caller: failed, partial, and four of seventeen cards published")
+        void theOutcomeReportsTheRefusalToTheCaller() {
+            queueRefusesFromCard(MID_STREAM_FAILING_ORDINAL);
 
             final JobSubmissionService.SubmissionResult result = JobSubmissionServiceTest.this.service
                     .submitTransactionReportJob(START_DATE, END_DATE);
 
+            assertThat(result.cardsRequested()).as("cards requested").isEqualTo(ORACLE_CARD_COUNT);
+            assertThat(result.cardsPublished()).as("cards published")
+                    .isEqualTo(MID_STREAM_FAILING_ORDINAL - FIRST_CARD_ORDINAL);
+            assertThat(result.failed()).as("failure indicator").isTrue();
+            assertThat(result.complete()).as("complete indicator").isFalse();
+            assertThat(result.partial()).as("partial indicator").isTrue();
             assertThat(result.failureMessage()).as("operator-facing failure text")
-                    .isEqualTo(ORACLE_FAILURE_TEXT)
-                    .doesNotContain(CAUSE_TEXT)
-                    .doesNotContain(QUEUE_NAME)
-                    .doesNotContain(IllegalStateException.class.getSimpleName())
-                    .doesNotContain(String.valueOf(MID_STREAM_FAILING_ORDINAL));
+                    .isEqualTo(ORACLE_FAILURE_TEXT);
         }
 
         @Test
-        @DisplayName("a successful submission carries no failure text at all, never the word null")
-        void aSuccessfulSubmissionCarriesNoFailureText() {
+        @DisplayName("the operator diagnostic is the frozen failure literal, byte for byte, with exactly three separate full stops and no ellipsis character")
+        void theOperatorDiagnosticIsTheFrozenFailureLiteral() {
+            queueRefusesFromCard(MID_STREAM_FAILING_ORDINAL);
+
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            final ILoggingEvent diagnostic = onlyErrorDiagnostic();
+            assertThat(diagnostic.getArgumentArray()).as("diagnostic arguments").isNotEmpty();
+            assertThat(diagnostic.getArgumentArray()[0]).as("the operator-facing literal, untrimmed")
+                    .isEqualTo(ORACLE_FAILURE_TEXT);
+            assertThat(diagnostic.getFormattedMessage()).as("the recorded diagnostic")
+                    .startsWith(ORACLE_FAILURE_TEXT);
+            assertThat(ORACLE_FAILURE_TEXT).as("the hand-written literal")
+                    .isEqualTo(JobSubmissionException.DEFAULT_MESSAGE)
+                    .endsWith("...")
+                    .doesNotEndWith("....")
+                    .doesNotContain("\u2026")
+                    .doesNotEndWith(" ");
+        }
+
+        @Test
+        @DisplayName("the diagnostic carries the response and reason codes and the failing card's one-based ordinal, mirroring the legacy diagnostic write that precedes the screen message")
+        void theDiagnosticCarriesTheCodesAndTheFailingOrdinal() {
+            queueRefusesFromCard(MID_STREAM_FAILING_ORDINAL);
+
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            assertThat(onlyErrorDiagnostic().getFormattedMessage()).as("the recorded diagnostic")
+                    .contains("ordinal=" + MID_STREAM_FAILING_ORDINAL)
+                    .contains("queue=" + QUEUE_NAME)
+                    .contains("messageGroup=" + MESSAGE_GROUP_ID)
+                    .contains("response=" + IllegalStateException.class.getSimpleName())
+                    .contains("reason=" + CAUSE_TEXT);
+        }
+
+        @Test
+        @DisplayName("the failure type is constructed and logged rather than thrown, and the underlying refusal is chained onto it as its cause")
+        void theFailureTypeIsLoggedRatherThanThrownAndKeepsItsCause() {
+            queueRefusesFromCard(MID_STREAM_FAILING_ORDINAL);
+
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            final ILoggingEvent diagnostic = onlyErrorDiagnostic();
+            assertThat(diagnostic.getThrowableProxy()).as("the logged failure").isNotNull();
+            assertThat(diagnostic.getThrowableProxy().getClassName()).as("the logged failure type")
+                    .isEqualTo(JobSubmissionException.class.getName());
+            assertThat(diagnostic.getThrowableProxy().getCause()).as("the chained cause").isNotNull();
+            assertThat(diagnostic.getThrowableProxy().getCause().getClassName())
+                    .as("the chained cause type")
+                    .isEqualTo(IllegalStateException.class.getName());
+        }
+
+        @Test
+        @DisplayName("the submission-level consequence is recorded as a warning rather than an error, because the caller's request completes exactly as the legacy transaction does")
+        void theSubmissionLevelConsequenceIsRecordedAsAWarning() {
+            queueRefusesFromCard(MID_STREAM_FAILING_ORDINAL);
+
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            final List<ILoggingEvent> warnings = JobSubmissionServiceTest.this.logRecorder.list
+                    .stream().filter(event -> event.getLevel() == Level.WARN).toList();
+            assertThat(warnings).as("submission-level warnings").hasSize(1);
+            assertThat(warnings.getFirst().getFormattedMessage()).as("the recorded warning")
+                    .contains("cardsPublished="
+                            + (MID_STREAM_FAILING_ORDINAL - FIRST_CARD_ORDINAL))
+                    .contains("cardsRequested=" + ORACLE_CARD_COUNT);
+        }
+
+        @Test
+        @DisplayName("a refusal on the very first card publishes nothing at all and still returns normally, reporting a failure that is not partial")
+        void aRefusalOnTheFirstCardPublishesNothingAndStillReturnsNormally() {
+            queueRefusesFromCard(FIRST_CARD_ORDINAL);
+
             final JobSubmissionService.SubmissionResult result = JobSubmissionServiceTest.this.service
                     .submitTransactionReportJob(START_DATE, END_DATE);
 
-            assertThat(result.failureMessage()).as("failure text of a successful submission")
-                    .isEmpty();
+            assertThat(result.cardsPublished()).as("cards published").isZero();
+            assertThat(result.failed()).as("failure indicator").isTrue();
+            assertThat(result.partial()).as("partial indicator").isFalse();
+            assertThat(result.complete()).as("complete indicator").isFalse();
+            assertThat(result.failureMessage()).as("operator-facing failure text")
+                    .isEqualTo(ORACLE_FAILURE_TEXT);
+            assertThat(capturedPublishes(FIRST_CARD_ORDINAL)).as("publish attempts").hasSize(1);
         }
 
         @Test
-        @DisplayName("the single-card entry point reports acceptance as true and a failure as false, and throws in neither case")
-        void theSingleCardEntryPointReportsRatherThanThrows() {
-            final String card = oracleCard("SINGLE CARD");
+        @DisplayName("a submission whose every card is refused makes exactly one attempt, because the write-error flag is one of the emitting loop's guard conditions")
+        void aSubmissionWhoseEveryCardIsRefusedMakesExactlyOneAttempt() {
+            queueRefusesFromCard(FIRST_CARD_ORDINAL);
 
-            assertThat(JobSubmissionServiceTest.this.service
-                    .writeJobSubmissionQueue("IDENTITY", card, FIRST_CARD_ORDINAL))
-                    .as("acceptance of a card the queue took").isTrue();
+            assertThatNoException().isThrownBy(() -> JobSubmissionServiceTest.this.service
+                    .submitCanonicalJobImage(CALLER_SUBMISSION_ID,
+                            oracleJobImage(START_DATE, END_DATE)));
 
-            JobSubmissionServiceTest.this.sqsOperations.failOnSendCall(2);
-
-            assertThat(JobSubmissionServiceTest.this.service
-                    .writeJobSubmissionQueue("IDENTITY", card, 2))
-                    .as("acceptance of a card the queue refused").isFalse();
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.published)
-                    .as("published messages after one acceptance and one refusal").hasSize(1);
-        }
-    }
-
-    @Nested
-    @DisplayName("the emitting loop: stream validation and the three stream-terminating card shapes")
-    class SubmitJobStreamContract {
-
-        @Test
-        @DisplayName("an empty stream is rejected, because a submission of no cards triggers nothing")
-        void anEmptyStreamIsRejected() {
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
-                            .submitJobStream("IDENTITY", List.of()))
-                    .withMessageContaining("at least one");
-        }
-
-        @Test
-        @DisplayName("a null stream, or a stream holding a null card, is rejected deterministically")
-        void aNullStreamOrNullCardIsRejected() {
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
-                            .submitJobStream("IDENTITY", null))
-                    .withMessageContaining("cardImages");
-
-            final List<String> streamHoldingNull = new ArrayList<>();
-            streamHoldingNull.add(oracleCard("CARD ONE"));
-            streamHoldingNull.add(null);
-
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
-                            .submitJobStream("IDENTITY", streamHoldingNull));
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.attempted)
-                    .as("publish attempts after a rejected stream").isEmpty();
-        }
-
-        @Test
-        @DisplayName("a card of the wrong encoded width is rejected before anything is published, so a malformed stream leaves no partial submission behind")
-        void aMalformedCardIsRejectedBeforeAnythingIsPublished() {
-            // One byte short of the record width, which the queue definition fixes at eighty.
-            final String oneByteShortCard = "SHORT CARD" + oracleSpaces(ORACLE_CARD_WIDTH - 11);
-            assertThat(usAsciiLength(oneByteShortCard)).as("width of the malformed card")
-                    .isEqualTo(ORACLE_CARD_WIDTH - 1);
-            final List<String> stream = List.of(oracleCard("CARD ONE"), oneByteShortCard);
-
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
-                            .submitJobStream("IDENTITY", stream))
-                    .withMessageContaining("encoded bytes");
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.attempted)
-                    .as("publish attempts after a malformed card").isEmpty();
-        }
-
-        @Test
-        @DisplayName("a card holding a character that is not a single US-ASCII byte is rejected, so the bytes published are the caller's bytes")
-        void aNonSingleByteCardIsRejected() {
-            final String nonSingleByteCard =
-                    "CARD\u00e9" + oracleSpaces(ORACLE_CARD_WIDTH - 5);
-
-            assertThat(nonSingleByteCard.length()).as("character count of the non-single-byte card")
-                    .isEqualTo(ORACLE_CARD_WIDTH);
-            assertThat(usAsciiLength(nonSingleByteCard))
-                    .as("encoded width, which replacement makes indistinguishable from a valid card")
-                    .isEqualTo(ORACLE_CARD_WIDTH);
-
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
-                            .submitJobStream("IDENTITY", List.of(nonSingleByteCard)))
-                    .withMessageContaining("US-ASCII");
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.attempted)
-                    .as("publish attempts after a non-single-byte card").isEmpty();
-        }
-
-        @Test
-        @DisplayName("the sentinel card terminates the stream after it has itself been published, so the cards behind it are never sent")
-        void theSentinelTerminatesTheStreamAfterBeingPublished() {
-            final List<String> stream = List.of(oracleCard("CARD ONE"),
-                    oracleCard(ORACLE_SENTINEL_CONTENT), oracleCard("CARD THREE"));
-
-            final JobSubmissionService.SubmissionResult result = JobSubmissionServiceTest.this.service
-                    .submitJobStream("IDENTITY", stream);
-
-            assertThat(result.cardsRequested()).as("cards requested").isEqualTo(3);
-            assertThat(result.cardsPublished()).as("cards published up to and including the sentinel")
-                    .isEqualTo(2);
-            assertThat(result.failed()).as("failure indicator, the stop being orderly").isFalse();
-            assertThat(payloadsOf(JobSubmissionServiceTest.this.sqsOperations.published))
-                    .as("published payloads")
-                    .containsExactly(oracleCard("CARD ONE"), oracleCard(ORACLE_SENTINEL_CONTENT));
-        }
-
-        @Test
-        @DisplayName("an all-spaces card also terminates the stream, because the legacy comparison tests the record against spaces as well as against the sentinel")
-        void anAllSpacesCardAlsoTerminatesTheStream() {
-            final List<String> stream = List.of(oracleCard("CARD ONE"), uniformCard(' '),
-                    oracleCard("CARD THREE"));
-
-            final JobSubmissionService.SubmissionResult result = JobSubmissionServiceTest.this.service
-                    .submitJobStream("IDENTITY", stream);
-
-            assertThat(result.cardsPublished()).as("cards published up to and including the blank")
-                    .isEqualTo(2);
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.sendCallCount)
-                    .as("publish attempts").isEqualTo(2);
-        }
-
-        @Test
-        @DisplayName("an all-low-values card never reaches the stream-terminating test at all: the payload boundary refuses it first, so the legacy third comparison is unreachable through any published stream")
-        void anAllLowValuesCardIsRefusedBeforeTheStreamTerminatingTest() {
-            // The legacy abbreviated combined relation expands to three equality tests - against the
-            // sentinel, against spaces and against low values - and the translation keeps all three, so
-            // the predicate remains faithful. The third of them is nonetheless unreachable through a
-            // published stream, because a low-values card is a card of control bytes and the payload
-            // boundary refuses those before the emitting loop begins: a control byte does not change a
-            // record's width, so a width check alone would admit it, and a smuggled control byte in an
-            // eighty-column card reframes the record at the consumer. Refusing the whole submission is
-            // strictly safer than silently ending a stream on it, and nothing is published either way.
-            // The two reachable comparisons are asserted by the blank-card and sentinel-card tests
-            // alongside this one.
-            final List<String> stream = List.of(oracleCard("CARD ONE"), uniformCard('\0'),
-                    oracleCard("CARD THREE"));
-
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
-                            .submitJobStream("IDENTITY", stream))
-                    .withMessageContaining("job-submission card 2")
-                    .withMessageContaining("non-printable")
-                    .withMessageContaining("position 1");
-
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.sendCallCount)
-                    .as("nothing is published, so the stream is refused rather than truncated")
-                    .isZero();
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.attempted)
-                    .as("publish attempts after a refused stream").isEmpty();
-        }
-
-        @Test
-        @DisplayName("a card whose only padding is trailing spaces is still published whole, never trimmed to its content")
-        void aCardIsPublishedWholeAndNeverTrimmed() {
-            final String card = oracleCard("CARD ONE");
-
-            JobSubmissionServiceTest.this.service.submitJobStream("IDENTITY", List.of(card));
-
-            assertThat(payloadsOf(JobSubmissionServiceTest.this.sqsOperations.published))
-                    .as("published payload").containsExactly(card);
-        }
-
-        @Test
-        @DisplayName("the stream is snapshotted on entry, so a caller mutating its list afterwards cannot alter what was published")
-        void theStreamIsSnapshottedOnEntry() {
-            final List<String> mutableStream = new ArrayList<>();
-            mutableStream.add(oracleCard("CARD ONE"));
-            mutableStream.add(oracleCard("CARD TWO"));
-            final List<String> snapshotBeforeTheCall = List.copyOf(mutableStream);
-
-            final JobSubmissionService.SubmissionResult result = JobSubmissionServiceTest.this.service
-                    .submitJobStream("IDENTITY", mutableStream);
-            mutableStream.clear();
-
-            assertThat(result.cardsRequested()).as("cards requested at the moment of the call")
-                    .isEqualTo(snapshotBeforeTheCall.size());
-            assertThat(payloadsOf(JobSubmissionServiceTest.this.sqsOperations.published))
-                    .as("published payloads after the caller cleared its list")
-                    .containsExactlyElementsOf(snapshotBeforeTheCall);
+            assertThat(capturedPublishes(FIRST_CARD_ORDINAL)).as("publish attempts").hasSize(1);
         }
     }
 
     @Nested
-    @DisplayName("the submission result: three distinguishable outcomes, normalised on construction")
-    class SubmissionResultContract {
+    @DisplayName("the single-card entry point reports the write-error flag rather than raising it")
+    class SingleCardEntryPointContract {
 
         @Test
-        @DisplayName("a negative count is rejected on construction")
-        void aNegativeCountIsRejected() {
+        @DisplayName("an accepted card reports acceptance and is published verbatim, at eighty bytes, to the configured destination and group")
+        void anAcceptedCardIsPublishedVerbatim() {
+            queueAcceptsEveryCard();
+
+            final boolean accepted = JobSubmissionServiceTest.this.service
+                    .writeJobSubmissionQueue(CALLER_SUBMISSION_ID, ORACLE_JOB_CARD,
+                            FIRST_CARD_ORDINAL);
+
+            assertThat(accepted).as("acceptance indicator").isTrue();
+            final RecordedPublish publish = capturedPublishes(1).getFirst();
+            assertThat(publish.payload).as("published body").isEqualTo(ORACLE_JOB_CARD);
+            assertThat(encodedWidth(publish.payload)).as("encoded body width")
+                    .isEqualTo(ORACLE_CARD_WIDTH);
+            assertThat(publish.queue).as("destination queue").isEqualTo(QUEUE_NAME);
+            assertThat(publish.messageGroupId).as("message group").isEqualTo(MESSAGE_GROUP_ID);
+            assertThat(publish.messageDeduplicationId).as("deduplication identifier")
+                    .isEqualTo(CALLER_SUBMISSION_ID + ORACLE_ORDINAL_SEPARATOR + FIRST_CARD_ORDINAL);
+        }
+
+        @Test
+        @DisplayName("a refused card reports refusal instead of throwing, and records the frozen diagnostic, which is the inverse of the legacy write-error flag")
+        void aRefusedCardReportsRefusalInsteadOfThrowing() {
+            queueRefusesFromCard(FIRST_CARD_ORDINAL);
+
+            final boolean accepted = JobSubmissionServiceTest.this.service
+                    .writeJobSubmissionQueue(CALLER_SUBMISSION_ID, ORACLE_JOB_CARD,
+                            FIRST_CARD_ORDINAL);
+
+            assertThat(accepted).as("acceptance indicator").isFalse();
+            assertThat(onlyErrorDiagnostic().getFormattedMessage()).as("the recorded diagnostic")
+                    .startsWith(ORACLE_FAILURE_TEXT);
+        }
+
+        @ParameterizedTest(name = "ordinal [{0}]")
+        @ValueSource(ints = {0, -1})
+        @DisplayName("an ordinal below one is refused, because the legacy card index is one-based and an identifier derived from a lower ordinal would be meaningless")
+        void anOrdinalBelowOneIsRefused(final int unusableOrdinal) {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(-1, 0, false,
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .writeJobSubmissionQueue(CALLER_SUBMISSION_ID, ORACLE_JOB_CARD,
+                                    unusableOrdinal))
+                    .withMessageContaining("one-based");
+
+            assertNothingWasPublished();
+        }
+
+        @Test
+        @DisplayName("a card of the wrong width is refused before it is published, because the record width is a byte contract rather than a suggestion")
+        void aCardOfTheWrongWidthIsRefused() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .writeJobSubmissionQueue(CALLER_SUBMISSION_ID, ORACLE_SENTINEL_CONTENT,
+                                    FIRST_CARD_ORDINAL))
+                    .withMessageContaining(String.valueOf(ORACLE_CARD_WIDTH));
+
+            assertNothingWasPublished();
+        }
+
+        @Test
+        @DisplayName("a card carrying a character that is not a single US-ASCII byte is refused, because the published bytes would not be the caller's bytes")
+        void aCardCarryingAMultiByteCharacterIsRefused() {
+            final String multiByteCard = "\u00a3" + " ".repeat(ORACLE_CARD_WIDTH - 1);
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .writeJobSubmissionQueue(CALLER_SUBMISSION_ID, multiByteCard,
+                                    FIRST_CARD_ORDINAL));
+
+            assertNothingWasPublished();
+        }
+
+        @Test
+        @DisplayName("a card carrying a control byte is refused, because a control byte inside a fixed-width record would reframe the record for the consumer that reads it")
+        void aCardCarryingAControlByteIsRefused() {
+            final String controlByteCard = "//*\n" + " ".repeat(ORACLE_CARD_WIDTH - 4);
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .writeJobSubmissionQueue(CALLER_SUBMISSION_ID, controlByteCard,
+                                    FIRST_CARD_ORDINAL))
+                    .withMessageContaining("non-printable");
+
+            assertNothingWasPublished();
+        }
+
+        @Test
+        @DisplayName("an absent card is refused deterministically and names the parameter")
+        void anAbsentCardIsRefused() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .writeJobSubmissionQueue(CALLER_SUBMISSION_ID, null, FIRST_CARD_ORDINAL))
+                    .withMessageContaining("cardImage");
+
+            assertNothingWasPublished();
+        }
+    }
+
+    @Nested
+    @DisplayName("the failure type this service reports through: frozen text, unchecked ancestry, chained cause")
+    class FailureTypeContract {
+
+        @Test
+        @DisplayName("the frozen failure text is exactly the legacy screen literal, with three separate full stops")
+        void theFrozenFailureTextIsExactlyTheLegacyScreenLiteral() {
+            assertThat(JobSubmissionException.DEFAULT_MESSAGE).as("published failure literal")
+                    .isEqualTo(ORACLE_FAILURE_TEXT)
+                    .endsWith("...")
+                    .doesNotEndWith("....")
+                    .doesNotContain("\u2026");
+        }
+
+        @Test
+        @DisplayName("the default queue name is the legacy queue identity, which is where that identity survives once the physical destination is renamed")
+        void theDefaultQueueNameIsTheLegacyQueueIdentity() {
+            assertThat(JobSubmissionException.DEFAULT_QUEUE_NAME).as("published default queue name")
+                    .isEqualTo(ORACLE_QUEUE_IDENTITY);
+        }
+
+        @Test
+        @DisplayName("the published record size is the eighty-character fixed width the queue definition specifies")
+        void thePublishedRecordSizeIsEighty() {
+            assertThat(JobSubmissionException.RECORD_SIZE).as("published record size")
+                    .isEqualTo(ORACLE_CARD_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the failure type is unchecked, so no publishing signature is forced to declare it and a non-fatal condition cannot be turned into a checked contract")
+        void theFailureTypeIsUnchecked() {
+            assertThat(new JobSubmissionException(new IllegalStateException(CAUSE_TEXT)))
+                    .as("the failure type").isInstanceOf(RuntimeException.class);
+            assertThat(JobSubmissionException.class.getSuperclass()).as("the direct supertype")
+                    .isEqualTo(RuntimeException.class);
+        }
+
+        @Test
+        @DisplayName("a failure built from a cause alone carries the frozen text, the legacy queue identity and no attributable card ordinal")
+        void aFailureBuiltFromACauseAloneCarriesTheFrozenText() {
+            final IllegalStateException refusal = new IllegalStateException(CAUSE_TEXT);
+
+            final JobSubmissionException failure = new JobSubmissionException(refusal);
+
+            assertThat(failure.getMessage()).as("failure text").isEqualTo(ORACLE_FAILURE_TEXT);
+            assertThat(failure.getCause()).as("chained cause").isSameAs(refusal);
+            assertThat(failure.queueName()).as("queue name")
+                    .isEqualTo(JobSubmissionException.DEFAULT_QUEUE_NAME);
+            assertThat(failure.responseCode()).as("response code").isEmpty();
+            assertThat(failure.reasonCode()).as("reason code").isEmpty();
+            assertThat(failure.failedCardOrdinal()).as("failing card ordinal")
+                    .isEqualTo(JobSubmissionException.ORDINAL_NOT_APPLICABLE);
+        }
+
+        @Test
+        @DisplayName("a failure built with an explicit message keeps that message and its cause unchanged")
+        void aFailureBuiltWithAnExplicitMessageKeepsBoth() {
+            final IllegalStateException refusal = new IllegalStateException(CAUSE_TEXT);
+
+            final JobSubmissionException failure =
+                    new JobSubmissionException(ORACLE_FAILURE_TEXT, refusal);
+
+            assertThat(failure.getMessage()).as("failure text").isEqualTo(ORACLE_FAILURE_TEXT);
+            assertThat(failure.getCause()).as("chained cause").isSameAs(refusal);
+        }
+
+        @Test
+        @DisplayName("a failure built with the fullest form records the codes and the one-based failing ordinal and still begins with the frozen text")
+        void theFullestFormRecordsTheCodesAndTheOrdinal() {
+            final IllegalStateException refusal = new IllegalStateException(CAUSE_TEXT);
+
+            final JobSubmissionException failure = new JobSubmissionException(QUEUE_NAME,
+                    IllegalStateException.class.getSimpleName(), CAUSE_TEXT,
+                    MID_STREAM_FAILING_ORDINAL, refusal);
+
+            assertThat(failure.getMessage()).as("failure text").startsWith(ORACLE_FAILURE_TEXT);
+            assertThat(failure.queueName()).as("queue name").isEqualTo(QUEUE_NAME);
+            assertThat(failure.responseCode()).as("response code")
+                    .isEqualTo(IllegalStateException.class.getSimpleName());
+            assertThat(failure.reasonCode()).as("reason code").isEqualTo(CAUSE_TEXT);
+            assertThat(failure.failedCardOrdinal()).as("failing card ordinal")
+                    .isEqualTo(MID_STREAM_FAILING_ORDINAL);
+            assertThat(failure.getCause()).as("chained cause").isSameAs(refusal);
+        }
+
+        @Test
+        @DisplayName("an absent message falls back to the frozen text, so the operator-facing text is never absent and never the word for a missing value")
+        void anAbsentMessageFallsBackToTheFrozenText() {
+            final JobSubmissionException failure = new JobSubmissionException(null, null);
+
+            assertThat(failure.getMessage()).as("failure text").isEqualTo(ORACLE_FAILURE_TEXT);
+            assertThat(failure.getCause()).as("chained cause").isNull();
+        }
+    }
+
+    @Nested
+    @DisplayName("the outcome record: three distinguishable states and a validated shape")
+    class SubmissionOutcomeContract {
+
+        @Test
+        @DisplayName("a complete outcome is complete, is not partial and carries no failure text")
+        void aCompleteOutcomeCarriesNoFailureText() {
+            final JobSubmissionService.SubmissionResult result =
+                    new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT, ORACLE_CARD_COUNT,
+                            false, EMPTY_TEXT);
+
+            assertThat(result.complete()).as("complete indicator").isTrue();
+            assertThat(result.partial()).as("partial indicator").isFalse();
+            assertThat(result.failureMessage()).as("failure text").isEmpty();
+        }
+
+        @Test
+        @DisplayName("a partial outcome is a failure that published something, so it is partial and not complete")
+        void aPartialOutcomeIsAFailureThatPublishedSomething() {
+            final JobSubmissionService.SubmissionResult result =
+                    new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT,
+                            MID_STREAM_FAILING_ORDINAL - FIRST_CARD_ORDINAL, true,
+                            ORACLE_FAILURE_TEXT);
+
+            assertThat(result.complete()).as("complete indicator").isFalse();
+            assertThat(result.partial()).as("partial indicator").isTrue();
+            assertThat(result.failureMessage()).as("failure text").isEqualTo(ORACLE_FAILURE_TEXT);
+        }
+
+        @Test
+        @DisplayName("a failure that published nothing is neither complete nor partial, which is how a first-card refusal is distinguished from a mid-stream one")
+        void aFailureThatPublishedNothingIsNeitherCompleteNorPartial() {
+            final JobSubmissionService.SubmissionResult result =
+                    new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT, 0, true,
+                            ORACLE_FAILURE_TEXT);
+
+            assertThat(result.complete()).as("complete indicator").isFalse();
+            assertThat(result.partial()).as("partial indicator").isFalse();
+            assertThat(result.failed()).as("failure indicator").isTrue();
+        }
+
+        @Test
+        @DisplayName("a failed outcome given no text takes the frozen literal, so the operator-facing text can never be empty on a failure")
+        void aFailedOutcomeGivenNoTextTakesTheFrozenLiteral() {
+            assertThat(new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT, 0, true,
+                    EMPTY_TEXT).failureMessage()).as("failure text").isEqualTo(ORACLE_FAILURE_TEXT);
+            assertThat(new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT, 0, true, null)
+                    .failureMessage()).as("failure text").isEqualTo(ORACLE_FAILURE_TEXT);
+        }
+
+        @Test
+        @DisplayName("a successful outcome discards any text it was given, so a success can never be reported carrying a failure message")
+        void aSuccessfulOutcomeDiscardsAnyTextItWasGiven() {
+            final JobSubmissionService.SubmissionResult result =
+                    new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT, ORACLE_CARD_COUNT,
+                            false, ORACLE_FAILURE_TEXT);
+
+            assertThat(result.failureMessage()).as("failure text").isEmpty();
+        }
+
+        @ParameterizedTest(name = "requested [{0}]")
+        @ValueSource(ints = {-1, -17})
+        @DisplayName("a negative requested count is refused, because a submission cannot ask for fewer than no cards")
+        void aNegativeRequestedCountIsRefused(final int requested) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(requested, 0, false,
                             EMPTY_TEXT))
                     .withMessageContaining("cardsRequested");
+        }
+
+        @Test
+        @DisplayName("a negative published count is refused, because a card cannot be un-published")
+        void aNegativePublishedCountIsRefused() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT, -1,
-                            false, EMPTY_TEXT))
+                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT,
+                            -1, false, EMPTY_TEXT))
                     .withMessageContaining("cardsPublished");
         }
 
         @Test
-        @DisplayName("more cards published than requested is rejected on construction")
-        void moreCardsPublishedThanRequestedIsRejected() {
+        @DisplayName("publishing more cards than were requested is refused, because the emitting loop cannot outrun its own stream")
+        void publishingMoreThanWasRequestedIsRefused() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(1, 2, false,
-                            EMPTY_TEXT))
-                    .withMessageContaining("must not")
-                    .withMessageContaining("exceed");
-        }
-
-        @Test
-        @DisplayName("a failed outcome with no supplied text takes the frozen operator literal, and never the word null")
-        void aFailedOutcomeWithNoTextTakesTheFrozenLiteral() {
-            assertThat(new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT, 0, true, null)
-                    .failureMessage()).as("normalised text for a null message")
-                    .isEqualTo(ORACLE_FAILURE_TEXT);
-            assertThat(new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT, 0, true,
-                    EMPTY_TEXT).failureMessage()).as("normalised text for an empty message")
-                    .isEqualTo(ORACLE_FAILURE_TEXT);
-        }
-
-        @Test
-        @DisplayName("a successful outcome discards any supplied text, so a success can never carry a failure message")
-        void aSuccessfulOutcomeDiscardsAnySuppliedText() {
-            assertThat(new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT,
-                    ORACLE_CARD_COUNT, false, ORACLE_FAILURE_TEXT).failureMessage())
-                    .as("normalised text for a successful outcome").isEmpty();
-        }
-
-        @Test
-        @DisplayName("the three outcomes are distinguishable: complete, partial, and failed with nothing published")
-        void theThreeOutcomesAreDistinguishable() {
-            final JobSubmissionService.SubmissionResult complete =
-                    new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT, ORACLE_CARD_COUNT,
-                            false, EMPTY_TEXT);
-            final JobSubmissionService.SubmissionResult partial =
-                    new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT, 4, true, EMPTY_TEXT);
-            final JobSubmissionService.SubmissionResult nothingPublished =
-                    new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT, 0, true, EMPTY_TEXT);
-
-            assertThat(complete.complete()).as("complete outcome, complete indicator").isTrue();
-            assertThat(complete.partial()).as("complete outcome, partial indicator").isFalse();
-            assertThat(partial.complete()).as("partial outcome, complete indicator").isFalse();
-            assertThat(partial.partial()).as("partial outcome, partial indicator").isTrue();
-            assertThat(nothingPublished.complete()).as("failed outcome, complete indicator")
-                    .isFalse();
-            assertThat(nothingPublished.partial()).as("failed outcome, partial indicator").isFalse();
-        }
-
-        @Test
-        @DisplayName("an orderly early stop is neither complete nor a failure, which is how a stream shorter than its sentinel is reported")
-        void anOrderlyEarlyStopIsNeitherCompleteNorAFailure() {
-            final JobSubmissionService.SubmissionResult earlyStop =
-                    new JobSubmissionService.SubmissionResult(3, 2, false, EMPTY_TEXT);
-
-            assertThat(earlyStop.failed()).as("failure indicator").isFalse();
-            assertThat(earlyStop.complete()).as("complete indicator").isFalse();
-            assertThat(earlyStop.partial()).as("partial indicator").isFalse();
-            assertThat(earlyStop.failureMessage()).as("failure text").isEmpty();
+                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(FIRST_CARD_ORDINAL,
+                            ORACLE_CARD_COUNT, false, EMPTY_TEXT))
+                    .withMessageContaining("must not");
         }
     }
 
     @Nested
-    @DisplayName("an injected date slot is rejected before any card is composed or published")
-    class InjectedDateSlotRejection {
+    @DisplayName("the caller's card stream is snapshotted and never mutated, and an unusable stream is refused before anything is published")
+    class StreamOwnershipContract {
 
         @Test
-        @DisplayName("an apostrophe in a reporting date is rejected and nothing at all is published, because it would close a sort character constant early")
-        void anApostropheInAReportingDateIsRejected() {
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
-                            .submitTransactionReportJob("2026-01-'X", END_DATE))
-                    .withMessageContaining("PARM-START-DATE");
+        @DisplayName("the caller's own list is left byte-identical by a submission, so nothing the caller holds is rewritten")
+        void theCallersOwnListIsLeftUnchanged() {
+            queueAcceptsEveryCard();
+            final List<String> callerOwned = new ArrayList<>(oracleJobImage(START_DATE, END_DATE));
 
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.attempted)
-                    .as("publish attempts after a rejected slot").isEmpty();
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.sendCallCount)
-                    .as("publish entries after a rejected slot").isZero();
+            JobSubmissionServiceTest.this.service
+                    .submitCanonicalJobImage(CALLER_SUBMISSION_ID, callerOwned);
+
+            assertThat(callerOwned).as("the caller's own list after the submission")
+                    .containsExactlyElementsOf(oracleJobImage(START_DATE, END_DATE));
         }
 
         @Test
-        @DisplayName("a record-splitting control byte in a reporting date is rejected and nothing is published")
-        void aControlByteInAReportingDateIsRejected() {
-            for (final String injected : new String[] {"2026-01-0\n", "2026-01-0\r", "2026-01-0\t",
-                    "2026-01-0\u0000", "2026-01-0\u001B", "2026-01-0\u007F"}) {
-                assertThatExceptionOfType(IllegalArgumentException.class)
-                        .as("injected slot carrying US-ASCII 0x"
-                                + Integer.toHexString(injected.charAt(injected.length() - 1)))
-                        .isThrownBy(() -> JobSubmissionServiceTest.this.service
-                                .submitTransactionReportJob(START_DATE, injected))
-                        .withMessageContaining("PARM-END-DATE");
-            }
+        @DisplayName("mutating the caller's list after the call cannot change what was published, because the stream is copied on entry")
+        void mutatingTheCallersListAfterwardsCannotChangeWhatWasPublished() {
+            queueAcceptsEveryCard();
+            final List<String> callerOwned = new ArrayList<>(oracleJobImage(START_DATE, END_DATE));
 
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.attempted)
-                    .as("publish attempts after rejected slots").isEmpty();
+            JobSubmissionServiceTest.this.service
+                    .submitCanonicalJobImage(CALLER_SUBMISSION_ID, callerOwned);
+            callerOwned.clear();
+
+            assertThat(payloadsOf(capturedPublishes(ORACLE_CARD_COUNT)))
+                    .as("published bodies after the caller emptied its list")
+                    .containsExactlyElementsOf(oracleJobImage(START_DATE, END_DATE));
         }
 
         @Test
-        @DisplayName("a misshaped reporting date of the right width is rejected and nothing is published")
-        void aMisshapedReportingDateIsRejected() {
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
-                            .submitTransactionReportJob("2022/01/01", END_DATE))
-                    .withMessageContaining("PARM-START-DATE");
+        @DisplayName("an unmodifiable stream is accepted, so the service never needs to write into the list it was given")
+        void anUnmodifiableStreamIsAccepted() {
+            queueAcceptsEveryCard();
+            final List<String> unmodifiable = oracleJobImage(START_DATE, END_DATE);
 
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.attempted)
-                    .as("publish attempts after a misshaped slot").isEmpty();
+            assertThatNoException().isThrownBy(() -> JobSubmissionServiceTest.this.service
+                    .submitCanonicalJobImage(CALLER_SUBMISSION_ID, unmodifiable));
+
+            assertThatExceptionOfType(UnsupportedOperationException.class)
+                    .as("the stream that was published is unmodifiable")
+                    .isThrownBy(() -> unmodifiable.set(0, ORACLE_COMMENT_CARD));
+            assertThat(capturedPublishes(ORACLE_CARD_COUNT)).as("publish attempts")
+                    .hasSize(ORACLE_CARD_COUNT);
         }
 
         @Test
-        @DisplayName("a reporting date of the wrong width, or an absent one, is rejected and nothing is published")
-        void aWrongWidthOrAbsentReportingDateIsRejected() {
+        @DisplayName("an empty stream is refused before anything is published, because a submission of no cards would trigger nothing at the batch tier")
+        void anEmptyStreamIsRefusedBeforeAnythingIsPublished() {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> JobSubmissionServiceTest.this.service
-                            .submitTransactionReportJob("2022-01-0", END_DATE))
-                    .withMessageContaining("encoded bytes");
+                            .submitJobStream(CALLER_SUBMISSION_ID, List.of()))
+                    .withMessageContaining("at least one");
+
+            assertNothingWasPublished();
+        }
+
+        @Test
+        @DisplayName("an absent stream is refused deterministically and names the parameter")
+        void anAbsentStreamIsRefused() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .submitJobStream(CALLER_SUBMISSION_ID, null))
+                    .withMessageContaining("cardImages");
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .submitCanonicalJobImage(CALLER_SUBMISSION_ID, null))
+                    .withMessageContaining("cardImages");
+
+            assertNothingWasPublished();
+        }
+
+        @Test
+        @DisplayName("a stream carrying an absent card is refused before anything is published, so a partial submission can only ever be the result of a refusal")
+        void aStreamCarryingAnAbsentCardIsRefused() {
+            final List<String> withAnAbsentCard = new ArrayList<>(ORACLE_CARD_COUNT);
+            withAnAbsentCard.add(ORACLE_JOB_CARD);
+            withAnAbsentCard.add(null);
+            withAnAbsentCard.add(ORACLE_SENTINEL_CARD);
+
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .submitJobStream(CALLER_SUBMISSION_ID, withAnAbsentCard));
+
+            assertNothingWasPublished();
+        }
+
+        @Test
+        @DisplayName("a stream carrying a card of the wrong width is refused before anything is published, so no partial stream is left behind by a malformed later card")
+        void aStreamCarryingAMalformedCardIsRefused() {
+            final List<String> withAMalformedCard = List.of(ORACLE_JOB_CARD,
+                    ORACLE_SENTINEL_CONTENT, ORACLE_SENTINEL_CARD);
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .submitJobStream(CALLER_SUBMISSION_ID, withAMalformedCard))
+                    .withMessageContaining(String.valueOf(ORACLE_CARD_WIDTH));
+
+            assertNothingWasPublished();
+        }
+    }
+
+    @Nested
+    @DisplayName("absent reporting dates are refused deterministically, before any card exists")
+    class AbsentInputContract {
+
+        @Test
+        @DisplayName("an absent start date is refused by name and publishes nothing, so no unattributable failure can surface later in the submission")
+        void anAbsentStartDateIsRefusedByName() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> JobSubmissionServiceTest.this.service
+                            .submitTransactionReportJob(null, END_DATE))
+                    .withMessageContaining("startDate");
+
+            assertNothingWasPublished();
+        }
+
+        @Test
+        @DisplayName("an absent end date is refused by name and publishes nothing")
+        void anAbsentEndDateIsRefusedByName() {
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> JobSubmissionServiceTest.this.service
                             .submitTransactionReportJob(START_DATE, null))
-                    .as("an absent slot is named by the parameter it arrived as, because no slot"
-                            + " exists yet to name positionally")
                     .withMessageContaining("endDate");
 
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.attempted)
-                    .as("publish attempts after a rejected slot").isEmpty();
+            assertNothingWasPublished();
         }
 
         @Test
-        @DisplayName("the caller-supplied identity overload applies exactly the same slot rejection")
-        void theCallerSuppliedIdentityOverloadRejectsTheSameSlots() {
-            assertThatExceptionOfType(IllegalArgumentException.class)
+        @DisplayName("the caller-supplied-identity entry point refuses an absent date by naming the slot it belongs to, and publishes nothing")
+        void theIdentityBearingEntryPointRefusesAnAbsentDateBySlotName() {
+            assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> JobSubmissionServiceTest.this.service
-                            .submitTransactionReportJob("IDENTITY", "2026-01-'X", END_DATE))
-                    .withMessageContaining("PARM-START-DATE");
-
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.attempted)
-                    .as("publish attempts after a rejected slot").isEmpty();
-        }
-
-        @Test
-        @DisplayName("a structurally valid but impossible calendar date is rejected before any card is composed, because both slots are embedded in the sort include-condition and in the report parameter")
-        void aStructurallyValidNonCalendarDateIsRejected() {
-            // The slot passes the positional allowlist - eight digits and two separators in the right
-            // places - so only a calendar check can catch it. Left uncaught it would be embedded in
-            // the sort include-condition on cards 11 and 12 and in the report parameter on card 15,
-            // producing a job whose date window names no real interval. The check rejects and never
-            // converts, so an accepted slot still reaches its card as the caller's own bytes.
-            assertThatExceptionOfType(IllegalArgumentException.class)
+                            .submitTransactionReportJob(CALLER_SUBMISSION_ID, null, END_DATE))
+                    .withMessageContaining(JclCardImageBuilder.SLOT_PARM_START_DATE);
+            assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> JobSubmissionServiceTest.this.service
-                            .submitTransactionReportJob("9999-99-99", "0000-00-00"))
-                    .withMessageContaining("PARM-START-DATE")
-                    .withMessageContaining("day that exists");
+                            .submitTransactionReportJob(CALLER_SUBMISSION_ID, START_DATE, null))
+                    .withMessageContaining(JclCardImageBuilder.SLOT_PARM_END_DATE);
 
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.attempted)
-                    .as("publish attempts after a rejected slot").isEmpty();
-            assertThat(JobSubmissionServiceTest.this.sqsOperations.sendCallCount)
-                    .as("publish entries after a rejected slot").isZero();
+            assertNothingWasPublished();
         }
     }
 
     /**
-     * Measures a value in encoded bytes using the single-byte encoding the record width is defined
-     * in, so no width assertion is ever taken from a character count.
+     * Records what the service asked the queue to send for one card.
      *
-     * @param value the value to measure
-     * @return the value's length in encoded bytes
+     * <p>The service configures its message through the fluent options object the template hands it,
+     * so a recording implementation of that interface is the only way to observe the body, the
+     * message group and the deduplication identifier. The two settings the service must never make -
+     * a delivery delay and a message header, neither of which has a legacy antecedent - are counted
+     * rather than stored, so their absence can be asserted positively.
      */
-    private static int usAsciiLength(final String value) {
-        return value.getBytes(StandardCharsets.US_ASCII).length;
-    }
+    private static final class RecordedPublish implements SqsSendOptions<String> {
 
-    /**
-     * Produces a run of ASCII spaces for a hand-written expectation.
-     *
-     * @param count the number of spaces
-     * @return the padding run
-     */
-    private static String oracleSpaces(final int count) {
-        return " ".repeat(count);
-    }
-
-    /**
-     * Left justifies hand-written card content in the eighty-byte record frame.
-     *
-     * @param content the card content, before padding
-     * @return the eighty-byte card image
-     */
-    private static String oracleCard(final String content) {
-        final String cardImage = content + oracleSpaces(ORACLE_CARD_WIDTH - usAsciiLength(content));
-
-        assertThat(usAsciiLength(cardImage)).as("hand-written oracle card width for: " + content)
-                .isEqualTo(ORACLE_CARD_WIDTH);
-        return cardImage;
-    }
-
-    /**
-     * Produces a card image made entirely of one repeated character, for the two stream-terminating
-     * card shapes the legacy comparison recognises beside the sentinel.
-     *
-     * @param fill the character to fill the record with
-     * @return an eighty-byte card image consisting solely of {@code fill}
-     */
-    private static String uniformCard(final char fill) {
-        return String.valueOf(fill).repeat(ORACLE_CARD_WIDTH);
-    }
-
-    /**
-     * Reads the deduplication identifiers of a recorded message list, in publication order.
-     *
-     * @param messages the recorded messages
-     * @return their deduplication identifiers, in order
-     */
-    private static List<String> deduplicationIdsOf(final List<PublishedMessage> messages) {
-        final List<String> identifiers = new ArrayList<>(messages.size());
-        for (final PublishedMessage message : messages) {
-            identifiers.add(message.deduplicationId());
-        }
-        return List.copyOf(identifiers);
-    }
-
-    /**
-     * Reads the payloads of a recorded message list, in publication order.
-     *
-     * @param messages the recorded messages
-     * @return their payloads, in order
-     */
-    private static List<String> payloadsOf(final List<PublishedMessage> messages) {
-        final List<String> payloads = new ArrayList<>(messages.size());
-        for (final PublishedMessage message : messages) {
-            payloads.add(message.payload());
-        }
-        return List.copyOf(payloads);
-    }
-
-    /**
-     * One message as the recording double observed it, carrying every option the service set.
-     *
-     * @param queue           the destination the service named
-     * @param payload         the message body, exactly as supplied and never trimmed
-     * @param messageGroupId  the message group the service named
-     * @param deduplicationId the deduplication identifier the service composed
-     */
-    private record PublishedMessage(String queue, String payload, String messageGroupId,
-            String deduplicationId) {
-    }
-
-    /**
-     * Captures the options a single publish set, so the test can assert on them rather than on a
-     * lambda.
-     *
-     * @param <T> the payload type the service publishes
-     */
-    private static final class CapturingSendOptions<T> implements SqsSendOptions<T> {
-
+        /** The destination the card was addressed to. */
         private String queue;
-        private T payload;
+
+        /** The eighty-character card image, exactly as the service supplied it. */
+        private String payload;
+
+        /** The message group that carries this submission's cards in order. */
         private String messageGroupId;
-        private String deduplicationId;
-        private int headerCallCount;
-        private int delaySecondsCallCount;
+
+        /** The per-card deduplication identifier. */
+        private String messageDeduplicationId;
+
+        /** How many times a single header was set; the contract requires none. */
+        private int headerSettings;
+
+        /** How many times a header map was set; the contract requires none. */
+        private int headerMapSettings;
+
+        /** How many times a delivery delay was set; the contract requires none. */
+        private int delaySettings;
 
         @Override
-        public SqsSendOptions<T> queue(final String queueName) {
-            this.queue = queueName;
+        public SqsSendOptions<String> queue(final String destination) {
+            this.queue = destination;
             return this;
         }
 
         @Override
-        public SqsSendOptions<T> payload(final T messagePayload) {
-            this.payload = messagePayload;
+        public SqsSendOptions<String> payload(final String cardImage) {
+            this.payload = cardImage;
             return this;
         }
 
         @Override
-        public SqsSendOptions<T> header(final String name, final Object value) {
-            this.headerCallCount++;
+        public SqsSendOptions<String> header(final String name, final Object value) {
+            this.headerSettings++;
             return this;
         }
 
         @Override
-        public SqsSendOptions<T> headers(final Map<String, Object> messageHeaders) {
-            this.headerCallCount++;
+        public SqsSendOptions<String> headers(final Map<String, Object> values) {
+            this.headerMapSettings++;
             return this;
         }
 
         @Override
-        public SqsSendOptions<T> delaySeconds(final Integer delay) {
-            this.delaySecondsCallCount++;
+        public SqsSendOptions<String> delaySeconds(final Integer delay) {
+            this.delaySettings++;
             return this;
         }
 
         @Override
-        public SqsSendOptions<T> messageGroupId(final String groupId) {
+        public SqsSendOptions<String> messageGroupId(final String groupId) {
             this.messageGroupId = groupId;
             return this;
         }
 
         @Override
-        public SqsSendOptions<T> messageDeduplicationId(final String identifier) {
-            this.deduplicationId = identifier;
+        public SqsSendOptions<String> messageDeduplicationId(final String deduplicationId) {
+            this.messageDeduplicationId = deduplicationId;
             return this;
-        }
-    }
-
-    /**
-     * A recording messaging double that answers what actually reached the queue.
-     *
-     * <p>Only the options form of the publish entry point is implemented. Every other entry point of
-     * the messaging interface - the three convenience send forms, the batch send, and all six
-     * receive forms - raises an {@code AssertionError}, because the queue is defined
-     * {@code TYPEFILE(OUTPUT)} and the service must never reach for any of them. A publish-only
-     * violation therefore fails whichever test provoked it rather than passing unnoticed.
-     */
-    private static final class RecordingSqsOperations implements SqsOperations {
-
-        /** Every publish attempt, in order, whether it succeeded or failed. */
-        private final List<PublishedMessage> attempted = new ArrayList<>();
-
-        /** Only the attempts the queue accepted, in order. */
-        private final List<PublishedMessage> published = new ArrayList<>();
-
-        /** How many times the publish entry point was entered, including the failing attempt. */
-        private int sendCallCount;
-
-        /** The one-based publish call that must fail, or {@value #NEVER_FAILS} for none. */
-        private int failOnSendCall = NEVER_FAILS;
-
-        /** Headers and delays the service set, which for this contract must both stay at zero. */
-        private int headerCallCount;
-
-        /** Delay-second settings the service made, which must stay at zero. */
-        private int delaySecondsCallCount;
-
-        /**
-         * Schedules a publish failure on one attempt.
-         *
-         * @param oneBasedSendCall the publish attempt that must raise
-         */
-        void failOnSendCall(final int oneBasedSendCall) {
-            this.failOnSendCall = oneBasedSendCall;
-        }
-
-        @Override
-        public <T> SendResult<T> send(final Consumer<SqsSendOptions<T>> optionsConsumer) {
-            this.sendCallCount++;
-
-            final CapturingSendOptions<T> captured = new CapturingSendOptions<>();
-            optionsConsumer.accept(captured);
-            this.headerCallCount += captured.headerCallCount;
-            this.delaySecondsCallCount += captured.delaySecondsCallCount;
-
-            final T messagePayload =
-                    Objects.requireNonNull(captured.payload, "the service must set a payload");
-            final PublishedMessage attempt = new PublishedMessage(captured.queue,
-                    String.valueOf(messagePayload), captured.messageGroupId,
-                    captured.deduplicationId);
-            this.attempted.add(attempt);
-
-            if (this.sendCallCount == this.failOnSendCall) {
-                throw new IllegalStateException(CAUSE_TEXT);
-            }
-
-            this.published.add(attempt);
-            final Message<T> message = new GenericMessage<>(messagePayload);
-            return new SendResult<>(UUID.randomUUID(), captured.queue, message, Map.of());
-        }
-
-        @Override
-        public <T> SendResult<T> send(final T payload) {
-            throw publishOnlyViolation("send(payload)");
-        }
-
-        @Override
-        public <T> SendResult<T> send(final String queue, final T payload) {
-            throw publishOnlyViolation("send(queue, payload)");
-        }
-
-        @Override
-        public <T> SendResult<T> send(final String queue, final Message<T> message) {
-            throw publishOnlyViolation("send(queue, message)");
-        }
-
-        @Override
-        public <T> SendResult.Batch<T> sendMany(final String queue,
-                final Collection<Message<T>> messages) {
-            throw publishOnlyViolation("sendMany");
-        }
-
-        @Override
-        public Optional<Message<?>> receive() {
-            throw publishOnlyViolation("receive()");
-        }
-
-        @Override
-        public <T> Optional<Message<T>> receive(final String queue, final Class<T> payloadType) {
-            throw publishOnlyViolation("receive(queue, type)");
-        }
-
-        @Override
-        public Optional<Message<?>> receive(final Consumer<SqsReceiveOptions> options) {
-            throw publishOnlyViolation("receive(options)");
-        }
-
-        @Override
-        public <T> Optional<Message<T>> receive(final Consumer<SqsReceiveOptions> options,
-                final Class<T> payloadType) {
-            throw publishOnlyViolation("receive(options, type)");
-        }
-
-        @Override
-        public Collection<Message<?>> receiveMany() {
-            throw publishOnlyViolation("receiveMany()");
-        }
-
-        @Override
-        public <T> Collection<Message<T>> receiveMany(final String queue,
-                final Class<T> payloadType) {
-            throw publishOnlyViolation("receiveMany(queue, type)");
-        }
-
-        @Override
-        public Collection<Message<?>> receiveMany(final Consumer<SqsReceiveOptions> options) {
-            throw publishOnlyViolation("receiveMany(options)");
-        }
-
-        @Override
-        public <T> Collection<Message<T>> receiveMany(final Consumer<SqsReceiveOptions> options,
-                final Class<T> payloadType) {
-            throw publishOnlyViolation("receiveMany(options, type)");
-        }
-
-        /**
-         * Builds the failure raised when the service reaches an entry point the queue definition
-         * forbids.
-         *
-         * @param entryPoint the entry point that was reached
-         * @return the assertion failure to raise
-         */
-        private static AssertionError publishOnlyViolation(final String entryPoint) {
-            return new AssertionError("the job-submission queue is defined TYPEFILE(OUTPUT), so the"
-                    + " service must never call " + entryPoint);
         }
     }
 }

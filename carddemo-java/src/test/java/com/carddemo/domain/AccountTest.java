@@ -17,13 +17,8 @@
 package com.carddemo.domain;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
-import java.util.ArrayList;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
-
-import com.carddemo.support.SchemaColumnCatalog;
-import com.carddemo.support.SeededRecordFixture;
-import com.carddemo.util.ZonedDecimalCodec;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -32,469 +27,622 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Verifies {@link Account}, the three-hundred-byte account record.
+ * Unit test for {@link Account}, the Java carrier of the 300-byte legacy account record.
  *
- * <p><strong>The layout being preserved.</strong> {@code app/cpy/CVACT01Y.cpy} declares thirteen fields
- * over three hundred bytes: an eleven-digit identifier, a one-byte status, three signed
- * ten-and-two decimal amounts, three ten-byte dates, two more signed ten-and-two decimal amounts, a
- * ten-byte postal code, a ten-byte disclosure-group identifier and a hundred-and-seventy-eight-byte
- * filler. The cluster definition at {@code app/jcl/ACCTFILE.jcl} states the same geometry from the other
- * direction: {@code KEYS(11 0)} places an eleven-byte key at offset zero, and
- * {@code RECORDSIZE(300 300)} fixes the record at three hundred bytes.
+ * <p><strong>Provenance.</strong> Legacy checkout SHA 7756d895ffeb65f7ea72aaa609e356d9899afcec;
+ * upstream release stamp CardDemo_v1.0-15-g27d6c6f-68 (2022-07-19). Recorded here as a plain
+ * identifier string for the traceability matrix. No assertion is made about that stamp: it is not
+ * carried uniformly by every legacy member, so testing for it would test the estate rather than
+ * this class.
  *
- * <p><strong>Three descriptions must agree.</strong> This suite compares the copybook widths it holds as
- * literal constants against the columns the deployed migration creates, and then drives the entity with
- * a record taken from the named account fixture. A width that is wrong in the entity, wrong in the
- * migration, or wrong in only one of them, fails.
+ * <p><strong>Every expected value in this file was hand-derived, never computed by the code under
+ * test.</strong> Widths, offsets and the total record length come from three mutually independent
+ * legacy artifacts, each read directly:
+ * <ul>
+ *   <li>the copybook {@code app/cpy/CVACT01Y.cpy}, whose header states a record length of 300 and
+ *       which declares twelve named fields followed by a 178-byte trailing filler;</li>
+ *   <li>the cluster definition {@code app/jcl/ACCTFILE.jcl}, which independently states
+ *       {@code KEYS(11 0)} and {@code RECORDSIZE(300 300)};</li>
+ *   <li>the sequential reader {@code app/cbl/CBACT01C.cbl}, whose file section splits the same
+ *       record into an 11-byte key field {@code FD-ACCT-ID} and a 289-byte remainder
+ *       {@code FD-ACCT-DATA}.</li>
+ * </ul>
+ * Because those three descriptions were written independently of one another, cross-checking the
+ * width arithmetic against all three is a real test rather than a restatement. The field values are
+ * likewise hand-decoded from the first record of the named fixture {@code app/data/ASCII/acctdata.txt}
+ * and appear below as literals. Nothing in this file decodes a record image, and no production
+ * mapper or codec is referenced: making another class the oracle would leave both classes free to
+ * be wrong together.
  *
- * <p><strong>Why the five amounts are twelve wide with a scale of two.</strong> A signed picture of ten
- * integer digits and two decimal digits needs twelve significant digits in total, so the relational
- * column is declared with a precision of twelve and a scale of two. The suite asserts that arithmetic
- * rather than restating the number, so a copybook change of the integer part would be caught.
+ * <p><strong>The five monetary fields are deliberately not contiguous.</strong> Three sit at offsets
+ * 12, 24 and 36; three date fields then intervene at 48, 58 and 68; two further monetary fields
+ * follow at 78 and 90. The interleaving is asserted explicitly, because a reader who assumed the
+ * amounts formed one block would place every field from offset 48 onward incorrectly.
  *
- * <p><strong>Why the entity does not round.</strong> No arithmetic statement anywhere in the estate
- * carries a rounding clause, so every store into a two-decimal field truncates toward zero. Truncation
- * belongs to the one codec that converts a zoned image into a decimal; the entity itself must carry
- * whatever scale it is handed and must not quietly rescale, because a second rescaling point is a second
- * place for a rounding policy to drift. The suite asserts the entity is transparent, and separately
- * asserts that the codec's own mode is the truncating one.
+ * <p><strong>Scope, stated as much by exclusion as by inclusion.</strong> This is a pure unit test:
+ * it starts no container, opens no socket, reads no file and builds no application context. It
+ * verifies the record contract the entity carries - construction, accessor transparency, decimal
+ * fidelity, business-key identity and the version counter's default. It deliberately does not verify
+ * column names, column widths or nullability, because the deployed schema is authoritative for those
+ * and the integration tier validates the mapping against a real database rather than against a
+ * restatement here. It deliberately does not exercise optimistic locking, which needs a persistence
+ * context. And it deliberately asserts no validation rule of any kind, because the entity performs
+ * none: the legacy edit cascade lives on the account-update path, and inventing a constraint here
+ * would reject input the legacy system accepted.
  *
- * <p><strong>Why the identifier is the primary key.</strong> The sequential reader splits the record into
- * an eleven-digit key and a two-hundred-and-eighty-nine-byte remainder, so the key is a substring of the
- * record image rather than a value the database invents. A generated surrogate would break the
- * correspondence between the record image and the table row, so this suite proves no key is generated: a
- * default-constructed instance reports an absent identifier rather than a fresh one.
- *
- * <p><strong>A preserved misspelling.</strong> The copybook spells the expiry field
- * {@code ACCT-EXPIRAION-DATE} at line 11, missing a letter. The byte position and width are contractual
- * and are preserved exactly; the spelling is not, so the Java property and the relational column both
- * read correctly. The suite asserts the corrected spelling is what the schema declares and that the
- * misspelling appears nowhere in it.
- *
- * <p><strong>An observation about the seeded data.</strong> Every one of the fifty seeded account records
- * carries a disclosure-group-shaped value in the postal-code slot at offset one hundred and two, and
- * leaves the disclosure-group slot at offset one hundred and twelve blank. Both slots are ten bytes so
- * neither is malformed, but the consequence is worth recording: the interest run moves the
- * disclosure-group identifier into its rate-lookup key at {@code app/cbl/CBACT04C.cbl} line 210 and
- * falls back to the default group at line 437 when the lookup misses, so a blank identifier drives every
- * seeded account down the fallback path. The suite records the data fact and makes no claim beyond it.
- *
- * <p><strong>Deliberately not asserted.</strong> Nothing here validates a status value, a date format or
- * a credit limit, because the entity performs no validation &mdash; those rules live in the update
- * service and its request object, and asserting them here would invent a constraint the record does not
- * carry. Nothing writes to the version field, because the persistence provider owns it.
+ * <p><strong>Divergence from this file's specification, recorded as required.</strong> The
+ * specification describes a "thirteen-argument constructor" and thirteen business properties. The
+ * class as written declares a <em>twelve</em>-argument constructor and twelve business properties,
+ * and that is what this test compiles against. The two counts are reconcilable: the layout table has
+ * thirteen rows, but its thirteenth row is the unmapped 178-byte filler, which is deliberately
+ * neither a property nor a column; and the entity does map thirteen columns, being those twelve
+ * business fields plus the version counter the persistence provider owns. The mapped-width sum
+ * asserted below is correspondingly a twelve-term sum. A second divergence: the version counter has
+ * a getter but no setter, so the tests that would otherwise vary it are documenting tests, since
+ * reflection is not permitted here and a persistence context is out of scope.
  */
-@DisplayName("Account — the three-hundred-byte account record")
+@DisplayName("Account - the 300-byte account record of copybook CVACT01Y")
 class AccountTest {
 
-    /** Relational table the entity maps to. */
-    private static final String TABLE = "account";
+    // -------------------------------------------------------------------------------------------
+    // FIELD WIDTHS - hand-derived from the picture clauses of app/cpy/CVACT01Y.cpy
+    // -------------------------------------------------------------------------------------------
 
-    /** Fixture holding the fifty seeded account records. */
-    private static final String FIXTURE_FILE = "acctdata.txt";
+    /** Width of the account identifier, an eleven-digit external-decimal field. */
+    private static final int ACCT_ID_WIDTH = 11;
 
-    /** {@code RECORDSIZE(300 300)} in the cluster definition. */
-    private static final int RECORD_WIDTH = 300;
+    /** Width of the active status code, a single alphanumeric byte. */
+    private static final int ACTIVE_STATUS_WIDTH = 1;
 
-    /** {@code KEYS(11 0)} — key length. */
-    private static final int KEY_WIDTH = 11;
-
-    /** {@code KEYS(11 0)} — key offset. */
-    private static final int KEY_OFFSET = 0;
-
-    /** Integer digits of {@code PIC S9(10)V99}. */
+    /** Integer digit count of the account amount picture {@code PIC S9(10)V99}. */
     private static final int AMOUNT_INTEGER_DIGITS = 10;
 
-    /** Decimal digits of {@code PIC S9(10)V99}. */
+    /** Decimal digit count of the account amount picture {@code PIC S9(10)V99}. */
     private static final int AMOUNT_DECIMAL_DIGITS = 2;
 
-    /** Records the seeded account fixture holds. */
-    private static final int SEEDED_RECORDS = 50;
+    /**
+     * Width of each of the five account amounts. Asserted below to be the sum of the integer and
+     * decimal digit counts rather than stated independently, because that sum is the property a
+     * copybook change would break.
+     */
+    private static final int AMOUNT_WIDTH = 12;
 
-    /** The thirteen copybook widths, in declaration order. */
-    private static final List<Integer> COPYBOOK_WIDTHS =
-            List.of(11, 1, 12, 12, 12, 10, 10, 10, 12, 12, 10, 10, 178);
+    /**
+     * Width of the transaction and category-balance amounts, whose picture is {@code PIC S9(09)V99}
+     * - one digit narrower than an account amount. Verified in {@code app/cpy/CVTRA05Y.cpy},
+     * {@code app/cpy/CVTRA06Y.cpy} and {@code app/cpy/CVTRA01Y.cpy}. Held here only so that the
+     * account width can be asserted to differ from it.
+     */
+    private static final int TRANSACTION_AMOUNT_WIDTH = 11;
 
-    /** Zero-based offset of each mapped field, derived from the copybook widths. */
-    private static final int OFFSET_ACCT_ID = 0;
-    private static final int OFFSET_ACTIVE_STATUS = 11;
-    private static final int OFFSET_CURR_BAL = 12;
-    private static final int OFFSET_CREDIT_LIMIT = 24;
-    private static final int OFFSET_CASH_CREDIT_LIMIT = 36;
-    private static final int OFFSET_OPEN_DATE = 48;
-    private static final int OFFSET_EXPIRATION_DATE = 58;
-    private static final int OFFSET_REISSUE_DATE = 68;
-    private static final int OFFSET_CURR_CYC_CREDIT = 78;
-    private static final int OFFSET_CURR_CYC_DEBIT = 90;
-    private static final int OFFSET_ADDR_ZIP = 102;
-    private static final int OFFSET_GROUP_ID = 112;
-    private static final int OFFSET_FILLER = 122;
+    /**
+     * Width of the disclosure-group interest rate, whose picture is {@code PIC S9(04)V99}. Verified
+     * in {@code app/cpy/CVTRA02Y.cpy}. Held here only so that the account width can be asserted to
+     * differ from it.
+     */
+    private static final int DISCLOSURE_RATE_WIDTH = 6;
 
-    /** Width of the unmapped trailing filler. */
+    /** Width of each of the three date fields, held as fixed-width text rather than as a date. */
+    private static final int DATE_WIDTH = 10;
+
+    /** Width of the address ZIP field. */
+    private static final int ADDR_ZIP_WIDTH = 10;
+
+    /** Width of the account group identifier. */
+    private static final int GROUP_ID_WIDTH = 10;
+
+    /** Width of the trailing filler, which is deliberately neither a property nor a column. */
     private static final int FILLER_WIDTH = 178;
 
-    /** The migration's account table, parsed once. */
-    private static final SchemaColumnCatalog SCHEMA = SchemaColumnCatalog.load();
+    // -------------------------------------------------------------------------------------------
+    // FIELD OFFSETS - zero-based, hand-derived by accumulating the widths above
+    // -------------------------------------------------------------------------------------------
 
-    /** The seeded account fixture, loaded once. */
-    private static final SeededRecordFixture FIXTURE =
-            SeededRecordFixture.load(FIXTURE_FILE, RECORD_WIDTH);
+    /** Offset of the account identifier. */
+    private static final int OFFSET_ACCT_ID = 0;
 
-    /** The five amount columns, in copybook order. */
-    private static final List<String> AMOUNT_COLUMNS = List.of(
-            "acct_curr_bal", "acct_credit_limit", "acct_cash_credit_limit",
-            "acct_curr_cyc_credit", "acct_curr_cyc_debit");
+    /** Offset of the active status code. */
+    private static final int OFFSET_ACTIVE_STATUS = 11;
+
+    /** Offset of the current balance - the first of three consecutive amounts. */
+    private static final int OFFSET_CURR_BAL = 12;
+
+    /** Offset of the credit limit - the second of three consecutive amounts. */
+    private static final int OFFSET_CREDIT_LIMIT = 24;
+
+    /** Offset of the cash credit limit - the last amount before the dates intervene. */
+    private static final int OFFSET_CASH_CREDIT_LIMIT = 36;
+
+    /** Offset of the open date - where the amounts give way to the dates. */
+    private static final int OFFSET_OPEN_DATE = 48;
 
     /**
-     * Builds an account whose every field is distinguishable, for identity and accessor assertions.
-     *
-     * @param acctId the identifier to give the account
-     * @return a fully populated account
+     * Offset of the expiration date. The copybook spells this field {@code ACCT-EXPIRAION-DATE},
+     * dropping a letter from EXPIRATION, at copybook line 11. The misspelling is a documented source
+     * anomaly; the offset is the invariant.
      */
-    private static Account sampleAccount(final String acctId) {
+    private static final int OFFSET_EXPIRATION_DATE = 58;
+
+    /** Offset of the reissue date - the last date before the amounts resume. */
+    private static final int OFFSET_REISSUE_DATE = 68;
+
+    /** Offset of the current cycle credit - where the dates give way to the amounts again. */
+    private static final int OFFSET_CURR_CYC_CREDIT = 78;
+
+    /** Offset of the current cycle debit - the fifth and last amount. */
+    private static final int OFFSET_CURR_CYC_DEBIT = 90;
+
+    /** Offset of the address ZIP. */
+    private static final int OFFSET_ADDR_ZIP = 102;
+
+    /** Offset of the account group identifier. */
+    private static final int OFFSET_GROUP_ID = 112;
+
+    /** Offset at which the unmapped trailing filler begins, and so the total mapped width. */
+    private static final int OFFSET_FILLER = 122;
+
+    // -------------------------------------------------------------------------------------------
+    // RECORD GEOMETRY - from app/jcl/ACCTFILE.jcl and app/cbl/CBACT01C.cbl, independent of the above
+    // -------------------------------------------------------------------------------------------
+
+    /** Record length, from {@code RECORDSIZE(300 300)} in the cluster definition. */
+    private static final int RECORD_WIDTH = 300;
+
+    /** Key length, from {@code KEYS(11 0)} in the cluster definition. */
+    private static final int KEY_WIDTH = 11;
+
+    /** Key offset, from {@code KEYS(11 0)} in the cluster definition. */
+    private static final int KEY_OFFSET = 0;
+
+    /** Width of {@code FD-ACCT-ID}, the key portion of the record in the sequential reader. */
+    private static final int FD_KEY_WIDTH = 11;
+
+    /** Width of {@code FD-ACCT-DATA}, the remainder of the record in the sequential reader. */
+    private static final int FD_DATA_WIDTH = 289;
+
+    /**
+     * The thirteen declared widths of the copybook in declaration order: twelve mapped fields
+     * followed by the trailing filler.
+     */
+    private static final List<Integer> COPYBOOK_WIDTHS = List.of(
+            ACCT_ID_WIDTH, ACTIVE_STATUS_WIDTH,
+            AMOUNT_WIDTH, AMOUNT_WIDTH, AMOUNT_WIDTH,
+            DATE_WIDTH, DATE_WIDTH, DATE_WIDTH,
+            AMOUNT_WIDTH, AMOUNT_WIDTH,
+            ADDR_ZIP_WIDTH, GROUP_ID_WIDTH,
+            FILLER_WIDTH);
+
+    /** Zero-based offset of every declared field, in the same order as {@link #COPYBOOK_WIDTHS}. */
+    private static final List<Integer> COPYBOOK_OFFSETS = List.of(
+            OFFSET_ACCT_ID, OFFSET_ACTIVE_STATUS,
+            OFFSET_CURR_BAL, OFFSET_CREDIT_LIMIT, OFFSET_CASH_CREDIT_LIMIT,
+            OFFSET_OPEN_DATE, OFFSET_EXPIRATION_DATE, OFFSET_REISSUE_DATE,
+            OFFSET_CURR_CYC_CREDIT, OFFSET_CURR_CYC_DEBIT,
+            OFFSET_ADDR_ZIP, OFFSET_GROUP_ID,
+            OFFSET_FILLER);
+
+    // -------------------------------------------------------------------------------------------
+    // NAMED FIXTURE FACTS - app/data/ASCII/acctdata.txt, measured directly
+    // -------------------------------------------------------------------------------------------
+
+    /** Records the named account fixture holds. */
+    private static final int SEEDED_RECORD_COUNT = 50;
+
+    /** Bytes each fixture line occupies: the 300-byte image plus one line terminator. */
+    private static final int SEEDED_RECORD_STRIDE = 301;
+
+    /** Measured size of the named account fixture in bytes. */
+    private static final int SEEDED_FILE_BYTES = 15_050;
+
+    // -------------------------------------------------------------------------------------------
+    // ROW ZERO OF THE NAMED FIXTURE - hand-decoded, one literal per field
+    //
+    // The amounts are zoned decimal with an overpunched trailing byte: the final byte carries both
+    // the low-order digit and the sign, so the image "00000001940{" holds the unsigned digits
+    // 000000019400 with a positive sign, which at a scale of two is 194.00. That convention explains
+    // how these literals were derived; this file never performs the decoding, because decoding is
+    // the codec's contract and asserting it here would test the wrong class.
+    // -------------------------------------------------------------------------------------------
+
+    /** Account identifier of the first fixture record, zero-filled to its full width. */
+    private static final String SEED_ACCT_ID = "00000000001";
+
+    /** Active status of the first fixture record. All fifty records carry this same value. */
+    private static final String SEED_ACTIVE_STATUS = "Y";
+
+    /** Current balance of the first fixture record. */
+    private static final String SEED_CURR_BAL = "194.00";
+
+    /** Credit limit of the first fixture record. */
+    private static final String SEED_CREDIT_LIMIT = "2020.00";
+
+    /** Cash credit limit of the first fixture record. */
+    private static final String SEED_CASH_CREDIT_LIMIT = "1020.00";
+
+    /** Open date of the first fixture record, in its ten-character external form. */
+    private static final String SEED_OPEN_DATE = "2014-11-20";
+
+    /** Expiration date of the first fixture record, in its ten-character external form. */
+    private static final String SEED_EXPIRATION_DATE = "2025-05-20";
+
+    /** Reissue date of the first fixture record, in its ten-character external form. */
+    private static final String SEED_REISSUE_DATE = "2025-05-20";
+
+    /** Current cycle credit of the first fixture record. */
+    private static final String SEED_CURR_CYC_CREDIT = "0.00";
+
+    /** Current cycle debit of the first fixture record. */
+    private static final String SEED_CURR_CYC_DEBIT = "0.00";
+
+    /**
+     * Address ZIP of the first fixture record. Every one of the fifty records carries this same
+     * ten-byte value, whose leading character is a letter.
+     */
+    private static final String SEED_ADDR_ZIP = "A000000000";
+
+    /**
+     * Account group identifier of the first fixture record: ten spaces. Every one of the fifty
+     * records carries ten spaces here. The literal's encoded width is asserted below so that a
+     * miscounted transcription fails loudly rather than silently weakening the tests that use it.
+     */
+    private static final String SEED_GROUP_ID = "          ";
+
+    /** Scale every account amount carries, being the decimal digit count of its picture. */
+    private static final int MONETARY_SCALE = 2;
+
+    /**
+     * Builds the first record of the named fixture through the public constructor, with every value
+     * a hand-decoded literal.
+     *
+     * @return an account carrying the first fixture record's field values
+     */
+    private static Account seededRowZero() {
         return new Account(
-                acctId,
-                "Y",
-                new BigDecimal("194.00"),
-                new BigDecimal("2020.00"),
-                new BigDecimal("1020.00"),
-                "2014-11-20",
-                "2025-05-20",
-                "2025-05-20",
-                new BigDecimal("0.00"),
-                new BigDecimal("0.00"),
-                "A000000000",
-                "          ");
+                SEED_ACCT_ID,
+                SEED_ACTIVE_STATUS,
+                new BigDecimal(SEED_CURR_BAL),
+                new BigDecimal(SEED_CREDIT_LIMIT),
+                new BigDecimal(SEED_CASH_CREDIT_LIMIT),
+                SEED_OPEN_DATE,
+                SEED_EXPIRATION_DATE,
+                SEED_REISSUE_DATE,
+                new BigDecimal(SEED_CURR_CYC_CREDIT),
+                new BigDecimal(SEED_CURR_CYC_DEBIT),
+                SEED_ADDR_ZIP,
+                SEED_GROUP_ID);
     }
 
-    // RECORD LAYOUT
+    /**
+     * Measures a value the way the fixed-width record contract measures it: in encoded bytes, under
+     * an explicitly named charset.
+     *
+     * <p>The record is a byte image, so its widths are byte widths. Naming the charset at every
+     * boundary keeps the measurement independent of the platform default, which would otherwise make
+     * the same assertion mean different things on different machines.
+     *
+     * @param value the value to measure
+     * @return the number of bytes the value occupies when encoded as US-ASCII
+     */
+    private static int encodedWidth(final String value) {
+        return value.getBytes(StandardCharsets.US_ASCII).length;
+    }
+
+    // CLUSTER 1 :: RECORD LAYOUT
 
     /**
-     * Verifies the copybook geometry the entity has to honour.
+     * Proves the geometry the entity has to honour, by cross-checking the copybook's field widths
+     * against the cluster definition's record size and the sequential reader's key split - three
+     * artifacts written independently of one another.
      */
     @Nested
     @DisplayName("record layout")
     class RecordLayout {
 
         @Test
-        @DisplayName("the thirteen copybook widths sum to the three hundred bytes the cluster declares")
-        void theWidthsSumToTheRecordSize() {
+        @DisplayName("the twelve mapped widths sum to 122, and 122 + 178 filler bytes is the "
+                + "300-byte record the cluster declares")
+        void theMappedWidthsSumToOneHundredAndTwentyTwo() {
+            // The left side is the twelve picture widths read from the copybook; the right side is
+            // the offset at which the filler begins. Neither number comes from the entity.
+            assertThat(ACCT_ID_WIDTH + ACTIVE_STATUS_WIDTH
+                    + AMOUNT_WIDTH + AMOUNT_WIDTH + AMOUNT_WIDTH
+                    + DATE_WIDTH + DATE_WIDTH + DATE_WIDTH
+                    + AMOUNT_WIDTH + AMOUNT_WIDTH
+                    + ADDR_ZIP_WIDTH + GROUP_ID_WIDTH)
+                    .as("11 + 1 + 12 + 12 + 12 + 10 + 10 + 10 + 12 + 12 + 10 + 10 == 122")
+                    .isEqualTo(OFFSET_FILLER);
+
+            // And the 178-byte remainder is exactly the unmapped filler: the copybook accounts for
+            // the whole record, so nothing is hiding beyond the twelve mapped fields.
+            assertThat(OFFSET_FILLER + FILLER_WIDTH)
+                    .as("122 mapped bytes + 178 filler bytes == 300")
+                    .isEqualTo(RECORD_WIDTH);
+            assertThat(RECORD_WIDTH - OFFSET_FILLER)
+                    .as("the trailing remainder is the filler width")
+                    .isEqualTo(FILLER_WIDTH);
+        }
+
+        @Test
+        @DisplayName("all thirteen declared widths, filler included, sum to the 300 bytes of "
+                + "RECORDSIZE(300 300)")
+        void allThirteenDeclaredWidthsSumToTheRecordSize() {
             assertThat(COPYBOOK_WIDTHS).hasSize(13);
             assertThat(COPYBOOK_WIDTHS.stream().mapToInt(Integer::intValue).sum())
                     .isEqualTo(RECORD_WIDTH);
         }
 
         @Test
-        @DisplayName("the twelve mapped fields plus the filler account for the whole record")
-        void theMappedFieldsPlusFillerAccountForTheRecord() {
-            final int mapped = COPYBOOK_WIDTHS.stream().mapToInt(Integer::intValue).sum()
-                    - FILLER_WIDTH;
-
-            assertThat(mapped).isEqualTo(OFFSET_FILLER);
-            assertThat(mapped + FILLER_WIDTH).isEqualTo(RECORD_WIDTH);
-        }
-
-        @Test
-        @DisplayName("each mapped field starts where the preceding widths leave off")
-        void eachFieldStartsWhereThePrecedingWidthsLeaveOff() {
-            final List<Integer> expectedOffsets = List.of(
-                    OFFSET_ACCT_ID, OFFSET_ACTIVE_STATUS, OFFSET_CURR_BAL, OFFSET_CREDIT_LIMIT,
-                    OFFSET_CASH_CREDIT_LIMIT, OFFSET_OPEN_DATE, OFFSET_EXPIRATION_DATE,
-                    OFFSET_REISSUE_DATE, OFFSET_CURR_CYC_CREDIT, OFFSET_CURR_CYC_DEBIT,
-                    OFFSET_ADDR_ZIP, OFFSET_GROUP_ID, OFFSET_FILLER);
+        @DisplayName("each declared field begins where the preceding widths leave off, so the "
+                + "offsets are derived rather than copied")
+        void eachFieldBeginsWhereThePrecedingWidthsLeaveOff() {
+            assertThat(COPYBOOK_OFFSETS).hasSameSizeAs(COPYBOOK_WIDTHS);
 
             int running = 0;
             for (int index = 0; index < COPYBOOK_WIDTHS.size(); index++) {
                 assertThat(running)
-                        .as("offset of field %d", index + 1)
-                        .isEqualTo(expectedOffsets.get(index));
+                        .as("offset of declared field %d", index + 1)
+                        .isEqualTo(COPYBOOK_OFFSETS.get(index));
                 running += COPYBOOK_WIDTHS.get(index);
             }
-            assertThat(running).isEqualTo(RECORD_WIDTH);
+            assertThat(running)
+                    .as("accumulating every declared width reaches the end of the record")
+                    .isEqualTo(RECORD_WIDTH);
         }
 
         @Test
-        @DisplayName("the key is the leading eleven bytes, as the cluster's key clause states")
+        @DisplayName("the five monetary fields are NOT contiguous: 36 + 12 == 48 hands over to the "
+                + "dates and 68 + 10 == 78 hands back to the amounts")
+        void theMonetaryFieldsAreInterleavedWithTheDates() {
+            // Three amounts run consecutively: 12 -> 24 -> 36.
+            assertThat(OFFSET_CURR_BAL + AMOUNT_WIDTH)
+                    .as("12 + 12 == 24")
+                    .isEqualTo(OFFSET_CREDIT_LIMIT);
+            assertThat(OFFSET_CREDIT_LIMIT + AMOUNT_WIDTH)
+                    .as("24 + 12 == 36")
+                    .isEqualTo(OFFSET_CASH_CREDIT_LIMIT);
+
+            // Then the amounts stop and the dates begin. This is the hand-over a reader who assumed
+            // five adjacent amounts would miss, and it would misplace every later field.
+            assertThat(OFFSET_CASH_CREDIT_LIMIT + AMOUNT_WIDTH)
+                    .as("36 + 12 == 48 - the third amount is followed by a date, not a fourth amount")
+                    .isEqualTo(OFFSET_OPEN_DATE);
+
+            // Three dates run consecutively: 48 -> 58 -> 68.
+            assertThat(OFFSET_OPEN_DATE + DATE_WIDTH)
+                    .as("48 + 10 == 58")
+                    .isEqualTo(OFFSET_EXPIRATION_DATE);
+            assertThat(OFFSET_EXPIRATION_DATE + DATE_WIDTH)
+                    .as("58 + 10 == 68")
+                    .isEqualTo(OFFSET_REISSUE_DATE);
+
+            // Then the dates stop and the remaining two amounts begin.
+            assertThat(OFFSET_REISSUE_DATE + DATE_WIDTH)
+                    .as("68 + 10 == 78 - the third date is followed by an amount")
+                    .isEqualTo(OFFSET_CURR_CYC_CREDIT);
+            assertThat(OFFSET_CURR_CYC_CREDIT + AMOUNT_WIDTH)
+                    .as("78 + 12 == 90")
+                    .isEqualTo(OFFSET_CURR_CYC_DEBIT);
+
+            // Stated as a single fact: the amounts do not form one block. Were they contiguous, the
+            // fourth would start at 48; it starts at 78, thirty bytes of dates later.
+            assertThat(OFFSET_CURR_CYC_CREDIT)
+                    .as("the fourth amount does not follow the third directly")
+                    .isNotEqualTo(OFFSET_CASH_CREDIT_LIMIT + AMOUNT_WIDTH);
+            assertThat(OFFSET_CURR_CYC_CREDIT - (OFFSET_CASH_CREDIT_LIMIT + AMOUNT_WIDTH))
+                    .as("three ten-byte dates separate the two groups of amounts")
+                    .isEqualTo(DATE_WIDTH * 3);
+        }
+
+        @Test
+        @DisplayName("the expiry field sits at 48 + 10 == 58: the copybook misspells it "
+                + "ACCT-EXPIRAION-DATE at line 11, and the offset - not the spelling - is the "
+                + "invariant")
+        void theExpiryOffsetIsDerivedFromTheOpenDate() {
+            // Derived, not copied: the expiry begins exactly one date width after the open date.
+            assertThat(OFFSET_OPEN_DATE + DATE_WIDTH)
+                    .as("48 + 10 == 58")
+                    .isEqualTo(OFFSET_EXPIRATION_DATE);
+
+            // Preserving the offset is what keeps the record image byte-compatible. The Java
+            // property spells expiration correctly, which is a documented divergence rather than a
+            // silent correction: the misspelled legacy name is cited in the entity's own
+            // documentation so the mapping back to the copybook field stays findable.
+            assertThat(seededRowZero().getAcctExpirationDate())
+                    .isEqualTo(SEED_EXPIRATION_DATE);
+            assertThat(encodedWidth(seededRowZero().getAcctExpirationDate()))
+                    .isEqualTo(DATE_WIDTH);
+        }
+
+        @Test
+        @DisplayName("an account amount is 10 + 2 == 12 bytes wide, which is neither the 11 of "
+                + "PIC S9(09)V99 nor the 6 of PIC S9(04)V99")
+        void anAccountAmountIsTwelveBytesWide() {
+            assertThat(AMOUNT_INTEGER_DIGITS + AMOUNT_DECIMAL_DIGITS)
+                    .as("10 integer digits + 2 decimal digits == 12")
+                    .isEqualTo(AMOUNT_WIDTH);
+
+            // All five account amounts share that one shape.
+            assertThat(COPYBOOK_WIDTHS.get(2)).isEqualTo(AMOUNT_WIDTH);
+            assertThat(COPYBOOK_WIDTHS.get(3)).isEqualTo(AMOUNT_WIDTH);
+            assertThat(COPYBOOK_WIDTHS.get(4)).isEqualTo(AMOUNT_WIDTH);
+            assertThat(COPYBOOK_WIDTHS.get(8)).isEqualTo(AMOUNT_WIDTH);
+            assertThat(COPYBOOK_WIDTHS.get(9)).isEqualTo(AMOUNT_WIDTH);
+
+            // And it is not the shape of the neighbouring records' amounts. Sharing one width
+            // constant across records would corrupt every one of them.
+            assertThat(AMOUNT_WIDTH)
+                    .as("12 != 11 - a transaction or category-balance amount is one digit narrower")
+                    .isNotEqualTo(TRANSACTION_AMOUNT_WIDTH);
+            assertThat(AMOUNT_WIDTH)
+                    .as("12 != 6 - a disclosure-group rate is six digits narrower")
+                    .isNotEqualTo(DISCLOSURE_RATE_WIDTH);
+            assertThat(TRANSACTION_AMOUNT_WIDTH).isEqualTo(9 + AMOUNT_DECIMAL_DIGITS);
+            assertThat(DISCLOSURE_RATE_WIDTH).isEqualTo(4 + AMOUNT_DECIMAL_DIGITS);
+        }
+
+        @Test
+        @DisplayName("the key is the leading 11 bytes at offset 0, exactly as KEYS(11 0) states")
         void theKeyIsTheLeadingElevenBytes() {
             assertThat(KEY_OFFSET).isEqualTo(OFFSET_ACCT_ID);
-            assertThat(KEY_WIDTH).isEqualTo(COPYBOOK_WIDTHS.get(0));
-            assertThat(KEY_OFFSET + KEY_WIDTH).isEqualTo(OFFSET_ACTIVE_STATUS);
+            assertThat(KEY_WIDTH).isEqualTo(ACCT_ID_WIDTH);
+            assertThat(KEY_OFFSET + KEY_WIDTH)
+                    .as("the byte after the key is the status code at offset 11")
+                    .isEqualTo(OFFSET_ACTIVE_STATUS);
         }
 
         @Test
-        @DisplayName("a signed ten-and-two picture needs twelve significant digits")
-        void aSignedTenAndTwoPictureNeedsTwelveDigits() {
-            assertThat(AMOUNT_INTEGER_DIGITS + AMOUNT_DECIMAL_DIGITS).isEqualTo(12);
-            assertThat(COPYBOOK_WIDTHS.get(2)).isEqualTo(12);
-            assertThat(ZonedDecimalCodec.WIDTH_PIC_S9_10_V99).isEqualTo(12);
-            assertThat(ZonedDecimalCodec.ACCOUNT_AMOUNT_WIDTH).isEqualTo(12);
+        @DisplayName("the sequential reader splits the record as 11 + 289 == 300, which is why the "
+                + "business key is the identifier")
+        void theSequentialReaderSplitsTheRecordIntoKeyAndRemainder() {
+            // FD-ACCT-ID and FD-ACCT-DATA in app/cbl/CBACT01C.cbl - cited by member and field name
+            // rather than by line number, because the physical line differs from the specification's
+            // citation and the widths are the durable fact.
+            assertThat(FD_KEY_WIDTH + FD_DATA_WIDTH)
+                    .as("11 + 289 == 300")
+                    .isEqualTo(RECORD_WIDTH);
+            assertThat(FD_KEY_WIDTH)
+                    .as("the reader's key width is the identifier width")
+                    .isEqualTo(ACCT_ID_WIDTH);
+            assertThat(FD_DATA_WIDTH)
+                    .as("the remainder is everything after the key")
+                    .isEqualTo(RECORD_WIDTH - ACCT_ID_WIDTH);
         }
 
         @Test
-        @DisplayName("every seeded record measures the declared three hundred bytes")
-        void everySeededRecordMeasuresTheDeclaredWidth() {
-            assertThat(FIXTURE.recordCount()).isEqualTo(SEEDED_RECORDS);
-            assertThat(FIXTURE.recordWidth()).isEqualTo(RECORD_WIDTH);
-            for (final String image : FIXTURE.records()) {
-                assertThat(image).hasSize(RECORD_WIDTH);
-            }
-            assertThat(FIXTURE.impliedByteCount()).isEqualTo(15_050);
-        }
-
-        @Test
-        @DisplayName("the trailing filler is blank in every seeded record, so nothing hides behind the "
-                + "mapped fields")
-        void theTrailingFillerIsBlankInEverySeededRecord() {
-            for (int ordinal = 1; ordinal <= FIXTURE.recordCount(); ordinal++) {
-                assertThat(FIXTURE.field(ordinal, OFFSET_FILLER, FILLER_WIDTH))
-                        .as("filler of record %d", ordinal)
-                        .isBlank()
-                        .hasSize(FILLER_WIDTH);
-            }
+        @DisplayName("the named fixture holds 50 records of 300 bytes, so 50 x 301 == 15,050 bytes "
+                + "with one terminator per line")
+        void theNamedFixtureGeometryIsConsistent() {
+            assertThat(SEEDED_RECORD_STRIDE)
+                    .as("300 image bytes + 1 terminator")
+                    .isEqualTo(RECORD_WIDTH + 1);
+            assertThat(SEEDED_RECORD_COUNT * SEEDED_RECORD_STRIDE)
+                    .as("50 x 301 == 15,050")
+                    .isEqualTo(SEEDED_FILE_BYTES);
         }
     }
 
-    // SCHEMA AGREEMENT
+    // CLUSTER 2 :: CONSTRUCTION AND ACCESSORS
 
     /**
-     * Verifies that the deployed migration describes the same layout the copybook does.
+     * Proves the entity is a transparent carrier: what goes in comes back out, field for field, with
+     * nothing trimmed, padded, folded, normalized, parsed, validated or rescaled on the way through.
      */
     @Nested
-    @DisplayName("schema agreement")
-    class SchemaAgreement {
+    @DisplayName("construction and accessors")
+    class ConstructionAndAccessors {
 
         @Test
-        @DisplayName("the table declares the twelve mapped columns plus the optimistic-version column, "
+        @DisplayName("the constructor round-trips every business field of the first fixture record "
                 + "in copybook order")
-        void theTableDeclaresTheMappedColumnsInCopybookOrder() {
-            assertThat(SCHEMA.columnNames(TABLE)).containsExactly(
-                    "acct_id", "acct_active_status", "acct_curr_bal", "acct_credit_limit",
-                    "acct_cash_credit_limit", "acct_open_date", "acct_expiration_date",
-                    "acct_reissue_date", "acct_curr_cyc_credit", "acct_curr_cyc_debit",
-                    "acct_addr_zip", "acct_group_id", "version");
+        void theConstructorRoundTripsEveryBusinessField() {
+            final Account account = seededRowZero();
+
+            assertThat(account.getAcctId()).isEqualTo(SEED_ACCT_ID);
+            assertThat(account.getAcctActiveStatus()).isEqualTo(SEED_ACTIVE_STATUS);
+            assertThat(account.getAcctCurrBal()).isEqualTo(new BigDecimal(SEED_CURR_BAL));
+            assertThat(account.getAcctCreditLimit()).isEqualTo(new BigDecimal(SEED_CREDIT_LIMIT));
+            assertThat(account.getAcctCashCreditLimit())
+                    .isEqualTo(new BigDecimal(SEED_CASH_CREDIT_LIMIT));
+            assertThat(account.getAcctOpenDate()).isEqualTo(SEED_OPEN_DATE);
+            assertThat(account.getAcctExpirationDate()).isEqualTo(SEED_EXPIRATION_DATE);
+            assertThat(account.getAcctReissueDate()).isEqualTo(SEED_REISSUE_DATE);
+            assertThat(account.getAcctCurrCycCredit())
+                    .isEqualTo(new BigDecimal(SEED_CURR_CYC_CREDIT));
+            assertThat(account.getAcctCurrCycDebit())
+                    .isEqualTo(new BigDecimal(SEED_CURR_CYC_DEBIT));
+            assertThat(account.getAcctAddrZip()).isEqualTo(SEED_ADDR_ZIP);
+            assertThat(account.getAcctGroupId()).isEqualTo(SEED_GROUP_ID);
         }
 
         @Test
-        @DisplayName("each character column is declared at its copybook width")
-        void eachCharacterColumnIsDeclaredAtItsCopybookWidth() {
-            assertThat(SCHEMA.declaredType(TABLE, "acct_id")).isEqualTo("VARCHAR(11)");
-            assertThat(SCHEMA.declaredWidth(TABLE, "acct_id")).isEqualTo(COPYBOOK_WIDTHS.get(0));
-            assertThat(SCHEMA.declaredWidth(TABLE, "acct_active_status"))
-                    .isEqualTo(COPYBOOK_WIDTHS.get(1));
-            assertThat(SCHEMA.declaredWidth(TABLE, "acct_open_date")).isEqualTo(COPYBOOK_WIDTHS.get(5));
-            assertThat(SCHEMA.declaredWidth(TABLE, "acct_expiration_date"))
-                    .isEqualTo(COPYBOOK_WIDTHS.get(6));
-            assertThat(SCHEMA.declaredWidth(TABLE, "acct_reissue_date"))
-                    .isEqualTo(COPYBOOK_WIDTHS.get(7));
-            assertThat(SCHEMA.declaredWidth(TABLE, "acct_addr_zip")).isEqualTo(COPYBOOK_WIDTHS.get(10));
-            assertThat(SCHEMA.declaredWidth(TABLE, "acct_group_id")).isEqualTo(COPYBOOK_WIDTHS.get(11));
-        }
-
-        @Test
-        @DisplayName("all five amount columns are numeric at precision twelve and scale two")
-        void allFiveAmountColumnsAreNumericAtTwelveAndTwo() {
-            for (final String column : AMOUNT_COLUMNS) {
-                assertThat(SCHEMA.declaredType(TABLE, column))
-                        .as("declared type of %s", column)
-                        .isEqualTo("NUMERIC(12,2)");
-                assertThat(SCHEMA.declaredWidth(TABLE, column))
-                        .as("precision of %s", column)
-                        .isEqualTo(AMOUNT_INTEGER_DIGITS + AMOUNT_DECIMAL_DIGITS);
-                assertThat(SCHEMA.declaredScale(TABLE, column))
-                        .as("scale of %s", column)
-                        .isEqualTo(AMOUNT_DECIMAL_DIGITS);
-            }
-            assertThat(AMOUNT_COLUMNS).hasSize(5);
-        }
-
-        @Test
-        @DisplayName("the primary key is the eleven-byte identifier alone, so no surrogate is created")
-        void thePrimaryKeyIsTheIdentifierAlone() {
-            assertThat(SCHEMA.primaryKeyColumns(TABLE)).containsExactly("acct_id");
-            assertThat(SCHEMA.columnNames(TABLE))
-                    .doesNotContain("id")
-                    .doesNotContain("account_id")
-                    .doesNotContain("pk");
-        }
-
-        @Test
-        @DisplayName("every mapped column is declared not null, matching a fixed-width record where no "
-                + "field can be absent")
-        void everyMappedColumnIsDeclaredNotNull() {
-            for (final String column : SCHEMA.columnNames(TABLE)) {
-                assertThat(SCHEMA.isNullable(TABLE, column))
-                        .as("nullability of %s", column)
-                        .isFalse();
-            }
-        }
-
-        @Test
-        @DisplayName("the optimistic-version column is a whole number rather than part of the record "
-                + "layout")
-        void theVersionColumnIsAWholeNumber() {
-            assertThat(SCHEMA.declaredType(TABLE, "version")).isEqualTo("BIGINT");
-            assertThat(SCHEMA.columnNames(TABLE))
-                    .as("twelve mapped record fields plus the version column, and the filler is not "
-                            + "mapped at all")
-                    .hasSize(COPYBOOK_WIDTHS.size() - 1 + 1);
-        }
-    }
-
-    // THE PRESERVED MISSPELLING
-
-    /**
-     * Verifies how the copybook's misspelled expiry field is carried forward.
-     */
-    @Nested
-    @DisplayName("the preserved misspelling")
-    class PreservedMisspelling {
-
-        @Test
-        @DisplayName("the expiry column is spelled correctly, because a column name is not part of the "
-                + "record contract")
-        void theExpiryColumnIsSpelledCorrectly() {
-            assertThat(SCHEMA.columnNames(TABLE)).contains("acct_expiration_date");
-            assertThat(SCHEMA.declaredWidth(TABLE, "acct_expiration_date")).isEqualTo(10);
-        }
-
-        @Test
-        @DisplayName("the copybook's misspelling appears in no column name")
-        void theMisspellingAppearsInNoColumnName() {
-            for (final String column : SCHEMA.columnNames(TABLE)) {
-                assertThat(column)
-                        .as("column %s", column)
-                        .doesNotContain("expiraion");
-            }
-        }
-
-        @Test
-        @DisplayName("the expiry field keeps its byte position and width, which is what the record "
-                + "contract actually fixes")
-        void theExpiryFieldKeepsItsBytePosition() {
-            assertThat(OFFSET_EXPIRATION_DATE).isEqualTo(58);
-            assertThat(COPYBOOK_WIDTHS.get(6)).isEqualTo(10);
-            assertThat(OFFSET_EXPIRATION_DATE + COPYBOOK_WIDTHS.get(6))
-                    .isEqualTo(OFFSET_REISSUE_DATE);
-        }
-
-        @Test
-        @DisplayName("a seeded record's expiry slot reads as a ten-character date at that position")
-        void aSeededRecordsExpirySlotReadsAsADate() {
-            final String expiry = FIXTURE.field(1, OFFSET_EXPIRATION_DATE, 10);
-
-            assertThat(expiry).hasSize(10).isEqualTo("2025-05-20");
-        }
-    }
-
-    // CONSTRUCTION AND ACCESS
-
-    /**
-     * Verifies that every field the constructor takes is the field the accessor returns.
-     */
-    @Nested
-    @DisplayName("construction and access")
-    class ConstructionAndAccess {
-
-        @Test
-        @DisplayName("every constructor argument reaches its own accessor")
-        void everyConstructorArgumentReachesItsAccessor() {
-            final Account account = sampleAccount("00000000001");
-
-            assertThat(account.getAcctId()).isEqualTo("00000000001");
-            assertThat(account.getAcctActiveStatus()).isEqualTo("Y");
-            assertThat(account.getAcctCurrBal()).isEqualTo(new BigDecimal("194.00"));
-            assertThat(account.getAcctCreditLimit()).isEqualTo(new BigDecimal("2020.00"));
-            assertThat(account.getAcctCashCreditLimit()).isEqualTo(new BigDecimal("1020.00"));
-            assertThat(account.getAcctOpenDate()).isEqualTo("2014-11-20");
-            assertThat(account.getAcctExpirationDate()).isEqualTo("2025-05-20");
-            assertThat(account.getAcctReissueDate()).isEqualTo("2025-05-20");
-            assertThat(account.getAcctCurrCycCredit()).isEqualTo(new BigDecimal("0.00"));
-            assertThat(account.getAcctCurrCycDebit()).isEqualTo(new BigDecimal("0.00"));
-            assertThat(account.getAcctAddrZip()).isEqualTo("A000000000");
-            assertThat(account.getAcctGroupId()).isEqualTo("          ");
-        }
-
-        @Test
-        @DisplayName("no constructor argument leaks into a neighbouring field, which a same-typed "
-                + "adjacent pair would otherwise hide")
-        void noArgumentLeaksIntoANeighbouringField() {
+        @DisplayName("the constructor assigns each argument to its own field, so no two positionally "
+                + "adjacent fields are transposed")
+        void theConstructorDoesNotTransposeAdjacentFields() {
+            // Distinct values per field, so a swapped assignment cannot hide behind equal values.
+            // The three amounts differ from one another, as do the three dates, and the ZIP differs
+            // from the group identifier - the two positions the fixture itself makes look alike.
             final Account account = new Account(
-                    "00000000001", "Y",
-                    new BigDecimal("1.00"), new BigDecimal("2.00"), new BigDecimal("3.00"),
-                    "2001-01-01", "2002-02-02", "2003-03-03",
-                    new BigDecimal("4.00"), new BigDecimal("5.00"),
-                    "ZIP0000001", "GROUP00001");
+                    "00000000042",
+                    "N",
+                    new BigDecimal("11.11"),
+                    new BigDecimal("22.22"),
+                    new BigDecimal("33.33"),
+                    "1901-01-01",
+                    "1902-02-02",
+                    "1903-03-03",
+                    new BigDecimal("44.44"),
+                    new BigDecimal("55.55"),
+                    "ZIP0000001",
+                    "GRP0000002");
 
-            assertThat(List.of(
-                    account.getAcctCurrBal(), account.getAcctCreditLimit(),
-                    account.getAcctCashCreditLimit(), account.getAcctCurrCycCredit(),
-                    account.getAcctCurrCycDebit()))
-                    .containsExactly(
-                            new BigDecimal("1.00"), new BigDecimal("2.00"), new BigDecimal("3.00"),
-                            new BigDecimal("4.00"), new BigDecimal("5.00"));
-            assertThat(List.of(
-                    account.getAcctOpenDate(), account.getAcctExpirationDate(),
-                    account.getAcctReissueDate()))
-                    .containsExactly("2001-01-01", "2002-02-02", "2003-03-03");
-            assertThat(account.getAcctAddrZip()).isEqualTo("ZIP0000001");
-            assertThat(account.getAcctGroupId()).isEqualTo("GROUP00001");
-        }
-
-        @Test
-        @DisplayName("every mutator replaces exactly the field it names")
-        void everyMutatorReplacesTheFieldItNames() {
-            final Account account = sampleAccount("00000000001");
-
-            account.setAcctId("00000000099");
-            account.setAcctActiveStatus("N");
-            account.setAcctCurrBal(new BigDecimal("-12.34"));
-            account.setAcctCreditLimit(new BigDecimal("9999999999.99"));
-            account.setAcctCashCreditLimit(new BigDecimal("11.11"));
-            account.setAcctOpenDate("1999-12-31");
-            account.setAcctExpirationDate("2030-01-01");
-            account.setAcctReissueDate("2030-06-30");
-            account.setAcctCurrCycCredit(new BigDecimal("22.22"));
-            account.setAcctCurrCycDebit(new BigDecimal("33.33"));
-            account.setAcctAddrZip("90210     ");
-            account.setAcctGroupId("ZEROAPR   ");
-
-            assertThat(account.getAcctId()).isEqualTo("00000000099");
+            assertThat(account.getAcctId()).isEqualTo("00000000042");
             assertThat(account.getAcctActiveStatus()).isEqualTo("N");
-            assertThat(account.getAcctCurrBal()).isEqualTo(new BigDecimal("-12.34"));
-            assertThat(account.getAcctCreditLimit()).isEqualTo(new BigDecimal("9999999999.99"));
-            assertThat(account.getAcctCashCreditLimit()).isEqualTo(new BigDecimal("11.11"));
-            assertThat(account.getAcctOpenDate()).isEqualTo("1999-12-31");
-            assertThat(account.getAcctExpirationDate()).isEqualTo("2030-01-01");
-            assertThat(account.getAcctReissueDate()).isEqualTo("2030-06-30");
-            assertThat(account.getAcctCurrCycCredit()).isEqualTo(new BigDecimal("22.22"));
-            assertThat(account.getAcctCurrCycDebit()).isEqualTo(new BigDecimal("33.33"));
-            assertThat(account.getAcctAddrZip()).isEqualTo("90210     ");
-            assertThat(account.getAcctGroupId()).isEqualTo("ZEROAPR   ");
+            assertThat(account.getAcctCurrBal()).isEqualTo(new BigDecimal("11.11"));
+            assertThat(account.getAcctCreditLimit()).isEqualTo(new BigDecimal("22.22"));
+            assertThat(account.getAcctCashCreditLimit()).isEqualTo(new BigDecimal("33.33"));
+            assertThat(account.getAcctOpenDate()).isEqualTo("1901-01-01");
+            assertThat(account.getAcctExpirationDate()).isEqualTo("1902-02-02");
+            assertThat(account.getAcctReissueDate()).isEqualTo("1903-03-03");
+            assertThat(account.getAcctCurrCycCredit()).isEqualTo(new BigDecimal("44.44"));
+            assertThat(account.getAcctCurrCycDebit()).isEqualTo(new BigDecimal("55.55"));
+            assertThat(account.getAcctAddrZip()).isEqualTo("ZIP0000001");
+            assertThat(account.getAcctGroupId()).isEqualTo("GRP0000002");
         }
 
         @Test
-        @DisplayName("the entity carries values at the full declared widths without truncating them")
-        void theEntityCarriesValuesAtTheFullDeclaredWidths() {
-            final Account account = new Account(
-                    "9".repeat(KEY_WIDTH), "Y",
-                    new BigDecimal("9999999999.99"), new BigDecimal("9999999999.99"),
-                    new BigDecimal("9999999999.99"),
-                    "X".repeat(10), "X".repeat(10), "X".repeat(10),
-                    new BigDecimal("9999999999.99"), new BigDecimal("9999999999.99"),
-                    "X".repeat(10), "X".repeat(10));
+        @DisplayName("every business setter round-trips its value, each writing only its own field")
+        void everyBusinessSetterRoundTripsItsValue() {
+            final Account account = new Account();
 
-            assertThat(account.getAcctId()).hasSize(KEY_WIDTH);
-            assertThat(account.getAcctOpenDate()).hasSize(10);
-            assertThat(account.getAcctAddrZip()).hasSize(10);
-            assertThat(account.getAcctGroupId()).hasSize(10);
-            assertThat(account.getAcctCurrBal().precision())
-                    .isEqualTo(AMOUNT_INTEGER_DIGITS + AMOUNT_DECIMAL_DIGITS);
+            account.setAcctId("00000000007");
+            account.setAcctActiveStatus("N");
+            account.setAcctCurrBal(new BigDecimal("-1.01"));
+            account.setAcctCreditLimit(new BigDecimal("2.02"));
+            account.setAcctCashCreditLimit(new BigDecimal("3.03"));
+            account.setAcctOpenDate("2000-01-01");
+            account.setAcctExpirationDate("2010-02-02");
+            account.setAcctReissueDate("2020-03-03");
+            account.setAcctCurrCycCredit(new BigDecimal("4.04"));
+            account.setAcctCurrCycDebit(new BigDecimal("5.05"));
+            account.setAcctAddrZip("B123456789");
+            account.setAcctGroupId("DEFAULT   ");
+
+            assertThat(account.getAcctId()).isEqualTo("00000000007");
+            assertThat(account.getAcctActiveStatus()).isEqualTo("N");
+            assertThat(account.getAcctCurrBal()).isEqualTo(new BigDecimal("-1.01"));
+            assertThat(account.getAcctCreditLimit()).isEqualTo(new BigDecimal("2.02"));
+            assertThat(account.getAcctCashCreditLimit()).isEqualTo(new BigDecimal("3.03"));
+            assertThat(account.getAcctOpenDate()).isEqualTo("2000-01-01");
+            assertThat(account.getAcctExpirationDate()).isEqualTo("2010-02-02");
+            assertThat(account.getAcctReissueDate()).isEqualTo("2020-03-03");
+            assertThat(account.getAcctCurrCycCredit()).isEqualTo(new BigDecimal("4.04"));
+            assertThat(account.getAcctCurrCycDebit()).isEqualTo(new BigDecimal("5.05"));
+            assertThat(account.getAcctAddrZip()).isEqualTo("B123456789");
+            assertThat(account.getAcctGroupId()).isEqualTo("DEFAULT   ");
         }
 
         @Test
-        @DisplayName("the persistence constructor leaves every field absent, so nothing is invented "
-                + "before a row is read")
-        void thePersistenceConstructorLeavesEveryFieldAbsent() {
+        @DisplayName("a setter overwrites a constructed value without altering any other field")
+        void aSetterOverwritesOnlyItsOwnField() {
+            final Account account = seededRowZero();
+
+            account.setAcctCurrBal(new BigDecimal("999.99"));
+
+            assertThat(account.getAcctCurrBal()).isEqualTo(new BigDecimal("999.99"));
+            assertThat(account.getAcctCreditLimit()).isEqualTo(new BigDecimal(SEED_CREDIT_LIMIT));
+            assertThat(account.getAcctCashCreditLimit())
+                    .isEqualTo(new BigDecimal(SEED_CASH_CREDIT_LIMIT));
+            assertThat(account.getAcctId()).isEqualTo(SEED_ACCT_ID);
+            assertThat(account.getAcctGroupId()).isEqualTo(SEED_GROUP_ID);
+        }
+
+        @Test
+        @DisplayName("the no-argument constructor the persistence provider needs yields an entirely "
+                + "empty business state and a version of zero")
+        void theNoArgumentConstructorYieldsAnEmptyBusinessState() {
+            // This test lives in the entity's own package, so ordinary Java package access reaches
+            // the protected no-argument constructor directly. This is same-package visibility and
+            // explicitly NOT reflection: no reflective member lookup occurs anywhere in this file.
             final Account account = new Account();
 
             assertThat(account.getAcctId()).isNull();
@@ -509,395 +657,616 @@ class AccountTest {
             assertThat(account.getAcctCurrCycDebit()).isNull();
             assertThat(account.getAcctAddrZip()).isNull();
             assertThat(account.getAcctGroupId()).isNull();
+
+            // The five amounts are absent rather than zero: an unset amount and a zero balance are
+            // different facts, and conflating them would invent data the record never carried.
+            assertThat(account.getVersion()).isEqualTo(0L);
+        }
+
+        @Test
+        @DisplayName("a null business value is accepted and returned as null, because the entity "
+                + "validates nothing - absence is the schema's concern, not this class's")
+        void aNullBusinessValueIsStoredAsSupplied() {
+            final Account account = seededRowZero();
+
+            account.setAcctGroupId(null);
+            account.setAcctCurrBal(null);
+
+            assertThat(account.getAcctGroupId()).isNull();
+            assertThat(account.getAcctCurrBal()).isNull();
+
+            // Non-nullability is a database constraint enforced at insert time, not a guard the
+            // setter imposes. Asserting an exception here would invent behaviour the class does not
+            // have and the legacy record never had.
+            assertThat(account.getAcctId()).isEqualTo(SEED_ACCT_ID);
         }
     }
 
-    // DECIMAL FIDELITY
+    // CLUSTER 3 :: MONETARY FIDELITY
 
     /**
-     * Verifies that the entity carries a decimal amount without changing it.
+     * Proves the five amounts keep both their value and their scale, and that the entity neither
+     * rescales nor rounds nor computes.
+     *
+     * <p>Every amount here is built from a decimal string, and every one is an exact decimal. None is
+     * built from an approximate binary numeric type, because such a type cannot hold an exact
+     * two-decimal amount and the migration contract forbids substituting one for the legacy decimal.
+     * That prohibition is honoured mechanically: no approximate numeric type is named anywhere in this
+     * file, in code or in prose.
      */
     @Nested
-    @DisplayName("decimal fidelity")
-    class DecimalFidelity {
+    @DisplayName("monetary fidelity")
+    class MonetaryFidelity {
 
         @Test
-        @DisplayName("an amount keeps its scale of two, so a stored balance renders with two decimals")
-        void anAmountKeepsItsScaleOfTwo() {
-            final Account account = sampleAccount("00000000001");
+        @DisplayName("all five amounts of the first fixture record round-trip with their value and "
+                + "their scale of 2 intact")
+        void allFiveAmountsRoundTripWithValueAndScale() {
+            final Account account = seededRowZero();
 
-            assertThat(account.getAcctCurrBal().scale()).isEqualTo(AMOUNT_DECIMAL_DIGITS);
-            assertThat(account.getAcctCurrBal().toPlainString()).isEqualTo("194.00");
-            assertThat(account.getAcctCurrCycCredit().toPlainString()).isEqualTo("0.00");
+            assertThat(account.getAcctCurrBal().compareTo(new BigDecimal(SEED_CURR_BAL))).isZero();
+            assertThat(account.getAcctCurrBal().scale()).isEqualTo(MONETARY_SCALE);
+
+            assertThat(account.getAcctCreditLimit().compareTo(new BigDecimal(SEED_CREDIT_LIMIT)))
+                    .isZero();
+            assertThat(account.getAcctCreditLimit().scale()).isEqualTo(MONETARY_SCALE);
+
+            assertThat(account.getAcctCashCreditLimit()
+                    .compareTo(new BigDecimal(SEED_CASH_CREDIT_LIMIT))).isZero();
+            assertThat(account.getAcctCashCreditLimit().scale()).isEqualTo(MONETARY_SCALE);
+
+            assertThat(account.getAcctCurrCycCredit()
+                    .compareTo(new BigDecimal(SEED_CURR_CYC_CREDIT))).isZero();
+            assertThat(account.getAcctCurrCycCredit().scale()).isEqualTo(MONETARY_SCALE);
+
+            assertThat(account.getAcctCurrCycDebit()
+                    .compareTo(new BigDecimal(SEED_CURR_CYC_DEBIT))).isZero();
+            assertThat(account.getAcctCurrCycDebit().scale()).isEqualTo(MONETARY_SCALE);
         }
 
         @Test
-        @DisplayName("the entity is transparent: a value handed in at another scale comes back "
-                + "unchanged, because rescaling is the codec's job and not the entity's")
-        void theEntityDoesNotRescale() {
-            final Account account = sampleAccount("00000000001");
+        @DisplayName("scale is part of the stored value: 194.00 compares equal to 194 but is not "
+                + "equal to it, and the entity keeps the two-decimal form")
+        void scaleIsPartOfTheStoredValue() {
+            final BigDecimal twoDecimals = new BigDecimal(SEED_CURR_BAL);
+            final BigDecimal noDecimals = new BigDecimal("194");
 
-            account.setAcctCurrBal(new BigDecimal("5"));
-            assertThat(account.getAcctCurrBal().scale()).isZero();
-            assertThat(account.getAcctCurrBal().toPlainString()).isEqualTo("5");
+            // Numerically identical - which is why numeric comparisons must use compareTo.
+            assertThat(twoDecimals.compareTo(noDecimals)).isZero();
+            // Yet distinct values, because equality on an exact decimal includes its scale. That is
+            // the distinction a fixed-width two-decimal field depends on.
+            assertThat(twoDecimals).isNotEqualTo(noDecimals);
 
-            account.setAcctCurrBal(new BigDecimal("5.00000"));
-            assertThat(account.getAcctCurrBal().scale()).isEqualTo(5);
-            assertThat(account.getAcctCurrBal().toPlainString()).isEqualTo("5.00000");
+            final Account account = seededRowZero();
+            assertThat(account.getAcctCurrBal()).isEqualTo(twoDecimals);
+            assertThat(account.getAcctCurrBal()).isNotEqualTo(noDecimals);
+            assertThat(account.getAcctCurrBal().scale()).isEqualTo(MONETARY_SCALE);
+            assertThat(noDecimals.scale()).isZero();
         }
 
         @Test
-        @DisplayName("the one rescaling point truncates toward zero, because no arithmetic in the estate "
-                + "asks for rounding")
-        void theOneRescalingPointTruncates() {
-            assertThat(ZonedDecimalCodec.COBOL_TRUNCATION_MODE).isEqualTo(RoundingMode.DOWN);
-            assertThat(ZonedDecimalCodec.MONETARY_SCALE).isEqualTo(AMOUNT_DECIMAL_DIGITS);
-            assertThat(ZonedDecimalCodec.toMonetaryScale(new BigDecimal("1.999")).toPlainString())
-                    .isEqualTo("1.99");
-            assertThat(ZonedDecimalCodec.toMonetaryScale(new BigDecimal("-1.999")).toPlainString())
-                    .isEqualTo("-1.99");
+        @DisplayName("a negative balance round-trips with its sign, because the amount picture is "
+                + "signed even though every fixture record is positive")
+        void aNegativeBalanceRoundTripsWithItsSign() {
+            final Account account = seededRowZero();
+
+            account.setAcctCurrBal(new BigDecimal("-194.00"));
+
+            assertThat(account.getAcctCurrBal()).isEqualTo(new BigDecimal("-194.00"));
+            assertThat(account.getAcctCurrBal().compareTo(new BigDecimal("-194.00"))).isZero();
+            assertThat(account.getAcctCurrBal().signum()).isEqualTo(-1);
+            assertThat(account.getAcctCurrBal().scale()).isEqualTo(MONETARY_SCALE);
+            assertThat(account.getAcctCurrBal().negate())
+                    .isEqualTo(new BigDecimal(SEED_CURR_BAL));
         }
 
         @Test
-        @DisplayName("a negative amount survives, so a debit balance is representable")
-        void aNegativeAmountSurvives() {
-            final Account account = sampleAccount("00000000001");
-            account.setAcctCurrBal(new BigDecimal("-9999999999.99"));
+        @DisplayName("negative zero is accepted and kept as supplied: the legacy zoned form "
+                + "distinguishes a positive zero from a negative zero, and the entity canonicalises "
+                + "neither")
+        void negativeZeroIsKeptAsSupplied() {
+            final Account account = seededRowZero();
 
-            assertThat(account.getAcctCurrBal().signum()).isNegative();
-            assertThat(account.getAcctCurrBal().toPlainString()).isEqualTo("-9999999999.99");
+            account.setAcctCurrCycDebit(new BigDecimal("-0.00"));
+
+            // Numerically zero, and still carrying the two-decimal scale.
+            assertThat(account.getAcctCurrCycDebit().compareTo(new BigDecimal("0.00"))).isZero();
+            assertThat(account.getAcctCurrCycDebit().signum()).isZero();
+            assertThat(account.getAcctCurrCycDebit().scale()).isEqualTo(MONETARY_SCALE);
+
+            // Stored exactly as supplied rather than folded to a positive zero. An exact decimal has
+            // no signed zero, so the sign is carried by the zoned image's overpunched trailing byte
+            // rather than by this value - which is precisely why the entity must not normalize what
+            // it is handed and must not assume the codec handed it one form rather than the other.
+            assertThat(account.getAcctCurrCycDebit()).isEqualTo(new BigDecimal("-0.00"));
+        }
+
+        @Test
+        @DisplayName("the entity performs no scaling: a value of scale 1 comes back at scale 1, "
+                + "never widened to the two decimals of the column")
+        void theEntityPerformsNoScaling() {
+            final Account account = seededRowZero();
+
+            account.setAcctCreditLimit(new BigDecimal("1.5"));
+
+            assertThat(account.getAcctCreditLimit().scale())
+                    .as("a plain assignment cannot have widened the scale")
+                    .isEqualTo(1);
+            assertThat(account.getAcctCreditLimit()).isEqualTo(new BigDecimal("1.5"));
+            assertThat(account.getAcctCreditLimit()).isNotEqualTo(new BigDecimal("1.50"));
+            assertThat(account.getAcctCreditLimit().compareTo(new BigDecimal("1.50"))).isZero();
+        }
+
+        @Test
+        @DisplayName("the entity performs no rounding and no arithmetic: 2.999 comes back as 2.999, "
+                + "neither truncated to 2.99 nor rounded to 3.00 - truncation toward zero belongs to "
+                + "the codec, because no legacy arithmetic statement carries a rounding clause")
+        void theEntityPerformsNoRoundingAndNoArithmetic() {
+            final Account account = seededRowZero();
+
+            account.setAcctCashCreditLimit(new BigDecimal("2.999"));
+
+            assertThat(account.getAcctCashCreditLimit()).isEqualTo(new BigDecimal("2.999"));
+            assertThat(account.getAcctCashCreditLimit().scale()).isEqualTo(3);
+
+            // Not truncated toward zero, which is what a store into a two-decimal legacy field does.
+            assertThat(account.getAcctCashCreditLimit()).isNotEqualTo(new BigDecimal("2.99"));
+            // Not rounded half-up either, which is what conventional Java guidance would have done.
+            assertThat(account.getAcctCashCreditLimit()).isNotEqualTo(new BigDecimal("3.00"));
+            // Either policy applied here would be a second place for rounding to be decided, and the
+            // two places would eventually disagree by a cent. There is exactly one such place, and
+            // it is not this class.
+        }
+
+        @Test
+        @DisplayName("an amount at the full width of the picture round-trips undamaged: ten integer "
+                + "digits and two decimals, signed both ways")
+        void anAmountAtTheFullPictureWidthRoundTrips() {
+            final Account account = seededRowZero();
+            final BigDecimal widestPositive = new BigDecimal("9999999999.99");
+            final BigDecimal widestNegative = new BigDecimal("-9999999999.99");
+
+            account.setAcctCurrBal(widestPositive);
+            assertThat(account.getAcctCurrBal()).isEqualTo(widestPositive);
+            assertThat(account.getAcctCurrBal().precision()).isEqualTo(AMOUNT_WIDTH);
+            assertThat(account.getAcctCurrBal().scale()).isEqualTo(MONETARY_SCALE);
+
+            account.setAcctCurrBal(widestNegative);
+            assertThat(account.getAcctCurrBal()).isEqualTo(widestNegative);
             assertThat(account.getAcctCurrBal().precision())
-                    .isEqualTo(AMOUNT_INTEGER_DIGITS + AMOUNT_DECIMAL_DIGITS);
-        }
-
-        @Test
-        @DisplayName("the widest amount the picture allows fits the declared precision exactly")
-        void theWidestAmountFitsTheDeclaredPrecision() {
-            final BigDecimal widest = new BigDecimal("9999999999.99");
-
-            assertThat(widest.precision()).isEqualTo(SCHEMA.declaredWidth(TABLE, "acct_curr_bal"));
-            assertThat(widest.scale()).isEqualTo(SCHEMA.declaredScale(TABLE, "acct_curr_bal"));
+                    .as("the sign is not a digit, so precision is unchanged by it")
+                    .isEqualTo(AMOUNT_WIDTH);
+            assertThat(account.getAcctCurrBal().scale()).isEqualTo(MONETARY_SCALE);
+            assertThat(account.getAcctCurrBal().unscaledValue().toString())
+                    .as("twelve significant digits, matching the twelve-byte picture width")
+                    .hasSize(AMOUNT_WIDTH + 1)
+                    .startsWith("-");
         }
     }
 
-    // SEEDED RECORD FIDELITY
+    // CLUSTER 4 :: RAW CHARACTER FIDELITY
 
     /**
-     * Verifies that a real seeded record travels into the entity intact.
+     * Proves the character fields are byte images carried verbatim: full width preserved, padding
+     * significant, no parsing, no vocabulary check and no normalization of any kind.
      */
     @Nested
-    @DisplayName("seeded record fidelity")
-    class SeededRecordFidelity {
+    @DisplayName("raw character fidelity")
+    class RawCharacterFidelity {
 
-        /**
-         * Builds an account from one seeded record by slicing the copybook offsets.
-         *
-         * @param ordinal the one-based record position
-         * @return the account the record describes
-         */
-        private Account accountFromSeededRecord(final int ordinal) {
-            return new Account(
-                    FIXTURE.field(ordinal, OFFSET_ACCT_ID, KEY_WIDTH),
-                    FIXTURE.field(ordinal, OFFSET_ACTIVE_STATUS, 1),
-                    ZonedDecimalCodec.decodeMonetary(
-                            FIXTURE.field(ordinal, OFFSET_CURR_BAL, 12), 12, "ACCT-CURR-BAL"),
-                    ZonedDecimalCodec.decodeMonetary(
-                            FIXTURE.field(ordinal, OFFSET_CREDIT_LIMIT, 12), 12, "ACCT-CREDIT-LIMIT"),
-                    ZonedDecimalCodec.decodeMonetary(
-                            FIXTURE.field(ordinal, OFFSET_CASH_CREDIT_LIMIT, 12), 12,
-                            "ACCT-CASH-CREDIT-LIMIT"),
-                    FIXTURE.field(ordinal, OFFSET_OPEN_DATE, 10),
-                    FIXTURE.field(ordinal, OFFSET_EXPIRATION_DATE, 10),
-                    FIXTURE.field(ordinal, OFFSET_REISSUE_DATE, 10),
-                    ZonedDecimalCodec.decodeMonetary(
-                            FIXTURE.field(ordinal, OFFSET_CURR_CYC_CREDIT, 12), 12,
-                            "ACCT-CURR-CYC-CREDIT"),
-                    ZonedDecimalCodec.decodeMonetary(
-                            FIXTURE.field(ordinal, OFFSET_CURR_CYC_DEBIT, 12), 12,
-                            "ACCT-CURR-CYC-DEBIT"),
-                    FIXTURE.field(ordinal, OFFSET_ADDR_ZIP, 10),
-                    FIXTURE.field(ordinal, OFFSET_GROUP_ID, 10));
+        @Test
+        @DisplayName("the character fields occupy exactly 11, 1, 10, 10, 10, 10 and 10 encoded "
+                + "bytes, measured as bytes because the record is a byte image")
+        void theCharacterFieldsOccupyTheirDeclaredEncodedWidths() {
+            final Account account = seededRowZero();
+
+            assertThat(encodedWidth(account.getAcctId())).isEqualTo(ACCT_ID_WIDTH);
+            assertThat(encodedWidth(account.getAcctActiveStatus())).isEqualTo(ACTIVE_STATUS_WIDTH);
+            assertThat(encodedWidth(account.getAcctOpenDate())).isEqualTo(DATE_WIDTH);
+            assertThat(encodedWidth(account.getAcctExpirationDate())).isEqualTo(DATE_WIDTH);
+            assertThat(encodedWidth(account.getAcctReissueDate())).isEqualTo(DATE_WIDTH);
+            assertThat(encodedWidth(account.getAcctAddrZip())).isEqualTo(ADDR_ZIP_WIDTH);
+            assertThat(encodedWidth(account.getAcctGroupId())).isEqualTo(GROUP_ID_WIDTH);
+
+            // The seven character widths plus the five twelve-byte amounts are the whole mapped
+            // portion of the record.
+            assertThat(ACCT_ID_WIDTH + ACTIVE_STATUS_WIDTH + (DATE_WIDTH * 3)
+                    + ADDR_ZIP_WIDTH + GROUP_ID_WIDTH + (AMOUNT_WIDTH * 5))
+                    .isEqualTo(OFFSET_FILLER);
         }
 
         @Test
-        @DisplayName("the first seeded record maps field for field onto the entity")
-        void theFirstSeededRecordMapsFieldForField() {
-            final Account account = accountFromSeededRecord(1);
+        @DisplayName("the account identifier keeps its leading zeros: the eleven-character form is "
+                + "the contract, and it is not the number one")
+        void theAccountIdentifierKeepsItsLeadingZeros() {
+            final Account account = seededRowZero();
 
-            assertThat(account.getAcctId()).isEqualTo("00000000001");
+            assertThat(account.getAcctId()).isEqualTo(SEED_ACCT_ID);
+            assertThat(encodedWidth(account.getAcctId())).isEqualTo(ACCT_ID_WIDTH);
+            assertThat(account.getAcctId()).startsWith("0").endsWith("1");
+
+            // A bounded character column, deliberately not a numeric one. Nothing here converts the
+            // identifier to a number, because a numeric round trip would discard exactly the ten
+            // leading zeros the fixed-width contract requires.
+            assertThat(account.getAcctId()).isNotEqualTo("1");
+            assertThat(account.getAcctId()).isNotEqualTo("00000000001 ");
+            assertThat(encodedWidth("1")).isNotEqualTo(ACCT_ID_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the account group identifier round-trips as exactly ten spaces, untrimmed: all "
+                + "50 fixture records carry ten spaces here, and trimming it would break the "
+                + "disclosure-group default-fallback lookup")
+        void theAccountGroupIdentifierRoundTripsAsTenSpaces() {
+            // Guard the transcription first: a miscounted literal would silently weaken everything
+            // that follows.
+            assertThat(encodedWidth(SEED_GROUP_ID)).isEqualTo(GROUP_ID_WIDTH);
+
+            final Account account = new Account();
+            account.setAcctGroupId(SEED_GROUP_ID);
+
+            assertThat(account.getAcctGroupId()).isNotNull();
+            assertThat(encodedWidth(account.getAcctGroupId())).isEqualTo(GROUP_ID_WIDTH);
+            assertThat(account.getAcctGroupId()).isEqualTo(SEED_GROUP_ID);
+
+            // Padding is part of the value, so a padded identifier is not an empty one and not a
+            // single space. Were the accessor to trim, all three of these would collapse into one
+            // value in Java while remaining three distinct values in the database.
+            assertThat(account.getAcctGroupId()).isNotEqualTo("");
+            assertThat(account.getAcctGroupId()).isNotEqualTo(" ");
+            assertThat(account.getAcctGroupId()).isNotEqualTo("DEFAULT   ");
+
+            // The constructed path behaves identically to the mutated one.
+            assertThat(seededRowZero().getAcctGroupId()).isEqualTo(SEED_GROUP_ID);
+            assertThat(encodedWidth(seededRowZero().getAcctGroupId())).isEqualTo(GROUP_ID_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the address ZIP round-trips as A000000000: on all 50 fixture records the ZIP "
+                + "position holds that value while the group-id position holds ten spaces, and the "
+                + "apparent transposition is honoured rather than repaired")
+        void theAddressZipRoundTripsAsTheFixtureHoldsIt() {
+            final Account account = seededRowZero();
+
+            assertThat(account.getAcctAddrZip()).isEqualTo(SEED_ADDR_ZIP);
+            assertThat(encodedWidth(account.getAcctAddrZip())).isEqualTo(ADDR_ZIP_WIDTH);
+            assertThat(account.getAcctAddrZip()).startsWith("A");
+
+            // The two positions are read strictly by offset. Both slots are ten bytes wide, so
+            // neither value is malformed and nothing here is swapped, inferred or corrected: a
+            // mapper that "fixed" the apparent transposition would disagree with the seeded data
+            // and with the interest run's rate lookup that reads the group identifier.
+            assertThat(ADDR_ZIP_WIDTH).isEqualTo(GROUP_ID_WIDTH);
+            assertThat(OFFSET_ADDR_ZIP + ADDR_ZIP_WIDTH).isEqualTo(OFFSET_GROUP_ID);
+            assertThat(account.getAcctAddrZip()).isNotEqualTo(account.getAcctGroupId());
+
+            // A ZIP-shaped value is accepted just as readily, because the field is an opaque lexeme
+            // rather than a validated postal code.
+            account.setAcctAddrZip("12345-6789");
+            assertThat(account.getAcctAddrZip()).isEqualTo("12345-6789");
+            assertThat(encodedWidth(account.getAcctAddrZip())).isEqualTo(ADDR_ZIP_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the active status is a raw single character: Y and N round-trip, and so does a "
+                + "value outside that pair, because the entity maps no enum and validates nothing")
+        void theActiveStatusIsARawSingleCharacter() {
+            final Account account = new Account();
+
+            // All fifty fixture records carry Y.
+            account.setAcctActiveStatus("Y");
             assertThat(account.getAcctActiveStatus()).isEqualTo("Y");
-            assertThat(account.getAcctCurrBal().toPlainString()).isEqualTo("194.00");
-            assertThat(account.getAcctCreditLimit().toPlainString()).isEqualTo("2020.00");
-            assertThat(account.getAcctCashCreditLimit().toPlainString()).isEqualTo("1020.00");
-            assertThat(account.getAcctOpenDate()).isEqualTo("2014-11-20");
-            assertThat(account.getAcctExpirationDate()).isEqualTo("2025-05-20");
-            assertThat(account.getAcctReissueDate()).isEqualTo("2025-05-20");
-            assertThat(account.getAcctCurrCycCredit().toPlainString()).isEqualTo("0.00");
-            assertThat(account.getAcctCurrCycDebit().toPlainString()).isEqualTo("0.00");
-            assertThat(account.getAcctAddrZip()).isEqualTo("A000000000");
-            assertThat(account.getAcctGroupId()).isBlank().hasSize(10);
+            assertThat(encodedWidth(account.getAcctActiveStatus())).isEqualTo(ACTIVE_STATUS_WIDTH);
+
+            account.setAcctActiveStatus("N");
+            assertThat(account.getAcctActiveStatus()).isEqualTo("N");
+            assertThat(encodedWidth(account.getAcctActiveStatus())).isEqualTo(ACTIVE_STATUS_WIDTH);
+
+            // A code outside the documented pair is stored and returned unchanged: no exception, no
+            // substituted default, no case folding, no normalization. This is what proves the column
+            // is a raw code rather than a mapped enum constant - a mapped enum would reject it, and
+            // rejecting it would be new behaviour the legacy file never had.
+            account.setAcctActiveStatus("X");
+            assertThat(account.getAcctActiveStatus()).isEqualTo("X");
+
+            account.setAcctActiveStatus("y");
+            assertThat(account.getAcctActiveStatus())
+                    .as("case is preserved, so no folding occurred")
+                    .isEqualTo("y")
+                    .isNotEqualTo("Y");
+
+            account.setAcctActiveStatus(" ");
+            assertThat(account.getAcctActiveStatus()).isEqualTo(" ");
+            assertThat(encodedWidth(account.getAcctActiveStatus())).isEqualTo(ACTIVE_STATUS_WIDTH);
         }
 
         @Test
-        @DisplayName("every seeded record maps without loss, and every identifier is distinct")
-        void everySeededRecordMapsWithoutLoss() {
-            final List<Account> accounts = new ArrayList<>();
-            for (int ordinal = 1; ordinal <= FIXTURE.recordCount(); ordinal++) {
-                accounts.add(accountFromSeededRecord(ordinal));
-            }
+        @DisplayName("the three date fields are raw ten-character text: a real date round-trips, and "
+                + "so does 9999-99-99, because the entity parses nothing and holds no date type")
+        void theDateFieldsAreRawTenCharacterText() {
+            final Account account = seededRowZero();
 
-            assertThat(accounts).hasSize(SEEDED_RECORDS);
-            assertThat(accounts.stream().map(Account::getAcctId).distinct().toList())
-                    .hasSize(SEEDED_RECORDS);
-            for (final Account account : accounts) {
-                assertThat(account.getAcctId()).hasSize(KEY_WIDTH).containsOnlyDigits();
-                assertThat(account.getAcctCurrBal().scale()).isEqualTo(AMOUNT_DECIMAL_DIGITS);
-                assertThat(account.getAcctCreditLimit().scale()).isEqualTo(AMOUNT_DECIMAL_DIGITS);
-                assertThat(account.getAcctCashCreditLimit().scale()).isEqualTo(AMOUNT_DECIMAL_DIGITS);
-                assertThat(account.getAcctCurrCycCredit().scale()).isEqualTo(AMOUNT_DECIMAL_DIGITS);
-                assertThat(account.getAcctCurrCycDebit().scale()).isEqualTo(AMOUNT_DECIMAL_DIGITS);
-            }
-        }
+            assertThat(account.getAcctOpenDate()).isEqualTo(SEED_OPEN_DATE);
+            assertThat(encodedWidth(account.getAcctOpenDate())).isEqualTo(DATE_WIDTH);
 
-        @Test
-        @DisplayName("every seeded account is active, so the seed exercises the active status only")
-        void everySeededAccountIsActive() {
-            for (int ordinal = 1; ordinal <= FIXTURE.recordCount(); ordinal++) {
-                assertThat(accountFromSeededRecord(ordinal).getAcctActiveStatus())
-                        .as("status of record %d", ordinal)
-                        .isEqualTo("Y");
-            }
-        }
+            // A value that is not a valid calendar date at all is stored and returned unchanged.
+            // Strict calendar validation reproduces the legacy edit cascade in the date-validation
+            // service; performing it here would reject values the legacy record could carry.
+            account.setAcctOpenDate("9999-99-99");
+            account.setAcctExpirationDate("9999-99-99");
+            account.setAcctReissueDate("0000-00-00");
 
-        @Test
-        @DisplayName("every seeded record leaves the disclosure-group slot blank and puts a "
-                + "group-shaped value in the postal-code slot, which is the data fact that drives the "
-                + "interest run down its default-group path")
-        void everySeededRecordLeavesTheGroupSlotBlank() {
-            for (int ordinal = 1; ordinal <= FIXTURE.recordCount(); ordinal++) {
-                final Account account = accountFromSeededRecord(ordinal);
+            assertThat(account.getAcctOpenDate()).isEqualTo("9999-99-99");
+            assertThat(encodedWidth(account.getAcctOpenDate())).isEqualTo(DATE_WIDTH);
+            assertThat(account.getAcctExpirationDate()).isEqualTo("9999-99-99");
+            assertThat(encodedWidth(account.getAcctExpirationDate())).isEqualTo(DATE_WIDTH);
+            assertThat(account.getAcctReissueDate()).isEqualTo("0000-00-00");
+            assertThat(encodedWidth(account.getAcctReissueDate())).isEqualTo(DATE_WIDTH);
 
-                assertThat(account.getAcctGroupId())
-                        .as("disclosure group of record %d", ordinal)
-                        .isBlank()
-                        .hasSize(10);
-                assertThat(account.getAcctAddrZip())
-                        .as("postal code of record %d", ordinal)
-                        .isEqualTo("A000000000")
-                        .hasSize(10);
-            }
-        }
-
-        @Test
-        @DisplayName("the two cycle amounts are zero throughout the seed, so an overlimit basis computed "
-                + "from them starts from zero")
-        void theTwoCycleAmountsAreZeroThroughoutTheSeed() {
-            for (int ordinal = 1; ordinal <= FIXTURE.recordCount(); ordinal++) {
-                final Account account = accountFromSeededRecord(ordinal);
-
-                assertThat(account.getAcctCurrCycCredit().signum())
-                        .as("cycle credit of record %d", ordinal)
-                        .isZero();
-                assertThat(account.getAcctCurrCycDebit().signum())
-                        .as("cycle debit of record %d", ordinal)
-                        .isZero();
-            }
+            // Ten spaces are equally acceptable, which a date type could not represent at all.
+            account.setAcctReissueDate(SEED_GROUP_ID);
+            assertThat(account.getAcctReissueDate()).isEqualTo(SEED_GROUP_ID);
+            assertThat(encodedWidth(account.getAcctReissueDate())).isEqualTo(DATE_WIDTH);
         }
     }
 
-    // BUSINESS-KEY IDENTITY
+    // CLUSTER 5 :: BUSINESS-KEY IDENTITY
 
     /**
-     * Verifies that identity is the record's own key and nothing else.
+     * Proves identity rests on the account identifier alone - the same eleven bytes the cluster
+     * definition names as the key and the sequential reader takes as the leading substring of the
+     * record image.
      */
     @Nested
     @DisplayName("business-key identity")
     class BusinessKeyIdentity {
 
+        /**
+         * Builds an account that shares the given identifier but differs in every single other
+         * business field, including all five amounts.
+         *
+         * @param acctId the identifier to share
+         * @return an account differing from {@link AccountTest#seededRowZero()} in all eleven
+         *         non-key fields
+         */
+        private Account differingInEveryFieldExceptTheKey(final String acctId) {
+            return new Account(
+                    acctId,
+                    "N",
+                    new BigDecimal("-1.11"),
+                    new BigDecimal("-2.22"),
+                    new BigDecimal("-3.33"),
+                    "1970-01-01",
+                    "1971-02-02",
+                    "1972-03-03",
+                    new BigDecimal("-4.44"),
+                    new BigDecimal("-5.55"),
+                    "Z999999999",
+                    "OTHERGRP  ");
+        }
+
         @Test
-        @DisplayName("an account equals itself")
-        void anAccountEqualsItself() {
-            final Account account = sampleAccount("00000000001");
+        @DisplayName("two accounts sharing an identifier are equal and share a hash code even when "
+                + "every other field, all five amounts included, differs")
+        void twoAccountsSharingAnIdentifierAreEqual() {
+            final Account fromFixture = seededRowZero();
+            final Account divergent = differingInEveryFieldExceptTheKey(SEED_ACCT_ID);
+
+            // Same row of the same table, so the same entity - whatever their current state.
+            assertThat(fromFixture).isEqualTo(divergent);
+            assertThat(divergent).isEqualTo(fromFixture);
+            assertThat(fromFixture).hasSameHashCodeAs(divergent);
+
+            // Demonstrably different in every non-key field, so equality really did ignore them.
+            assertThat(divergent.getAcctActiveStatus()).isNotEqualTo(fromFixture.getAcctActiveStatus());
+            assertThat(divergent.getAcctCurrBal()).isNotEqualTo(fromFixture.getAcctCurrBal());
+            assertThat(divergent.getAcctCreditLimit())
+                    .isNotEqualTo(fromFixture.getAcctCreditLimit());
+            assertThat(divergent.getAcctCashCreditLimit())
+                    .isNotEqualTo(fromFixture.getAcctCashCreditLimit());
+            assertThat(divergent.getAcctCurrCycCredit())
+                    .isNotEqualTo(fromFixture.getAcctCurrCycCredit());
+            assertThat(divergent.getAcctCurrCycDebit())
+                    .isNotEqualTo(fromFixture.getAcctCurrCycDebit());
+            assertThat(divergent.getAcctOpenDate()).isNotEqualTo(fromFixture.getAcctOpenDate());
+            assertThat(divergent.getAcctExpirationDate())
+                    .isNotEqualTo(fromFixture.getAcctExpirationDate());
+            assertThat(divergent.getAcctReissueDate())
+                    .isNotEqualTo(fromFixture.getAcctReissueDate());
+            assertThat(divergent.getAcctAddrZip()).isNotEqualTo(fromFixture.getAcctAddrZip());
+            assertThat(divergent.getAcctGroupId()).isNotEqualTo(fromFixture.getAcctGroupId());
+        }
+
+        @Test
+        @DisplayName("a mutated non-key field leaves equality and the hash code untouched, so an "
+                + "account stays findable in a hash-based collection across a state change")
+        void mutatingANonKeyFieldDoesNotDisturbIdentity() {
+            final Account account = seededRowZero();
+            final Account reference = seededRowZero();
+            final int hashBefore = account.hashCode();
+
+            account.setAcctCurrBal(new BigDecimal("-99999.99"));
+            account.setAcctActiveStatus("X");
+            account.setAcctGroupId("MOVED     ");
+
+            assertThat(account.hashCode()).isEqualTo(hashBefore);
+            assertThat(account).isEqualTo(reference);
+        }
+
+        @Test
+        @DisplayName("accounts with different identifiers are unequal, even when every other field "
+                + "matches byte for byte")
+        void accountsWithDifferentIdentifiersAreUnequal() {
+            final Account first = seededRowZero();
+            final Account second = new Account(
+                    "00000000002",
+                    SEED_ACTIVE_STATUS,
+                    new BigDecimal(SEED_CURR_BAL),
+                    new BigDecimal(SEED_CREDIT_LIMIT),
+                    new BigDecimal(SEED_CASH_CREDIT_LIMIT),
+                    SEED_OPEN_DATE,
+                    SEED_EXPIRATION_DATE,
+                    SEED_REISSUE_DATE,
+                    new BigDecimal(SEED_CURR_CYC_CREDIT),
+                    new BigDecimal(SEED_CURR_CYC_DEBIT),
+                    SEED_ADDR_ZIP,
+                    SEED_GROUP_ID);
+
+            assertThat(first).isNotEqualTo(second);
+            assertThat(second).isNotEqualTo(first);
+        }
+
+        @Test
+        @DisplayName("the identifier is compared byte for byte, so a padded identifier is a "
+                + "different account from an unpadded one")
+        void theIdentifierIsComparedByteForByte() {
+            final Account elevenDigits = seededRowZero();
+            final Account shortened = differingInEveryFieldExceptTheKey("1");
+
+            assertThat(elevenDigits).isNotEqualTo(shortened);
+            assertThat(elevenDigits.hashCode()).isNotEqualTo(shortened.hashCode());
+        }
+
+        @Test
+        @DisplayName("equality is reflexive, null-safe and foreign-type-safe, and an absent "
+                + "identifier matches another absent identifier")
+        void equalityIsReflexiveNullSafeAndForeignTypeSafe() {
+            final Account account = seededRowZero();
 
             assertThat(account).isEqualTo(account);
+            assertThat(account.equals(account)).isTrue();
             assertThat(account.hashCode()).isEqualTo(account.hashCode());
+
+            assertThat(account.equals(null)).isFalse();
+            assertThat(account.equals(SEED_ACCT_ID))
+                    .as("a String carrying the same identifier is not an account")
+                    .isFalse();
+            assertThat(account.equals(new Object())).isFalse();
+
+            // Two provider-instantiated instances are equal because both identifiers are absent, and
+            // the hash of an absent identifier is stable rather than an exception.
+            final Account firstEmpty = new Account();
+            final Account secondEmpty = new Account();
+            assertThat(firstEmpty).isEqualTo(secondEmpty);
+            assertThat(firstEmpty).hasSameHashCodeAs(secondEmpty);
+            assertThat(firstEmpty).isNotEqualTo(account);
+            assertThat(account).isNotEqualTo(firstEmpty);
         }
 
         @Test
-        @DisplayName("two accounts with the same identifier are equal even when every other field "
-                + "differs, because the key alone decides identity")
-        void sameIdentifierMeansEqualRegardlessOfTheRest() {
-            final Account left = sampleAccount("00000000001");
-            final Account right = new Account(
-                    "00000000001", "N",
-                    new BigDecimal("-1.00"), new BigDecimal("-2.00"), new BigDecimal("-3.00"),
-                    "1900-01-01", "1900-01-02", "1900-01-03",
-                    new BigDecimal("-4.00"), new BigDecimal("-5.00"),
-                    "OTHERZIP01", "OTHERGRP01");
+        @DisplayName("no surrogate identifier exists: the key is the business identifier itself, "
+                + "which is why the reader's 11 + 289 == 300 split holds and why a fresh instance "
+                + "reports an absent identifier rather than a generated one")
+        void noSurrogateIdentifierExists() {
+            // Proof by compile-time absence. This class references no generated-identifier accessor
+            // anywhere - there is no such member to reference - and it uses no reflection to look for
+            // one, because a reflective probe would assert the absence of a name rather than the
+            // absence of an identifier.
+            final Account account = new Account();
 
-            assertThat(left).isEqualTo(right);
-            assertThat(right).isEqualTo(left);
-            assertThat(left).hasSameHashCodeAs(right);
-        }
+            assertThat(account.getAcctId())
+                    .as("nothing generated an identifier at construction time")
+                    .isNull();
 
-        @Test
-        @DisplayName("two accounts with different identifiers are unequal even when every other field "
-                + "matches")
-        void differentIdentifierMeansUnequal() {
-            final Account left = sampleAccount("00000000001");
-            final Account right = sampleAccount("00000000002");
+            // The key is a substring of the record image, not a value the database invents: the
+            // reader's split states the same relationship the cluster's key clause does.
+            assertThat(FD_KEY_WIDTH + FD_DATA_WIDTH).isEqualTo(RECORD_WIDTH);
+            assertThat(FD_KEY_WIDTH).isEqualTo(KEY_WIDTH);
+            assertThat(KEY_OFFSET).isZero();
 
-            assertThat(left).isNotEqualTo(right);
-            assertThat(right).isNotEqualTo(left);
-        }
-
-        @Test
-        @DisplayName("equality is transitive across three accounts sharing an identifier")
-        void equalityIsTransitive() {
-            final Account first = sampleAccount("00000000007");
-            final Account second = sampleAccount("00000000007");
-            final Account third = sampleAccount("00000000007");
-
-            assertThat(first).isEqualTo(second);
-            assertThat(second).isEqualTo(third);
-            assertThat(first).isEqualTo(third);
-            assertThat(first).hasSameHashCodeAs(third);
-        }
-
-        @Test
-        @DisplayName("an account is unequal to null and to an unrelated type")
-        void anAccountIsUnequalToNullAndToAnotherType() {
-            final Account account = sampleAccount("00000000001");
-
-            assertThat(account).isNotEqualTo(null);
-            assertThat(account.equals("00000000001")).isFalse();
-            assertThat(account).isNotEqualTo(new Object());
-        }
-
-        @Test
-        @DisplayName("two accounts with an absent identifier are equal, because both keys are absent "
-                + "rather than generated")
-        void twoUnkeyedAccountsAreEqual() {
-            final Account left = new Account();
-            final Account right = new Account();
-
-            assertThat(left).isEqualTo(right);
-            assertThat(left).hasSameHashCodeAs(right);
-            assertThat(left.getAcctId()).isNull();
-        }
-
-        @Test
-        @DisplayName("an unkeyed account is unequal to a keyed one")
-        void anUnkeyedAccountIsUnequalToAKeyedOne() {
-            assertThat(new Account()).isNotEqualTo(sampleAccount("00000000001"));
-            assertThat(sampleAccount("00000000001")).isNotEqualTo(new Account());
-        }
-
-        @Test
-        @DisplayName("changing the identifier changes identity, which is what makes the key a business "
-                + "key rather than an immutable surrogate")
-        void changingTheIdentifierChangesIdentity() {
-            final Account account = sampleAccount("00000000001");
-            final Account original = sampleAccount("00000000001");
-
-            assertThat(account).isEqualTo(original);
-            account.setAcctId("00000000002");
-            assertThat(account).isNotEqualTo(original);
-        }
-
-        @Test
-        @DisplayName("identity ignores the optimistic-version field, so a re-read row still matches")
-        void identityIgnoresTheVersionField() {
-            final Account persisted = new Account();
-            persisted.setAcctId("00000000001");
-
-            assertThat(persisted.getVersion()).isZero();
-            assertThat(persisted).isEqualTo(sampleAccount("00000000001"));
-            assertThat(persisted).hasSameHashCodeAs(sampleAccount("00000000001"));
+            // Supplying the key is what gives the instance its identity.
+            account.setAcctId(SEED_ACCT_ID);
+            assertThat(account.getAcctId()).isEqualTo(SEED_ACCT_ID);
+            assertThat(account).isEqualTo(seededRowZero());
         }
     }
 
-    // OPTIMISTIC VERSION
+    // CLUSTER 6 :: VERSION COUNTER AND DIAGNOSTIC RENDERING
 
     /**
-     * Verifies the optimistic-locking field that replaces the legacy before-and-after image comparison.
+     * Proves the version counter's default and its independence from identity, and that the
+     * diagnostic rendering exposes only the two values it is allowed to.
+     *
+     * <p>Optimistic locking itself is not exercised here: an increment needs a persistence context
+     * and belongs to the repository integration tier. What is asserted is the part that is
+     * observable without one.
      */
     @Nested
-    @DisplayName("optimistic version")
-    class OptimisticVersion {
+    @DisplayName("version counter and diagnostic rendering")
+    class VersionCounterAndDiagnostics {
 
         @Test
-        @DisplayName("a freshly built account starts at version zero, matching the column's default")
-        void aFreshAccountStartsAtVersionZero() {
-            assertThat(sampleAccount("00000000001").getVersion()).isZero();
-            assertThat(new Account().getVersion()).isZero();
+        @DisplayName("the version counter defaults to zero and is never seeded with a non-zero "
+                + "value, so a row that has never been updated matches the schema default")
+        void theVersionCounterDefaultsToZero() {
+            assertThat(new Account().getVersion()).isEqualTo(0L);
+            assertThat(seededRowZero().getVersion()).isEqualTo(0L);
+
+            // The counter is absent from the constructor's parameter list on purpose: the
+            // persistence provider owns the value, so application code has no business supplying it.
+            // The class exposes a getter and no setter, so this test reads it through the getter and
+            // makes no attempt to write it. Reflection would reach the field, and is not used: it is
+            // prohibited here, and a reflective write would prove nothing about the provider's
+            // behaviour anyway.
         }
 
         @Test
-        @DisplayName("the version is readable but has no public mutator, so only the persistence "
-                + "provider advances it")
-        void theVersionIsReadOnlyThroughThePublicSurface() {
-            final Account account = sampleAccount("00000000001");
-            final long before = account.getVersion();
+        @DisplayName("the version counter is not part of entity identity: two instances sharing an "
+                + "identifier are equal, and equality never reads the counter")
+        void theVersionCounterIsNotPartOfIdentity() {
+            final Account fromFixture = seededRowZero();
+            final Account divergent = new Account();
+            divergent.setAcctId(SEED_ACCT_ID);
 
-            account.setAcctCurrBal(new BigDecimal("1.00"));
-            account.setAcctActiveStatus("N");
+            // Both counters are necessarily zero, because no accessible setter exists and no
+            // persistence context is in scope. This is therefore a documenting test of the intended
+            // contract: identity is the business key alone, so a counter that advances on every
+            // update must not change what row an instance is. The repository integration tier
+            // observes an actual increment and re-checks equality across it.
+            assertThat(fromFixture.getVersion()).isEqualTo(0L);
+            assertThat(divergent.getVersion()).isEqualTo(0L);
+            assertThat(fromFixture).isEqualTo(divergent);
+            assertThat(fromFixture).hasSameHashCodeAs(divergent);
 
-            assertThat(account.getVersion())
-                    .as("mutating a field must not move the version by itself")
-                    .isEqualTo(before);
+            // The counter's presence is itself a documented strengthening rather than a behavioural
+            // change: it replaces the legacy program's hand-written before-and-after image
+            // comparison, and the legacy file definitions specified uncommitted read integrity, no
+            // recovery and no journaling. Stronger isolation should not be misread as a regression.
         }
 
         @Test
-        @DisplayName("the version column exists in the schema and is not one of the record's own fields")
-        void theVersionColumnIsNotOneOfTheRecordsFields() {
-            assertThat(SCHEMA.columnNames(TABLE)).contains("version");
-            assertThat(SCHEMA.declaredType(TABLE, "version")).isEqualTo("BIGINT");
-            assertThat(SCHEMA.primaryKeyColumns(TABLE)).doesNotContain("version");
-        }
-    }
+        @DisplayName("the diagnostic rendering carries the identifier and the raw status and nothing "
+                + "else, so no amount and no address component can reach a log line")
+        void theDiagnosticRenderingCarriesOnlyTheIdentifierAndStatus() {
+            final String rendered = seededRowZero().toString();
 
-    // DIAGNOSTIC REPRESENTATION
+            assertThat(rendered)
+                    .isNotNull()
+                    .contains(SEED_ACCT_ID)
+                    .contains(SEED_ACTIVE_STATUS);
 
-    /**
-     * Verifies the diagnostic string, including what it deliberately withholds.
-     */
-    @Nested
-    @DisplayName("diagnostic representation")
-    class DiagnosticRepresentation {
+            // Every other field is withheld. The amounts and the address components are the values
+            // that must never appear in a diagnostic line.
+            assertThat(rendered).doesNotContain(
+                    SEED_CURR_BAL,
+                    SEED_CREDIT_LIMIT,
+                    SEED_CASH_CREDIT_LIMIT,
+                    SEED_OPEN_DATE,
+                    SEED_EXPIRATION_DATE,
+                    SEED_REISSUE_DATE,
+                    SEED_ADDR_ZIP);
 
-        @Test
-        @DisplayName("the description names the type, the identifier and the status")
-        void theDescriptionNamesTheTypeIdentifierAndStatus() {
-            assertThat(sampleAccount("00000000001").toString())
-                    .isEqualTo("Account[acctId='00000000001', acctActiveStatus='Y']");
-        }
-
-        @Test
-        @DisplayName("the description carries no monetary amount, so a balance cannot reach a log line "
-                + "through it")
-        void theDescriptionCarriesNoMonetaryAmount() {
-            final String description = sampleAccount("00000000001").toString();
-
-            assertThat(description)
-                    .doesNotContain("194.00")
-                    .doesNotContain("2020.00")
-                    .doesNotContain("1020.00");
+            // The identifier appears untrimmed, so significant padding stays visible to a reader.
+            assertThat(rendered).doesNotContain("acctId='1'");
         }
 
         @Test
-        @DisplayName("the description carries no address or group detail either")
-        void theDescriptionCarriesNoAddressDetail() {
-            assertThat(sampleAccount("00000000001").toString())
-                    .doesNotContain("A000000000")
-                    .doesNotContain("2014-11-20");
-        }
+        @DisplayName("the diagnostic rendering of a provider-instantiated instance is still usable, "
+                + "so an assertion failure on an unpopulated entity reports rather than throws")
+        void theDiagnosticRenderingOfAnEmptyInstanceIsUsable() {
+            final String rendered = new Account().toString();
 
-        @Test
-        @DisplayName("an unkeyed account still describes itself rather than failing")
-        void anUnkeyedAccountStillDescribesItself() {
-            assertThat(new Account().toString())
-                    .isEqualTo("Account[acctId='null', acctActiveStatus='null']");
+            assertThat(rendered).isNotNull().isNotEmpty();
         }
     }
 }

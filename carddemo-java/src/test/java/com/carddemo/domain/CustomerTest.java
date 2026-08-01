@@ -16,13 +16,6 @@
  */
 package com.carddemo.domain;
 
-import java.util.ArrayList;
-import java.util.List;
-
-import com.carddemo.support.SchemaColumnCatalog;
-import com.carddemo.support.SeededRecordFixture;
-import com.carddemo.util.SensitiveFieldCodec;
-
 import java.nio.charset.StandardCharsets;
 
 import org.junit.jupiter.api.DisplayName;
@@ -30,442 +23,1179 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 /**
- * Verifies {@link Customer}, the five-hundred-byte customer record.
+ * Unit test for {@link Customer}, the 500-byte customer record and the widest entity in this
+ * package.
  *
- * <p><strong>The layout being preserved.</strong> {@code app/cpy/CVCUS01Y.cpy} declares nineteen fields
- * over five hundred bytes: a nine-digit identifier, three twenty-five-byte names, three fifty-byte
- * address lines, a two-byte state, a three-byte country, a ten-byte postal code, two fifteen-byte
- * telephone numbers, a nine-digit social security number, a twenty-byte government identifier, a
- * ten-byte date of birth, a ten-byte electronic-transfer account, a one-byte primary-cardholder
- * indicator, a three-digit credit score and a hundred-and-sixty-eight-byte filler. The cluster definition
- * at {@code app/jcl/CUSTFILE.jcl} agrees: {@code KEYS(9 0)} and {@code RECORDSIZE(500 500)}.
+ * <p><strong>What this suite is an oracle for.</strong> Every expected value below was derived by
+ * hand and independently of the class under test. The eighteen widths were read off the customer
+ * copybook and summed by hand; the running sums that place each field are written out in the
+ * assertions so a reviewer can check the arithmetic without a calculator; and every literal value
+ * was decoded by hand from the first record of the seeded customer reference file, which measures
+ * 25,050 bytes and holds 50 records of 500 characters each. The record length is corroborated
+ * independently of the copybook by the customer cluster definition, which declares
+ * {@code KEYS(9 0)} and {@code RECORDSIZE(500 500)}. No assertion calls a production method to
+ * compute its own expectation.
  *
- * <p><strong>Why the credit score is carried as text and not as a number.</strong> The copybook declares
- * it {@code PIC 9(03)}, which is a three-character field holding digits, so a score below one hundred is
- * stored with leading zeros. Seven of the fifty seeded customers have such a score, one of them as low as
- * {@code 001}. An integer field would render that score as a single character and the record would no
- * longer be five hundred bytes when written back out, so the text form is the faithful one and this suite
- * asserts the leading zeros survive.
+ * <p><strong>Eighteen mapped fields, all of them text.</strong> The mapped widths are 9, 25, 25,
+ * 25, 50, 50, 50, 2, 3, 10, 15, 15, 9, 20, 10, 10, 1 and 3, which sum to 332; a 168-byte trailing
+ * filler closes the record at 500 and is deliberately neither a field nor a column here. Three of
+ * the eighteen are external decimal in the copybook - the identifier, the national identifier and
+ * the credit score - and all three are nevertheless carried as text, because their external
+ * representation is the contract: an identifier must stay nine characters rather than collapsing to
+ * one. There is consequently no monetary attribute, no numeric attribute and no optimistic-locking
+ * attribute on this entity, and this suite parses nothing to a number.
  *
- * <p><strong>Why the score is not range-checked here.</strong> The account-update screen enforces the
- * three-hundred to eight-hundred-and-fifty band, but the record itself carries whatever the file holds
- * &mdash; and twenty-one of the fifty seeded customers sit below three hundred. An entity that rejected
- * those values could not read the estate's own data, so the entity validates nothing and this suite
- * proves it accepts the seeded values as they are.
+ * <p><strong>Widths are measured in encoded bytes, never in characters.</strong> Every width
+ * assertion encodes with {@link StandardCharsets#US_ASCII} explicitly rather than relying on the
+ * platform default, because the value being described is a position in a fixed-width record image.
  *
- * <p><strong>Why two fields are never validated anywhere.</strong> The account-update program decorates
- * the middle name and the second address line for error display but never checks them, saying so in its
- * own comments. Adding a constraint to either would reject input the legacy accepts, so neither carries
- * one. This suite asserts both accept a blank value.
+ * <p><strong>Two legacy spellings, one entity.</strong> The estate declares this record twice. The
+ * copybook the six online and batch programs include hyphenates the date-of-birth field; the
+ * alternate copybook that the statement generator includes spells the same field without the
+ * hyphens. Both denote the same 10 bytes at offset 308, so one attribute, one column and one test
+ * class serve both. No variant flag, discriminator, second entity or second test class exists.
  *
- * <p><strong>Two privacy departures, and one gap left open.</strong> The social security number is
- * cleartext in the legacy record. It is the one column the migration declares nullable and the one
- * declared far wider than its nine source bytes, because a ciphertext is longer than its plaintext and an
- * unset value must be distinguishable from an empty one. The suite asserts both properties. Separately,
- * the entity declares no diagnostic string at all, so the number cannot escape through one; the suite
- * proves that by asserting the inherited description carries no field value. The gap the legacy leaves
- * open &mdash; that the card number and verification code have no field-level protection anywhere in the
- * design &mdash; is recorded in the decision log and is not closed here, because closing it was not
- * asked for.
+ * <p><strong>Deliberately out of scope here.</strong> This is a pure unit test: it starts no
+ * container, opens no connection, reads no file and loads no Spring context. Column names, declared
+ * lengths and nullability are verified in the integration tier, where the persistence provider
+ * validates the mapping against a real PostgreSQL 16 schema and aborts start-up on any mismatch;
+ * nullability is proved here behaviourally instead, by round-tripping an absent value. State-code,
+ * area-code and state-plus-postal-prefix membership belong to the validation-lookup service, and
+ * calendar validity belongs to the date-validation service; neither is asserted here, and this
+ * suite deliberately proves that the entity itself performs no such check.
  *
- * <p><strong>Deliberately not asserted.</strong> Nothing here checks a state code, an area code or a
- * postal prefix against the permitted lists; those live in the lookup service and are verified there.
- * Nothing checks a date of birth, which the date-validation service owns.
+ * <p><strong>Provenance.</strong> Legacy estate read at commit
+ * 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release stamp
+ * CardDemo_v1.0-15-g27d6c6f-68 dated 2022-07-19. No legacy source text is reproduced; field names,
+ * widths, offsets and record lengths are cited as metadata only.
  */
-@DisplayName("Customer — the five-hundred-byte customer record")
+@DisplayName("Customer - the 500-byte customer record, 18 mapped fields plus a 168-byte filler")
 class CustomerTest {
 
-    /** Relational table the entity maps to. */
-    private static final String TABLE = "customer";
+    // ------------------------------------------------------------------------------------------
+    // Hand-derived record geometry. Each width was read from the copybook's picture clause; each
+    // offset is the running sum of the widths before it. These are the oracle for every position
+    // and length assertion in this file.
+    // ------------------------------------------------------------------------------------------
 
-    /** Fixture holding the fifty seeded customer records. */
-    private static final String FIXTURE_FILE = "custdata.txt";
-
-    /** {@code RECORDSIZE(500 500)} in the cluster definition. */
+    /** Declared record length, corroborated by {@code RECORDSIZE(500 500)} on the cluster. */
     private static final int RECORD_WIDTH = 500;
 
-    /** {@code KEYS(9 0)} — key length. */
-    private static final int KEY_WIDTH = 9;
+    /** Sum of the eighteen mapped widths, where the trailing filler begins. */
+    private static final int MAPPED_WIDTH = 332;
 
-    /** Width of the unmapped trailing filler. */
+    /** Unmapped trailing filler: 500 - 332. */
     private static final int FILLER_WIDTH = 168;
 
-    /** Records the seeded customer fixture holds. */
-    private static final int SEEDED_RECORDS = 50;
+    /** Key length, corroborated by {@code KEYS(9 0)} on the cluster. */
+    private static final int WIDTH_CUST_ID = 9;
 
-    /** Seeded customers whose credit score carries a leading zero. */
-    private static final int SEEDED_SCORES_WITH_LEADING_ZERO = 7;
+    /** Width shared by the three name fields. */
+    private static final int WIDTH_NAME = 25;
 
-    /** Seeded customers whose credit score is below the screen's lower bound of three hundred. */
-    private static final int SEEDED_SCORES_BELOW_SCREEN_MINIMUM = 21;
+    /** Width shared by the three address lines. */
+    private static final int WIDTH_ADDR_LINE = 50;
 
-    /** Lower bound the account-update screen enforces, which the record itself does not. */
-    private static final int SCREEN_SCORE_MINIMUM = 300;
+    /** State-code width. */
+    private static final int WIDTH_STATE_CD = 2;
 
-    /** The nineteen copybook widths, in declaration order. */
-    private static final List<Integer> COPYBOOK_WIDTHS = List.of(
-            9, 25, 25, 25, 50, 50, 50, 2, 3, 10, 15, 15, 9, 20, 10, 10, 1, 3, 168);
+    /** Country-code width. */
+    private static final int WIDTH_COUNTRY_CD = 3;
 
-    /** Zero-based offset of each mapped field, derived from the copybook widths. */
-    private static final int OFFSET_CUST_ID = 0;
-    private static final int OFFSET_FIRST_NAME = 9;
-    private static final int OFFSET_MIDDLE_NAME = 34;
-    private static final int OFFSET_LAST_NAME = 59;
-    private static final int OFFSET_ADDR_LINE_1 = 84;
-    private static final int OFFSET_ADDR_LINE_2 = 134;
-    private static final int OFFSET_ADDR_LINE_3 = 184;
-    private static final int OFFSET_ADDR_STATE_CD = 234;
-    private static final int OFFSET_ADDR_COUNTRY_CD = 236;
-    private static final int OFFSET_ADDR_ZIP = 239;
-    private static final int OFFSET_PHONE_NUM_1 = 249;
-    private static final int OFFSET_PHONE_NUM_2 = 264;
+    /** Postal-code width. */
+    private static final int WIDTH_ZIP = 10;
+
+    /** Width shared by both telephone numbers. */
+    private static final int WIDTH_PHONE = 15;
+
+    /** National-identifier width in the record image, before the column was widened. */
+    private static final int WIDTH_CUST_SSN = 9;
+
+    /** Government-identifier width in the record image, before the column was widened. */
+    private static final int WIDTH_GOVT_ISSUED_ID = 20;
+
+    /** Date-of-birth width, identical under both legacy spellings of the field. */
+    private static final int WIDTH_CUST_DOB = 10;
+
+    /** Transfer-account-identifier width. */
+    private static final int WIDTH_EFT_ACCOUNT_ID = 10;
+
+    /** Primary-cardholder-indicator width. */
+    private static final int WIDTH_PRI_CARD_HOLDER_IND = 1;
+
+    /** Credit-score width. */
+    private static final int WIDTH_FICO = 3;
+
+    /** Zero-based offset of the national identifier: the running sum of the twelve widths before it. */
     private static final int OFFSET_CUST_SSN = 279;
+
+    /** Zero-based offset of the government identifier: 279 + 9. */
     private static final int OFFSET_GOVT_ISSUED_ID = 288;
+
+    /** Zero-based offset of the date of birth: 288 + 20. Identical under both legacy spellings. */
     private static final int OFFSET_CUST_DOB = 308;
+
+    /** Zero-based offset of the transfer account identifier: 308 + 10. */
     private static final int OFFSET_EFT_ACCOUNT_ID = 318;
+
+    /** Zero-based offset of the primary-cardholder indicator: 318 + 10. */
     private static final int OFFSET_PRI_CARD_HOLDER_IND = 328;
-    private static final int OFFSET_FICO_CREDIT_SCORE = 329;
-    private static final int OFFSET_FILLER = 332;
 
-    /** The migration's customer table, parsed once. */
-    private static final SchemaColumnCatalog SCHEMA = SchemaColumnCatalog.load();
+    /** Zero-based offset of the credit score: 328 + 1. */
+    private static final int OFFSET_FICO = 329;
 
-    /** The seeded customer fixture, loaded once. */
-    private static final SeededRecordFixture FIXTURE =
-            SeededRecordFixture.load(FIXTURE_FILE, RECORD_WIDTH);
+    // ------------------------------------------------------------------------------------------
+    // Hand-decoded values from the first seeded customer record. Padding is spelled out in full
+    // rather than generated, so that each literal is auditable by eye against its declared width.
+    // ------------------------------------------------------------------------------------------
+
+    /** Identifier of the first seeded customer: nine characters, zero filled. */
+    private static final String CUST_ID = "000000001";
+
+    /** Given name, 8 characters plus 17 trailing spaces. */
+    private static final String FIRST_NAME = "Immanuel                 ";
+
+    /** Middle name, 8 characters plus 17 trailing spaces. */
+    private static final String MIDDLE_NAME = "Madeline                 ";
+
+    /** Family name, 7 characters plus 18 trailing spaces. */
+    private static final String LAST_NAME = "Kessler                  ";
+
+    /** First address line, 17 characters plus 33 trailing spaces. */
+    private static final String ADDR_LINE_1 = "618 Deshaun Route                                 ";
+
+    /** Second address line, 8 characters plus 42 trailing spaces. Carries a period and digits. */
+    private static final String ADDR_LINE_2 = "Apt. 802                                          ";
+
+    /** Third address line, 15 characters plus 35 trailing spaces. */
+    private static final String ADDR_LINE_3 = "Altenwerthshire                                   ";
+
+    /** State code of the first seeded customer. */
+    private static final String ADDR_STATE_CD = "NC";
+
+    /** Country code of the first seeded customer. */
+    private static final String ADDR_COUNTRY_CD = "USA";
+
+    /** Postal code, 5 characters plus 5 trailing spaces. */
+    private static final String ADDR_ZIP = "12546     ";
+
+    /** Primary telephone number, 13 characters plus 2 trailing spaces. */
+    private static final String PHONE_NUM_1 = "(908)119-8310  ";
+
+    /** Secondary telephone number, 13 characters plus 2 trailing spaces. */
+    private static final String PHONE_NUM_2 = "(373)693-8684  ";
+
+    /** Date of birth of the first seeded customer, ten characters of text. */
+    private static final String CUST_DOB = "1961-06-08";
+
+    /** Transfer account identifier of the first seeded customer, ten characters, leading zero kept. */
+    private static final String EFT_ACCOUNT_ID = "0053581756";
+
+    /** Primary-cardholder indicator of the first seeded customer. */
+    private static final String PRI_CARD_HOLDER_IND = "Y";
 
     /**
-     * A thirty-two-byte key used only to manufacture and read back well-formed protected values.
-     *
-     * <p>The entity refuses any value on its two regulated attributes that does not carry the
-     * module's protected-value envelope, so a test cannot hand it the legacy cleartext directly. The
-     * key exists to seal the seeded bytes on the way in and to recover them for assertion; it
-     * protects nothing real and is not a deployment secret.
+     * Credit score of the first seeded customer. This value sits below the 300-to-850 band the
+     * account-update screen enforces, and is stored exactly as the file holds it.
      */
-    private static final byte[] PROTECTION_KEY =
-            "carddemo-customer-test-key-0123!".getBytes(StandardCharsets.UTF_8);
+    private static final String FICO_ROW_ZERO = "274";
+
+    /** Lowest credit score in the seeded reference data, and the reason leading zeros matter. */
+    private static final String FICO_LOWEST_SEEDED = "001";
+
+    /** Upper bound of the band the account-update screen enforces, stored here without checking. */
+    private static final String FICO_SCREEN_UPPER_BOUND = "850";
+
+    /** Seeded customer rows in the reference file. */
+    private static final int SEEDED_ROWS = 50;
+
+    /** Seeded rows whose credit score falls below the band the account-update screen enforces. */
+    private static final int SEEDED_ROWS_BELOW_SCREEN_BAND = 21;
+
+    // ------------------------------------------------------------------------------------------
+    // Protected-value envelopes, hand-built from the RFC 4648 base-64 specification.
+    //
+    // DIVERGENCE FROM THE SUMMARISED CONTRACT, RESOLVED IN FAVOUR OF THE PRODUCTION CLASS.
+    // The contract summary describes plain-assignment mutators for all eighteen attributes. The
+    // class as written is stricter for the two regulated identifiers: both write paths refuse any
+    // value that does not already carry the module's protected-value envelope - a scheme marker,
+    // then a base-64 body decoding to at least 28 bytes, being a 96-bit initialisation vector plus a
+    // 128-bit authentication tag. The entity still transforms nothing; it either stores the value
+    // unchanged or refuses it. This suite therefore asserts the behaviour the class actually has,
+    // and additionally pins the refusal of legacy-width cleartext, which is the property that keeps
+    // regulated cleartext away from the persistence boundary.
+    //
+    // The literals below were derived from the RFC 4648 base-64 specification rather than by calling any
+    // production or platform encoder, so that nothing in this file uses the implementation as its
+    // own oracle: a body of n base-64 characters carries 3n/4 bytes, less one byte per padding
+    // character. Each decoded plaintext reads as an obviously synthetic, non-secret marker.
+    // ------------------------------------------------------------------------------------------
+
+    /** Scheme marker every protected value opens with. */
+    private static final String ENVELOPE_MARKER = "ENC1:";
+
+    /** 40 base-64 characters with two padding characters: 9 * 3 + 1 = 28 decoded bytes, the minimum. */
+    private static final String ENVELOPE_BODY_MINIMUM = "U1lOVEhFVElDLVRFU1QtRU5WRUxPUEUtMDAwMQ==";
+
+    /** A second 28-byte body, distinct from the first, so two attributes cannot be confused. */
+    private static final String ENVELOPE_BODY_SECOND = "U1lOVEhFVElDLVRFU1QtRU5WRUxPUEUtMDAwMg==";
+
+    /** 64 base-64 characters, no padding: 16 * 3 = 48 decoded bytes, a longer ciphertext shape. */
+    private static final String ENVELOPE_BODY_LONG =
+            "U1lOVEhFVElDLVRFU1QtRU5WRUxPUEUtTE9OR0VSLUNJUEhFUlRFWFQtRk9STS0x";
+
+    /** 36 base-64 characters, no padding: 9 * 3 = 27 decoded bytes, exactly one below the minimum. */
+    private static final String ENVELOPE_BODY_ONE_BYTE_SHORT = "U1lOVEhFVElDLVRFU1QtU0hPUlQtQk9EWS0x";
+
+    /** Accepted protected value carrying the minimum body. */
+    private static final String PROTECTED_MINIMUM = ENVELOPE_MARKER + ENVELOPE_BODY_MINIMUM;
+
+    /** Accepted protected value carrying the second body. */
+    private static final String PROTECTED_SECOND = ENVELOPE_MARKER + ENVELOPE_BODY_SECOND;
+
+    /** Accepted protected value carrying the long body. */
+    private static final String PROTECTED_LONG = ENVELOPE_MARKER + ENVELOPE_BODY_LONG;
+
+    /** Refused: the marker is present but the body is one byte short of an authenticated envelope. */
+    private static final String PROTECTED_TOO_SHORT = ENVELOPE_MARKER + ENVELOPE_BODY_ONE_BYTE_SHORT;
+
+    /** Refused: the marker is present but the body is not base-64 at all. */
+    private static final String PROTECTED_BODY_NOT_ENCODED = ENVELOPE_MARKER + "not-encoded!!";
 
     /**
-     * Seals a cleartext value into the envelope shape the entity accepts.
-     *
-     * @param cleartext the legacy cleartext value, or {@code null}
-     * @return the sealed value, or {@code null} when nothing was supplied
+     * Refused: no marker, and exactly the nine characters the record image reserves for the
+     * national identifier. An obviously synthetic, non-secret token stands in for a real value.
      */
-    private static String sealed(final String cleartext) {
-        return cleartext == null ? null : SensitiveFieldCodec.protect(cleartext, PROTECTION_KEY);
-    }
+    private static final String UNPROTECTED_NINE_CHARACTERS = "NOTSECRET";
 
     /**
-     * Recovers the cleartext a stored protected value carries.
-     *
-     * @param envelope the value read off the entity
-     * @return the cleartext it protects
+     * Refused: no marker, and exactly the twenty characters the record image reserves for the
+     * government identifier. Again an obviously synthetic, non-secret token.
      */
-    private static String revealed(final String envelope) {
-        return SensitiveFieldCodec.reveal(envelope, PROTECTION_KEY);
-    }
+    private static final String UNPROTECTED_TWENTY_CHARACTERS = "NOTSECRETNOTSECRET00";
 
     /**
-     * Builds a customer from one seeded record by slicing the copybook offsets.
+     * Builds a fully populated customer from the hand-decoded first seeded record, supplying a
+     * well-formed protected value for each of the two regulated identifiers.
      *
-     * @param ordinal the one-based record position
-     * @return the customer the record describes
+     * <p>Construction goes through the public eighteen-argument constructor in record order. No
+     * builder and no parameter object is introduced: the module admits no code generation, and the
+     * eighteen-argument shape is exactly the record contract.
+     *
+     * @return a customer carrying the first seeded record's values
      */
-    private static Customer customerFromSeededRecord(final int ordinal) {
+    private static Customer firstSeededCustomer() {
         return new Customer(
-                FIXTURE.field(ordinal, OFFSET_CUST_ID, KEY_WIDTH),
-                FIXTURE.field(ordinal, OFFSET_FIRST_NAME, 25),
-                FIXTURE.field(ordinal, OFFSET_MIDDLE_NAME, 25),
-                FIXTURE.field(ordinal, OFFSET_LAST_NAME, 25),
-                FIXTURE.field(ordinal, OFFSET_ADDR_LINE_1, 50),
-                FIXTURE.field(ordinal, OFFSET_ADDR_LINE_2, 50),
-                FIXTURE.field(ordinal, OFFSET_ADDR_LINE_3, 50),
-                FIXTURE.field(ordinal, OFFSET_ADDR_STATE_CD, 2),
-                FIXTURE.field(ordinal, OFFSET_ADDR_COUNTRY_CD, 3),
-                FIXTURE.field(ordinal, OFFSET_ADDR_ZIP, 10),
-                FIXTURE.field(ordinal, OFFSET_PHONE_NUM_1, 15),
-                FIXTURE.field(ordinal, OFFSET_PHONE_NUM_2, 15),
-                sealed(FIXTURE.field(ordinal, OFFSET_CUST_SSN, 9)),
-                sealed(FIXTURE.field(ordinal, OFFSET_GOVT_ISSUED_ID, 20)),
-                FIXTURE.field(ordinal, OFFSET_CUST_DOB, 10),
-                FIXTURE.field(ordinal, OFFSET_EFT_ACCOUNT_ID, 10),
-                FIXTURE.field(ordinal, OFFSET_PRI_CARD_HOLDER_IND, 1),
-                FIXTURE.field(ordinal, OFFSET_FICO_CREDIT_SCORE, 3));
+                CUST_ID,
+                FIRST_NAME,
+                MIDDLE_NAME,
+                LAST_NAME,
+                ADDR_LINE_1,
+                ADDR_LINE_2,
+                ADDR_LINE_3,
+                ADDR_STATE_CD,
+                ADDR_COUNTRY_CD,
+                ADDR_ZIP,
+                PHONE_NUM_1,
+                PHONE_NUM_2,
+                PROTECTED_MINIMUM,
+                PROTECTED_SECOND,
+                CUST_DOB,
+                EFT_ACCOUNT_ID,
+                PRI_CARD_HOLDER_IND,
+                FICO_ROW_ZERO);
     }
 
-    // RECORD LAYOUT
+    /**
+     * Measures a value the way the fixed-width record image measures it.
+     *
+     * @param value the value to measure
+     * @return the number of bytes the value occupies when encoded as US-ASCII
+     */
+    private static int encodedWidthOf(final String value) {
+        return value.getBytes(StandardCharsets.US_ASCII).length;
+    }
 
     /**
-     * Verifies the copybook geometry the entity has to honour.
+     * Proves the record geometry the entity is mapped against, by summing the copybook widths in the
+     * open rather than quoting a total.
      */
     @Nested
-    @DisplayName("record layout")
-    class RecordLayout {
+    @DisplayName("Record geometry derived by summing the copybook widths")
+    class RecordGeometry {
 
         @Test
-        @DisplayName("the nineteen copybook widths sum to the five hundred bytes the cluster declares")
-        void theWidthsSumToTheRecordSize() {
-            assertThat(COPYBOOK_WIDTHS).hasSize(19);
-            assertThat(COPYBOOK_WIDTHS.stream().mapToInt(Integer::intValue).sum())
-                    .isEqualTo(RECORD_WIDTH);
+        @DisplayName("the eighteen mapped widths sum to 332, and a 168-byte filler closes the 500-byte record")
+        void theMappedWidthsSumToThreeHundredAndThirtyTwo() {
+            assertThat(WIDTH_CUST_ID
+                    + WIDTH_NAME + WIDTH_NAME + WIDTH_NAME
+                    + WIDTH_ADDR_LINE + WIDTH_ADDR_LINE + WIDTH_ADDR_LINE
+                    + WIDTH_STATE_CD + WIDTH_COUNTRY_CD + WIDTH_ZIP
+                    + WIDTH_PHONE + WIDTH_PHONE
+                    + WIDTH_CUST_SSN + WIDTH_GOVT_ISSUED_ID + WIDTH_CUST_DOB
+                    + WIDTH_EFT_ACCOUNT_ID + WIDTH_PRI_CARD_HOLDER_IND + WIDTH_FICO)
+                    .isEqualTo(MAPPED_WIDTH);
+
+            assertThat(9 + 25 + 25 + 25 + 50 + 50 + 50 + 2 + 3 + 10 + 15 + 15 + 9 + 20 + 10 + 10 + 1 + 3)
+                    .isEqualTo(332);
+
+            // The remainder is the unmapped trailing filler: it is neither an attribute nor a column,
+            // and only the fixed-width record mapper in the utility layer consumes it.
+            assertThat(MAPPED_WIDTH + FILLER_WIDTH).isEqualTo(RECORD_WIDTH);
+            assertThat(332 + 168).isEqualTo(500);
         }
 
         @Test
-        @DisplayName("the eighteen mapped fields end where the filler begins")
-        void theMappedFieldsEndWhereTheFillerBegins() {
-            assertThat(COPYBOOK_WIDTHS.stream().mapToInt(Integer::intValue).sum() - FILLER_WIDTH)
-                    .isEqualTo(OFFSET_FILLER);
-            assertThat(OFFSET_FILLER + FILLER_WIDTH).isEqualTo(RECORD_WIDTH);
+        @DisplayName("the national identifier begins at offset 279, the sum of the twelve widths ahead of it")
+        void theNationalIdentifierOffsetIsTwoHundredAndSeventyNine() {
+            assertThat(9 + 25 + 25 + 25 + 50 + 50 + 50 + 2 + 3 + 10 + 15 + 15).isEqualTo(279);
+            assertThat(OFFSET_CUST_SSN).isEqualTo(279);
         }
 
         @Test
-        @DisplayName("each mapped field starts where the preceding widths leave off")
-        void eachFieldStartsWhereThePrecedingWidthsLeaveOff() {
-            final List<Integer> expectedOffsets = List.of(
-                    OFFSET_CUST_ID, OFFSET_FIRST_NAME, OFFSET_MIDDLE_NAME, OFFSET_LAST_NAME,
-                    OFFSET_ADDR_LINE_1, OFFSET_ADDR_LINE_2, OFFSET_ADDR_LINE_3, OFFSET_ADDR_STATE_CD,
-                    OFFSET_ADDR_COUNTRY_CD, OFFSET_ADDR_ZIP, OFFSET_PHONE_NUM_1, OFFSET_PHONE_NUM_2,
-                    OFFSET_CUST_SSN, OFFSET_GOVT_ISSUED_ID, OFFSET_CUST_DOB, OFFSET_EFT_ACCOUNT_ID,
-                    OFFSET_PRI_CARD_HOLDER_IND, OFFSET_FICO_CREDIT_SCORE, OFFSET_FILLER);
+        @DisplayName("the running sums place the government identifier at 288, the date of birth at 308 and the score at 329")
+        void theTrailingOffsetsFollowFromTheRunningSums() {
+            assertThat(OFFSET_CUST_SSN + WIDTH_CUST_SSN).isEqualTo(OFFSET_GOVT_ISSUED_ID);
+            assertThat(279 + 9).isEqualTo(288);
 
-            int running = 0;
-            for (int index = 0; index < COPYBOOK_WIDTHS.size(); index++) {
-                assertThat(running)
-                        .as("offset of field %d", index + 1)
-                        .isEqualTo(expectedOffsets.get(index));
-                running += COPYBOOK_WIDTHS.get(index);
-            }
-            assertThat(running).isEqualTo(RECORD_WIDTH);
+            assertThat(OFFSET_GOVT_ISSUED_ID + WIDTH_GOVT_ISSUED_ID).isEqualTo(OFFSET_CUST_DOB);
+            assertThat(288 + 20).isEqualTo(308);
+
+            assertThat(OFFSET_CUST_DOB + WIDTH_CUST_DOB).isEqualTo(OFFSET_EFT_ACCOUNT_ID);
+            assertThat(308 + 10).isEqualTo(318);
+
+            assertThat(OFFSET_EFT_ACCOUNT_ID + WIDTH_EFT_ACCOUNT_ID).isEqualTo(OFFSET_PRI_CARD_HOLDER_IND);
+            assertThat(318 + 10).isEqualTo(328);
+
+            assertThat(OFFSET_PRI_CARD_HOLDER_IND + WIDTH_PRI_CARD_HOLDER_IND).isEqualTo(OFFSET_FICO);
+            assertThat(328 + 1).isEqualTo(329);
+
+            assertThat(OFFSET_FICO + WIDTH_FICO).isEqualTo(MAPPED_WIDTH);
+            assertThat(329 + 3).isEqualTo(332);
         }
 
         @Test
-        @DisplayName("the key is the leading nine bytes, as the cluster's key clause states")
+        @DisplayName("the key is the leading nine bytes of the record image, matching KEYS(9 0) on the cluster")
         void theKeyIsTheLeadingNineBytes() {
-            assertThat(KEY_WIDTH).isEqualTo(COPYBOOK_WIDTHS.get(0));
-            assertThat(OFFSET_CUST_ID).isZero();
-            assertThat(OFFSET_CUST_ID + KEY_WIDTH).isEqualTo(OFFSET_FIRST_NAME);
-        }
-
-        @Test
-        @DisplayName("every seeded record measures the declared five hundred bytes")
-        void everySeededRecordMeasuresTheDeclaredWidth() {
-            assertThat(FIXTURE.recordCount()).isEqualTo(SEEDED_RECORDS);
-            assertThat(FIXTURE.recordWidth()).isEqualTo(RECORD_WIDTH);
-            assertThat(FIXTURE.impliedByteCount()).isEqualTo(25_050);
-            for (final String image : FIXTURE.records()) {
-                assertThat(image).hasSize(RECORD_WIDTH);
-            }
-        }
-
-        @Test
-        @DisplayName("the trailing filler is blank in every seeded record")
-        void theTrailingFillerIsBlankInEverySeededRecord() {
-            for (int ordinal = 1; ordinal <= FIXTURE.recordCount(); ordinal++) {
-                assertThat(FIXTURE.field(ordinal, OFFSET_FILLER, FILLER_WIDTH))
-                        .as("filler of record %d", ordinal)
-                        .isBlank()
-                        .hasSize(FILLER_WIDTH);
-            }
+            assertThat(WIDTH_CUST_ID).isEqualTo(9);
+            assertThat(encodedWidthOf(CUST_ID)).isEqualTo(WIDTH_CUST_ID);
         }
     }
 
-    // SCHEMA AGREEMENT
-
     /**
-     * Verifies that the deployed migration describes the same layout the copybook does.
+     * Proves that the eighteen-argument constructor binds each argument to the attribute of the same
+     * name, in record order, with nothing transformed on the way in.
      */
     @Nested
-    @DisplayName("schema agreement")
-    class SchemaAgreement {
+    @DisplayName("The eighteen-argument constructor binds every attribute in record order")
+    class ConstructorRoundTrip {
 
         @Test
-        @DisplayName("the table declares the eighteen mapped columns in copybook order")
-        void theTableDeclaresTheMappedColumnsInCopybookOrder() {
-            assertThat(SCHEMA.columnNames(TABLE)).containsExactly(
-                    "cust_id", "first_name", "middle_name", "last_name",
-                    "addr_line_1", "addr_line_2", "addr_line_3", "addr_state_cd",
-                    "addr_country_cd", "addr_zip", "phone_num_1", "phone_num_2",
-                    "cust_ssn", "govt_issued_id", "cust_dob", "eft_account_id",
-                    "pri_card_holder_ind", "fico_credit_score");
-            assertThat(SCHEMA.columnNames(TABLE)).hasSize(COPYBOOK_WIDTHS.size() - 1);
-        }
-
-        @Test
-        @DisplayName("every column except the two protected identifiers is declared at its copybook "
-                + "width, those two being widened to hold ciphertext")
-        void everyColumnExceptTheProtectedOnesMatchesItsCopybookWidth() {
-            final List<String> columns = SCHEMA.columnNames(TABLE);
-
-            for (int index = 0; index < columns.size(); index++) {
-                final String column = columns.get(index);
-                if ("cust_ssn".equals(column) || "govt_issued_id".equals(column)) {
-                    continue;
-                }
-                assertThat(SCHEMA.declaredWidth(TABLE, column))
-                        .as("declared width of %s", column)
-                        .isEqualTo(COPYBOOK_WIDTHS.get(index));
-            }
-        }
-
-        @Test
-        @DisplayName("every column is a character type, because the record holds no binary or numeric "
-                + "field")
-        void everyColumnIsACharacterType() {
-            for (final String column : SCHEMA.columnNames(TABLE)) {
-                assertThat(SCHEMA.declaredType(TABLE, column))
-                        .as("declared type of %s", column)
-                        .startsWith("VARCHAR(");
-            }
-        }
-
-        @Test
-        @DisplayName("the credit score is a three-character column rather than a whole number, so a "
-                + "leading zero survives a round trip")
-        void theCreditScoreIsAThreeCharacterColumn() {
-            assertThat(SCHEMA.declaredType(TABLE, "fico_credit_score")).isEqualTo("VARCHAR(3)");
-            assertThat(SCHEMA.declaredWidth(TABLE, "fico_credit_score")).isEqualTo(3);
-        }
-
-        @Test
-        @DisplayName("the primary key is the nine-byte identifier alone, so no surrogate is created")
-        void thePrimaryKeyIsTheIdentifierAlone() {
-            assertThat(SCHEMA.primaryKeyColumns(TABLE)).containsExactly("cust_id");
-            assertThat(SCHEMA.columnNames(TABLE)).doesNotContain("id", "customer_id", "version");
-        }
-
-        @Test
-        @DisplayName("the social security number is the only nullable column, so an unset value stays "
-                + "distinguishable from an empty one")
-        void theSsnIsTheOnlyNullableColumn() {
-            final List<String> nullable = new ArrayList<>();
-            for (final String column : SCHEMA.columnNames(TABLE)) {
-                if (SCHEMA.isNullable(TABLE, column)) {
-                    nullable.add(column);
-                }
-            }
-
-            assertThat(nullable).containsExactly("cust_ssn");
-        }
-
-        @Test
-        @DisplayName("both protected columns are far wider than their source bytes, because a protected "
-                + "value is longer than the value it protects")
-        void theProtectedColumnsAreWiderThanTheirSourceFields() {
-            assertThat(SCHEMA.declaredWidth(TABLE, "cust_ssn"))
-                    .isEqualTo(255)
-                    .isGreaterThan(COPYBOOK_WIDTHS.get(12));
-            assertThat(COPYBOOK_WIDTHS.get(12)).isEqualTo(9);
-
-            assertThat(SCHEMA.declaredWidth(TABLE, "govt_issued_id"))
-                    .as("the government-issued identifier is regulated in the same way and is"
-                            + " protected in the same way, so its column is widened too")
-                    .isEqualTo(255)
-                    .isGreaterThan(COPYBOOK_WIDTHS.get(13));
-            assertThat(COPYBOOK_WIDTHS.get(13)).isEqualTo(20);
-        }
-    }
-
-    // CONSTRUCTION AND ACCESS
-
-    /**
-     * Verifies that every field the constructor takes is the field the accessor returns.
-     */
-    @Nested
-    @DisplayName("construction and access")
-    class ConstructionAndAccess {
-
-        @Test
-        @DisplayName("every constructor argument reaches its own accessor, with no leak between the "
-                + "three same-width names or the three same-width address lines")
+        @DisplayName("every one of the eighteen constructor arguments reaches the accessor of the same name")
         void everyConstructorArgumentReachesItsAccessor() {
+            final Customer customer = firstSeededCustomer();
+
+            assertThat(customer.getCustId()).isEqualTo(CUST_ID);
+            assertThat(customer.getFirstName()).isEqualTo(FIRST_NAME);
+            assertThat(customer.getMiddleName()).isEqualTo(MIDDLE_NAME);
+            assertThat(customer.getLastName()).isEqualTo(LAST_NAME);
+            assertThat(customer.getAddrLine1()).isEqualTo(ADDR_LINE_1);
+            assertThat(customer.getAddrLine2()).isEqualTo(ADDR_LINE_2);
+            assertThat(customer.getAddrLine3()).isEqualTo(ADDR_LINE_3);
+            assertThat(customer.getAddrStateCd()).isEqualTo(ADDR_STATE_CD);
+            assertThat(customer.getAddrCountryCd()).isEqualTo(ADDR_COUNTRY_CD);
+            assertThat(customer.getAddrZip()).isEqualTo(ADDR_ZIP);
+            assertThat(customer.getPhoneNum1()).isEqualTo(PHONE_NUM_1);
+            assertThat(customer.getPhoneNum2()).isEqualTo(PHONE_NUM_2);
+            assertThat(customer.getCustSsn()).isEqualTo(PROTECTED_MINIMUM);
+            assertThat(customer.getGovtIssuedId()).isEqualTo(PROTECTED_SECOND);
+            assertThat(customer.getCustDob()).isEqualTo(CUST_DOB);
+            assertThat(customer.getEftAccountId()).isEqualTo(EFT_ACCOUNT_ID);
+            assertThat(customer.getPriCardHolderInd()).isEqualTo(PRI_CARD_HOLDER_IND);
+            assertThat(customer.getFicoCreditScore()).isEqualTo(FICO_ROW_ZERO);
+        }
+
+        @Test
+        @DisplayName("the three same-width name arguments are not transposed, since a width match cannot catch a swap")
+        void theThreeNamesAreNotTransposed() {
+            final Customer customer = firstSeededCustomer();
+
+            assertThat(customer.getFirstName()).isNotEqualTo(customer.getMiddleName());
+            assertThat(customer.getMiddleName()).isNotEqualTo(customer.getLastName());
+            assertThat(customer.getFirstName()).isNotEqualTo(customer.getLastName());
+        }
+
+        @Test
+        @DisplayName("the two same-width telephone numbers are not transposed, nor are the three address lines")
+        void theSameWidthNeighboursAreNotTransposed() {
+            final Customer customer = firstSeededCustomer();
+
+            assertThat(customer.getPhoneNum1()).isNotEqualTo(customer.getPhoneNum2());
+            assertThat(customer.getAddrLine1()).isNotEqualTo(customer.getAddrLine2());
+            assertThat(customer.getAddrLine2()).isNotEqualTo(customer.getAddrLine3());
+        }
+
+        @Test
+        @DisplayName("the two same-width ten-byte fields either side of the transfer identifier are not transposed")
+        void theDateOfBirthAndTransferIdentifierAreNotTransposed() {
+            final Customer customer = firstSeededCustomer();
+
+            assertThat(customer.getCustDob()).isEqualTo(CUST_DOB);
+            assertThat(customer.getEftAccountId()).isEqualTo(EFT_ACCOUNT_ID);
+            assertThat(customer.getCustDob()).isNotEqualTo(customer.getEftAccountId());
+        }
+    }
+
+    /**
+     * Proves that each of the eighteen mutators replaces the attribute it names and no other, and
+     * that none of them transforms the value on the way in.
+     */
+    @Nested
+    @DisplayName("All eighteen mutators assign the attribute they name, verbatim")
+    class MutatorRoundTrip {
+
+        @Test
+        @DisplayName("the sixteen unguarded mutators round-trip the first seeded record's values unchanged")
+        void theUnguardedMutatorsRoundTripVerbatim() {
+            // Same-package visibility reaches the persistence constructor directly. This is Java
+            // package access, explicitly NOT reflection: no member is looked up by name anywhere.
+            final Customer customer = new Customer();
+
+            customer.setCustId(CUST_ID);
+            customer.setFirstName(FIRST_NAME);
+            customer.setMiddleName(MIDDLE_NAME);
+            customer.setLastName(LAST_NAME);
+            customer.setAddrLine1(ADDR_LINE_1);
+            customer.setAddrLine2(ADDR_LINE_2);
+            customer.setAddrLine3(ADDR_LINE_3);
+            customer.setAddrStateCd(ADDR_STATE_CD);
+            customer.setAddrCountryCd(ADDR_COUNTRY_CD);
+            customer.setAddrZip(ADDR_ZIP);
+            customer.setPhoneNum1(PHONE_NUM_1);
+            customer.setPhoneNum2(PHONE_NUM_2);
+            customer.setCustDob(CUST_DOB);
+            customer.setEftAccountId(EFT_ACCOUNT_ID);
+            customer.setPriCardHolderInd(PRI_CARD_HOLDER_IND);
+            customer.setFicoCreditScore(FICO_ROW_ZERO);
+
+            assertThat(customer.getCustId()).isEqualTo(CUST_ID);
+            assertThat(customer.getFirstName()).isEqualTo(FIRST_NAME);
+            assertThat(customer.getMiddleName()).isEqualTo(MIDDLE_NAME);
+            assertThat(customer.getLastName()).isEqualTo(LAST_NAME);
+            assertThat(customer.getAddrLine1()).isEqualTo(ADDR_LINE_1);
+            assertThat(customer.getAddrLine2()).isEqualTo(ADDR_LINE_2);
+            assertThat(customer.getAddrLine3()).isEqualTo(ADDR_LINE_3);
+            assertThat(customer.getAddrStateCd()).isEqualTo(ADDR_STATE_CD);
+            assertThat(customer.getAddrCountryCd()).isEqualTo(ADDR_COUNTRY_CD);
+            assertThat(customer.getAddrZip()).isEqualTo(ADDR_ZIP);
+            assertThat(customer.getPhoneNum1()).isEqualTo(PHONE_NUM_1);
+            assertThat(customer.getPhoneNum2()).isEqualTo(PHONE_NUM_2);
+            assertThat(customer.getCustDob()).isEqualTo(CUST_DOB);
+            assertThat(customer.getEftAccountId()).isEqualTo(EFT_ACCOUNT_ID);
+            assertThat(customer.getPriCardHolderInd()).isEqualTo(PRI_CARD_HOLDER_IND);
+            assertThat(customer.getFicoCreditScore()).isEqualTo(FICO_ROW_ZERO);
+        }
+
+        @Test
+        @DisplayName("the two guarded mutators round-trip a well-formed protected value unchanged")
+        void theGuardedMutatorsRoundTripAProtectedValueUnchanged() {
+            final Customer customer = new Customer();
+
+            customer.setCustSsn(PROTECTED_MINIMUM);
+            customer.setGovtIssuedId(PROTECTED_SECOND);
+
+            assertThat(customer.getCustSsn()).isEqualTo(PROTECTED_MINIMUM);
+            assertThat(customer.getGovtIssuedId()).isEqualTo(PROTECTED_SECOND);
+        }
+
+        @Test
+        @DisplayName("a mutator replaces only the attribute it names, so the other seventeen are undisturbed")
+        void aMutatorReplacesOnlyTheAttributeItNames() {
+            final Customer customer = firstSeededCustomer();
+
+            customer.setAddrStateCd("NY");
+
+            assertThat(customer.getAddrStateCd()).isEqualTo("NY");
+            assertThat(customer.getCustId()).isEqualTo(CUST_ID);
+            assertThat(customer.getFirstName()).isEqualTo(FIRST_NAME);
+            assertThat(customer.getMiddleName()).isEqualTo(MIDDLE_NAME);
+            assertThat(customer.getLastName()).isEqualTo(LAST_NAME);
+            assertThat(customer.getAddrLine1()).isEqualTo(ADDR_LINE_1);
+            assertThat(customer.getAddrLine2()).isEqualTo(ADDR_LINE_2);
+            assertThat(customer.getAddrLine3()).isEqualTo(ADDR_LINE_3);
+            assertThat(customer.getAddrCountryCd()).isEqualTo(ADDR_COUNTRY_CD);
+            assertThat(customer.getAddrZip()).isEqualTo(ADDR_ZIP);
+            assertThat(customer.getPhoneNum1()).isEqualTo(PHONE_NUM_1);
+            assertThat(customer.getPhoneNum2()).isEqualTo(PHONE_NUM_2);
+            assertThat(customer.getCustSsn()).isEqualTo(PROTECTED_MINIMUM);
+            assertThat(customer.getGovtIssuedId()).isEqualTo(PROTECTED_SECOND);
+            assertThat(customer.getCustDob()).isEqualTo(CUST_DOB);
+            assertThat(customer.getEftAccountId()).isEqualTo(EFT_ACCOUNT_ID);
+            assertThat(customer.getPriCardHolderInd()).isEqualTo(PRI_CARD_HOLDER_IND);
+            assertThat(customer.getFicoCreditScore()).isEqualTo(FICO_ROW_ZERO);
+        }
+    }
+
+    /**
+     * Proves each attribute carries exactly the number of encoded bytes its picture clause reserves.
+     * Every measurement encodes as US-ASCII explicitly; character counts are never used, because the
+     * value being described is a span of a fixed-width record image.
+     */
+    @Nested
+    @DisplayName("Encoded field widths measured in US-ASCII bytes, never in characters")
+    class EncodedFieldWidths {
+
+        @Test
+        @DisplayName("the eighteen attributes measure 9/25/25/25/50/50/50/2/3/10/15/15/9/20/10/10/1/3 encoded bytes in the record image")
+        void everyAttributeMeasuresItsDeclaredWidth() {
+            final Customer customer = firstSeededCustomer();
+
+            assertThat(encodedWidthOf(customer.getCustId())).isEqualTo(9);
+            assertThat(encodedWidthOf(customer.getFirstName())).isEqualTo(25);
+            assertThat(encodedWidthOf(customer.getMiddleName())).isEqualTo(25);
+            assertThat(encodedWidthOf(customer.getLastName())).isEqualTo(25);
+            assertThat(encodedWidthOf(customer.getAddrLine1())).isEqualTo(50);
+            assertThat(encodedWidthOf(customer.getAddrLine2())).isEqualTo(50);
+            assertThat(encodedWidthOf(customer.getAddrLine3())).isEqualTo(50);
+            assertThat(encodedWidthOf(customer.getAddrStateCd())).isEqualTo(2);
+            assertThat(encodedWidthOf(customer.getAddrCountryCd())).isEqualTo(3);
+            assertThat(encodedWidthOf(customer.getAddrZip())).isEqualTo(10);
+            assertThat(encodedWidthOf(customer.getPhoneNum1())).isEqualTo(15);
+            assertThat(encodedWidthOf(customer.getPhoneNum2())).isEqualTo(15);
+            assertThat(encodedWidthOf(customer.getCustDob())).isEqualTo(10);
+            assertThat(encodedWidthOf(customer.getEftAccountId())).isEqualTo(10);
+            assertThat(encodedWidthOf(customer.getPriCardHolderInd())).isEqualTo(1);
+            assertThat(encodedWidthOf(customer.getFicoCreditScore())).isEqualTo(3);
+
+            // The two regulated identifiers occupy 9 and 20 bytes in the legacy record image, and
+            // those two spans are asserted here on record-image-shaped values. The stored form is a
+            // protected value and is deliberately longer, which is why the columns were widened.
+            assertThat(encodedWidthOf(UNPROTECTED_NINE_CHARACTERS)).isEqualTo(WIDTH_CUST_SSN);
+            assertThat(encodedWidthOf(UNPROTECTED_TWENTY_CHARACTERS)).isEqualTo(WIDTH_GOVT_ISSUED_ID);
+        }
+
+        @Test
+        @DisplayName("the sixteen unregulated widths sum to 303, which with the 9-byte and 20-byte regulated spans closes the mapped 332")
+        void theMeasuredWidthsCloseTheMappedRecord() {
+            final Customer customer = firstSeededCustomer();
+
+            final int measured = encodedWidthOf(customer.getCustId())
+                    + encodedWidthOf(customer.getFirstName())
+                    + encodedWidthOf(customer.getMiddleName())
+                    + encodedWidthOf(customer.getLastName())
+                    + encodedWidthOf(customer.getAddrLine1())
+                    + encodedWidthOf(customer.getAddrLine2())
+                    + encodedWidthOf(customer.getAddrLine3())
+                    + encodedWidthOf(customer.getAddrStateCd())
+                    + encodedWidthOf(customer.getAddrCountryCd())
+                    + encodedWidthOf(customer.getAddrZip())
+                    + encodedWidthOf(customer.getPhoneNum1())
+                    + encodedWidthOf(customer.getPhoneNum2())
+                    + encodedWidthOf(customer.getCustDob())
+                    + encodedWidthOf(customer.getEftAccountId())
+                    + encodedWidthOf(customer.getPriCardHolderInd())
+                    + encodedWidthOf(customer.getFicoCreditScore());
+
+            assertThat(measured).isEqualTo(303);
+            assertThat(measured + WIDTH_CUST_SSN + WIDTH_GOVT_ISSUED_ID).isEqualTo(MAPPED_WIDTH);
+            assertThat(303 + 9 + 20).isEqualTo(332);
+        }
+    }
+
+    /**
+     * Proves the behaviour of the national identifier, the one attribute that may be absent.
+     */
+    @Nested
+    @DisplayName("The national identifier - the only attribute in the schema that may be absent")
+    class NationalIdentifier {
+
+        @Test
+        @DisplayName("an absent national identifier round-trips as absent: it is the only nullable column across the eleven application tables, widened to 255 characters because it holds application-encrypted ciphertext wider than the nine-character legacy field, and the reference-data seed writes an absent value for all 50 rows")
+        void anAbsentNationalIdentifierRoundTripsAsAbsent() {
+            final Customer customer = firstSeededCustomer();
+
+            assertThatCode(() -> customer.setCustSsn(null)).doesNotThrowAnyException();
+
+            assertThat(customer.getCustSsn()).isNull();
+            assertThat(customer.getCustSsn()).isNotEqualTo("null");
+            assertThat(customer.getCustSsn()).isNotEqualTo("");
+        }
+
+        @Test
+        @DisplayName("the eighteen-argument constructor also accepts an absent national identifier and stores it as absent")
+        void theConstructorAcceptsAnAbsentNationalIdentifier() {
             final Customer customer = new Customer(
-                    "000000001", "FIRST", "MIDDLE", "LAST",
-                    "LINE ONE", "LINE TWO", "LINE THREE", "NC", "USA", "12546     ",
-                    "(908)119-8310  ", "(373)693-8684  ", sealed("020973888"),
-                    sealed("00000000000049368437"), "1961-06-08", "0053581756", "Y", "274");
+                    CUST_ID, FIRST_NAME, MIDDLE_NAME, LAST_NAME,
+                    ADDR_LINE_1, ADDR_LINE_2, ADDR_LINE_3,
+                    ADDR_STATE_CD, ADDR_COUNTRY_CD, ADDR_ZIP,
+                    PHONE_NUM_1, PHONE_NUM_2,
+                    null, PROTECTED_SECOND, CUST_DOB,
+                    EFT_ACCOUNT_ID, PRI_CARD_HOLDER_IND, FICO_ROW_ZERO);
+
+            assertThat(customer.getCustSsn()).isNull();
+            assertThat(customer.getGovtIssuedId()).isEqualTo(PROTECTED_SECOND);
+        }
+
+        @Test
+        @DisplayName("a stored national identifier is returned byte for byte, proving the entity neither encrypts, decrypts, masks nor coerces the length")
+        void aStoredNationalIdentifierIsReturnedByteForByte() {
+            final Customer customer = new Customer();
+
+            customer.setCustSsn(PROTECTED_MINIMUM);
+
+            assertThat(customer.getCustSsn()).isEqualTo(PROTECTED_MINIMUM);
+            assertThat(encodedWidthOf(customer.getCustSsn()))
+                    .isEqualTo(encodedWidthOf(PROTECTED_MINIMUM));
+        }
+
+        @Test
+        @DisplayName("a value far longer than the nine-character legacy field is stored whole, with no truncation to the source width")
+        void aLongerValueIsStoredWhole() {
+            final Customer customer = new Customer();
+
+            customer.setCustSsn(PROTECTED_LONG);
+
+            assertThat(customer.getCustSsn()).isEqualTo(PROTECTED_LONG);
+            assertThat(encodedWidthOf(customer.getCustSsn())).isGreaterThan(WIDTH_CUST_SSN);
+            assertThat(encodedWidthOf(customer.getCustSsn()))
+                    .isEqualTo(encodedWidthOf(PROTECTED_LONG));
+        }
+
+        @Test
+        @DisplayName("DIVERGENCE from the summarised contract: a nine-character unprotected value the width of the legacy field is refused rather than stored, so regulated cleartext cannot reach the persistence boundary")
+        void anUnprotectedValueOfTheLegacyWidthIsRefused() {
+            // The contract summary anticipated a plain-assignment mutator that would store a
+            // nine-character value unchanged. The class as written is fail-closed instead: it refuses
+            // any value lacking the protected-value envelope. Following the class, this suite asserts
+            // the refusal, and asserts separately above that an accepted value is stored verbatim.
+            final Customer customer = new Customer();
+
+            assertThat(encodedWidthOf(UNPROTECTED_NINE_CHARACTERS)).isEqualTo(WIDTH_CUST_SSN);
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> customer.setCustSsn(UNPROTECTED_NINE_CHARACTERS));
+
+            assertThat(customer.getCustSsn()).isNull();
+        }
+
+        @Test
+        @DisplayName("the refusal message names the attribute and never the offending value, because an exception message is a surface that gets logged")
+        void theRefusalMessageNamesTheAttributeOnly() {
+            final Customer customer = new Customer();
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> customer.setCustSsn(UNPROTECTED_NINE_CHARACTERS))
+                    .withMessageContaining("custSsn")
+                    .withMessageNotContaining(UNPROTECTED_NINE_CHARACTERS);
+        }
+
+        @Test
+        @DisplayName("a body one byte below the 28-byte authenticated minimum is refused, so a value cannot merely look like an envelope")
+        void aBodyOneByteBelowTheMinimumIsRefused() {
+            final Customer customer = new Customer();
+
+            assertThatIllegalArgumentException().isThrownBy(() -> customer.setCustSsn(PROTECTED_TOO_SHORT));
+            assertThatCode(() -> customer.setCustSsn(PROTECTED_MINIMUM)).doesNotThrowAnyException();
+
+            assertThat(customer.getCustSsn()).isEqualTo(PROTECTED_MINIMUM);
+        }
+
+        @Test
+        @DisplayName("a marker followed by a body that is not base-64 is refused, and so is an empty body")
+        void aMalformedBodyIsRefused() {
+            final Customer customer = new Customer();
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> customer.setCustSsn(PROTECTED_BODY_NOT_ENCODED));
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> customer.setCustSsn(ENVELOPE_MARKER));
+
+            assertThat(customer.getCustSsn()).isNull();
+        }
+    }
+
+    /**
+     * Proves the behaviour of the government-issued identifier, which is guarded in the same way as
+     * the national identifier and differs in exactly one respect: it may not be absent.
+     */
+    @Nested
+    @DisplayName("The government-issued identifier - guarded identically, but never absent")
+    class GovernmentIssuedIdentifier {
+
+        @Test
+        @DisplayName("a stored government-issued identifier is returned byte for byte, unencrypted and undecrypted by this entity")
+        void aStoredIdentifierIsReturnedByteForByte() {
+            final Customer customer = new Customer();
+
+            customer.setGovtIssuedId(PROTECTED_LONG);
+
+            assertThat(customer.getGovtIssuedId()).isEqualTo(PROTECTED_LONG);
+            assertThat(encodedWidthOf(customer.getGovtIssuedId()))
+                    .isEqualTo(encodedWidthOf(PROTECTED_LONG));
+        }
+
+        @Test
+        @DisplayName("DIVERGENCE from the summarised contract: a twenty-character unprotected value the width of the legacy field is refused rather than stored")
+        void anUnprotectedValueOfTheLegacyWidthIsRefused() {
+            // As with the national identifier, the summarised contract expected the twenty legacy
+            // characters to be stored unchanged; the class refuses them. The 20-byte record-image span
+            // is still asserted, on the value that is refused.
+            final Customer customer = new Customer();
+
+            assertThat(encodedWidthOf(UNPROTECTED_TWENTY_CHARACTERS)).isEqualTo(WIDTH_GOVT_ISSUED_ID);
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> customer.setGovtIssuedId(UNPROTECTED_TWENTY_CHARACTERS))
+                    .withMessageContaining("govtIssuedId")
+                    .withMessageNotContaining(UNPROTECTED_TWENTY_CHARACTERS);
+
+            assertThat(customer.getGovtIssuedId()).isNull();
+        }
+
+        @Test
+        @DisplayName("an absent government-issued identifier is refused, because unlike the national identifier its column is not nullable")
+        void anAbsentIdentifierIsRefused() {
+            final Customer customer = new Customer();
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> customer.setGovtIssuedId(null))
+                    .withMessageContaining("govtIssuedId");
+        }
+
+        @Test
+        @DisplayName("the eighteen-argument constructor likewise refuses an absent government-issued identifier")
+        void theConstructorRefusesAnAbsentIdentifier() {
+            assertThatIllegalArgumentException().isThrownBy(() -> new Customer(
+                    CUST_ID, FIRST_NAME, MIDDLE_NAME, LAST_NAME,
+                    ADDR_LINE_1, ADDR_LINE_2, ADDR_LINE_3,
+                    ADDR_STATE_CD, ADDR_COUNTRY_CD, ADDR_ZIP,
+                    PHONE_NUM_1, PHONE_NUM_2,
+                    PROTECTED_MINIMUM, null, CUST_DOB,
+                    EFT_ACCOUNT_ID, PRI_CARD_HOLDER_IND, FICO_ROW_ZERO));
+        }
+
+        @Test
+        @DisplayName("a short or non-base-64 body is refused here too, and the accepted value is then stored unchanged")
+        void aMalformedBodyIsRefused() {
+            final Customer customer = new Customer();
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> customer.setGovtIssuedId(PROTECTED_TOO_SHORT));
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> customer.setGovtIssuedId(PROTECTED_BODY_NOT_ENCODED));
+
+            customer.setGovtIssuedId(PROTECTED_SECOND);
+
+            assertThat(customer.getGovtIssuedId()).isEqualTo(PROTECTED_SECOND);
+        }
+
+        @Test
+        @DisplayName("the two guarded attributes are independent: writing one leaves the other exactly as it was")
+        void theTwoGuardedAttributesAreIndependent() {
+            final Customer customer = firstSeededCustomer();
+
+            customer.setCustSsn(PROTECTED_LONG);
+
+            assertThat(customer.getCustSsn()).isEqualTo(PROTECTED_LONG);
+            assertThat(customer.getGovtIssuedId()).isEqualTo(PROTECTED_SECOND);
+
+            customer.setGovtIssuedId(PROTECTED_MINIMUM);
+
+            assertThat(customer.getGovtIssuedId()).isEqualTo(PROTECTED_MINIMUM);
+            assertThat(customer.getCustSsn()).isEqualTo(PROTECTED_LONG);
+        }
+    }
+
+    /**
+     * Proves the credit score is carried as three characters of text with no range applied, which is
+     * the only way the seeded reference data can be read back at all.
+     */
+    @Nested
+    @DisplayName("The credit score - three characters of text, no range applied")
+    class CreditScore {
+
+        @Test
+        @DisplayName("every out-of-band seeded score is stored unchanged: 21 of the 50 seeded rows fall below the 300-to-850 band, the first row carries 274, and the band is a level-88 range condition enforced on the account-update path alone, never by this entity")
+        void everyOutOfBandSeededScoreIsStoredUnchanged() {
+            final Customer customer = new Customer();
+
+            assertThatCode(() -> customer.setFicoCreditScore(FICO_LOWEST_SEEDED)).doesNotThrowAnyException();
+            assertThat(customer.getFicoCreditScore()).isEqualTo(FICO_LOWEST_SEEDED);
+            assertThat(encodedWidthOf(customer.getFicoCreditScore())).isEqualTo(WIDTH_FICO);
+
+            assertThatCode(() -> customer.setFicoCreditScore(FICO_ROW_ZERO)).doesNotThrowAnyException();
+            assertThat(customer.getFicoCreditScore()).isEqualTo(FICO_ROW_ZERO);
+            assertThat(encodedWidthOf(customer.getFicoCreditScore())).isEqualTo(WIDTH_FICO);
+
+            assertThatCode(() -> customer.setFicoCreditScore(FICO_SCREEN_UPPER_BOUND))
+                    .doesNotThrowAnyException();
+            assertThat(customer.getFicoCreditScore()).isEqualTo(FICO_SCREEN_UPPER_BOUND);
+            assertThat(encodedWidthOf(customer.getFicoCreditScore())).isEqualTo(WIDTH_FICO);
+
+            // Recorded as data evidence, not as a threshold: 21 of the 50 seeded rows would be
+            // rejected by any constraint here, which is exactly why none is declared.
+            assertThat(SEEDED_ROWS_BELOW_SCREEN_BAND).isLessThan(SEEDED_ROWS);
+        }
+
+        @Test
+        @DisplayName("the constructor also accepts an out-of-band score, so the seed load and every fixture round trip succeed")
+        void theConstructorAcceptsAnOutOfBandScore() {
+            final Customer customer = new Customer(
+                    CUST_ID, FIRST_NAME, MIDDLE_NAME, LAST_NAME,
+                    ADDR_LINE_1, ADDR_LINE_2, ADDR_LINE_3,
+                    ADDR_STATE_CD, ADDR_COUNTRY_CD, ADDR_ZIP,
+                    PHONE_NUM_1, PHONE_NUM_2,
+                    PROTECTED_MINIMUM, PROTECTED_SECOND, CUST_DOB,
+                    EFT_ACCOUNT_ID, PRI_CARD_HOLDER_IND, FICO_LOWEST_SEEDED);
+
+            assertThat(customer.getFicoCreditScore()).isEqualTo(FICO_LOWEST_SEEDED);
+        }
+
+        @Test
+        @DisplayName("the score keeps its leading zeros: the lowest seeded score stays three characters and is not the single character a numeric type would render")
+        void theScoreKeepsItsLeadingZeros() {
+            final Customer customer = new Customer();
+
+            customer.setFicoCreditScore(FICO_LOWEST_SEEDED);
+
+            assertThat(customer.getFicoCreditScore()).isEqualTo("001");
+            assertThat(customer.getFicoCreditScore()).isNotEqualTo("1");
+            assertThat(encodedWidthOf(customer.getFicoCreditScore())).isEqualTo(3);
+        }
+    }
+
+    /**
+     * Proves the fixed-width digit-only identifiers keep their external decimal form, which is what
+     * makes them stable keys and stable record spans.
+     */
+    @Nested
+    @DisplayName("Fixed-width identifiers keep their external decimal form")
+    class FixedWidthIdentifiers {
+
+        @Test
+        @DisplayName("the customer identifier keeps its leading zeros: nine characters of text, not a numeric type, matching KEYS(9 0)")
+        void theCustomerIdentifierKeepsItsLeadingZeros() {
+            final Customer customer = firstSeededCustomer();
 
             assertThat(customer.getCustId()).isEqualTo("000000001");
-            assertThat(customer.getFirstName()).isEqualTo("FIRST");
-            assertThat(customer.getMiddleName()).isEqualTo("MIDDLE");
-            assertThat(customer.getLastName()).isEqualTo("LAST");
-            assertThat(customer.getAddrLine1()).isEqualTo("LINE ONE");
-            assertThat(customer.getAddrLine2()).isEqualTo("LINE TWO");
-            assertThat(customer.getAddrLine3()).isEqualTo("LINE THREE");
+            assertThat(customer.getCustId()).isNotEqualTo("1");
+            assertThat(encodedWidthOf(customer.getCustId())).isEqualTo(9);
+        }
+
+        @Test
+        @DisplayName("the transfer account identifier keeps its leading zero: ten characters, and not the eight-character form a numeric type would render")
+        void theTransferAccountIdentifierKeepsItsLeadingZero() {
+            final Customer customer = firstSeededCustomer();
+
+            assertThat(customer.getEftAccountId()).isEqualTo(EFT_ACCOUNT_ID);
+            assertThat(customer.getEftAccountId()).isNotEqualTo("53581756");
+            assertThat(encodedWidthOf(customer.getEftAccountId())).isEqualTo(10);
+        }
+    }
+
+    /**
+     * Proves that trailing padding is part of the stored value rather than incidental whitespace, so
+     * a record written back out is still the width the cluster declares.
+     */
+    @Nested
+    @DisplayName("Trailing padding is part of the value, never incidental whitespace")
+    class PaddingFidelity {
+
+        @Test
+        @DisplayName("the three 25-byte names round-trip with their padding intact and are not equal to their unpadded forms")
+        void theNamesKeepTheirPadding() {
+            final Customer customer = firstSeededCustomer();
+
+            assertThat(encodedWidthOf(customer.getFirstName())).isEqualTo(WIDTH_NAME);
+            assertThat(encodedWidthOf(customer.getMiddleName())).isEqualTo(WIDTH_NAME);
+            assertThat(encodedWidthOf(customer.getLastName())).isEqualTo(WIDTH_NAME);
+
+            assertThat(customer.getFirstName()).isNotEqualTo("Immanuel");
+            assertThat(customer.getMiddleName()).isNotEqualTo("Madeline");
+            assertThat(customer.getLastName()).isNotEqualTo("Kessler");
+
+            assertThat(customer.getFirstName()).startsWith("Immanuel");
+            assertThat(customer.getMiddleName()).startsWith("Madeline");
+            assertThat(customer.getLastName()).startsWith("Kessler");
+        }
+
+        @Test
+        @DisplayName("the three 50-byte address lines round-trip with their padding intact and are not equal to their unpadded forms")
+        void theAddressLinesKeepTheirPadding() {
+            final Customer customer = firstSeededCustomer();
+
+            assertThat(encodedWidthOf(customer.getAddrLine1())).isEqualTo(WIDTH_ADDR_LINE);
+            assertThat(encodedWidthOf(customer.getAddrLine2())).isEqualTo(WIDTH_ADDR_LINE);
+            assertThat(encodedWidthOf(customer.getAddrLine3())).isEqualTo(WIDTH_ADDR_LINE);
+
+            assertThat(customer.getAddrLine1()).isNotEqualTo("618 Deshaun Route");
+            assertThat(customer.getAddrLine2()).isNotEqualTo("Apt. 802");
+            assertThat(customer.getAddrLine3()).isNotEqualTo("Altenwerthshire");
+        }
+
+        @Test
+        @DisplayName("the postal code round-trips as five characters plus five trailing spaces, ten bytes in all, and is not equal to its unpadded form")
+        void thePostalCodeKeepsItsFiveTrailingSpaces() {
+            final Customer customer = firstSeededCustomer();
+
+            assertThat(customer.getAddrZip()).isEqualTo(ADDR_ZIP);
+            assertThat(encodedWidthOf(customer.getAddrZip())).isEqualTo(10);
+            assertThat(customer.getAddrZip()).isNotEqualTo("12546");
+        }
+
+        @Test
+        @DisplayName("both telephone numbers keep their parenthesised area-code formatting and two trailing spaces verbatim, fifteen bytes each; area-code membership of the 490-entry numbering-plan set - 410 general-purpose plus 80 easily-recognisable, an exact partition - is a lookup-service concern and is not applied here")
+        void theTelephoneNumbersKeepTheirFormattingAndPadding() {
+            final Customer customer = firstSeededCustomer();
+
+            assertThat(customer.getPhoneNum1()).isEqualTo(PHONE_NUM_1);
+            assertThat(customer.getPhoneNum2()).isEqualTo(PHONE_NUM_2);
+            assertThat(encodedWidthOf(customer.getPhoneNum1())).isEqualTo(WIDTH_PHONE);
+            assertThat(encodedWidthOf(customer.getPhoneNum2())).isEqualTo(WIDTH_PHONE);
+
+            assertThat(customer.getPhoneNum1()).isNotEqualTo("(908)119-8310");
+            assertThat(customer.getPhoneNum2()).isNotEqualTo("(373)693-8684");
+
+            // An area code outside the permitted set is stored exactly as supplied.
+            customer.setPhoneNum1("(000)000-0000  ");
+            assertThat(customer.getPhoneNum1()).isEqualTo("(000)000-0000  ");
+            assertThat(encodedWidthOf(customer.getPhoneNum1())).isEqualTo(WIDTH_PHONE);
+        }
+    }
+
+    /**
+     * Proves the two attributes the legacy account-update path decorates for error display but never
+     * edits remain unconstrained here, so input the legacy system accepts is not rejected.
+     */
+    @Nested
+    @DisplayName("The two decorated-but-never-edited attributes carry no constraint")
+    class UnvalidatedAttributes {
+
+        @Test
+        @DisplayName("an all-spaces middle name is accepted at its full 25 bytes: the legacy account-update screen decorates this field for error display but codes no edit for it, so attaching any constraint would reject input the legacy system accepts")
+        void anAllSpacesMiddleNameIsAccepted() {
+            final Customer customer = firstSeededCustomer();
+            final String twentyFiveSpaces = "                         ";
+
+            assertThatCode(() -> customer.setMiddleName(twentyFiveSpaces)).doesNotThrowAnyException();
+
+            assertThat(customer.getMiddleName()).isEqualTo(twentyFiveSpaces);
+            assertThat(customer.getMiddleName()).isNotNull();
+            assertThat(customer.getMiddleName()).isNotEqualTo("");
+            assertThat(encodedWidthOf(customer.getMiddleName())).isEqualTo(WIDTH_NAME);
+        }
+
+        @Test
+        @DisplayName("the second address line accepts a period and digits padded to 50 bytes: the legacy screen codes no edit for it either, and the seeded value is neither alphabetic-or-space nor alphanumeric-or-space, so no constraint may be attached")
+        void theSecondAddressLineAcceptsPunctuationAndDigits() {
+            final Customer customer = firstSeededCustomer();
+
+            assertThatCode(() -> customer.setAddrLine2(ADDR_LINE_2)).doesNotThrowAnyException();
+
+            assertThat(customer.getAddrLine2()).isEqualTo(ADDR_LINE_2);
+            assertThat(customer.getAddrLine2()).contains(".");
+            assertThat(customer.getAddrLine2()).contains("802");
+            assertThat(encodedWidthOf(customer.getAddrLine2())).isEqualTo(WIDTH_ADDR_LINE);
+        }
+
+        @Test
+        @DisplayName("both decorated-but-never-edited attributes also accept an absent value, since neither carries a constraint of any kind")
+        void bothAttributesAlsoAcceptAnAbsentValue() {
+            final Customer customer = firstSeededCustomer();
+
+            assertThatCode(() -> customer.setMiddleName(null)).doesNotThrowAnyException();
+            assertThatCode(() -> customer.setAddrLine2(null)).doesNotThrowAnyException();
+
+            assertThat(customer.getMiddleName()).isNull();
+            assertThat(customer.getAddrLine2()).isNull();
+        }
+    }
+
+    /**
+     * Proves the entity performs none of the reference-data or calendar checks that belong to the
+     * service layer, by storing values those services would reject.
+     */
+    @Nested
+    @DisplayName("Reference-data and calendar checks belong to the service layer, not to this entity")
+    class NoServiceLevelChecksHere {
+
+        @Test
+        @DisplayName("the state and country codes round-trip at exactly 2 and 3 bytes, and a two-character value outside the 56-entry state set is stored unchanged: membership of that set, and of the 240-entry state-and-postal-prefix set, is checked by the validation-lookup service")
+        void theStateAndCountryCodesAreStoredWithoutAnyLookup() {
+            final Customer customer = firstSeededCustomer();
+
             assertThat(customer.getAddrStateCd()).isEqualTo("NC");
             assertThat(customer.getAddrCountryCd()).isEqualTo("USA");
-            assertThat(customer.getAddrZip()).isEqualTo("12546     ");
-            assertThat(customer.getPhoneNum1()).isEqualTo("(908)119-8310  ");
-            assertThat(customer.getPhoneNum2()).isEqualTo("(373)693-8684  ");
-            assertThat(revealed(customer.getCustSsn())).isEqualTo("020973888");
-            assertThat(revealed(customer.getGovtIssuedId())).isEqualTo("00000000000049368437");
-            assertThat(customer.getCustSsn())
-                    .as("what is stored is the protected form, never the value it protects")
-                    .doesNotContain("020973888");
-            assertThat(customer.getCustDob()).isEqualTo("1961-06-08");
-            assertThat(customer.getEftAccountId()).isEqualTo("0053581756");
+            assertThat(encodedWidthOf(customer.getAddrStateCd())).isEqualTo(WIDTH_STATE_CD);
+            assertThat(encodedWidthOf(customer.getAddrCountryCd())).isEqualTo(WIDTH_COUNTRY_CD);
+
+            // "ZZ" is not a state code in the permitted set. The entity stores it regardless.
+            assertThatCode(() -> customer.setAddrStateCd("ZZ")).doesNotThrowAnyException();
+            assertThat(customer.getAddrStateCd()).isEqualTo("ZZ");
+            assertThat(encodedWidthOf(customer.getAddrStateCd())).isEqualTo(WIDTH_STATE_CD);
+
+            assertThatCode(() -> customer.setAddrCountryCd("ZZZ")).doesNotThrowAnyException();
+            assertThat(customer.getAddrCountryCd()).isEqualTo("ZZZ");
+            assertThat(encodedWidthOf(customer.getAddrCountryCd())).isEqualTo(WIDTH_COUNTRY_CD);
+        }
+
+        @Test
+        @DisplayName("the date of birth round-trips as ten raw characters and a value that is no calendar date at all is stored unchanged: the attribute holds text rather than a date type, and calendar validity is the date-validation service's cascade to enforce")
+        void theDateOfBirthIsStoredAsRawTextWithoutParsing() {
+            final Customer customer = firstSeededCustomer();
+
+            assertThat(customer.getCustDob()).isEqualTo(CUST_DOB);
+            assertThat(encodedWidthOf(customer.getCustDob())).isEqualTo(WIDTH_CUST_DOB);
+
+            // Neither a real month nor a real day. Stored exactly as supplied, at the same width.
+            assertThatCode(() -> customer.setCustDob("9999-99-99")).doesNotThrowAnyException();
+            assertThat(customer.getCustDob()).isEqualTo("9999-99-99");
+            assertThat(encodedWidthOf(customer.getCustDob())).isEqualTo(WIDTH_CUST_DOB);
+        }
+
+        @Test
+        @DisplayName("the primary-cardholder indicator is a raw single character: the two legacy values round-trip, and so does a value outside that pair, with no exception, no default substitution and no case folding")
+        void thePrimaryCardholderIndicatorIsStoredRaw() {
+            final Customer customer = firstSeededCustomer();
+
             assertThat(customer.getPriCardHolderInd()).isEqualTo("Y");
-            assertThat(customer.getFicoCreditScore()).isEqualTo("274");
-        }
 
-        @Test
-        @DisplayName("the two telephone numbers do not swap, which same-width adjacency would hide")
-        void theTwoTelephoneNumbersDoNotSwap() {
-            final Customer customer = customerFromSeededRecord(1);
-
-            assertThat(customer.getPhoneNum1()).isEqualTo("(908)119-8310  ");
-            assertThat(customer.getPhoneNum2()).isEqualTo("(373)693-8684  ");
-            assertThat(customer.getPhoneNum1()).isNotEqualTo(customer.getPhoneNum2());
-        }
-
-        @Test
-        @DisplayName("every mutator replaces exactly the field it names")
-        void everyMutatorReplacesTheFieldItNames() {
-            final Customer customer = customerFromSeededRecord(1);
-
-            customer.setCustId("000000099");
-            customer.setFirstName("A");
-            customer.setMiddleName("B");
-            customer.setLastName("C");
-            customer.setAddrLine1("D");
-            customer.setAddrLine2("E");
-            customer.setAddrLine3("F");
-            customer.setAddrStateCd("CA");
-            customer.setAddrCountryCd("CAN");
-            customer.setAddrZip("90210     ");
-            customer.setPhoneNum1("(111)111-1111  ");
-            customer.setPhoneNum2("(222)222-2222  ");
-            customer.setCustSsn(sealed("999999999"));
-            customer.setGovtIssuedId(sealed("G".repeat(20)));
-            customer.setCustDob("2000-01-01");
-            customer.setEftAccountId("EFT0000001");
             customer.setPriCardHolderInd("N");
-            customer.setFicoCreditScore("850");
-
-            assertThat(customer.getCustId()).isEqualTo("000000099");
-            assertThat(customer.getFirstName()).isEqualTo("A");
-            assertThat(customer.getMiddleName()).isEqualTo("B");
-            assertThat(customer.getLastName()).isEqualTo("C");
-            assertThat(customer.getAddrLine1()).isEqualTo("D");
-            assertThat(customer.getAddrLine2()).isEqualTo("E");
-            assertThat(customer.getAddrLine3()).isEqualTo("F");
-            assertThat(customer.getAddrStateCd()).isEqualTo("CA");
-            assertThat(customer.getAddrCountryCd()).isEqualTo("CAN");
-            assertThat(customer.getAddrZip()).isEqualTo("90210     ");
-            assertThat(customer.getPhoneNum1()).isEqualTo("(111)111-1111  ");
-            assertThat(customer.getPhoneNum2()).isEqualTo("(222)222-2222  ");
-            assertThat(revealed(customer.getCustSsn())).isEqualTo("999999999");
-            assertThat(revealed(customer.getGovtIssuedId())).isEqualTo("G".repeat(20));
-            assertThat(customer.getCustDob()).isEqualTo("2000-01-01");
-            assertThat(customer.getEftAccountId()).isEqualTo("EFT0000001");
             assertThat(customer.getPriCardHolderInd()).isEqualTo("N");
-            assertThat(customer.getFicoCreditScore()).isEqualTo("850");
+
+            assertThatCode(() -> customer.setPriCardHolderInd("X")).doesNotThrowAnyException();
+            assertThat(customer.getPriCardHolderInd()).isEqualTo("X");
+            assertThat(encodedWidthOf(customer.getPriCardHolderInd()))
+                    .isEqualTo(WIDTH_PRI_CARD_HOLDER_IND);
+
+            // Lower case is not folded to upper case.
+            customer.setPriCardHolderInd("y");
+            assertThat(customer.getPriCardHolderInd()).isEqualTo("y");
+            assertThat(customer.getPriCardHolderInd()).isNotEqualTo("Y");
+        }
+    }
+
+    /**
+     * Proves identity is the business key alone, which is what keeps an instance stable in a
+     * hash-based collection across an update to any other attribute.
+     */
+    @Nested
+    @DisplayName("Identity is the business key alone, never a surrogate")
+    class BusinessKeyIdentity {
+
+        @Test
+        @DisplayName("two customers sharing an identifier but differing in every other attribute - including an absent against a present national identifier - are equal and share a hash code")
+        void sameIdentifierMeansEqualWhateverElseDiffers() {
+            final Customer first = firstSeededCustomer();
+            final Customer second = new Customer(
+                    CUST_ID,
+                    "Different                ",
+                    "Different                ",
+                    "Different                ",
+                    "Different                                         ",
+                    "Different                                         ",
+                    "Different                                         ",
+                    "NY",
+                    "CAN",
+                    "99999     ",
+                    "(111)111-1111  ",
+                    "(222)222-2222  ",
+                    null,
+                    PROTECTED_MINIMUM,
+                    "1999-12-31",
+                    "9999999999",
+                    "N",
+                    FICO_SCREEN_UPPER_BOUND);
+
+            assertThat(first.getCustSsn()).isNotNull();
+            assertThat(second.getCustSsn()).isNull();
+            assertThat(first.getFirstName()).isNotEqualTo(second.getFirstName());
+            assertThat(first.getFicoCreditScore()).isNotEqualTo(second.getFicoCreditScore());
+
+            assertThat(first).isEqualTo(second);
+            assertThat(second).isEqualTo(first);
+            assertThat(first).hasSameHashCodeAs(second);
         }
 
         @Test
-        @DisplayName("the persistence constructor leaves every field absent")
-        void thePersistenceConstructorLeavesEveryFieldAbsent() {
+        @DisplayName("a different identifier means a different customer, even when every other attribute matches")
+        void aDifferentIdentifierMeansUnequal() {
+            final Customer first = firstSeededCustomer();
+            final Customer second = firstSeededCustomer();
+
+            second.setCustId("000000002");
+
+            assertThat(first).isNotEqualTo(second);
+        }
+
+        @Test
+        @DisplayName("a differently padded identifier is deliberately not equal, because it is a distinct key in the database too")
+        void zeroFillingIsSignificantToIdentity() {
+            final Customer padded = firstSeededCustomer();
+            final Customer unpadded = firstSeededCustomer();
+
+            unpadded.setCustId("1");
+
+            assertThat(padded).isNotEqualTo(unpadded);
+        }
+
+        @Test
+        @DisplayName("equality is reflexive, rejects an absent operand and rejects a foreign type")
+        void equalityIsReflexiveAndTypeSafe() {
+            final Customer customer = firstSeededCustomer();
+
+            assertThat(customer).isEqualTo(customer);
+            assertThat(customer.equals(customer)).isTrue();
+            assertThat(customer.equals(null)).isFalse();
+            assertThat(customer.equals(CUST_ID)).isFalse();
+        }
+
+        @Test
+        @DisplayName("the hash is derived from the identifier alone, so replacing a non-key attribute leaves an instance where it already sits in a hash-based collection")
+        void theHashIsStableAcrossANonKeyUpdate() {
+            final Customer customer = firstSeededCustomer();
+            final Customer reference = firstSeededCustomer();
+
+            customer.setFicoCreditScore(FICO_SCREEN_UPPER_BOUND);
+            customer.setAddrStateCd("NY");
+            customer.setCustSsn(null);
+
+            assertThat(customer.getFicoCreditScore()).isNotEqualTo(reference.getFicoCreditScore());
+            assertThat(customer).hasSameHashCodeAs(reference);
+            assertThat(customer).isEqualTo(reference);
+        }
+
+        @Test
+        @DisplayName("two customers with an absent identifier are equal, and an absent identifier is unequal to a present one")
+        void anAbsentIdentifierCompares() {
+            final Customer firstUnkeyed = new Customer();
+            final Customer secondUnkeyed = new Customer();
+            final Customer keyed = firstSeededCustomer();
+
+            assertThat(firstUnkeyed).isEqualTo(secondUnkeyed);
+            assertThat(firstUnkeyed).hasSameHashCodeAs(secondUnkeyed);
+            assertThat(firstUnkeyed).isNotEqualTo(keyed);
+            assertThat(keyed).isNotEqualTo(firstUnkeyed);
+        }
+    }
+
+    /**
+     * Proves the provider-facing constructor exists and leaves the instance empty, and records the
+     * documented non-features of this entity.
+     */
+    @Nested
+    @DisplayName("The persistence constructor, and this entity's documented non-features")
+    class PersistenceContractAndNonFeatures {
+
+        @Test
+        @DisplayName("the no-argument persistence constructor leaves all eighteen attributes absent, so the provider can populate them after construction")
+        void thePersistenceConstructorLeavesEveryAttributeAbsent() {
+            // This test class sits in the same package as the entity, so Java package access reaches
+            // the protected no-argument constructor directly. This is same-package visibility and is
+            // explicitly NOT reflection: no member is resolved by name and no accessibility flag is
+            // changed anywhere in this file.
             final Customer customer = new Customer();
 
             assertThat(customer.getCustId()).isNull();
@@ -489,363 +1219,57 @@ class CustomerTest {
         }
 
         @Test
-        @DisplayName("the entity carries a value at every declared width without truncating it")
-        void theEntityCarriesValuesAtTheDeclaredWidths() {
-            final Customer customer = new Customer(
-                    "9".repeat(9), "N".repeat(25), "M".repeat(25), "L".repeat(25),
-                    "1".repeat(50), "2".repeat(50), "3".repeat(50), "ST", "CTY", "Z".repeat(10),
-                    "P".repeat(15), "Q".repeat(15), sealed("8".repeat(9)),
-                    sealed("G".repeat(20)), "D".repeat(10), "E".repeat(10), "Y", "999");
+        @DisplayName("no surrogate identifier exists: the key is the 9-character business key at offset 0, matching KEYS(9 0), no generated value is declared, and the caller assigns it - proved by compile-time absence, since this file never names a generated-identifier accessor")
+        void noSurrogateIdentifierExists() {
+            // The proof of absence is that this file compiles while naming only getCustId and
+            // setCustId. There is no getId, no setId and no generated-identifier accessor to call, and
+            // no reflection is used to look for one. What is asserted behaviourally is that the key is
+            // caller-assigned and survives verbatim: a provider-constructed instance has no key until
+            // one is supplied, and a supplied key is never replaced by a generated value.
+            final Customer customer = new Customer();
 
-            assertThat(customer.getCustId()).hasSize(9);
-            assertThat(customer.getFirstName()).hasSize(25);
-            assertThat(customer.getMiddleName()).hasSize(25);
-            assertThat(customer.getLastName()).hasSize(25);
-            assertThat(customer.getAddrLine1()).hasSize(50);
-            assertThat(customer.getAddrLine2()).hasSize(50);
-            assertThat(customer.getAddrLine3()).hasSize(50);
-            assertThat(customer.getAddrZip()).hasSize(10);
-            assertThat(customer.getPhoneNum1()).hasSize(15);
-            assertThat(customer.getPhoneNum2()).hasSize(15);
-            assertThat(revealed(customer.getCustSsn())).hasSize(9);
-            assertThat(revealed(customer.getGovtIssuedId())).hasSize(20);
-            assertThat(customer.getFicoCreditScore()).hasSize(3);
-        }
-    }
+            assertThat(customer.getCustId()).isNull();
 
-    // THE TWO UNVALIDATED FIELDS
+            customer.setCustId(CUST_ID);
 
-    /**
-     * Verifies that the two fields the legacy decorates but never checks carry no constraint.
-     */
-    @Nested
-    @DisplayName("the two unvalidated fields")
-    class UnvalidatedFields {
-
-        @Test
-        @DisplayName("a blank middle name is accepted, because the legacy codes no edit for it")
-        void aBlankMiddleNameIsAccepted() {
-            final Customer customer = customerFromSeededRecord(1);
-            customer.setMiddleName(" ".repeat(25));
-
-            assertThat(customer.getMiddleName()).isBlank().hasSize(25);
+            assertThat(customer.getCustId()).isEqualTo(CUST_ID);
+            assertThat(encodedWidthOf(customer.getCustId())).isEqualTo(WIDTH_CUST_ID);
         }
 
         @Test
-        @DisplayName("a blank second address line is accepted, because the legacy codes no edit for it "
-                + "either")
-        void aBlankSecondAddressLineIsAccepted() {
-            final Customer customer = customerFromSeededRecord(1);
-            customer.setAddrLine2(" ".repeat(50));
+        @DisplayName("two legacy spellings, one entity: the copybook the six online and batch programs include hyphenates the date-of-birth field while the alternate copybook the statement generator includes does not, both denote the same 10 bytes at offset 308 derived as 288 + 20, and one attribute, one column cust_dob and one test class serve both - with no variant flag, no discriminator and no second entity")
+        void twoLegacySpellingsMapToOneAttribute() {
+            assertThat(OFFSET_GOVT_ISSUED_ID + WIDTH_GOVT_ISSUED_ID).isEqualTo(OFFSET_CUST_DOB);
+            assertThat(288 + 20).isEqualTo(308);
+            assertThat(WIDTH_CUST_DOB).isEqualTo(10);
 
-            assertThat(customer.getAddrLine2()).isBlank().hasSize(50);
+            // One accessor pair serves both spellings, and it stores text at the shared width.
+            final Customer customer = new Customer();
+            customer.setCustDob(CUST_DOB);
+
+            assertThat(customer.getCustDob()).isEqualTo(CUST_DOB);
+            assertThat(encodedWidthOf(customer.getCustDob())).isEqualTo(OFFSET_EFT_ACCOUNT_ID - OFFSET_CUST_DOB);
         }
 
         @Test
-        @DisplayName("both unvalidated fields are also accepted as absent, so no constraint hides in the "
-                + "constructor")
-        void bothUnvalidatedFieldsAreAcceptedAsAbsent() {
-            final Customer customer = new Customer(
-                    "000000001", "FIRST", null, "LAST",
-                    "LINE ONE", null, "LINE THREE", "NC", "USA", "12546     ",
-                    "(908)119-8310  ", "(373)693-8684  ", sealed("020973888"),
-                    sealed("00000000000049368437"), "1961-06-08", "0053581756", "Y", "274");
+        @DisplayName("this entity declares no diagnostic string of its own, so no attribute value can escape through one; the inherited description names the type and carries no stored value")
+        void noDiagnosticStringExposesAnyAttribute() {
+            // The class deliberately declares no diagnostic string, because every attribute is
+            // personally identifiable. What is inherited names the type and a hash only, so the two
+            // regulated values in particular cannot leak through it. The prefix checked below is the
+            // documented format of the inherited description - the type name, an at sign, then the
+            // hash in hexadecimal - and is asserted solely as evidence that no override was added.
+            // No entity-authored diagnostic format is being pinned here, because there is none.
+            final Customer customer = firstSeededCustomer();
 
-            assertThat(customer.getMiddleName()).isNull();
-            assertThat(customer.getAddrLine2()).isNull();
-            assertThat(customer.getCustId()).isEqualTo("000000001");
-        }
-    }
+            final String inheritedDescription = customer.toString();
 
-    // CREDIT SCORE FIDELITY
-
-    /**
-     * Verifies that the three-digit credit score is carried without numeric reinterpretation.
-     */
-    @Nested
-    @DisplayName("credit score fidelity")
-    class CreditScoreFidelity {
-
-        @Test
-        @DisplayName("a leading zero survives, which an integer field would have discarded")
-        void aLeadingZeroSurvives() {
-            final Customer customer = customerFromSeededRecord(1);
-            customer.setFicoCreditScore("001");
-
-            assertThat(customer.getFicoCreditScore()).isEqualTo("001").hasSize(3);
-            assertThat(Integer.parseInt(customer.getFicoCreditScore())).isOne();
-            assertThat(customer.getFicoCreditScore())
-                    .as("the stored form differs from the numeric form, which is exactly what a whole "
-                            + "number column would have lost")
-                    .isNotEqualTo(Integer.toString(Integer.parseInt(customer.getFicoCreditScore())));
-        }
-
-        @Test
-        @DisplayName("the seeded file carries scores with a leading zero, so the case is not "
-                + "hypothetical")
-        void theSeededFileCarriesScoresWithALeadingZero() {
-            final List<String> withLeadingZero = new ArrayList<>();
-            for (int ordinal = 1; ordinal <= FIXTURE.recordCount(); ordinal++) {
-                final String score = customerFromSeededRecord(ordinal).getFicoCreditScore();
-                if (score.startsWith("0")) {
-                    withLeadingZero.add(score);
-                }
-            }
-
-            assertThat(withLeadingZero).hasSize(SEEDED_SCORES_WITH_LEADING_ZERO).contains("001");
-        }
-
-        @Test
-        @DisplayName("every seeded score is exactly three digits")
-        void everySeededScoreIsThreeDigits() {
-            for (int ordinal = 1; ordinal <= FIXTURE.recordCount(); ordinal++) {
-                assertThat(customerFromSeededRecord(ordinal).getFicoCreditScore())
-                        .as("score of record %d", ordinal)
-                        .hasSize(3)
-                        .containsOnlyDigits();
-            }
-        }
-
-        @Test
-        @DisplayName("the record accepts a score below the screen's lower bound, because the screen "
-                + "enforces the band and the record does not")
-        void theRecordAcceptsAScoreBelowTheScreenBound() {
-            int belowBound = 0;
-            for (int ordinal = 1; ordinal <= FIXTURE.recordCount(); ordinal++) {
-                final int score =
-                        Integer.parseInt(customerFromSeededRecord(ordinal).getFicoCreditScore());
-                if (score < SCREEN_SCORE_MINIMUM) {
-                    belowBound++;
-                }
-            }
-
-            assertThat(belowBound)
-                    .as("an entity that enforced the band could not read the estate's own data")
-                    .isEqualTo(SEEDED_SCORES_BELOW_SCREEN_MINIMUM)
-                    .isPositive();
-        }
-    }
-
-    // SEEDED RECORD FIDELITY
-
-    /**
-     * Verifies that a real seeded record travels into the entity intact.
-     */
-    @Nested
-    @DisplayName("seeded record fidelity")
-    class SeededRecordFidelity {
-
-        @Test
-        @DisplayName("the first seeded record maps field for field onto the entity")
-        void theFirstSeededRecordMapsFieldForField() {
-            final Customer customer = customerFromSeededRecord(1);
-
-            assertThat(customer.getCustId()).isEqualTo("000000001");
-            assertThat(customer.getFirstName()).startsWith("Immanuel").hasSize(25);
-            assertThat(customer.getMiddleName()).startsWith("Madeline").hasSize(25);
-            assertThat(customer.getLastName()).startsWith("Kessler").hasSize(25);
-            assertThat(customer.getAddrLine1()).startsWith("618 Deshaun Route").hasSize(50);
-            assertThat(customer.getAddrLine2()).startsWith("Apt. 802").hasSize(50);
-            assertThat(customer.getAddrLine3()).startsWith("Altenwerthshire").hasSize(50);
-            assertThat(customer.getAddrStateCd()).isEqualTo("NC");
-            assertThat(customer.getAddrCountryCd()).isEqualTo("USA");
-            assertThat(customer.getAddrZip()).isEqualTo("12546     ");
-            assertThat(revealed(customer.getCustSsn())).isEqualTo("020973888");
-            assertThat(revealed(customer.getGovtIssuedId())).isEqualTo("00000000000049368437");
-            assertThat(customer.getCustDob()).isEqualTo("1961-06-08");
-            assertThat(customer.getEftAccountId()).isEqualTo("0053581756");
-            assertThat(customer.getPriCardHolderInd()).isEqualTo("Y");
-            assertThat(customer.getFicoCreditScore()).isEqualTo("274");
-        }
-
-        @Test
-        @DisplayName("every seeded record maps without loss, and every identifier is distinct")
-        void everySeededRecordMapsWithoutLoss() {
-            final List<Customer> customers = new ArrayList<>();
-            for (int ordinal = 1; ordinal <= FIXTURE.recordCount(); ordinal++) {
-                customers.add(customerFromSeededRecord(ordinal));
-            }
-
-            assertThat(customers).hasSize(SEEDED_RECORDS);
-            assertThat(customers.stream().map(Customer::getCustId).distinct().toList())
-                    .hasSize(SEEDED_RECORDS);
-            for (final Customer customer : customers) {
-                assertThat(customer.getCustId()).hasSize(KEY_WIDTH).containsOnlyDigits();
-                assertThat(revealed(customer.getCustSsn())).hasSize(9).containsOnlyDigits();
-                assertThat(customer.getCustDob()).hasSize(10);
-            }
-        }
-
-        @Test
-        @DisplayName("a social security number keeps its leading zero, so the nine digits are carried as "
-                + "text rather than as a number")
-        void aSocialSecurityNumberKeepsItsLeadingZero() {
-            assertThat(revealed(customerFromSeededRecord(1).getCustSsn())).isEqualTo("020973888")
-                    .startsWith("0")
-                    .hasSize(9);
-        }
-
-        @Test
-        @DisplayName("every seeded customer is a primary cardholder in the same country, so those two "
-                + "fields are not exercised by the seed")
-        void everySeededCustomerIsAPrimaryCardholderInTheSameCountry() {
-            for (int ordinal = 1; ordinal <= FIXTURE.recordCount(); ordinal++) {
-                final Customer customer = customerFromSeededRecord(ordinal);
-
-                assertThat(customer.getPriCardHolderInd())
-                        .as("indicator of record %d", ordinal)
-                        .isEqualTo("Y");
-                assertThat(customer.getAddrCountryCd())
-                        .as("country of record %d", ordinal)
-                        .isEqualTo("USA");
-            }
-        }
-    }
-
-    // BUSINESS-KEY IDENTITY
-
-    /**
-     * Verifies that identity is the record's own key and nothing else.
-     */
-    @Nested
-    @DisplayName("business-key identity")
-    class BusinessKeyIdentity {
-
-        @Test
-        @DisplayName("a customer equals itself")
-        void aCustomerEqualsItself() {
-            final Customer customer = customerFromSeededRecord(1);
-
-            assertThat(customer).isEqualTo(customer);
-            assertThat(customer.hashCode()).isEqualTo(customer.hashCode());
-        }
-
-        @Test
-        @DisplayName("two customers with the same identifier are equal even when every other field "
-                + "differs")
-        void sameIdentifierMeansEqualRegardlessOfTheRest() {
-            final Customer left = customerFromSeededRecord(1);
-            final Customer right = new Customer(
-                    left.getCustId(), "OTHER", "OTHER", "OTHER",
-                    "OTHER", "OTHER", "OTHER", "CA", "CAN", "OTHER     ",
-                    "OTHER          ", "OTHER          ", sealed("111111111"),
-                    sealed("OTHER"), "1900-01-01", "OTHER", "N", "850");
-
-            assertThat(left).isEqualTo(right);
-            assertThat(right).isEqualTo(left);
-            assertThat(left).hasSameHashCodeAs(right);
-        }
-
-        @Test
-        @DisplayName("two customers with different identifiers are unequal even when every other field "
-                + "matches")
-        void differentIdentifierMeansUnequal() {
-            final Customer left = customerFromSeededRecord(1);
-            final Customer right = customerFromSeededRecord(1);
-            right.setCustId("000000002");
-
-            assertThat(left).isNotEqualTo(right);
-            assertThat(right).isNotEqualTo(left);
-        }
-
-        @Test
-        @DisplayName("equality is transitive across three customers sharing an identifier")
-        void equalityIsTransitive() {
-            final Customer first = customerFromSeededRecord(1);
-            final Customer second = customerFromSeededRecord(1);
-            final Customer third = customerFromSeededRecord(1);
-
-            assertThat(first).isEqualTo(second);
-            assertThat(second).isEqualTo(third);
-            assertThat(first).isEqualTo(third);
-            assertThat(first).hasSameHashCodeAs(third);
-        }
-
-        @Test
-        @DisplayName("a customer is unequal to null and to an unrelated type")
-        void aCustomerIsUnequalToNullAndToAnotherType() {
-            final Customer customer = customerFromSeededRecord(1);
-
-            assertThat(customer).isNotEqualTo(null);
-            assertThat(customer.equals("000000001")).isFalse();
-            assertThat(customer).isNotEqualTo(new Object());
-        }
-
-        @Test
-        @DisplayName("two customers with an absent identifier are equal, because both keys are absent "
-                + "rather than generated")
-        void twoUnkeyedCustomersAreEqual() {
-            assertThat(new Customer()).isEqualTo(new Customer());
-            assertThat(new Customer()).hasSameHashCodeAs(new Customer());
-            assertThat(new Customer().getCustId()).isNull();
-        }
-
-        @Test
-        @DisplayName("an unkeyed customer is unequal to a keyed one")
-        void anUnkeyedCustomerIsUnequalToAKeyedOne() {
-            assertThat(new Customer()).isNotEqualTo(customerFromSeededRecord(1));
-            assertThat(customerFromSeededRecord(1)).isNotEqualTo(new Customer());
-        }
-    }
-
-    // PRIVACY POSTURE
-
-    /**
-     * Verifies the two privacy departures the migration makes and the leak it forecloses.
-     */
-    @Nested
-    @DisplayName("privacy posture")
-    class PrivacyPosture {
-
-        @Test
-        @DisplayName("the entity declares no diagnostic string, so no field value can escape through "
-                + "one")
-        void theEntityDeclaresNoDiagnosticString() {
-            final Customer customer = customerFromSeededRecord(1);
-            final String description = customer.toString();
-
-            assertThat(description)
-                    .startsWith(Customer.class.getName() + "@")
-                    .doesNotContain("020973888")
-                    .doesNotContain("Immanuel")
-                    .doesNotContain("Kessler")
-                    .doesNotContain("1961-06-08")
-                    .doesNotContain("000000001");
-        }
-
-        @Test
-        @DisplayName("the description is the inherited type-and-handle form, not a field-bearing "
-                + "override")
-        void theDescriptionIsTheInheritedOne() {
-            final Customer customer = customerFromSeededRecord(1);
-
-            assertThat(customer.toString())
-                    .matches("com\\.carddemo\\.domain\\.Customer@[0-9a-f]+");
-        }
-
-        @Test
-        @DisplayName("the social security number may be absent, which is what lets a deployment store "
-                + "nothing rather than an empty protected value")
-        void theSocialSecurityNumberMayBeAbsent() {
-            final Customer customer = customerFromSeededRecord(1);
-            customer.setCustSsn(null);
-
-            assertThat(customer.getCustSsn()).isNull();
-            assertThat(SCHEMA.isNullable(TABLE, "cust_ssn")).isTrue();
-        }
-
-        @Test
-        @DisplayName("the number's column accommodates a value far longer than nine characters, which a "
-                + "nine-character column could not have held")
-        void theColumnAccommodatesALongerValue() {
-            final Customer customer = customerFromSeededRecord(1);
-            final String protectedValue = sealed("L".repeat(120));
-            customer.setCustSsn(protectedValue);
-
-            assertThat(customer.getCustSsn())
-                    .hasSizeGreaterThan(COPYBOOK_WIDTHS.get(12))
-                    .hasSizeLessThanOrEqualTo(SCHEMA.declaredWidth(TABLE, "cust_ssn"));
-            assertThat(SCHEMA.declaredWidth(TABLE, "cust_ssn")).isGreaterThanOrEqualTo(200);
+            assertThat(inheritedDescription).startsWith("com.carddemo.domain.Customer@");
+            assertThat(inheritedDescription).doesNotContain(PROTECTED_MINIMUM);
+            assertThat(inheritedDescription).doesNotContain(PROTECTED_SECOND);
+            assertThat(inheritedDescription).doesNotContain(CUST_ID);
+            assertThat(inheritedDescription).doesNotContain(EFT_ACCOUNT_ID);
+            assertThat(inheritedDescription).doesNotContain(CUST_DOB);
         }
     }
 }

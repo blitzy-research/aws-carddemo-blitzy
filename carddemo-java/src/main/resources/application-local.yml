@@ -188,9 +188,10 @@ spring:
   #                            V2__create_indexes.sql  keys and alternate-index equivalents
   #                                                    -> every profile, production included
   #   classpath:db/seed        reference rows and sign-on identities -> local and test ONLY
-  #                            NOT YET DELIVERED: this location is declared and carries no script, so
-  #                            a migration currently ends at V2 here as it does everywhere. The
-  #                            location is listed in advance deliberately - see below.
+  #                            V3__seed_reference_data.sql  the nine measured ASCII reference
+  #                                                         datasets, 626 rows across nine tables
+  #                            so a migration currently ends at V3 under this overlay and at V2 under
+  #                            production, which does not list this location.
   #
   # The production overlay lists classpath:db/migration alone, so production migrates schema and
   # indexes without inheriting reference rows or seeded identities. Keeping the seeds in a separate

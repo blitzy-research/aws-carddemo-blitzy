@@ -1694,6 +1694,7 @@ end pairs the entries that record the same decision under both.
 | `service/AccountConcurrencyTokenService.java` | DL-074, DL-075, DL-076, DL-077 |
 | `service/FieldErrorTranslationService.java` | DL-080 |
 | `service/SensitiveFieldEncryptionService.java` | DL-005, DL-008 |
+| `util/AccountRecordMapper.java` | DL-013, DL-017, DL-034, DL-035, anomaly register (1) |
 | `util/ReportLineFormatter.java` | DL-041, anomaly register |
 | `util/CobolStringUtils.java` | DL-078 |
 | `util/SensitiveFieldCodec.java` | DL-009 |
@@ -1739,6 +1740,7 @@ end pairs the entries that record the same decision under both.
 | `domain/Account.java` | D-15 |
 | `domain/DailyTransaction.java` | D-39 |
 | `domain/TransactionCategory.java` | D-37, D-38 |
+| `domain/TransactionCategoryBalance.java` | D-37, D-38 |
 | `domain/TransactionType.java` | D-38 |
 | `domain/UserSecurity.java` | D-12 |
 | `domain/enums/FileStatus.java` | D-21, D-22 |
@@ -1760,6 +1762,7 @@ end pairs the entries that record the same decision under both.
 | `resources/db/migration/V1__create_schema.sql` | D-12, D-14 |
 | `service/AbendService.java` | D-41 |
 | `service/JobSubmissionService.java` | D-09, D-16, D-36 |
+| `util/AccountRecordMapper.java` | D-02, D-04, D-08, D-10, D-11, D-26, D-29, D-30, D-42, anomaly 20 |
 | `util/CobolStringUtils.java` | D-17, D-18, D-19, D-22, anomaly 18 |
 | `util/CobolStringUtilsTest.java` | anomaly 18, 19 |
 | `util/FixedWidthFieldReader.java` | D-06, D-10, D-11, D-16, D-42, anomaly 20 |

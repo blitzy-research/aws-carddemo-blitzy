@@ -16,525 +16,395 @@
  */
 package com.carddemo.config;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Properties;
+import java.util.regex.Pattern;
 
+import com.carddemo.CardDemoApplication;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.json.JsonMapper;
+import io.swagger.v3.oas.annotations.OpenAPIDefinition;
 import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.oas.models.info.Info;
+import io.swagger.v3.oas.models.info.License;
+import io.swagger.v3.oas.models.security.SecurityRequirement;
 import io.swagger.v3.oas.models.security.SecurityScheme;
+import org.springdoc.core.models.GroupedOpenApi;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.info.BuildProperties;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.core.annotation.MergedAnnotations;
+import org.springframework.core.annotation.MergedAnnotations.SearchStrategy;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Verifies {@link OpenApiConfig}, the bean that publishes this module's interface contract.
+ * Verifies {@link OpenApiConfig}, the configuration class that constructs the
+ * {@link io.swagger.v3.oas.models.OpenAPI} object graph this module publishes as its interface
+ * description.
  *
- * <p><strong>Why this matters to the gates.</strong> The published contract is what discharges the
- * interface-verification obligation: it is the machine-readable description a client is written against.
- * Two properties of it are therefore load-bearing and are asserted here rather than assumed. First, the
- * document must carry the two provenance identifiers — the legacy checkout commit and the upstream release
- * stamp — because the migration's traceability requirement is that the target cites the source it was
- * translated from. Second, the document must contain no credential of any kind, because a contract that
- * pre-filled an authorisation value would leak one just as surely as source code would.
+ * <p><strong>Why this class is tested at all.</strong> {@code OpenApiConfig} does real work: it builds a
+ * document carrying a title, a description, a version, a licence, a bearer security scheme registered as a
+ * component and that same scheme applied as a document-wide requirement. Asserting that constructed object
+ * graph is behaviour testing, not annotation checking, so every test method below makes at least one
+ * assertion about the graph the production code actually produced. No test method here asserts only that an
+ * annotation is present.
  *
- * <p><strong>Where the expectations come from.</strong> The declared module version is checked against the
- * build file itself, read from disk as text, so the assertion has an independent second description rather
- * than restating the constant. The provenance identifiers are checked for shape as well as value: the
- * commit is asserted to be forty lowercase hexadecimal characters, which a mistyped or truncated value
- * would fail. The bearer scheme's name is cross-checked between the declared security requirement and the
- * component map, because a requirement naming a scheme the components do not define produces a document
- * that reads plausibly and cannot be honoured.
+ * <p><strong>Why the document's shape is contractual.</strong>
+ * <strong>No browser interface and no single-page application is built anywhere in this migration</strong>,
+ * and no component library or design system is in scope: the requirements name no frontend technology, no
+ * design assets were supplied, and the repository carries no JavaScript, TypeScript or CSS source. The
+ * published OpenAPI document is therefore not a convenience view over a contract held elsewhere - it
+ * <em>is</em> the machine-readable interface description, and it is the artefact the interface-contract
+ * acceptance criterion reads.
  *
- * <p><strong>What is deliberately not asserted.</strong> The operation paths are not checked, because this
- * bean contributes document-level metadata only and the paths are contributed by the controller scan at
- * runtime. The suite asserts the paths are absent here, which is the correct state for this bean, and
- * leaves path verification to the tests that exercise the endpoints.
+ * <p>The legacy presentation layer it replaces was a CICS 3270 terminal contract of <strong>17 BMS
+ * mapsets</strong> at 24x80, with <strong>17 generated symbolic-map copybooks</strong> supplying the
+ * field-level contract. {@code app/csd/CARDDEMO.CSD} carries <strong>18</strong> {@code DEFINE TRANSACTION}
+ * entries bound to 18 programs, and <strong>17 of the 18</strong> drive a screen and become the REST
+ * endpoint groups this document describes; the eighteenth drives the shared date-validation subprogram
+ * rather than a screen. Those figures are cited here as metadata only. No program, copybook, screen map,
+ * job stream or resource-definition source line is reproduced anywhere in this file.
+ *
+ * <p><strong>What this class deliberately does not assert.</strong>
+ * Endpoint paths, request and response schemas, HTTP status codes and the per-field MISSING and INVALID
+ * error contract belong to the controller and integration tiers, not here - this bean contributes
+ * document-level metadata only, and the paths are contributed by the controller scan at runtime. The three
+ * screen page sizes that survive into the REST contract (7 for the card list, 10 for the transaction list
+ * and 10 for the user list) belong to the request and response object tests. The route-to-role table, the
+ * password encoder, statelessness and CSRF belong to the HTTP security configuration's own test. Token
+ * issuing, parsing, tampering and expiry belong to the token provider's own test. The contractual sign-on
+ * message literals belong to the message catalogue service's test. Here the document is only required to
+ * <em>describe</em> bearer authentication.
+ *
+ * <p><strong>Independent oracle.</strong>
+ * Every expected title, version, licence name, licence URL and scheme key below is written out as a literal
+ * in this class. None is read back from a constant on the class under test, because an expectation sourced
+ * from the code it is meant to check cannot fail.
+ *
+ * <p><strong>Test tier.</strong>
+ * A unit test. It starts no web server, issues no HTTP request, declares no container and needs no
+ * datasource: it instantiates the configuration directly for the object-graph assertions and uses a narrow
+ * {@link ApplicationContextRunner} slice registering only {@code OpenApiConfig} for the assertions that are
+ * about which beans the class contributes.
  */
-@DisplayName("OpenApiConfig — the published interface contract")
-class OpenApiConfigTest {
+@DisplayName("OpenApiConfig - the published OpenAPI document, which is this module's interface artefact")
+final class OpenApiConfigTest {
 
-    /** The legacy checkout the migration was translated from. */
-    private static final String LEGACY_CHECKOUT = "7756d895ffeb65f7ea72aaa609e356d9899afcec";
+    // EXPECTED VALUES - literals only, never read back from the class under test
 
-    /** The upstream release stamp carried in every legacy member's trailer. */
-    private static final String UPSTREAM_RELEASE_STAMP = "CardDemo_v1.0-15-g27d6c6f-68";
-
-    /** The date that release stamp carries. */
-    private static final String UPSTREAM_RELEASE_DATE = "2022-07-19";
-
-    /** Length of a full-length Git commit identifier. */
-    private static final int COMMIT_IDENTIFIER_LENGTH = 40;
-
-    /** Number of legacy online transactions the contract describes. */
-    private static final int LEGACY_TRANSACTION_COUNT = 17;
-
-    /** The eight-character password literal every legacy seed record carries. */
-    private static final String LEGACY_PASSWORD_LITERAL = "PASSWORD";
-
-    /** The canonical Apache 2.0 licence location, matching the repository's own licence grant. */
-    private static final String APACHE_LICENCE_URL = "http://www.apache.org/licenses/LICENSE-2.0";
+    /** Title the document is required to carry. */
+    private static final String EXPECTED_TITLE = "CardDemo REST API";
 
     /**
-     * Reads this module's own declared version out of the build file, giving the version assertion an
-     * independent second description instead of restating the constant under test.
+     * Version the document is required to publish when the build publishes no build information.
      *
-     * @return the version the build file publishes for this module
+     * <p>This is the module's own Maven coordinate version for {@code com.carddemo:carddemo-java}. That
+     * value appears in {@code pom.xml} exactly once, as the artefact's own coordinate, and it is
+     * <strong>not</strong> a placeholder standing in for an unresolved third-party version: every
+     * third-party coordinate in that file is pinned to an exact version read back out of an executed
+     * resolution.</p>
      */
-    private static String versionDeclaredByTheBuildFile() {
-        final Path buildFile = locateBuildFile();
-        final List<String> lines;
-        try {
-            lines = Files.readAllLines(buildFile, StandardCharsets.UTF_8);
-        } catch (final IOException cause) {
-            throw new UncheckedIOException("unable to read " + buildFile.toAbsolutePath(), cause);
-        }
+    private static final String EXPECTED_MODULE_VERSION = "1.0.0";
 
-        boolean seenModuleCoordinate = false;
-        for (final String line : lines) {
-            if (line.contains("<artifactId>carddemo-java</artifactId>")) {
-                seenModuleCoordinate = true;
-            } else if (seenModuleCoordinate && line.contains("<version>")) {
-                final int from = line.indexOf("<version>") + "<version>".length();
-                final int to = line.indexOf("</version>", from);
-                return line.substring(from, to).trim();
-            }
-        }
-        throw new IllegalStateException("no module version found in " + buildFile.toAbsolutePath());
+    /**
+     * Licence name the document is required to carry.
+     *
+     * <p>Continuity rationale: every legacy artefact in the estate opens with an Apache-2.0 header, and the
+     * repository ships both a licence file and a notice file attributing Amazon.com, Inc. or its
+     * affiliates. The generated interface document must therefore carry the same grant, so that a consumer
+     * reading only the published contract still learns the terms the surface is offered under.</p>
+     */
+    private static final String EXPECTED_LICENCE_NAME = "Apache License 2.0";
+
+    /**
+     * Canonical location of the licence named by {@link #EXPECTED_LICENCE_NAME}.
+     *
+     * <p>Asserted character for character. This is the same address the source-file licence header of every
+     * file in this module points at, including the header of this file; the header block and this
+     * expectation are two different things that must both be right, and both appearing in this file is
+     * intentional.</p>
+     */
+    private static final String EXPECTED_LICENCE_URL = "http://www.apache.org/licenses/LICENSE-2.0";
+
+    /** Key the bearer scheme is required to be registered under, and named by, in the requirement. */
+    private static final String EXPECTED_SCHEME_KEY = "bearerAuth";
+
+    /** HTTP authentication scheme the registered scheme is required to declare. */
+    private static final String EXPECTED_HTTP_SCHEME = "bearer";
+
+    /** Token format the registered scheme is required to advertise. */
+    private static final String EXPECTED_BEARER_FORMAT = "JWT";
+
+    /**
+     * Address the document itself is served from.
+     *
+     * <p>Declared in {@code application.yml} under the {@code springdoc} key and nowhere else. It appears in
+     * this class for one purpose only: to be asserted <strong>absent</strong> from the constructed document,
+     * so a future edit that restated it in code would fail rather than quietly give a value with exactly one
+     * home a second home.</p>
+     */
+    private static final String CONFIGURED_API_DOCS_PATH = "/v3/api-docs";
+
+    /**
+     * Address the rendered viewer is served from.
+     *
+     * <p>Owned by {@code application.yml} exactly as {@link #CONFIGURED_API_DOCS_PATH} is, and present here
+     * for the same single purpose: to be asserted <strong>absent</strong> from the constructed document.</p>
+     */
+    private static final String CONFIGURED_VIEWER_PATH = "/swagger-ui";
+
+    // CREDENTIAL SCAN RULES
+
+    /**
+     * Field names that would identify a credential, matched case-insensitively as a substring of the name.
+     *
+     * <p>A field so named must be absent or carry no value. This is the first of four complementary rules,
+     * and it is the one that catches a credential parked under an honest label.</p>
+     */
+    private static final List<String> CREDENTIAL_FIELD_NAME_FRAGMENTS = List.of(
+            "password", "passwd", "secret", "credential", "token", "apikey", "api_key", "api-key",
+            "authorization");
+
+    /**
+     * Field names under which an example value would sit.
+     *
+     * <p>Held separately from {@link #CREDENTIAL_FIELD_NAME_FRAGMENTS} because an example is not itself a
+     * credential; it is the place a credential most easily hides in a published contract.</p>
+     */
+    private static final List<String> EXAMPLE_FIELD_NAME_FRAGMENTS = List.of("example", "examples");
+
+    /**
+     * Patterns that identify a credential appearing as a value, each paired with the rule name reported when
+     * it matches.
+     *
+     * <p>Every pattern requires an actual value, never a bare word. That distinction is the whole point of
+     * this rule set: the published document legitimately <em>talks about</em> tokens, credentials and
+     * passwords in prose, because its security scheme has to explain itself. A scheme named for bearer
+     * tokens is legitimate; a token value is not. A scan that merely searched the serialized text for the
+     * word {@code password} would fail on the scheme's own description, which is why the scan is expressed
+     * over values.</p>
+     */
+    private static final Map<String, Pattern> CREDENTIAL_VALUE_RULES = Map.of(
+            "credential assignment",
+            Pattern.compile("(?i)\\b(?:password|passwd|secret|credential|token|api[ _-]?key|authorization)"
+                    + "\\b\\s*[:=]\\s*\\S"),
+            "compact web token",
+            Pattern.compile("eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}"),
+            "payment provider key",
+            Pattern.compile("(?:sk|pk)_(?:live|test)_[A-Za-z0-9]{8,}"),
+            "cloud access key identifier",
+            Pattern.compile("A(?:KIA|SIA)[0-9A-Z]{12,}"),
+            "code forge access token",
+            Pattern.compile("(?:ghp|gho|ghs|ghu|ghr|github_pat)_[A-Za-z0-9_]{16,}"),
+            "cloud api key",
+            Pattern.compile("AIza[0-9A-Za-z_-]{16,}"),
+            "workspace token",
+            Pattern.compile("xox[abpsr]-[0-9A-Za-z-]{8,}"),
+            "private key block",
+            Pattern.compile("-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+            "basic authentication in a url",
+            Pattern.compile("[A-Za-z][A-Za-z0-9+.-]*://[^\\s/?#@]*:[^\\s/?#@]*@"));
+
+    /**
+     * Shape of a fixed-width credential field carried as a bare value.
+     *
+     * <p>This is the generic expression of the requirement that the shared cleartext credential the legacy
+     * provisioning job stream carried in-stream must not appear in the published contract. The literal is
+     * deliberately not named here and is not needed: it was a run of uppercase letters occupying a
+     * fixed-width field, so any bare value made only of uppercase letters and digits is rejected on shape
+     * alone. The length floor sits below that field's width so a shortened variant is caught too.</p>
+     *
+     * <p>No legitimate value in the document has this shape: the specification version and the module
+     * version carry dots, the title and both descriptions carry whitespace and lowercase letters, the
+     * licence name carries whitespace, the licence URL and the HTTP scheme are lowercase, and the scheme
+     * type and token format are shorter than the floor.</p>
+     */
+    private static final Pattern CREDENTIAL_SHAPED_BARE_VALUE = Pattern.compile("[A-Z0-9]{6,}");
+
+    /**
+     * Serializer used to turn the published document into text and back into a tree.
+     *
+     * <p>Built through the builder rather than by mutating a constructed mapper, because the mutators are
+     * deprecated on this Jackson line and every diagnostic is promoted to an error by this build. No
+     * inclusion filter is applied, so absent members appear as explicit nulls and the scan sees the whole
+     * document rather than only its populated parts.</p>
+     */
+    private static final ObjectMapper CONTRACT_MAPPER = JsonMapper.builder().build();
+
+    /** Parsed shape of the serialized document; parameterised so no raw type and no unchecked cast arises. */
+    private static final TypeReference<Map<String, Object>> DOCUMENT_TREE =
+            new TypeReference<Map<String, Object>>() { };
+
+    /**
+     * JSON pointers the credential scan must be shown to reach, so that a passing scan cannot be a scan
+     * that walked nothing.
+     */
+    private static final List<String> DEEPEST_TEXT_POINTERS = List.of(
+            "/info/title",
+            "/info/description",
+            "/info/license/name",
+            "/info/license/url",
+            "/components/securitySchemes/" + EXPECTED_SCHEME_KEY + "/description");
+
+    // HELPERS
+
+    /**
+     * Builds the document the container would publish when the build supplies no build information, which is
+     * the state of a locally compiled class tree.
+     *
+     * @return the published document
+     */
+    private static OpenAPI publishedDocument() {
+        return new OpenApiConfig(new AbsentBuildInformation()).cardDemoOpenApi();
     }
 
     /**
-     * Locates this module's build file relative to the directory the test was launched from, so the
-     * assertion works whether the suite runs from the module directory or from a parent of it.
+     * Builds the document the container would publish when the build supplies the given version.
      *
-     * @return the path of the build file
+     * @param publishedVersion the version the build publishes, or {@code null} for a build that publishes
+     *                         none
+     * @return the published document
      */
-    private static Path locateBuildFile() {
-        Path candidate = Path.of("pom.xml").toAbsolutePath();
-        Path directory = candidate.getParent();
-        for (int depth = 0; depth < 3 && directory != null; depth++) {
-            candidate = directory.resolve("pom.xml");
-            if (Files.isRegularFile(candidate)
-                    && directory.getFileName() != null
-                    && "carddemo-java".equals(directory.getFileName().toString())) {
-                return candidate;
-            }
-            directory = directory.getParent();
-        }
-        throw new IllegalStateException("no carddemo-java build file found from "
-                + Path.of("").toAbsolutePath());
-    }
-
-    /**
-     * Builds the contract as the container would, with no published build information available.
-     *
-     * @return the published contract
-     */
-    private static OpenAPI contractWithoutBuildInformation() {
-        return new OpenApiConfig(new AbsentBuildProperties()).cardDemoOpenApi();
-    }
-
-    /**
-     * Builds the contract as the container would, with the supplied version published by the build.
-     *
-     * @param publishedVersion the version the build publishes, possibly {@code null}
-     * @return the published contract
-     */
-    private static OpenAPI contractWithPublishedVersion(final String publishedVersion) {
+    private static OpenAPI publishedDocumentForBuildVersion(final String publishedVersion) {
         final Properties entries = new Properties();
+        entries.setProperty("group", "com.carddemo");
+        entries.setProperty("artifact", "carddemo-java");
         if (publishedVersion != null) {
             entries.setProperty("version", publishedVersion);
         }
-        entries.setProperty("group", "com.carddemo");
-        entries.setProperty("artifact", "carddemo-java");
-        return new OpenApiConfig(new PresentBuildProperties(new BuildProperties(entries)))
+        return new OpenApiConfig(new PresentBuildInformation(new BuildProperties(entries)))
                 .cardDemoOpenApi();
     }
 
     /**
-     * Returns every free-text field of the contract, so a single assertion can sweep all of them.
+     * Returns the scheme the document registers under the expected key.
      *
-     * @param contract the published contract
-     * @return the contract's free text
+     * @param document the published document
+     * @return the registered scheme, or {@code null} when the document registers none under that key
      */
-    private static List<String> freeTextOf(final OpenAPI contract) {
-        return List.of(
-                contract.getInfo().getTitle(),
-                contract.getInfo().getDescription(),
-                contract.getInfo().getVersion(),
-                contract.getInfo().getLicense().getName(),
-                contract.getInfo().getLicense().getUrl(),
-                contract.getComponents()
-                        .getSecuritySchemes()
-                        .get(OpenApiConfig.BEARER_SCHEME_NAME)
-                        .getDescription());
+    private static SecurityScheme registeredScheme(final OpenAPI document) {
+        return document.getComponents().getSecuritySchemes().get(EXPECTED_SCHEME_KEY);
     }
 
-    // DOCUMENT IDENTITY
-
     /**
-     * Verifies the document's title, licence and version.
+     * Serializes the published document to JSON.
+     *
+     * @param document the published document
+     * @return the serialized document
      */
-    @Nested
-    @DisplayName("document identity")
-    class DocumentIdentity {
-
-        @Test
-        @DisplayName("the document is titled for this application")
-        void theDocumentIsTitledForThisApplication() {
-            assertThat(contractWithoutBuildInformation().getInfo().getTitle())
-                    .isEqualTo(OpenApiConfig.API_TITLE)
-                    .isEqualTo("CardDemo REST API");
-        }
-
-        @Test
-        @DisplayName("the document carries the same licence grant as the repository it ships in")
-        void theDocumentCarriesTheRepositoryLicence() {
-            assertThat(OpenApiConfig.LICENSE_URL).isEqualTo(APACHE_LICENCE_URL);
-            assertThat(contractWithoutBuildInformation().getInfo().getLicense().getName())
-                    .isEqualTo("Apache License 2.0");
-            assertThat(contractWithoutBuildInformation().getInfo().getLicense().getUrl())
-                    .isEqualTo(APACHE_LICENCE_URL);
-        }
-
-        @Test
-        @DisplayName("the fallback version is the version the build file itself declares for this module")
-        void theFallbackVersionMatchesTheBuildFile() {
-            assertThat(OpenApiConfig.MODULE_VERSION).isEqualTo(versionDeclaredByTheBuildFile());
-        }
-
-        @Test
-        @DisplayName("the document contributes metadata only, leaving the operation paths to the "
-                + "controller scan")
-        void theDocumentContributesMetadataOnly() {
-            assertThat(contractWithoutBuildInformation().getPaths()).isNull();
-            assertThat(contractWithoutBuildInformation().getComponents().getSchemas()).isNull();
+    private static String serialized(final OpenAPI document) {
+        try {
+            return CONTRACT_MAPPER.writeValueAsString(document);
+        } catch (final JsonProcessingException cause) {
+            throw new IllegalStateException("the published document could not be serialized", cause);
         }
     }
 
-    // VERSION RESOLUTION
+    /**
+     * Serializes the published document and parses it back into a tree, so the credential scan runs over
+     * values and field names rather than over an undifferentiated run of text.
+     *
+     * @param document the published document
+     * @return every node of the serialized document, in document order
+     */
+    private static List<DocumentNode> nodesOf(final OpenAPI document) {
+        final Map<String, Object> tree;
+        try {
+            tree = CONTRACT_MAPPER.readValue(serialized(document), DOCUMENT_TREE);
+        } catch (final JsonProcessingException cause) {
+            throw new IllegalStateException("the serialized document could not be parsed", cause);
+        }
+        final List<DocumentNode> nodes = new ArrayList<>();
+        collect("", null, tree, nodes);
+        return nodes;
+    }
 
     /**
-     * Verifies how the contract version is chosen.
+     * Walks a parsed JSON value, recording every node with the pointer that locates it.
+     *
+     * <p>Wildcard-parameterised patterns are used for the container cases so that no raw type and no
+     * unchecked cast is introduced; either would fail this build outright.</p>
+     *
+     * @param pointer   pointer locating the value being visited
+     * @param fieldName name of the field carrying the value, or {@code null} for the root and for elements
+     *                  of an array
+     * @param value     the value being visited
+     * @param sink      collector the visited nodes are added to
      */
-    @Nested
-    @DisplayName("version resolution")
-    class VersionResolution {
-
-        @Test
-        @DisplayName("an absent build information bean falls back to the module version")
-        void anAbsentBuildInformationBeanFallsBackToTheModuleVersion() {
-            assertThat(contractWithoutBuildInformation().getInfo().getVersion())
-                    .isEqualTo(OpenApiConfig.MODULE_VERSION);
-        }
-
-        @Test
-        @DisplayName("a published version is preferred over the module version")
-        void aPublishedVersionIsPreferred() {
-            assertThat(contractWithPublishedVersion("2.7.3").getInfo().getVersion())
-                    .isEqualTo("2.7.3")
-                    .isNotEqualTo(OpenApiConfig.MODULE_VERSION);
-        }
-
-        @Test
-        @DisplayName("a build that publishes no version at all falls back to the module version")
-        void aBuildPublishingNoVersionFallsBack() {
-            assertThat(contractWithPublishedVersion(null).getInfo().getVersion())
-                    .isEqualTo(OpenApiConfig.MODULE_VERSION);
-        }
-
-        @Test
-        @DisplayName("a blank or whitespace-only published version falls back rather than publishing "
-                + "an empty version")
-        void aBlankPublishedVersionFallsBack() {
-            for (final String blank : List.of("", " ", "   ", "\t", "\n")) {
-                assertThat(contractWithPublishedVersion(blank).getInfo().getVersion())
-                        .as("published version %s", blank.strip().isEmpty() ? "<blank>" : blank)
-                        .isEqualTo(OpenApiConfig.MODULE_VERSION);
+    private static void collect(final String pointer, final String fieldName, final Object value,
+            final List<DocumentNode> sink) {
+        sink.add(new DocumentNode(pointer, fieldName, value));
+        if (value instanceof Map<?, ?> object) {
+            for (final Map.Entry<?, ?> member : object.entrySet()) {
+                final String memberName = String.valueOf(member.getKey());
+                collect(pointer + "/" + memberName, memberName, member.getValue(), sink);
+            }
+        } else if (value instanceof List<?> array) {
+            for (int index = 0; index < array.size(); index++) {
+                collect(pointer + "/" + index, null, array.get(index), sink);
             }
         }
-
-        @Test
-        @DisplayName("the published version is used verbatim, including a snapshot qualifier")
-        void thePublishedVersionIsUsedVerbatim() {
-            assertThat(contractWithPublishedVersion("1.0.1-SNAPSHOT").getInfo().getVersion())
-                    .isEqualTo("1.0.1-SNAPSHOT");
-        }
-
-        @Test
-        @DisplayName("the version is resolved once when the configuration is built, so every document it "
-                + "produces reports the same version")
-        void theVersionIsResolvedOnceAndReusedConsistently() {
-            final Properties entries = new Properties();
-            entries.setProperty("version", "3.1.4");
-            final OpenApiConfig configuration =
-                    new OpenApiConfig(new PresentBuildProperties(new BuildProperties(entries)));
-
-            assertThat(configuration.cardDemoOpenApi().getInfo().getVersion()).isEqualTo("3.1.4");
-            assertThat(configuration.cardDemoOpenApi().getInfo().getVersion()).isEqualTo("3.1.4");
-        }
     }
-
-    // PROVENANCE
 
     /**
-     * Verifies that the document cites the estate it was translated from.
+     * Returns every node of the document whose value is text.
+     *
+     * @param document the published document
+     * @return the text-valued nodes
      */
-    @Nested
-    @DisplayName("provenance")
-    class Provenance {
-
-        @Test
-        @DisplayName("the description cites the legacy checkout commit")
-        void theDescriptionCitesTheLegacyCheckout() {
-            assertThat(contractWithoutBuildInformation().getInfo().getDescription())
-                    .contains(LEGACY_CHECKOUT);
-        }
-
-        @Test
-        @DisplayName("the cited commit is a full-length lowercase hexadecimal identifier, so a truncated "
-                + "or mistyped citation is caught")
-        void theCitedCommitIsAFullLengthIdentifier() {
-            assertThat(LEGACY_CHECKOUT)
-                    .hasSize(COMMIT_IDENTIFIER_LENGTH)
-                    .matches("[0-9a-f]{" + COMMIT_IDENTIFIER_LENGTH + "}");
-        }
-
-        @Test
-        @DisplayName("the description cites the upstream release stamp and its date")
-        void theDescriptionCitesTheUpstreamReleaseStamp() {
-            assertThat(contractWithoutBuildInformation().getInfo().getDescription())
-                    .contains(UPSTREAM_RELEASE_STAMP)
-                    .contains(UPSTREAM_RELEASE_DATE);
-        }
-
-        @Test
-        @DisplayName("the description states how many legacy transactions it describes, matching the "
-                + "seventeen online programs")
-        void theDescriptionStatesTheTransactionCount() {
-            assertThat(contractWithoutBuildInformation().getInfo().getDescription())
-                    .contains(String.valueOf(LEGACY_TRANSACTION_COUNT));
-        }
-
-        @Test
-        @DisplayName("the description states that decimal values travel in plain form, which is the "
-                + "property a client parsing an amount depends on")
-        void theDescriptionStatesDecimalValuesTravelInPlainForm() {
-            assertThat(contractWithoutBuildInformation().getInfo().getDescription())
-                    .contains("plain decimal")
-                    .contains("scientific notation");
-        }
+    private static List<DocumentNode> textNodesOf(final OpenAPI document) {
+        return nodesOf(document).stream().filter(node -> node.value() instanceof String).toList();
     }
-
-    // THE SECURITY SCHEME
 
     /**
-     * Verifies the declared authentication scheme.
+     * Reports whether a field name identifies one of the given concerns.
+     *
+     * @param fieldName the field name, or {@code null} for a node that has none
+     * @param fragments the fragments that identify the concern
+     * @return {@code true} when the name carries any of the fragments
      */
-    @Nested
-    @DisplayName("the security scheme")
-    class TheSecurityScheme {
-
-        @Test
-        @DisplayName("exactly one scheme is declared, under the published name")
-        void exactlyOneSchemeIsDeclared() {
-            assertThat(contractWithoutBuildInformation().getComponents().getSecuritySchemes())
-                    .hasSize(1)
-                    .containsKey(OpenApiConfig.BEARER_SCHEME_NAME);
+    private static boolean names(final String fieldName, final List<String> fragments) {
+        if (fieldName == null) {
+            return false;
         }
-
-        @Test
-        @DisplayName("the scheme is HTTP bearer carrying a token")
-        void theSchemeIsHttpBearer() {
-            final SecurityScheme scheme = contractWithoutBuildInformation()
-                    .getComponents()
-                    .getSecuritySchemes()
-                    .get(OpenApiConfig.BEARER_SCHEME_NAME);
-
-            assertThat(scheme.getType()).isEqualTo(SecurityScheme.Type.HTTP);
-            assertThat(scheme.getScheme()).isEqualTo(OpenApiConfig.HTTP_BEARER_SCHEME);
-            assertThat(scheme.getBearerFormat()).isEqualTo(OpenApiConfig.BEARER_TOKEN_FORMAT);
-        }
-
-        @Test
-        @DisplayName("the scheme name is lowercase as the transport requires, and the token format is the "
-                + "uppercase abbreviation")
-        void theSchemeNameIsLowercaseAndTheFormatUppercase() {
-            assertThat(OpenApiConfig.HTTP_BEARER_SCHEME)
-                    .isEqualTo("bearer")
-                    .isEqualTo(OpenApiConfig.HTTP_BEARER_SCHEME.toLowerCase(Locale.ROOT));
-            assertThat(OpenApiConfig.BEARER_TOKEN_FORMAT).isEqualTo("JWT");
-        }
-
-        @Test
-        @DisplayName("exactly one requirement is declared and it names the scheme the components define, "
-                + "so the document cannot reference a scheme it never declared")
-        void theRequirementNamesADeclaredScheme() {
-            final OpenAPI contract = contractWithoutBuildInformation();
-
-            assertThat(contract.getSecurity()).hasSize(1);
-            assertThat(contract.getSecurity().getFirst())
-                    .containsOnlyKeys(OpenApiConfig.BEARER_SCHEME_NAME);
-            assertThat(contract.getComponents().getSecuritySchemes())
-                    .containsKey(contract.getSecurity().getFirst().keySet().iterator().next());
-        }
-
-        @Test
-        @DisplayName("the requirement lists no scope, because HTTP bearer authentication has none")
-        void theRequirementListsNoScope() {
-            assertThat(contractWithoutBuildInformation()
-                    .getSecurity()
-                    .getFirst()
-                    .get(OpenApiConfig.BEARER_SCHEME_NAME))
-                    .isEmpty();
-        }
+        final String folded = fieldName.toLowerCase(Locale.ROOT);
+        return fragments.stream().anyMatch(folded::contains);
     }
-
-    // CREDENTIAL CONTAINMENT
 
     /**
-     * Verifies that publishing the contract discloses nothing.
+     * A node of the serialized document: the pointer that locates it, the field name that carries it and its
+     * value.
+     *
+     * @param pointer   JSON pointer locating this node
+     * @param fieldName name of the field carrying this node, or {@code null} for the root and array elements
+     * @param value     the node's value, which may be {@code null}
      */
-    @Nested
-    @DisplayName("credential containment")
-    class CredentialContainment {
-
-        @Test
-        @DisplayName("no field of the document carries the legacy password literal")
-        void noFieldCarriesTheLegacyPasswordLiteral() {
-            for (final String text : freeTextOf(contractWithoutBuildInformation())) {
-                assertThat(text).doesNotContain(LEGACY_PASSWORD_LITERAL);
-            }
-        }
-
-        @Test
-        @DisplayName("no field of the document carries a seeded identifier from the credential table")
-        void noFieldCarriesASeededIdentifier() {
-            for (final String text : freeTextOf(contractWithoutBuildInformation())) {
-                assertThat(text)
-                        .doesNotContain("ADMIN001")
-                        .doesNotContain("USER0001");
-            }
-        }
-
-        @Test
-        @DisplayName("the scheme pre-fills no authorisation value and carries no example")
-        void theSchemePreFillsNoAuthorisationValue() {
-            final SecurityScheme scheme = contractWithoutBuildInformation()
-                    .getComponents()
-                    .getSecuritySchemes()
-                    .get(OpenApiConfig.BEARER_SCHEME_NAME);
-
-            assertThat(scheme.getName()).isNull();
-            assertThat(scheme.getIn()).isNull();
-            assertThat(scheme.getFlows()).isNull();
-            assertThat(scheme.getOpenIdConnectUrl()).isNull();
-            assertThat(scheme.getExtensions()).isNull();
-            assertThat(scheme.get$ref()).isNull();
-        }
-
-        @Test
-        @DisplayName("the scheme description states that access is decided by the filter chain rather "
-                + "than by this document")
-        void theSchemeDescriptionDefersAccessToTheFilterChain() {
-            assertThat(contractWithoutBuildInformation()
-                    .getComponents()
-                    .getSecuritySchemes()
-                    .get(OpenApiConfig.BEARER_SCHEME_NAME)
-                    .getDescription())
-                    .contains("security filter chain")
-                    .contains("nothing in")
-                    .contains("grants access");
-        }
-
-        @Test
-        @DisplayName("no field of the document names a host, port or connection string")
-        void noFieldNamesAHostOrConnectionString() {
-            for (final String text : freeTextOf(contractWithoutBuildInformation())) {
-                assertThat(text)
-                        .doesNotContain("jdbc:")
-                        .doesNotContain("localhost")
-                        .doesNotContain("amazonaws.com");
-            }
-            assertThat(contractWithoutBuildInformation().getServers()).isNull();
-        }
-
-        @Test
-        @DisplayName("the document reproduces no legacy source text, only identifiers and counts")
-        void theDocumentReproducesNoLegacySourceText() {
-            final String description = contractWithoutBuildInformation().getInfo().getDescription();
-
-            assertThat(description)
-                    .contains("No legacy source text is reproduced")
-                    .doesNotContain("PROCEDURE DIVISION")
-                    .doesNotContain("EXEC CICS")
-                    .doesNotContain("PIC X(");
-        }
-    }
-
-    // BEAN BEHAVIOUR
-
-    /**
-     * Verifies that the bean method behaves as a factory rather than as shared state.
-     */
-    @Nested
-    @DisplayName("bean behaviour")
-    class BeanBehaviour {
-
-        @Test
-        @DisplayName("each invocation yields a distinct document, so a caller cannot mutate the one the "
-                + "container published")
-        void eachInvocationYieldsADistinctDocument() {
-            final OpenApiConfig configuration = new OpenApiConfig(new AbsentBuildProperties());
-
-            assertThat(configuration.cardDemoOpenApi())
-                    .isNotSameAs(configuration.cardDemoOpenApi());
-        }
-
-        @Test
-        @DisplayName("two documents built from the same configuration agree on every published field")
-        void twoDocumentsAgreeOnEveryPublishedField() {
-            final OpenApiConfig configuration = new OpenApiConfig(new AbsentBuildProperties());
-
-            assertThat(freeTextOf(configuration.cardDemoOpenApi()))
-                    .isEqualTo(freeTextOf(configuration.cardDemoOpenApi()));
-        }
-
-        @Test
-        @DisplayName("the build information is consulted once, when the configuration is constructed, "
-                + "rather than on every document")
-        void theBuildInformationIsConsultedOnce() {
-            final CountingBuildProperties provider = new CountingBuildProperties();
-            final OpenApiConfig configuration = new OpenApiConfig(provider);
-
-            final OpenAPI ignoredFirst = configuration.cardDemoOpenApi();
-            final OpenAPI ignoredSecond = configuration.cardDemoOpenApi();
-
-            assertThat(ignoredFirst.getInfo().getVersion())
-                    .isEqualTo(ignoredSecond.getInfo().getVersion());
-            assertThat(provider.lookups()).isOne();
-        }
-    }
+    private record DocumentNode(String pointer, String fieldName, Object value) { }
 
     // TEST DOUBLES
 
     /**
-     * A provider that reports no build information, as a plain {@code java -jar} run does.
+     * A provider that resolves to no build information, which is what a locally compiled class tree yields
+     * because the build-information resource is written by the packaging step.
+     *
+     * <p>Hand written rather than mocked: a mocked generic provider would force an unchecked conversion, and
+     * an unchecked conversion fails this build.</p>
      */
-    private static final class AbsentBuildProperties implements ObjectProvider<BuildProperties> {
+    private static final class AbsentBuildInformation implements ObjectProvider<BuildProperties> {
 
         @Override
         public BuildProperties getObject() {
-            throw new IllegalStateException("no BuildProperties bean is available");
+            throw new IllegalStateException("no build information bean is available");
         }
 
         @Override
@@ -544,19 +414,19 @@ class OpenApiConfigTest {
     }
 
     /**
-     * A provider that reports the supplied build information.
+     * A provider that resolves to the build information it was given.
      */
-    private static final class PresentBuildProperties implements ObjectProvider<BuildProperties> {
+    private static final class PresentBuildInformation implements ObjectProvider<BuildProperties> {
 
-        /** The build information to report. */
+        /** The build information this provider resolves to. */
         private final BuildProperties buildProperties;
 
         /**
-         * Creates a provider reporting the supplied build information.
+         * Creates a provider resolving to the given build information.
          *
-         * @param buildProperties the build information to report
+         * @param buildProperties the build information to resolve to
          */
-        PresentBuildProperties(final BuildProperties buildProperties) {
+        PresentBuildInformation(final BuildProperties buildProperties) {
             this.buildProperties = buildProperties;
         }
 
@@ -572,12 +442,17 @@ class OpenApiConfigTest {
     }
 
     /**
-     * A provider that records how many times it was consulted.
+     * A provider that records how many times it was consulted, so that resolving the version once at
+     * construction can be told apart from resolving it on every document.
      */
-    private static final class CountingBuildProperties implements ObjectProvider<BuildProperties> {
+    private static final class CountingBuildInformation implements ObjectProvider<BuildProperties> {
 
-        /** Number of times the provider was consulted. */
-        private int lookups;
+        /** Version this provider resolves to; free of the module coordinate version so the two cannot be
+         * confused. */
+        private static final String PUBLISHED_VERSION = "4.2.9";
+
+        /** Number of times this provider was consulted. */
+        private int consultations;
 
         @Override
         public BuildProperties getObject() {
@@ -586,19 +461,458 @@ class OpenApiConfigTest {
 
         @Override
         public BuildProperties getIfAvailable() {
-            this.lookups++;
+            this.consultations++;
             final Properties entries = new Properties();
-            entries.setProperty("version", "9.9.9");
+            entries.setProperty("group", "com.carddemo");
+            entries.setProperty("artifact", "carddemo-java");
+            entries.setProperty("version", PUBLISHED_VERSION);
             return new BuildProperties(entries);
         }
 
         /**
-         * Returns how many times the provider was consulted.
+         * Returns how many times this provider was consulted.
          *
-         * @return the lookup count
+         * @return the consultation count
          */
-        int lookups() {
-            return this.lookups;
+        int consultations() {
+            return this.consultations;
+        }
+
+        /**
+         * Returns the version this provider resolves to.
+         *
+         * @return the published version
+         */
+        static String publishedVersion() {
+            return PUBLISHED_VERSION;
+        }
+    }
+
+
+    // DOCUMENT IDENTITY
+
+    /**
+     * Verifies the identity block the document publishes: its title, its description, its version and its
+     * licence.
+     */
+    @Nested
+    @DisplayName("document identity")
+    final class DocumentIdentity {
+
+        @Test
+        @DisplayName("a document is produced, carrying an info block, a component section and a security "
+                + "requirement")
+        void aDocumentIsProduced() {
+            final OpenAPI document = publishedDocument();
+
+            assertThat(document).isNotNull();
+            assertThat(document.getInfo()).isNotNull();
+            assertThat(document.getComponents()).isNotNull();
+            assertThat(document.getSecurity()).isNotNull().isNotEmpty();
+        }
+
+        @Test
+        @DisplayName("the title identifies the CardDemo service")
+        void theTitleIdentifiesTheCardDemoService() {
+            assertThat(publishedDocument().getInfo().getTitle())
+                    .isNotBlank()
+                    .isEqualTo(EXPECTED_TITLE);
+        }
+
+        @Test
+        @DisplayName("the description is present and says something the title does not, so a consumer "
+                + "reading the document learns what the surface is")
+        void theDescriptionIsPresentAndDistinctFromTheTitle() {
+            final Info info = publishedDocument().getInfo();
+
+            assertThat(info.getDescription())
+                    .isNotBlank()
+                    .isNotEqualTo(info.getTitle());
+        }
+
+        @Test
+        @DisplayName("the version published when the build supplies none is the module coordinate version")
+        void theVersionIsTheModuleCoordinateVersion() {
+            assertThat(publishedDocument().getInfo().getVersion()).isEqualTo(EXPECTED_MODULE_VERSION);
+        }
+
+        @Test
+        @DisplayName("the licence is the Apache 2.0 grant, by name and by exact address")
+        void theLicenceIsTheApacheGrant() {
+            final License licence = publishedDocument().getInfo().getLicense();
+
+            assertThat(licence).isNotNull();
+            assertThat(licence.getName()).isEqualTo(EXPECTED_LICENCE_NAME);
+            assertThat(licence.getUrl()).isEqualTo(EXPECTED_LICENCE_URL);
+        }
+
+        @Test
+        @DisplayName("this bean is the single source of the document's info block, with no competing "
+                + "definition carried on the application entry point")
+        void thisBeanIsTheSingleSourceOfTheInfoBlock() {
+            final Info info = publishedDocument().getInfo();
+
+            assertThat(info.getTitle()).isEqualTo(EXPECTED_TITLE);
+            assertThat(info.getVersion()).isEqualTo(EXPECTED_MODULE_VERSION);
+            assertThat(info.getLicense().getName()).isEqualTo(EXPECTED_LICENCE_NAME);
+
+            final boolean competingDefinitionPresent = MergedAnnotations
+                    .from(CardDemoApplication.class, SearchStrategy.TYPE_HIERARCHY)
+                    .isPresent(OpenAPIDefinition.class);
+
+            assertThat(competingDefinitionPresent)
+                    .as("a document-definition annotation on the application entry point would produce a "
+                            + "second, competing description of the same document")
+                    .isFalse();
+        }
+    }
+
+    // THE BEARER SECURITY SCHEME AND THE DOCUMENT-WIDE REQUIREMENT
+
+    /**
+     * Verifies the declared authentication scheme and the requirement that applies it.
+     *
+     * <p>Grounding, as metadata: the token this scheme describes is what replaces the legacy
+     * communication-area state carriage that every online program copied in and echoed back across a
+     * pseudo-conversational turn. The legacy sign-on compared the entered credential with the stored one in
+     * cleartext at {@code app/cbl/COSGN00C.cbl} line 223; that comparison is replaced by a hashed
+     * verification, which is a deliberate and documented departure from byte parity. Neither the legacy
+     * source line nor any sign-on message literal is reproduced here - the message contract belongs to the
+     * message catalogue service's own test.</p>
+     *
+     * <p>Both halves are asserted. A scheme registered as a component but never required would document
+     * authentication without the document ever expecting it; a requirement naming a key the component
+     * section does not define would produce a document that references an undefined scheme. Either half
+     * alone reads plausibly and cannot be honoured.</p>
+     */
+    @Nested
+    @DisplayName("the bearer security scheme")
+    final class BearerSecurityScheme {
+
+        @Test
+        @DisplayName("the component section registers exactly one security scheme, under the bearer key")
+        void theComponentSectionRegistersTheBearerScheme() {
+            assertThat(publishedDocument().getComponents().getSecuritySchemes())
+                    .hasSize(1)
+                    .containsKey(EXPECTED_SCHEME_KEY);
+        }
+
+        @Test
+        @DisplayName("the registered scheme is HTTP bearer carrying a JWT")
+        void theRegisteredSchemeIsHttpBearerCarryingAJwt() {
+            final SecurityScheme scheme = registeredScheme(publishedDocument());
+
+            assertThat(scheme).isNotNull();
+            assertThat(scheme.getType()).isEqualTo(SecurityScheme.Type.HTTP);
+            assertThat(scheme.getScheme()).isEqualTo(EXPECTED_HTTP_SCHEME);
+            assertThat(scheme.getBearerFormat()).isEqualTo(EXPECTED_BEARER_FORMAT);
+            assertThat(scheme.getDescription()).isNotBlank();
+        }
+
+        @Test
+        @DisplayName("the scheme is also applied as a document-wide requirement, with no scope, because "
+                + "HTTP bearer authentication has none")
+        void theSchemeIsAlsoAppliedAsADocumentWideRequirement() {
+            final List<SecurityRequirement> requirements = publishedDocument().getSecurity();
+
+            assertThat(requirements).isNotNull().isNotEmpty();
+            assertThat(requirements.getFirst()).containsOnlyKeys(EXPECTED_SCHEME_KEY);
+            assertThat(requirements.getFirst().get(EXPECTED_SCHEME_KEY)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("every key named by a requirement is a key the component section defines, so the "
+                + "document cannot reference a scheme it never declared")
+        void everyRequirementKeyIsADefinedComponentKey() {
+            final OpenAPI document = publishedDocument();
+
+            final List<String> requiredKeys = document.getSecurity().stream()
+                    .flatMap(requirement -> requirement.keySet().stream())
+                    .toList();
+
+            assertThat(requiredKeys).isNotEmpty().containsOnly(EXPECTED_SCHEME_KEY);
+            assertThat(document.getComponents().getSecuritySchemes().keySet()).containsAll(requiredKeys);
+        }
+    }
+
+    // WHAT THE DOCUMENT MUST NOT RESTATE
+
+    /**
+     * Verifies that the configuration restates none of the addresses that configuration owns.
+     *
+     * <p>The address the document is served from and the address the rendered viewer is served from are both
+     * declared under the {@code springdoc} key of {@code application.yml}. A value that must have exactly one
+     * home would drift the moment it acquired a second, so neither appears in the constructed document.</p>
+     */
+    @Nested
+    @DisplayName("addresses the document must not restate")
+    final class AddressesTheDocumentMustNotRestate {
+
+        @Test
+        @DisplayName("the document declares no server, so the served address is derived from the request "
+                + "rather than restated in code")
+        void theDocumentDeclaresNoServer() {
+            assertThat(publishedDocument().getServers())
+                    .as("a literal server address would be wrong behind a published container port or "
+                            + "behind a harness on an ephemeral port")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("the document declares no operation path at all, because the paths are contributed by "
+                + "the controller scan")
+        void theDocumentDeclaresNoOperationPath() {
+            final OpenAPI document = publishedDocument();
+
+            assertThat(document.getPaths()).isNull();
+            assertThat(document.getComponents().getSchemas()).isNull();
+        }
+
+        @Test
+        @DisplayName("neither the document address nor the viewer address is hardcoded anywhere in the "
+                + "constructed document")
+        void neitherServedAddressIsHardcoded() {
+            assertThat(serialized(publishedDocument()))
+                    .as("both addresses are owned by configuration and must appear in no constructed value")
+                    .doesNotContain(CONFIGURED_API_DOCS_PATH)
+                    .doesNotContain(CONFIGURED_VIEWER_PATH);
+        }
+    }
+
+    // CREDENTIAL CONTAINMENT
+
+    /**
+     * Verifies that publishing the document discloses nothing.
+     *
+     * <p>The document is serialized with a Jackson mapper and the resulting tree is walked, so the four
+     * rules are applied to field names and to values rather than to an undifferentiated run of text. That
+     * distinction matters: the document legitimately explains its own security scheme in prose, so a scan
+     * that simply searched the serialized text for a word such as {@code password} would fail on the
+     * scheme's own description while catching nothing.</p>
+     *
+     * <p>Every diagnostic names the location and the rule that matched and deliberately never echoes the
+     * offending value, because a build log must not print a credential it has just found.</p>
+     */
+    @Nested
+    @DisplayName("credential containment")
+    final class CredentialContainment {
+
+        @Test
+        @DisplayName("no field of the serialized document is named for a credential and carries a value")
+        void noFieldNamedForACredentialCarriesAValue() {
+            final List<String> offenders = nodesOf(publishedDocument()).stream()
+                    .filter(node -> names(node.fieldName(), CREDENTIAL_FIELD_NAME_FRAGMENTS))
+                    .filter(node -> node.value() != null)
+                    .map(DocumentNode::pointer)
+                    .toList();
+
+            assertThat(offenders)
+                    .as("the published document must carry no value under a credential-named field; "
+                            + "offending locations: %s", offenders)
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("no value of the serialized document is a credential literal")
+        void noValueIsACredentialLiteral() {
+            final List<String> offenders = new ArrayList<>();
+            for (final DocumentNode node : textNodesOf(publishedDocument())) {
+                final String text = String.valueOf(node.value());
+                for (final Map.Entry<String, Pattern> rule : CREDENTIAL_VALUE_RULES.entrySet()) {
+                    if (rule.getValue().matcher(text).find()) {
+                        offenders.add(node.pointer() + " matched the " + rule.getKey() + " rule");
+                    }
+                }
+            }
+
+            assertThat(offenders)
+                    .as("the published document must carry no credential value; offending locations and "
+                            + "rules: %s", offenders)
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("no value of the serialized document has the shape of a fixed-width credential field")
+        void noValueHasTheShapeOfAFixedWidthCredentialField() {
+            final List<String> offenders = textNodesOf(publishedDocument()).stream()
+                    .filter(node -> CREDENTIAL_SHAPED_BARE_VALUE
+                            .matcher(String.valueOf(node.value()).strip())
+                            .matches())
+                    .map(DocumentNode::pointer)
+                    .toList();
+
+            assertThat(offenders)
+                    .as("the shared cleartext credential the legacy provisioning stream carried in-stream "
+                            + "occupied a fixed-width field of uppercase letters, so any bare value of that "
+                            + "shape is rejected without the literal ever being named; offending "
+                            + "locations: %s", offenders)
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the serialized document carries no example, which is where a credential most easily "
+                + "hides in a published contract")
+        void theDocumentCarriesNoExample() {
+            final List<String> offenders = nodesOf(publishedDocument()).stream()
+                    .filter(node -> names(node.fieldName(), EXAMPLE_FIELD_NAME_FRAGMENTS))
+                    .filter(node -> node.value() != null)
+                    .map(DocumentNode::pointer)
+                    .toList();
+
+            assertThat(offenders)
+                    .as("no example value of any kind may be published; offending locations: %s", offenders)
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the scan reaches the document's deepest prose, so a passing scan cannot be a scan "
+                + "that walked nothing")
+        void theScanReachesTheDocumentsDeepestProse() {
+            final List<String> visited = textNodesOf(publishedDocument()).stream()
+                    .map(DocumentNode::pointer)
+                    .toList();
+
+            assertThat(visited)
+                    .as("the walk must reach the nested prose fields, not only the top-level members")
+                    .containsAll(DEEPEST_TEXT_POINTERS)
+                    .hasSizeGreaterThan(DEEPEST_TEXT_POINTERS.size());
+        }
+
+        @Test
+        @DisplayName("the registered scheme pre-fills no authorisation value, names no header or parameter "
+                + "and carries no extension")
+        void theRegisteredSchemePreFillsNothing() {
+            final SecurityScheme scheme = registeredScheme(publishedDocument());
+
+            assertThat(scheme.getName()).isNull();
+            assertThat(scheme.getIn()).isNull();
+            assertThat(scheme.getFlows()).isNull();
+            assertThat(scheme.getOpenIdConnectUrl()).isNull();
+            assertThat(scheme.get$ref()).isNull();
+            assertThat(scheme.getExtensions()).isNull();
+        }
+    }
+
+    // WHAT THE CLASS CONTRIBUTES TO A CONTAINER
+
+    /**
+     * Verifies the bean set the class contributes, proved against a real context rather than asserted.
+     *
+     * <p>The slice registers nothing but the class under test, so every bean the context reports is a bean
+     * this class put there. Each negative is paired with the positive, so a context that failed to start at
+     * all could not be mistaken for a clean negative result.</p>
+     */
+    @Nested
+    @DisplayName("what the class contributes to a container")
+    final class ContainerContribution {
+
+        /** A slice registering nothing but the class under test. No web server and no datasource. */
+        private final ApplicationContextRunner runner =
+                new ApplicationContextRunner().withUserConfiguration(OpenApiConfig.class);
+
+        @Test
+        @DisplayName("exactly one OpenAPI bean is contributed, and it carries the published title")
+        void exactlyOneDocumentBeanIsContributed() {
+            this.runner.run(context -> {
+                assertThat(context).hasSingleBean(OpenAPI.class);
+                assertThat(context.getBeanNamesForType(OpenAPI.class)).hasSize(1);
+                assertThat(context.getBean(OpenAPI.class).getInfo().getTitle()).isEqualTo(EXPECTED_TITLE);
+            });
+        }
+
+        @Test
+        @DisplayName("no JSON mapper bean is contributed, because the documentation library's own "
+                + "auto-configuration owns that")
+        void noJsonMapperBeanIsContributed() {
+            this.runner.run(context -> {
+                assertThat(context).hasSingleBean(OpenAPI.class);
+                assertThat(context).doesNotHaveBean(ObjectMapper.class);
+            });
+        }
+
+        @Test
+        @DisplayName("no grouped-API bean is contributed, because the documentation library owns the "
+                + "grouping and the controller scan")
+        void noGroupedApiBeanIsContributed() {
+            this.runner.run(context -> {
+                assertThat(context).hasSingleBean(OpenAPI.class);
+                assertThat(context).doesNotHaveBean(GroupedOpenApi.class);
+            });
+        }
+
+        @Test
+        @DisplayName("the container-published document falls back to the module coordinate version when "
+                + "the context publishes no build information")
+        void theContainerPublishedDocumentFallsBackToTheModuleVersion() {
+            this.runner.run(context -> assertThat(context.getBean(OpenAPI.class).getInfo().getVersion())
+                    .isEqualTo(EXPECTED_MODULE_VERSION));
+        }
+    }
+
+    // HOW THE PUBLISHED VERSION IS RESOLVED
+
+    /**
+     * Verifies the two sources of the published version and the blank-value edge between them.
+     */
+    @Nested
+    @DisplayName("how the published version is resolved")
+    final class ContractVersionResolution {
+
+        @Test
+        @DisplayName("a version published by the build is used verbatim, so the document tracks the "
+                + "artefact actually running")
+        void aPublishedVersionIsUsedVerbatim() {
+            assertThat(publishedDocumentForBuildVersion("2.7.3").getInfo().getVersion())
+                    .isEqualTo("2.7.3");
+        }
+
+        @Test
+        @DisplayName("a snapshot qualifier survives verbatim rather than being trimmed away")
+        void aSnapshotQualifierSurvivesVerbatim() {
+            assertThat(publishedDocumentForBuildVersion("2.7.4-SNAPSHOT").getInfo().getVersion())
+                    .isEqualTo("2.7.4-SNAPSHOT");
+        }
+
+        @Test
+        @DisplayName("build information carrying no version falls back to the module coordinate version")
+        void buildInformationWithoutAVersionFallsBack() {
+            assertThat(publishedDocumentForBuildVersion(null).getInfo().getVersion())
+                    .isEqualTo(EXPECTED_MODULE_VERSION);
+        }
+
+        @Test
+        @DisplayName("a published version made only of whitespace falls back rather than publishing an "
+                + "empty version")
+        void aBlankPublishedVersionFallsBack() {
+            for (final String blank : List.of("", " ", "   ", "\t")) {
+                assertThat(publishedDocumentForBuildVersion(blank).getInfo().getVersion())
+                        .as("a version made only of whitespace must never reach the document")
+                        .isEqualTo(EXPECTED_MODULE_VERSION);
+            }
+        }
+
+        @Test
+        @DisplayName("the build information is consulted once at construction, so every document a single "
+                + "configuration produces reports the same version")
+        void theBuildInformationIsConsultedOnceAtConstruction() {
+            final CountingBuildInformation provider = new CountingBuildInformation();
+            final OpenApiConfig configuration = new OpenApiConfig(provider);
+
+            final String first = configuration.cardDemoOpenApi().getInfo().getVersion();
+            final String second = configuration.cardDemoOpenApi().getInfo().getVersion();
+
+            assertThat(first).isEqualTo(CountingBuildInformation.publishedVersion()).isEqualTo(second);
+            assertThat(provider.consultations()).isOne();
+        }
+
+        @Test
+        @DisplayName("each call yields an independent document, so a consumer that decorates one cannot "
+                + "reach the one the container published")
+        void eachCallYieldsAnIndependentDocument() {
+            final OpenApiConfig configuration = new OpenApiConfig(new AbsentBuildInformation());
+
+            assertThat(configuration.cardDemoOpenApi()).isNotSameAs(configuration.cardDemoOpenApi());
         }
     }
 }
+

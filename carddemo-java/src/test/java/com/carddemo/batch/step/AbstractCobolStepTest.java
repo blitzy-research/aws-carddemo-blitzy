@@ -21,190 +21,505 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
-import java.util.EnumSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.Appender;
 import com.carddemo.domain.enums.FileStatus;
 import com.carddemo.exception.AbendException;
+import com.carddemo.exception.FileStatusException;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Tag;
+import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.mockito.InOrder;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.batch.core.step.tasklet.Tasklet;
+import org.springframework.batch.core.step.tasklet.TaskletStep;
 import org.springframework.batch.repeat.RepeatStatus;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mockingDetails;
 
 /**
- * Verifies {@code AbstractCobolStep}, the template that absorbs the open / read-loop / status-check /
- * close / abend skeleton shared by all ten batch programs.
+ * Verifies {@link AbstractCobolStep}, the Template Method that absorbs the open, read-loop,
+ * status-normalisation, close, diagnostic and abend skeleton every batch program of the CardDemo
+ * mainframe estate repeats.
  *
- * <p>The skeleton is not invented. It is the shape of {@code app/cbl/CBACT01C.cbl}, whose procedure
- * division opens the file, loops reading until the at-end flag is set, processes each delivered
- * record, closes the file and abends on any terminal status; the other nine programs repeat it with a
- * different loop body and a different number of files.
+ * <h2>The legacy authority</h2>
  *
- * <p><strong>The two-level status model is the thing under test.</strong> The legacy programs never
- * branch on the raw two-character {@code FILE STATUS}. They normalise it into {@code APPL-RESULT}
- * first - zero for success, sixteen for at end, twelve for anything else - and then branch on the
- * condition names {@code APPL-AOK} and {@code APPL-EOF}
- * ({@code app/cbl/CBACT01C.cbl} lines 90 to 114). Collapsing the two levels into one enumeration
- * would erase the end-of-file-versus-error distinction that every batch read loop depends on, so both
- * levels are asserted separately here.
+ * <p>The skeleton under test is not an invention. It is the shape of {@code app/cbl/CBACT01C.cbl},
+ * whose procedure division announces its own start, performs an open paragraph, loops reading until an
+ * end-of-file flag flips, processes each delivered record, performs a close paragraph and announces its
+ * own end. The same shape, with the same paragraph numbering, recurs in {@code CBACT02C},
+ * {@code CBACT03C}, {@code CBCUS01C}, {@code CBTRN01C}, {@code CBTRN02C}, {@code CBTRN03C} and
+ * {@code CBACT04C}, and its individual guarded operations recur in {@code CBSTM03A.CBL} and
+ * {@code CBSTM03B.CBL} even though those two are a dispatcher and its data-access helper rather than a
+ * read loop. Ten batch programs in total, one skeleton.
  *
- * <p>Three distinctions carry the most risk and each has its own nested class:
+ * <h2>Provenance</h2>
+ *
+ * <p>Matrix-header provenance for this file: checkout SHA
+ * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
+ *
+ * <p>That stamp is deliberately recorded once, here, as a header string and nothing more. It is
+ * <strong>not universal</strong> across the estate: seventy-eight legacy members carry it, three carry
+ * later stamps, all seventeen screen definitions differ from it and twenty-five members carry no stamp
+ * at all. It may therefore never become a per-member assertion, in this file or any other, because such
+ * an assertion would fail for a third of the estate while appearing to prove provenance. No COBOL, job
+ * control, screen definition, copybook or resource definition text is transcribed anywhere below: the
+ * legacy is cited by member, paragraph, field, condition name, line number, width and status code, and
+ * its statements are described rather than quoted. Nothing here reads the legacy tree at runtime.
+ *
+ * <h2>What is asserted, and why it is asserted in two levels</h2>
+ *
+ * <p>The legacy programs never branch on the raw two-byte file status. They normalise it into a coarser
+ * signed integer first and branch on that, so this file proves the two levels separately and never
+ * collapses them.
+ *
+ * <p><strong>Level one, raw status to coarse result.</strong> On the read path
+ * ({@code app/cbl/CBACT01C.cbl} lines 93 to 103) success moves zero, the at-end code moves sixteen and
+ * everything else moves twelve. On the open, close and write paths the normalisation has only two arms:
+ * success moves zero and <em>everything else</em> moves twelve, with no at-end arm anywhere
+ * ({@code app/cbl/CBACT01C.cbl} lines 136 to 140 and 154 to 158, and the write paragraphs of
+ * {@code app/cbl/CBTRN02C.cbl}). The consequence is the single most easily mistranslated fact in the
+ * batch tier: the at-end code is end of file <strong>only on a read</strong>. On an open, a close or a
+ * write it is a terminal failure that abends, and a translation that treated it as an empty file would
+ * swallow a genuine error silently. Both readings are asserted here, side by side.
+ *
+ * <p><strong>Level two, coarse result to control branch.</strong> Zero continues, sixteen sets the
+ * loop's termination flag and stops cleanly, and twelve emits the failing operation's error text with
+ * the raw two-byte status, then emits the abend announcement, and only then ends the run
+ * ({@code app/cbl/CBACT01C.cbl} lines 104 to 115, its status-display paragraph at lines 176 to 189 and
+ * its abend paragraph at lines 169 to 173). The coarse item is referenced on 223 lines of
+ * {@code app/cbl}, so it, and not the raw code, is what the estate actually tests.
+ *
+ * <h2>Decision-log candidates raised by this file</h2>
+ *
+ * <p>These notes exist so that the audit trail is complete. This file raises them and does not act on
+ * them: {@code docs/traceability-matrix.md}, {@code docs/decision-log.md} and
+ * {@code docs/gate-evidence.md} are owned elsewhere and are neither created nor edited here.
  *
  * <ol>
- *   <li><strong>An at-end status is normal for a read and fatal for everything else.</strong> The
- *       read paragraphs normalise three ways; the open, write and close paragraphs normalise two ways
- *       and have no at-end clause at all. Erasing the distinction would make a failed open look like
- *       an empty file.</li>
- *   <li><strong>The pre-operation sentinel makes an incomplete operation terminal.</strong> The legacy
- *       arms {@code APPL-RESULT} to eight before an open, a write and a close, and eight matches
- *       neither condition name, so an operation that never reports a status falls through to the
- *       terminal branch with no extra check.</li>
- *   <li><strong>The diagnostic is emitted before the abend exists.</strong> Two log records precede
- *       the exception, mirroring {@code 9910-DISPLAY-IO-STATUS} followed by
- *       {@code 9999-ABEND-PROGRAM}, and the raw status travels with the failure so that one file's
- *       status can never be reported for another file's failure - the defect at
- *       {@code app/cbl/CBTRN02C.cbl} line 649.</li>
+ * <li><strong>The terminal coarse value has no condition name.</strong> The coarse item declares a
+ * level-88 name for zero and another for sixteen ({@code app/cbl/CBACT01C.cbl} lines 62 and 63) but
+ * <em>none</em> for twelve, which appears throughout the estate as a bare literal. The Java model
+ * therefore names all three outcomes while the legacy named only two, and the extra name is a
+ * readability gain that changes no behaviour.</li>
+ * <li><strong>Two documented-but-unexercised status codes.</strong> An earlier section of the technical
+ * specification attributes duplicate-key and file-not-found handling to two status codes that are
+ * compared nowhere in the estate. The status vocabulary appearing anywhere in the source is
+ * {@code 00}, {@code 01}, {@code 02}, {@code 04}, {@code 05}, {@code 10}, {@code 12}, {@code 23} and
+ * {@code 31}, and in status-test context only {@code 00}, {@code 10} and {@code 23} are ever compared.
+ * {@link FileStatus} may carry the two extra codes as documented values, but no assertion in this file
+ * depends on them and none may be added, because a test that depends on them would assert a behaviour
+ * the legacy never exhibited.</li>
+ * <li><strong>A source defect that must not be propagated.</strong> The daily-rejects close paragraph
+ * of {@code app/cbl/CBTRN02C.cbl} correctly tests its own file's status to decide that the close
+ * failed, and then reports the cross-reference file's status instead (line 649). Its three sibling
+ * close paragraphs in the same program each report their own status, so the defect is confined to that
+ * one line. The template cannot reproduce it, because the status travels from the failing operation to
+ * the diagnostic as a parameter rather than through a shared display field, and a test below proves the
+ * reported status and resource always belong to the operation that actually failed.</li>
+ * <li><strong>The batch timestamp is not the online timestamp.</strong> The batch form separates the
+ * day from the hour with a hyphen, uses dots between the time components, carries two digits of
+ * hundredths and ends in four literal zeros. The online form uses a space in that position, colons
+ * between the time components and six fractional digits. A negative test below rules the online form
+ * out explicitly, because the two forms are the same width and a substitution would be invisible to any
+ * assertion that only checked the length.</li>
+ * <li><strong>An inspection note on shape, not behaviour.</strong> The coarse-outcome type and the
+ * batch-timestamp helper are members of {@link AbstractCobolStep} and are reached below only through
+ * that nesting. A top-level {@code FileStatusNormalizer}, {@code IoOutcome} or
+ * {@code Db2TimestampFormatter} would be a duplicate of state the template already owns and must not
+ * exist. Their absence is an inspection matter and is recorded here rather than probed at runtime;
+ * what this file asserts is behaviour.</li>
  * </ol>
  *
- * <p>Because the class is abstract, the tests drive it through {@link ScriptedStep}, a concrete
- * subclass that records what the template asked it to do and replays a scripted sequence of statuses.
- * A hand-written double is used rather than a mocking framework because the template's collaborator is
- * its own abstract method set, and because the generic {@code IoAction} callbacks cannot be stubbed
- * without unchecked warnings under {@code -Werror}.
+ * <h2>How the assertions are built</h2>
+ *
+ * <p>Every expected value below is an independent oracle: the coarse values, the field widths, the
+ * timestamp image and the status vocabulary are declared here as plain constants or composed with plain
+ * string operations, and no expectation is ever produced by asking the class under test, a formatter, a
+ * template or a record mapper what it would produce. The one deliberate exception is the abend code,
+ * which the prompt for this file requires be read from the constant that publishes it rather than
+ * restated as a literal, so that a change to the published code cannot leave a stale literal behind.
+ * Widths are asserted on encoded bytes rather than on character counts, and nothing is trimmed before
+ * a fixed-width comparison. Time is supplied by a fixed clock, formatting is given an explicit locale,
+ * and this file touches no database, no queue, no object store, no container and no application
+ * context: it is a unit test of a template, and the integration obligations belong to the tests that
+ * own real infrastructure.
  */
-@DisplayName("AbstractCobolStep: the batch lifecycle template and its two-level status model")
+@ExtendWith(MockitoExtension.class)
+@DisplayName("AbstractCobolStep: the batch lifecycle template, its two-level status model and its "
+        + "ordered abend path")
 final class AbstractCobolStepTest {
 
-    // Oracles read from the legacy source, never from the Java under test.
+    // Independent oracles. Every figure below was read from the legacy source and is restated here
+    // as a constant so that no expectation is ever produced by the class under test.
 
-    /** {@code 88 APPL-AOK VALUE 0}, {@code [app/cbl/CBACT01C.cbl:L90]}. */
-    private static final int ORACLE_APPL_RESULT_AOK = 0;
-
-    /** The value armed before an open, a write and a close, {@code [app/cbl/CBACT01C.cbl:L135]}. */
-    private static final int ORACLE_APPL_RESULT_PENDING = 8;
-
-    /** The terminal normalised value, {@code MOVE 12 TO APPL-RESULT}. */
-    private static final int ORACLE_APPL_RESULT_ERROR = 12;
-
-    /** {@code 88 APPL-EOF VALUE 16}, {@code MOVE 16 TO APPL-RESULT} on an at-end status. */
-    private static final int ORACLE_APPL_RESULT_EOF = 16;
+    /** The coarse result the legacy moves on success, and the value behind its first condition name. */
+    private static final int ORACLE_COARSE_SUCCESS = 0;
 
     /**
-     * Width of the batch timestamp field, {@code [app/cbl/CBTRN02C.cbl:L148]} and its redefinition at
-     * lines 159 to 174.
+     * The sentinel the legacy arms before an open, a write and a close, meaning "operation attempted,
+     * outcome not yet normalised". It has no condition name and is never a normalised outcome.
      */
-    private static final int ORACLE_BATCH_TIMESTAMP_LENGTH = 26;
+    private static final int ORACLE_COARSE_SENTINEL = 8;
 
-    /** The four-character literal tail of the batch timestamp image. */
-    private static final String ORACLE_BATCH_TIMESTAMP_TAIL = "0000";
+    /** The terminal coarse result. The legacy declares no condition name for it. */
+    private static final int ORACLE_COARSE_TERMINAL = 12;
 
-    /** The batch abend code, {@code [app/cpy/CSMSG02Y.cpy]} as carried by {@code AbendException}. */
-    private static final String ORACLE_BATCH_ABEND_CODE = "999";
+    /** The coarse result meaning end of file, and the value behind the legacy's second condition name. */
+    private static final int ORACLE_COARSE_END_OF_FILE = 16;
 
-    /** The four legacy gerunds the diagnostics use, so a Java log line reads as the console read. */
+    /** Width of the abend code component of the legacy abend work area. */
+    private static final int ORACLE_ABEND_CODE_WIDTH = 4;
+
+    /** Width of the abend culprit component, which also bounds a legacy program name. */
+    private static final int ORACLE_ABEND_CULPRIT_WIDTH = 8;
+
+    /** Width of the abend reason component. */
+    private static final int ORACLE_ABEND_REASON_WIDTH = 50;
+
+    /** Width of the abend message component. */
+    private static final int ORACLE_ABEND_MESSAGE_WIDTH = 72;
+
+    /** Total width of the abend work area: the four components summed. */
+    private static final int ORACLE_ABEND_CONTEXT_WIDTH = 134;
+
+    /** Width of the batch timestamp image. */
+    private static final int ORACLE_TIMESTAMP_WIDTH = 26;
+
+    /** The literal four characters the populating paragraph moves into the timestamp's trailing field. */
+    private static final String ORACLE_TIMESTAMP_TAIL = "0000";
+
+    /** Width of the timestamp's trailing field, stated as a width so no assertion counts characters. */
+    private static final int ORACLE_TIMESTAMP_TAIL_WIDTH = 4;
+
+    /**
+     * The character the populating paragraph moves into the timestamp's first three separators, held as
+     * an encoded byte because a fixed-width position is a byte and never a code point.
+     */
+    private static final byte ORACLE_DATE_SEPARATOR = (byte) '-';
+
+    /** The character the populating paragraph moves into the timestamp's last three separators. */
+    private static final byte ORACLE_TIME_SEPARATOR = (byte) '.';
+
+    /** Lowest digit byte, the lower bound of every numeric position in the timestamp image. */
+    private static final byte ORACLE_ZERO_DIGIT = (byte) '0';
+
+    /** Highest digit byte, the upper bound of every numeric position in the timestamp image. */
+    private static final byte ORACLE_NINE_DIGIT = (byte) '9';
+
+    /**
+     * The byte the online timestamp form carries between the date and the time. The batch form carries
+     * a separator instead, and proving the two apart is the point of the negative assertion.
+     */
+    private static final byte ORACLE_ONLINE_DATE_AND_TIME_DIVIDER = (byte) ' ';
+
+    /** The separator the online timestamp form uses between time components; the batch form uses none. */
+    private static final String ORACLE_ONLINE_TIME_SEPARATOR_TEXT = ":";
+
+    /** The divider the online timestamp form uses between date and time, as text. */
+    private static final String ORACLE_ONLINE_DATE_AND_TIME_DIVIDER_TEXT = " ";
+
+    /** Nanoseconds the pinned instant carries, rendering as the hundredths the image ends on. */
+    private static final int PINNED_NANOSECONDS = 870_000_000;
+
+    /**
+     * Nanoseconds that render to the same hundredths as the pinned instant only if sub-hundredth
+     * precision is truncated. Rounding to nearest would carry the hundredths one higher.
+     */
+    private static final int TRUNCATED_NANOSECONDS = 879_000_000;
+
+    /** The smallest year that no longer fits the timestamp's four-byte year field. */
+    private static final int ORACLE_SMALLEST_UNREPRESENTABLE_YEAR = 10_000;
+
+    /** The largest year the four-byte year field holds: one below the smallest five-digit value. */
+    private static final int ORACLE_LARGEST_REPRESENTABLE_YEAR =
+            ORACLE_SMALLEST_UNREPRESENTABLE_YEAR - 1;
+
+    /** The smallest year the four-byte year field holds. */
+    private static final int ORACLE_SMALLEST_REPRESENTABLE_YEAR = 0;
+
+    /** A year below the field's floor, which must be refused rather than rendered narrower. */
+    private static final int ORACLE_YEAR_BELOW_THE_FLOOR = -1;
+
+    /** Width of the raw file-status field, which the legacy splits into two separately named bytes. */
+    private static final int ORACLE_RAW_STATUS_WIDTH = 2;
+
+    /** The name given to the step built around the tasklet, so its propagation can be observed. */
+    private static final String ORACLE_STEP_NAME = "acctfileStep";
+
+    /** Gerund the open diagnostics use. */
     private static final String ORACLE_GERUND_OPEN = "OPENING";
 
-    /** {@code ERROR READING ACCOUNT FILE}. */
+    /** Gerund the read diagnostics use. */
     private static final String ORACLE_GERUND_READ = "READING";
 
-    /** {@code ERROR WRITING TO REJECTS FILE}. */
+    /** Gerund the write diagnostics use. */
     private static final String ORACLE_GERUND_WRITE = "WRITING TO";
 
-    /** {@code ERROR CLOSING ACCOUNT FILE}. */
+    /** Gerund the close diagnostics use. */
     private static final String ORACLE_GERUND_CLOSE = "CLOSING";
 
-    /** Raw success status, {@code 88 ... VALUE '00'}. */
+    /** Text the legacy abend paragraph displays before it ends the run. */
+    private static final String ORACLE_ABEND_ANNOUNCEMENT = "ABENDING PROGRAM";
+
+    /** Text the legacy status-display paragraph emits ahead of the rendered status, in both its arms. */
+    private static final String ORACLE_STATUS_DISPLAY = "FILE STATUS IS:";
+
+    /** Raw success status, the only code the estate treats as success. */
     private static final String STATUS_SUCCESS = "00";
 
-    /** Raw at-end status, compared seven times across the estate. */
+    /** Raw at-end status, end of file on a read and terminal on every other operation. */
     private static final String STATUS_END_OF_FILE = "10";
 
-    /** Raw record-not-found status, compared exactly once, in the interest program. */
+    /** Raw record-not-found status, numeric and terminal to this template. */
     private static final String STATUS_RECORD_NOT_FOUND = "23";
 
-    /** Raw permanent-error status. */
+    /** Raw permanent-error status, numeric and terminal. */
     private static final String STATUS_PERMANENT_ERROR = "31";
 
-    /** A code outside the vocabulary the estate compares anywhere. */
-    private static final String STATUS_OUTSIDE_VOCABULARY = "99";
+    /** A code outside the estate's vocabulary whose first byte is nine, exercising the catch-all arm. */
+    private static final String STATUS_UNLISTED_LEADING_NINE = "99";
 
-    /** The legacy program name used throughout, and the abend culprit. */
+    /** A non-numeric code outside the estate's vocabulary, exercising the other rendering arm. */
+    private static final String STATUS_UNLISTED_NON_NUMERIC = "AB";
+
+    /** Metric the template records one sample on per lifecycle. */
+    private static final String ORACLE_METRIC_NAME = "carddemo.batch.cobol.step";
+
+    /** Tag key naming the legacy program the step stands in for. */
+    private static final String ORACLE_TAG_STEP = "step";
+
+    /** Tag key naming how the lifecycle ended. */
+    private static final String ORACLE_TAG_OUTCOME = "outcome";
+
+    /** Tag value for a lifecycle that reached its end. */
+    private static final String ORACLE_OUTCOME_COMPLETED = "COMPLETED";
+
+    /** Tag value for a lifecycle that ended in an abend. */
+    private static final String ORACLE_OUTCOME_ABENDED = "ABENDED";
+
+    /** Diagnostics the terminal path emits before the failure reaches the caller. */
+    private static final int ORACLE_TERMINAL_DIAGNOSTIC_COUNT = 2;
+
+    /** The legacy program this step stands in for; also the abend culprit, at exactly the culprit width. */
     private static final String PROGRAM_NAME = "CBACT01C";
 
-    /** The file name used throughout, named as the legacy diagnostics name it. */
+    /** The file the scripted lifecycle opens, reads and closes. */
     private static final String RESOURCE_NAME = "ACCTFILE";
 
-    /** A second file name, so a diagnostic can be shown to name the file that actually failed. */
-    private static final String OTHER_RESOURCE_NAME = "DALYREJS";
+    /** A second file, so a diagnostic can be shown to name the file that actually failed. */
+    private static final String OTHER_RESOURCE_NAME = "XREFFILE";
 
-    /** A pinned instant, so the timestamp image can be asserted character for character. */
+    /** A third file, standing in for the one whose close paragraph carries the documented defect. */
+    private static final String REJECTS_RESOURCE_NAME = "DALYREJS";
+
+    /** A pinned instant, so the timestamp image can be asserted byte for byte. */
     private static final Instant PINNED_INSTANT = Instant.parse("2022-07-06T14:23:41.87Z");
 
-    /** The image the pinned instant must render to under the batch shape. */
-    private static final String PINNED_TIMESTAMP_IMAGE = "2022-07-06-14.23.41.87" + "0000";
+    /** The image the pinned instant must render to, composed here and not by the class under test. */
+    private static final String PINNED_TIMESTAMP_IMAGE = "2022-07-06-14.23.41.87" + ORACLE_TIMESTAMP_TAIL;
 
-    /** A record value the scripted read delivers. */
-    private static final String FIRST_RECORD = "RECORD ONE";
+    /**
+     * A second fixed offset, used to prove the injected clock's zone is honoured and not quietly
+     * replaced by the host's. A pure offset is used rather than a named region so the expectation cannot
+     * move with a time-zone database update.
+     */
+    private static final ZoneOffset SECOND_OFFSET = ZoneOffset.ofHours(9);
 
-    /** A second record value. */
-    private static final String SECOND_RECORD = "RECORD TWO";
+    /**
+     * The image the pinned instant must render to under {@link #SECOND_OFFSET}, computed by hand here:
+     * the same instant, nine hours later on the wall clock, on the same calendar day.
+     */
+    private static final String PINNED_TIMESTAMP_IMAGE_AT_SECOND_OFFSET =
+            "2022-07-06-23.23.41.87" + ORACLE_TIMESTAMP_TAIL;
+
+    /** First record the scripted read delivers. */
+    private static final String FIRST_RECORD = "FIRST RECORD IMAGE";
+
+    /** Second record the scripted read delivers. */
+    private static final String SECOND_RECORD = "SECOND RECORD IMAGE";
+
+    /** Captures the diagnostics the template emits, in the order it emits them. */
+    @Mock
+    private Appender<ILoggingEvent> appender;
+
+    /** Stands in for the step repository when a real step is built around the tasklet. */
+    @Mock
+    private JobRepository jobRepository;
+
+    /** Stands in for the transaction manager when a real step is built around the tasklet. */
+    @Mock
+    private PlatformTransactionManager transactionManager;
+
+    /** The template's own logger, which the capture is attached to. */
+    private Logger templateLogger;
+
+    /** The level the logger carried before the capture lowered it. */
+    private Level restoreLevel;
 
     /** The registry the lifecycle timer registers with. */
     private MeterRegistry meterRegistry;
 
-    /** The clock pinned to {@link #PINNED_INSTANT} in the UTC zone. */
+    /** A clock pinned to {@link #PINNED_INSTANT}, so no assertion depends on the wall clock. */
     private Clock fixedClock;
 
     @BeforeEach
-    void createCollaborators() {
-        meterRegistry = new SimpleMeterRegistry();
-        fixedClock = Clock.fixed(PINNED_INSTANT, ZoneOffset.UTC);
+    void attachDiagnosticCapture() {
+        final LoggerContext context = (LoggerContext) LoggerFactory.getILoggerFactory();
+        this.templateLogger = context.getLogger(AbstractCobolStep.class);
+        this.restoreLevel = this.templateLogger.getLevel();
+        this.templateLogger.setLevel(Level.DEBUG);
+        this.templateLogger.addAppender(this.appender);
+        this.meterRegistry = new SimpleMeterRegistry();
+        this.fixedClock = Clock.fixed(PINNED_INSTANT, ZoneOffset.UTC);
+    }
+
+    @AfterEach
+    void detachDiagnosticCapture() {
+        this.templateLogger.detachAppender(this.appender);
+        this.templateLogger.setLevel(this.restoreLevel);
     }
 
     /**
-     * Builds a step whose read delivers each supplied record in turn and then reports end of file.
+     * Builds a step whose scripted read delivers each supplied record in turn and then reports end of
+     * file.
+     *
+     * <p>Takes a list rather than a variable-length argument list on purpose: a generic variable-length
+     * parameter is a compilation failure under the module's warning settings, and an explicit list says
+     * the same thing without one.</p>
      *
      * @param records the records the read should deliver, in order
      * @return the scripted step
      */
-    private ScriptedStep stepDelivering(final String... records) {
-        final ScriptedStep step = new ScriptedStep(PROGRAM_NAME, meterRegistry, fixedClock);
+    private ScriptedStep stepDelivering(final List<String> records) {
+        final ScriptedStep step = new ScriptedStep(PROGRAM_NAME, this.meterRegistry, this.fixedClock);
         for (final String record : records) {
-            step.enqueueRead(AbstractCobolStep.IoResult.of(STATUS_SUCCESS, record));
+            step.deliverRecord(record);
         }
         return step;
     }
 
-    // The concrete subclass the tests drive the template through.
+    /**
+     * Renders every diagnostic the template emitted, in order.
+     *
+     * @return the captured logging events
+     */
+    private List<ILoggingEvent> capturedEvents() {
+        return mockingDetails(this.appender).getInvocations().stream()
+                .map(invocation -> invocation.<ILoggingEvent>getArgument(0))
+                .toList();
+    }
 
     /**
-     * A concrete step that records what the template asked of it and replays a scripted read sequence.
+     * Renders the formatted text of every diagnostic the template emitted, in order.
      *
-     * <p>Every abstract method is implemented through the guarded helpers, exactly as the class
-     * documentation instructs a real step to implement them, so the tests exercise the template's own
-     * sentinel, normalisation and diagnostic ordering rather than a bypass of them.
+     * @return the formatted messages
+     */
+    private List<String> diagnostics() {
+        return capturedEvents().stream().map(ILoggingEvent::getFormattedMessage).toList();
+    }
+
+    /**
+     * Renders the formatted text of the diagnostics the template emitted at the error level.
+     *
+     * @return the formatted error messages, in order
+     */
+    private List<String> errorDiagnostics() {
+        return capturedEvents().stream()
+                .filter(event -> event.getLevel() == Level.ERROR)
+                .map(ILoggingEvent::getFormattedMessage)
+                .toList();
+    }
+
+    /**
+     * Slices the abend work area at a component boundary without trimming anything.
+     *
+     * @param context the rendered work area
+     * @param offset  the zero-based start of the component
+     * @param width   the component's declared width
+     * @return the component image, padded exactly as the work area holds it
+     */
+    private static String component(final String context, final int offset, final int width) {
+        return context.substring(offset, offset + width);
+    }
+
+    /**
+     * Counts the encoded bytes of a value, which is the only width that means anything for a
+     * fixed-width field.
+     *
+     * @param value the value to measure
+     * @return the encoded length
+     */
+    private static int encodedLength(final String value) {
+        return value.getBytes(StandardCharsets.US_ASCII).length;
+    }
+
+    /**
+     * Asserts that a run of positions in the timestamp image holds digits and nothing else.
+     *
+     * @param image  the encoded image
+     * @param offset the zero-based start of the run
+     * @param width  how many positions the run covers
+     */
+    private static void assertDigits(final byte[] image, final int offset, final int width) {
+        for (int index = offset; index < offset + width; index++) {
+            assertThat(image[index])
+                    .as("position %s", Integer.toString(index + 1))
+                    .isBetween(ORACLE_ZERO_DIGIT, ORACLE_NINE_DIGIT);
+        }
+    }
+
+    // The minimal concrete subclass the template is driven through. It implements the four hooks,
+    // records what it was asked to do in plain fields and adds no logic of its own.
+
+    /**
+     * A concrete step that replays a scripted read sequence and records the lifecycle it was driven
+     * through.
+     *
+     * <p>Each hook routes through the template's own guarded helper, exactly as a real step is
+     * documented to, so the tests exercise the sentinel, the normalisation cascade and the ordered
+     * diagnostic rather than a bypass of them. The constructor calls nothing overridable.</p>
      */
     private static final class ScriptedStep extends AbstractCobolStep<String> {
 
-        /** The order in which the template invoked the lifecycle hooks. */
+        /** The order in which the template invoked the hooks. */
         private final List<String> lifecycle = new ArrayList<>();
 
-        /** Results the scripted read will report, in order; exhaustion means end of file. */
-        private final Deque<IoResult<String>> reads = new ArrayDeque<>();
+        /** Results the scripted read reports, in order; exhaustion is end of file. */
+        private final Deque<IoResult<String>> scriptedReads = new ArrayDeque<>();
 
-        /** Records the template handed to {@code processRecord}. */
+        /** Records the template handed to the processing hook. */
         private final List<String> processed = new ArrayList<>();
 
         /** Raw status the scripted open reports. */
@@ -216,1018 +531,1000 @@ final class AbstractCobolStepTest {
         /** When set, the scripted open throws this instead of reporting a status. */
         private Exception openFailure;
 
-        /** When set, the scripted close throws this instead of reporting a status. */
-        private RuntimeException closeFailure;
-
-        /** When set, the failure-path handle release throws this. */
-        private RuntimeException releaseFailure;
-
         /** When set, the scripted read throws this instead of reporting a result. */
         private Exception readFailure;
 
-        /** When set, {@code processRecord} throws this on its first invocation. */
-        private RuntimeException processFailure;
-
-        /** When set, {@code readNextRecord} returns {@code null} rather than an {@code Optional}. */
-        private boolean readReturnsNull;
-
-        /** How many times the close sequence has been entered. */
-        private int closeAttempts;
-
-        /** How many times the failure-path handle release has been entered. */
+        /** How many times the failure-path handle release was entered. */
         private int releaseAttempts;
 
         ScriptedStep(final String programName, final MeterRegistry meterRegistry, final Clock clock) {
             super(programName, meterRegistry, clock);
         }
 
-        void enqueueRead(final IoResult<String> result) {
-            reads.addLast(result);
+        /** Queues one successful read delivering the given record. */
+        void deliverRecord(final String record) {
+            this.scriptedReads.addLast(IoResult.of(STATUS_SUCCESS, record));
         }
 
         @Override
         protected void openResources() {
-            lifecycle.add("open");
+            this.lifecycle.add("open");
             openResource(RESOURCE_NAME, () -> {
-                if (openFailure != null) {
-                    throw openFailure;
+                if (this.openFailure != null) {
+                    throw this.openFailure;
                 }
-                return openStatus;
+                return this.openStatus;
             });
         }
 
         @Override
         protected Optional<String> readNextRecord() {
-            lifecycle.add("read");
-            if (readReturnsNull) {
-                return null;
-            }
+            this.lifecycle.add("read");
             return readRecord(RESOURCE_NAME, () -> {
-                if (readFailure != null) {
-                    throw readFailure;
+                if (this.readFailure != null) {
+                    throw this.readFailure;
                 }
-                final IoResult<String> next = reads.pollFirst();
+                final IoResult<String> next = this.scriptedReads.pollFirst();
                 return next == null ? IoResult.endOfFile() : next;
             });
         }
 
         @Override
         protected void processRecord(final String record) {
-            lifecycle.add("process");
-            if (processFailure != null) {
-                final RuntimeException toThrow = processFailure;
-                processFailure = null;
-                throw toThrow;
-            }
-            processed.add(record);
+            this.lifecycle.add("process");
+            this.processed.add(record);
         }
 
         @Override
         protected void closeResources() {
-            lifecycle.add("close");
-            closeAttempts++;
-            if (closeFailure != null) {
-                throw closeFailure;
-            }
-            closeResource(RESOURCE_NAME, () -> closeStatus);
+            this.lifecycle.add("close");
+            closeResource(RESOURCE_NAME, () -> this.closeStatus);
         }
 
-        /**
-         * Records the failure-path handle release.
-         *
-         * <p>Deliberately does <em>not</em> route through {@link #closeResource(String, IoAction)}: the
-         * documented contract on the hook forbids a guarded helper here, because the legacy performs no
-         * operation at all at this point and a guarded call would normalise a status and emit a
-         * diagnostic that has no antecedent.</p>
-         */
         @Override
         protected void releaseResources() {
-            lifecycle.add("release");
-            releaseAttempts++;
-            if (releaseFailure != null) {
-                throw releaseFailure;
-            }
+            this.lifecycle.add("release");
+            this.releaseAttempts++;
+        }
+    }
+
+    // Level one of the status model: the raw two-byte code becomes a coarse normalised result. The
+    // read path has three arms; every other path has two.
+
+    @Nested
+    @DisplayName("level one on the read path: the raw two-byte code becomes a coarse result")
+    final class RawStatusToCoarseResultOnTheReadPath {
+
+        @ParameterizedTest(name = "a read reporting the raw status {0} normalises to the coarse result {1}")
+        @CsvSource({
+            STATUS_SUCCESS + ", " + ORACLE_COARSE_SUCCESS,
+            STATUS_END_OF_FILE + ", " + ORACLE_COARSE_END_OF_FILE,
+            STATUS_RECORD_NOT_FOUND + ", " + ORACLE_COARSE_TERMINAL,
+            STATUS_UNLISTED_LEADING_NINE + ", " + ORACLE_COARSE_TERMINAL,
+        })
+        @DisplayName("the read cascade has three arms: success, at end, and everything else")
+        void theReadCascadeHasThreeArms(final String rawStatus, final int expectedCoarseResult) {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final AbstractCobolStep.IoOutcome outcome =
+                    step.normaliseStatus(AbstractCobolStep.IoOperation.READ, rawStatus);
+
+            assertThat(outcome.applResult()).isEqualTo(expectedCoarseResult);
         }
 
-        /** Exposes the protected normalisation for direct assertion. */
-        IoOutcome normalise(final IoOperation operation, final String rawStatus) {
-            return normaliseStatus(operation, rawStatus);
+        @Test
+        @DisplayName("the at-end code is end of file on a read, which is what terminates every read loop")
+        void theAtEndCodeIsEndOfFileOnARead() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final AbstractCobolStep.IoOutcome outcome =
+                    step.normaliseStatus(AbstractCobolStep.IoOperation.READ, STATUS_END_OF_FILE);
+
+            assertThat(outcome).isEqualTo(AbstractCobolStep.IoOutcome.END_OF_FILE);
+            assertThat(outcome.applResult()).isEqualTo(ORACLE_COARSE_END_OF_FILE);
+            assertThat(AbstractCobolStep.IoOperation.READ.endOfFileTerminatesNormally()).isTrue();
         }
 
-        /** Exposes the protected terminal path for direct assertion. */
-        void abend(final IoOperation operation, final String resource, final String rawStatus) {
-            abendOnIoFailure(operation, resource, rawStatus);
+        @Test
+        @DisplayName("a code the estate never names is terminal rather than an exception")
+        void anUnlistedCodeIsTerminalRatherThanAnException() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            assertThat(step.normaliseStatus(AbstractCobolStep.IoOperation.READ,
+                    STATUS_UNLISTED_NON_NUMERIC))
+                    .isEqualTo(AbstractCobolStep.IoOutcome.ERROR);
+            assertThat(step.normaliseStatus(AbstractCobolStep.IoOperation.READ,
+                    STATUS_UNLISTED_LEADING_NINE).applResult())
+                    .isEqualTo(ORACLE_COARSE_TERMINAL);
         }
 
-        /** Exposes the protected accessor for direct assertion. */
-        String name() {
-            return programName();
+        @Test
+        @DisplayName("every raw code the cascade takes is two bytes wide, as the split status field is")
+        void everyRawCodeIsTwoBytesWide() {
+            assertThat(FileStatusException.CODE_LENGTH).isEqualTo(ORACLE_RAW_STATUS_WIDTH);
+            assertThat(encodedLength(STATUS_SUCCESS)).isEqualTo(ORACLE_RAW_STATUS_WIDTH);
+            assertThat(encodedLength(STATUS_END_OF_FILE)).isEqualTo(ORACLE_RAW_STATUS_WIDTH);
+            assertThat(encodedLength(STATUS_RECORD_NOT_FOUND)).isEqualTo(ORACLE_RAW_STATUS_WIDTH);
+            assertThat(encodedLength(STATUS_UNLISTED_LEADING_NINE)).isEqualTo(ORACLE_RAW_STATUS_WIDTH);
+            assertThat(encodedLength(FileStatus.SUCCESS.getCode())).isEqualTo(ORACLE_RAW_STATUS_WIDTH);
+            assertThat(encodedLength(FileStatus.END_OF_FILE.getCode()))
+                    .isEqualTo(ORACLE_RAW_STATUS_WIDTH);
         }
 
-        /** Exposes the protected clock-reading timestamp for direct assertion. */
-        String timestamp() {
-            return currentBatchTimestamp();
-        }
-
-        /** Exposes a guarded write so the write path can be driven without a second subclass. */
-        void write(final String resource, final String rawStatus) {
-            writeRecord(resource, () -> rawStatus);
+        @Test
+        @DisplayName("the codes the estate compares carry the values the source compares them against")
+        void theComparedCodesCarryTheirSourceValues() {
+            assertThat(FileStatus.SUCCESS.getCode()).isEqualTo(STATUS_SUCCESS);
+            assertThat(FileStatus.END_OF_FILE.getCode()).isEqualTo(STATUS_END_OF_FILE);
+            assertThat(FileStatus.RECORD_NOT_FOUND.getCode()).isEqualTo(STATUS_RECORD_NOT_FOUND);
+            assertThat(FileStatus.SUCCESS.isSuccess()).isTrue();
+            assertThat(FileStatus.END_OF_FILE.isEndOfFile()).isTrue();
+            assertThat(FileStatus.RECORD_NOT_FOUND.isSuccess()).isFalse();
+            assertThat(FileStatus.RECORD_NOT_FOUND.isEndOfFile()).isFalse();
         }
     }
 
     @Nested
-    @DisplayName("construction: the program name doubles as the abend culprit and is validated early")
-    final class ConstructionContract {
+    @DisplayName("level one on the open, close and write paths: two arms only, and no end of file")
+    final class RawStatusToCoarseResultOnTheOtherPaths {
 
-        @Test
-        @DisplayName("the program name is reported back verbatim")
-        void theProgramNameIsReportedBack() {
-            assertThat(new ScriptedStep(PROGRAM_NAME, meterRegistry, fixedClock).name())
-                    .isEqualTo(PROGRAM_NAME);
+        @ParameterizedTest(name = "an {0} reporting the raw status {1} normalises to the coarse result {2}")
+        @CsvSource({
+            "OPEN, " + STATUS_SUCCESS + ", " + ORACLE_COARSE_SUCCESS,
+            "OPEN, " + STATUS_END_OF_FILE + ", " + ORACLE_COARSE_TERMINAL,
+            "OPEN, " + STATUS_UNLISTED_LEADING_NINE + ", " + ORACLE_COARSE_TERMINAL,
+            "CLOSE, " + STATUS_SUCCESS + ", " + ORACLE_COARSE_SUCCESS,
+            "CLOSE, " + STATUS_END_OF_FILE + ", " + ORACLE_COARSE_TERMINAL,
+            "CLOSE, " + STATUS_UNLISTED_LEADING_NINE + ", " + ORACLE_COARSE_TERMINAL,
+            "WRITE, " + STATUS_SUCCESS + ", " + ORACLE_COARSE_SUCCESS,
+            "WRITE, " + STATUS_END_OF_FILE + ", " + ORACLE_COARSE_TERMINAL,
+            "WRITE, " + STATUS_UNLISTED_LEADING_NINE + ", " + ORACLE_COARSE_TERMINAL,
+        })
+        @DisplayName("success normalises to the success result and everything else to the terminal one")
+        void twoArmsOnly(final AbstractCobolStep.IoOperation operation, final String rawStatus,
+                final int expectedCoarseResult) {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            assertThat(step.normaliseStatus(operation, rawStatus).applResult())
+                    .isEqualTo(expectedCoarseResult);
+        }
+
+        @ParameterizedTest(name = "the at-end code is terminal, not end of file, on an {0}")
+        @CsvSource({"OPEN", "CLOSE", "WRITE"})
+        @DisplayName("the at-end code is terminal outside a read, which is the defect a naive reading "
+                + "would introduce")
+        void theAtEndCodeIsTerminalOutsideARead(final AbstractCobolStep.IoOperation operation) {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final AbstractCobolStep.IoOutcome outcome =
+                    step.normaliseStatus(operation, STATUS_END_OF_FILE);
+
+            assertThat(outcome).isEqualTo(AbstractCobolStep.IoOutcome.ERROR);
+            assertThat(outcome.applResult()).isEqualTo(ORACLE_COARSE_TERMINAL);
+            assertThat(outcome.applResult()).isNotEqualTo(ORACLE_COARSE_END_OF_FILE);
+            assertThat(operation.endOfFileTerminatesNormally()).isFalse();
         }
 
         @Test
-        @DisplayName("an absent or blank program name is rejected at construction, not at failure time")
-        void anAbsentOrBlankProgramNameIsRejected() {
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new ScriptedStep(null, meterRegistry, fixedClock))
-                    .withMessageContaining("programName");
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new ScriptedStep("   ", meterRegistry, fixedClock))
-                    .withMessageContaining("programName");
+        @DisplayName("the same raw code therefore takes two different arms according to the operation")
+        void theSameCodeTakesTwoDifferentArms() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            assertThat(step.normaliseStatus(AbstractCobolStep.IoOperation.READ, STATUS_END_OF_FILE)
+                    .applResult())
+                    .isEqualTo(ORACLE_COARSE_END_OF_FILE);
+            assertThat(step.normaliseStatus(AbstractCobolStep.IoOperation.CLOSE, STATUS_END_OF_FILE)
+                    .applResult())
+                    .isEqualTo(ORACLE_COARSE_TERMINAL);
         }
 
         @Test
-        @DisplayName("a program name longer than the legacy culprit field is rejected")
-        void anOverlongProgramNameIsRejected() {
-            final String tooLong = "A".repeat(AbendException.CULPRIT_LENGTH + 1);
-
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new ScriptedStep(tooLong, meterRegistry, fixedClock))
-                    .withMessageContaining(String.valueOf(AbendException.CULPRIT_LENGTH));
-        }
-
-        @Test
-        @DisplayName("a name of exactly the culprit width is accepted")
-        void aNameOfExactlyTheCulpritWidthIsAccepted() {
-            final String exact = "A".repeat(AbendException.CULPRIT_LENGTH);
-
-            assertThat(new ScriptedStep(exact, meterRegistry, fixedClock).name()).isEqualTo(exact);
-            assertThat(PROGRAM_NAME).hasSize(AbendException.CULPRIT_LENGTH);
-        }
-
-        @Test
-        @DisplayName("a missing meter registry is rejected")
-        void aMissingMeterRegistryIsRejected() {
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new ScriptedStep(PROGRAM_NAME, null, fixedClock));
-        }
-
-        @Test
-        @DisplayName("a missing clock is rejected")
-        void aMissingClockIsRejected() {
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new ScriptedStep(PROGRAM_NAME, meterRegistry, null));
-        }
-    }
-
-    @Nested
-    @DisplayName("the lifecycle: open, then read until at end, then close, in that order")
-    final class LifecycleOrdering {
-
-        @Test
-        @DisplayName("an empty file opens, reads once, and closes without processing anything")
-        void anEmptyFileOpensReadsOnceAndCloses() {
-            final ScriptedStep step = stepDelivering();
-
-            final AbstractCobolStep.ExecutionSummary summary = step.run();
-
-            assertThat(step.lifecycle).containsExactly("open", "read", "close");
-            assertThat(step.processed).isEmpty();
-            assertThat(summary.recordsRead()).isZero();
-        }
-
-        @Test
-        @DisplayName("each delivered record is processed once, in file order")
-        void eachDeliveredRecordIsProcessedOnceInOrder() {
-            final ScriptedStep step = stepDelivering(FIRST_RECORD, SECOND_RECORD);
-
-            final AbstractCobolStep.ExecutionSummary summary = step.run();
-
-            assertThat(step.processed).containsExactly(FIRST_RECORD, SECOND_RECORD);
-            assertThat(summary.recordsRead()).isEqualTo(2L);
-            assertThat(step.lifecycle)
-                    .containsExactly("open", "read", "process", "read", "process", "read", "close");
-        }
-
-        @Test
-        @DisplayName("the read that reports end of file is not processed, which is the inner flag test")
-        void theAtEndReadIsNotProcessed() {
-            final ScriptedStep step = stepDelivering(FIRST_RECORD);
-
-            step.run();
-
-            assertThat(step.processed).containsExactly(FIRST_RECORD);
-            assertThat(step.lifecycle.stream().filter("read"::equals).count())
-                    .as("one read per record plus the at-end read")
-                    .isEqualTo(2L);
-            assertThat(step.lifecycle.stream().filter("process"::equals).count()).isEqualTo(1L);
-        }
-
-        @Test
-        @DisplayName("the summary carries the program name and both timestamps")
-        void theSummaryCarriesTheProgramNameAndBothTimestamps() {
-            final AbstractCobolStep.ExecutionSummary summary = stepDelivering(FIRST_RECORD).run();
-
-            assertThat(summary.programName()).isEqualTo(PROGRAM_NAME);
-            assertThat(summary.startedAt()).isEqualTo(PINNED_TIMESTAMP_IMAGE);
-            assertThat(summary.completedAt()).isEqualTo(PINNED_TIMESTAMP_IMAGE);
-        }
-
-        @Test
-        @DisplayName("the loop keeps no instance state, so one instance may run twice")
-        void oneInstanceMayRunTwice() {
-            final ScriptedStep step = stepDelivering(FIRST_RECORD);
-
-            final AbstractCobolStep.ExecutionSummary first = step.run();
-            final AbstractCobolStep.ExecutionSummary second = step.run();
-
-            assertThat(first.recordsRead()).isEqualTo(1L);
-            assertThat(second.recordsRead()).as("the queue is drained, so the second pass sees an empty file")
-                    .isZero();
-            assertThat(step.closeAttempts).isEqualTo(2);
-        }
-
-        @Test
-        @DisplayName("a read that reports no Optional at all is refused rather than dereferenced")
-        void aReadReportingNoOptionalIsRefused() {
-            final ScriptedStep step = stepDelivering();
-            step.readReturnsNull = true;
-
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(step::run)
-                    .withMessageContaining("readNextRecord");
-        }
-
-        @Test
-        @DisplayName("the tasklet adapter runs the lifecycle once and always reports finished")
-        void theTaskletAdapterRunsOnceAndReportsFinished() {
-            final ScriptedStep step = stepDelivering(FIRST_RECORD);
-
-            assertThat(step.execute(null, null))
-                    .as("a legacy batch program processes a whole file in one invocation")
-                    .isEqualTo(RepeatStatus.FINISHED);
-            assertThat(step.processed).containsExactly(FIRST_RECORD);
-        }
-
-        @Test
-        @DisplayName("neither tasklet parameter is consulted, so both may be absent")
-        void neitherTaskletParameterIsConsulted() {
-            assertThat(stepDelivering().execute(null, null))
-                    .isEqualTo(RepeatStatus.FINISHED);
-        }
-
-        @Test
-        @DisplayName("the lifecycle is timed once on the completing path")
-        void theLifecycleIsTimedOnceOnTheCompletingPath() {
-            stepDelivering(FIRST_RECORD).run();
-
-            assertThat(meterRegistry.find("carddemo.batch.cobol.step")
-                    .tag("step", PROGRAM_NAME)
-                    .tag("outcome", "COMPLETED")
-                    .timer())
-                    .isNotNull();
-            assertThat(meterRegistry.find("carddemo.batch.cobol.step")
-                    .tag("outcome", "COMPLETED").timer().count())
-                    .isEqualTo(1L);
-        }
-    }
-
-    @Nested
-    @DisplayName("the two-level status model: raw code, then APPL-RESULT, then the condition names")
-    final class TwoLevelStatusModel {
-
-        @Test
-        @DisplayName("success normalises to APPL-AOK for every operation kind")
-        void successNormalisesToApplAok() {
-            final ScriptedStep step = stepDelivering();
-
-            for (final AbstractCobolStep.IoOperation operation
-                    : AbstractCobolStep.IoOperation.values()) {
-                assertThat(step.normalise(operation, STATUS_SUCCESS))
-                        .as("success on %s", operation)
-                        .isEqualTo(AbstractCobolStep.IoOutcome.OK);
-            }
-        }
-
-        @Test
-        @DisplayName("an at-end status normalises to APPL-EOF for a read and to failure for the rest")
-        void atEndIsNormalOnlyForARead() {
-            final ScriptedStep step = stepDelivering();
-
-            assertThat(step.normalise(AbstractCobolStep.IoOperation.READ, STATUS_END_OF_FILE))
-                    .isEqualTo(AbstractCobolStep.IoOutcome.END_OF_FILE);
-            for (final AbstractCobolStep.IoOperation operation
-                    : EnumSet.of(AbstractCobolStep.IoOperation.OPEN,
-                            AbstractCobolStep.IoOperation.WRITE,
-                            AbstractCobolStep.IoOperation.CLOSE)) {
-                assertThat(step.normalise(operation, STATUS_END_OF_FILE))
-                        .as("an at-end status arriving from %s is a failure, not an empty file", operation)
-                        .isEqualTo(AbstractCobolStep.IoOutcome.ERROR);
-            }
-        }
-
-        @Test
-        @DisplayName("every other recognised code normalises to failure, whatever the operation")
-        void everyOtherRecognisedCodeIsAFailure() {
-            final ScriptedStep step = stepDelivering();
-
-            for (final FileStatus status : FileStatus.values()) {
-                if (status.isSuccess() || status.isEndOfFile()) {
-                    continue;
-                }
-                for (final AbstractCobolStep.IoOperation operation
-                        : AbstractCobolStep.IoOperation.values()) {
-                    assertThat(step.normalise(operation, status.getCode()))
-                            .as("%s on %s", status, operation)
-                            .isEqualTo(AbstractCobolStep.IoOutcome.ERROR);
-                }
-            }
-        }
-
-        @Test
-        @DisplayName("a code outside the estate's vocabulary is a failure, never an exception")
-        void anUnrecognisedCodeIsAFailureNotAnException() {
-            final ScriptedStep step = stepDelivering();
-
-            assertThat(step.normalise(AbstractCobolStep.IoOperation.READ, STATUS_OUTSIDE_VOCABULARY))
-                    .isEqualTo(AbstractCobolStep.IoOutcome.ERROR);
-            assertThat(step.normalise(AbstractCobolStep.IoOperation.READ, null))
-                    .as("no status at all is also a failure")
-                    .isEqualTo(AbstractCobolStep.IoOutcome.ERROR);
-            assertThat(step.normalise(AbstractCobolStep.IoOperation.READ, ""))
-                    .isEqualTo(AbstractCobolStep.IoOutcome.ERROR);
-        }
-
-        @Test
-        @DisplayName("the three outcomes carry the APPL-RESULT values the source moves")
-        void theThreeOutcomesCarryTheirApplResultValues() {
-            assertThat(AbstractCobolStep.IoOutcome.OK.applResult()).isEqualTo(ORACLE_APPL_RESULT_AOK);
-            assertThat(AbstractCobolStep.IoOutcome.END_OF_FILE.applResult())
-                    .isEqualTo(ORACLE_APPL_RESULT_EOF);
-            assertThat(AbstractCobolStep.IoOutcome.ERROR.applResult())
-                    .isEqualTo(ORACLE_APPL_RESULT_ERROR);
-            assertThat(AbstractCobolStep.IoOutcome.values()).hasSize(3);
-        }
-
-        @Test
-        @DisplayName("normalising requires an operation kind, because the kind decides the at-end clause")
-        void normalisingRequiresAnOperationKind() {
-            final ScriptedStep step = stepDelivering();
-
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> step.normalise(null, STATUS_SUCCESS))
-                    .withMessageContaining("operation");
-        }
-
-        @Test
-        @DisplayName("the record-not-found status the interest program accepts normalises to failure here")
-        void recordNotFoundNormalisesToFailure() {
-            final ScriptedStep step = stepDelivering();
-
-            assertThat(step.normalise(AbstractCobolStep.IoOperation.READ, STATUS_RECORD_NOT_FOUND))
-                    .as("the canonical cascade rejects it; a site that accepts it applies its own rule")
-                    .isEqualTo(AbstractCobolStep.IoOutcome.ERROR);
-        }
-    }
-
-    @Nested
-    @DisplayName("the four operation kinds and their three differing facts")
-    final class OperationKindContract {
-
-        @Test
-        @DisplayName("exactly four kinds exist, one per legacy I/O verb")
-        void exactlyFourKindsExist() {
-            assertThat(AbstractCobolStep.IoOperation.values()).hasSize(4);
-            assertThat(EnumSet.allOf(AbstractCobolStep.IoOperation.class))
-                    .containsExactly(AbstractCobolStep.IoOperation.OPEN,
-                            AbstractCobolStep.IoOperation.READ,
-                            AbstractCobolStep.IoOperation.WRITE,
-                            AbstractCobolStep.IoOperation.CLOSE);
-        }
-
-        @Test
-        @DisplayName("each kind carries the gerund its legacy diagnostic used")
-        void eachKindCarriesItsLegacyGerund() {
-            assertThat(AbstractCobolStep.IoOperation.OPEN.legacyGerund()).isEqualTo(ORACLE_GERUND_OPEN);
-            assertThat(AbstractCobolStep.IoOperation.READ.legacyGerund()).isEqualTo(ORACLE_GERUND_READ);
+        @DisplayName("each operation reports the gerund its legacy diagnostic used")
+        void eachOperationReportsItsLegacyGerund() {
+            assertThat(AbstractCobolStep.IoOperation.OPEN.legacyGerund())
+                    .isEqualTo(ORACLE_GERUND_OPEN);
+            assertThat(AbstractCobolStep.IoOperation.READ.legacyGerund())
+                    .isEqualTo(ORACLE_GERUND_READ);
             assertThat(AbstractCobolStep.IoOperation.WRITE.legacyGerund())
-                    .as("the write diagnostic reads ERROR WRITING TO REJECTS FILE")
                     .isEqualTo(ORACLE_GERUND_WRITE);
             assertThat(AbstractCobolStep.IoOperation.CLOSE.legacyGerund())
                     .isEqualTo(ORACLE_GERUND_CLOSE);
         }
+    }
+
+    // Level two of the status model: the coarse result selects one of three control branches.
+
+    @Nested
+    @DisplayName("level two, first branch: the success result continues and the read loop advances")
+    final class CoarseSuccessContinues {
 
         @Test
-        @DisplayName("only the read declines to arm the sentinel; the other three arm it to eight")
-        void onlyTheReadDeclinesToArmTheSentinel() {
-            assertThat(AbstractCobolStep.IoOperation.OPEN.armedApplResult())
-                    .isEqualTo(ORACLE_APPL_RESULT_PENDING);
-            assertThat(AbstractCobolStep.IoOperation.WRITE.armedApplResult())
-                    .isEqualTo(ORACLE_APPL_RESULT_PENDING);
-            assertThat(AbstractCobolStep.IoOperation.CLOSE.armedApplResult())
-                    .isEqualTo(ORACLE_APPL_RESULT_PENDING);
+        @DisplayName("every delivered record is processed once, in file order, and the loop advances")
+        void everyDeliveredRecordIsProcessedInOrder() {
+            final ScriptedStep step = stepDelivering(List.of(FIRST_RECORD, SECOND_RECORD));
+
+            final AbstractCobolStep.ExecutionSummary summary = step.run();
+
+            assertThat(step.processed).containsExactly(FIRST_RECORD, SECOND_RECORD);
+            assertThat(step.lifecycle).containsExactly("open", "read", "process", "read", "process",
+                    "read", "close");
+            assertThat(summary.recordsRead()).isEqualTo(2L);
+        }
+
+        @Test
+        @DisplayName("a continuing read sets no end-of-file state and emits no error diagnostic")
+        void aContinuingReadEmitsNoErrorDiagnostic() {
+            final ScriptedStep step = stepDelivering(List.of(FIRST_RECORD));
+
+            step.run();
+
+            assertThat(errorDiagnostics()).isEmpty();
+            assertThat(diagnostics()).isNotEmpty();
+            assertThat(diagnostics()).noneMatch(text -> text.contains(ORACLE_ABEND_ANNOUNCEMENT));
+        }
+
+        @Test
+        @DisplayName("a successful guarded operation returns quietly and logs nothing at all")
+        void aSuccessfulGuardedOperationLogsNothing() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            step.openResource(RESOURCE_NAME, () -> STATUS_SUCCESS);
+            step.writeRecord(RESOURCE_NAME, () -> STATUS_SUCCESS);
+            step.closeResource(RESOURCE_NAME, () -> STATUS_SUCCESS);
+
+            assertThat(diagnostics()).isEmpty();
+        }
+    }
+
+    @Nested
+    @DisplayName("level two, second branch: the end-of-file result stops the loop cleanly")
+    final class CoarseEndOfFileStopsCleanly {
+
+        @Test
+        @DisplayName("the at-end read is not processed and the lifecycle reaches its close")
+        void theAtEndReadIsNotProcessedAndTheCloseIsReached() {
+            final ScriptedStep step = stepDelivering(List.of(FIRST_RECORD));
+
+            final AbstractCobolStep.ExecutionSummary summary = step.run();
+
+            assertThat(step.processed).containsExactly(FIRST_RECORD);
+            assertThat(step.lifecycle).containsExactly("open", "read", "process", "read", "close");
+            assertThat(step.lifecycle).doesNotContain("release");
+            assertThat(summary.recordsRead()).isEqualTo(1L);
+        }
+
+        @Test
+        @DisplayName("an empty file is a normal outcome: no exception, no error text, a complete summary")
+        void anEmptyFileIsANormalOutcome() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final AbstractCobolStep.ExecutionSummary summary = step.run();
+
+            assertThat(summary.programName()).isEqualTo(PROGRAM_NAME);
+            assertThat(summary.recordsRead()).isZero();
+            assertThat(summary.startedAt()).isEqualTo(PINNED_TIMESTAMP_IMAGE);
+            assertThat(summary.completedAt()).isEqualTo(PINNED_TIMESTAMP_IMAGE);
+            assertThat(errorDiagnostics()).isEmpty();
+            assertThat(step.processed).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the end-of-file result is reported by the read helper as an absent record")
+        void theEndOfFileResultIsReportedAsAnAbsentRecord() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final Optional<String> delivered = step.readRecord(RESOURCE_NAME,
+                    AbstractCobolStep.IoResult::endOfFile);
+
+            assertThat(delivered).isEmpty();
+            assertThat(diagnostics()).isEmpty();
+        }
+    }
+
+    @Nested
+    @DisplayName("level two, third branch: the terminal result diagnoses, then names the raw status, "
+            + "then ends the run")
+    final class CoarseTerminalResultDiagnosesThenAbends {
+
+        @Test
+        @DisplayName("both diagnostics are emitted before the failure ever reaches the caller")
+        void bothDiagnosticsPrecedeThePropagatedFailure() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final AbendException thrown = catchThrowableOfType(AbendException.class,
+                    () -> step.closeResource(REJECTS_RESOURCE_NAME, () -> STATUS_PERMANENT_ERROR));
+            final int diagnosticsBeforePropagation =
+                    mockingDetails(AbstractCobolStepTest.this.appender).getInvocations().size();
+
+            assertThat(thrown).isNotNull();
+            assertThat(diagnosticsBeforePropagation).isEqualTo(ORACLE_TERMINAL_DIAGNOSTIC_COUNT);
+
+            final InOrder ordered = inOrder(AbstractCobolStepTest.this.appender);
+            ordered.verify(AbstractCobolStepTest.this.appender).doAppend(argThat(event ->
+                    event.getLevel() == Level.ERROR
+                            && event.getFormattedMessage().contains(ORACLE_GERUND_CLOSE)
+                            && event.getFormattedMessage().contains(REJECTS_RESOURCE_NAME)
+                            && event.getFormattedMessage().contains(ORACLE_STATUS_DISPLAY)
+                            && event.getFormattedMessage().contains(STATUS_PERMANENT_ERROR)));
+            ordered.verify(AbstractCobolStepTest.this.appender).doAppend(argThat(event ->
+                    event.getLevel() == Level.ERROR
+                            && event.getFormattedMessage().contains(ORACLE_ABEND_ANNOUNCEMENT)
+                            && event.getFormattedMessage().contains(PROGRAM_NAME)));
+            ordered.verifyNoMoreInteractions();
+        }
+
+        @Test
+        @DisplayName("the per-call-site terminal helper reaches the same two diagnostics in the same "
+                + "order")
+        void thePerCallSiteHelperReachesTheSameOrderedDiagnostics() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final AbendException thrown = catchThrowableOfType(AbendException.class,
+                    () -> step.abendOnIoFailure(AbstractCobolStep.IoOperation.READ, RESOURCE_NAME,
+                            STATUS_RECORD_NOT_FOUND));
+
+            assertThat(thrown).isNotNull();
+
+            final InOrder ordered = inOrder(AbstractCobolStepTest.this.appender);
+            ordered.verify(AbstractCobolStepTest.this.appender).doAppend(argThat(event ->
+                    event.getFormattedMessage().contains(ORACLE_GERUND_READ)
+                            && event.getFormattedMessage().contains(STATUS_RECORD_NOT_FOUND)));
+            ordered.verify(AbstractCobolStepTest.this.appender).doAppend(argThat(event ->
+                    event.getFormattedMessage().contains(ORACLE_ABEND_ANNOUNCEMENT)));
+            ordered.verifyNoMoreInteractions();
+        }
+
+        @ParameterizedTest(name = "the diagnostic carries the raw status {0} verbatim")
+        @CsvSource({STATUS_RECORD_NOT_FOUND, STATUS_UNLISTED_LEADING_NINE,
+            STATUS_UNLISTED_NON_NUMERIC})
+        @DisplayName("the raw two-byte status is present in the diagnostic under both legacy rendering "
+                + "arms")
+        void theRawStatusIsPresentUnderBothRenderingArms(final String rawStatus) {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final AbendException thrown = catchThrowableOfType(AbendException.class,
+                    () -> step.openResource(RESOURCE_NAME, () -> rawStatus));
+
+            assertThat(thrown).isNotNull();
+            assertThat(errorDiagnostics()).hasSize(ORACLE_TERMINAL_DIAGNOSTIC_COUNT);
+            assertThat(errorDiagnostics().get(0))
+                    .contains(ORACLE_STATUS_DISPLAY)
+                    .contains(rawStatus);
+            assertThat(thrown.getMessage()).contains(rawStatus);
+        }
+
+        @Test
+        @DisplayName("a terminal read status ends the run rather than terminating the loop")
+        void aTerminalReadStatusEndsTheRun() {
+            final ScriptedStep step = new ScriptedStep(PROGRAM_NAME,
+                    AbstractCobolStepTest.this.meterRegistry, AbstractCobolStepTest.this.fixedClock);
+            step.scriptedReads.addLast(
+                    AbstractCobolStep.IoResult.of(STATUS_PERMANENT_ERROR, FIRST_RECORD));
+
+            final AbendException thrown = catchThrowableOfType(AbendException.class, step::run);
+
+            assertThat(thrown).isNotNull();
+            assertThat(step.processed).isEmpty();
+            assertThat(errorDiagnostics()).anyMatch(text -> text.contains(ORACLE_GERUND_READ));
+            assertThat(errorDiagnostics()).anyMatch(text -> text.contains(ORACLE_ABEND_ANNOUNCEMENT));
+        }
+
+        @Test
+        @DisplayName("an abend is terminal, so the close family never runs after one")
+        void anAbendIsTerminalSoTheCloseFamilyNeverRuns() {
+            final ScriptedStep step = stepDelivering(List.of());
+            step.openStatus = STATUS_END_OF_FILE;
+
+            final AbendException thrown = catchThrowableOfType(AbendException.class, step::run);
+
+            assertThat(thrown).isNotNull();
+            assertThat(step.lifecycle).containsExactly("open", "release");
+            assertThat(step.lifecycle).doesNotContain("close");
+            assertThat(step.releaseAttempts).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("the terminal path ends the run rather than handing back a recoverable status")
+        void theTerminalPathEndsTheRunRatherThanHandingBackAStatus() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final AbendException thrown = catchThrowableOfType(AbendException.class,
+                    () -> step.writeRecord(RESOURCE_NAME, () -> STATUS_PERMANENT_ERROR));
+
+            assertThat(thrown).isNotNull();
+            assertThat(thrown).isNotInstanceOf(FileStatusException.class);
+            assertThat(errorDiagnostics().get(0)).contains(ORACLE_GERUND_WRITE);
+        }
+    }
+
+    // The pre-operation sentinel: armed before an open, a write and a close, meaning the operation
+    // was attempted and its outcome is not yet normalised.
+
+    @Nested
+    @DisplayName("the pre-operation sentinel: a state that is none of the three normalised outcomes")
+    final class PreOperationSentinel {
+
+        @ParameterizedTest(name = "an {0} arms the sentinel before the operation runs")
+        @CsvSource({"OPEN", "WRITE", "CLOSE"})
+        @DisplayName("the open, write and close paths arm the sentinel the legacy moves")
+        void theOpenWriteAndClosePathsArmTheSentinel(
+                final AbstractCobolStep.IoOperation operation) {
+            assertThat(operation.armedApplResult()).isEqualTo(ORACLE_COARSE_SENTINEL);
+        }
+
+        @Test
+        @DisplayName("the read path arms no sentinel, because its paragraph never moves one")
+        void theReadPathArmsNoSentinel() {
             assertThat(AbstractCobolStep.IoOperation.READ.armedApplResult())
-                    .as("the read paragraphs do not arm the sentinel")
-                    .isEqualTo(ORACLE_APPL_RESULT_ERROR);
+                    .isEqualTo(ORACLE_COARSE_TERMINAL)
+                    .isNotEqualTo(ORACLE_COARSE_SENTINEL);
         }
 
         @Test
-        @DisplayName("both armed values are terminal, so an incomplete operation abends either way")
-        void bothArmedValuesAreTerminal() {
-            final ScriptedStep step = stepDelivering();
-
-            for (final AbstractCobolStep.IoOperation operation
-                    : AbstractCobolStep.IoOperation.values()) {
-                assertThat(operation.armedApplResult())
-                        .as("the armed value of %s must match neither condition name", operation)
-                        .isNotIn(ORACLE_APPL_RESULT_AOK, ORACLE_APPL_RESULT_EOF);
-            }
-            assertThat(step.normalise(AbstractCobolStep.IoOperation.OPEN, null))
-                    .isEqualTo(AbstractCobolStep.IoOutcome.ERROR);
+        @DisplayName("the sentinel is distinct from every one of the three normalised outcomes")
+        void theSentinelIsDistinctFromEveryNormalisedOutcome() {
+            assertThat(ORACLE_COARSE_SENTINEL)
+                    .isNotEqualTo(ORACLE_COARSE_SUCCESS)
+                    .isNotEqualTo(ORACLE_COARSE_TERMINAL)
+                    .isNotEqualTo(ORACLE_COARSE_END_OF_FILE);
+            assertThat(AbstractCobolStep.IoOutcome.OK.applResult())
+                    .isNotEqualTo(ORACLE_COARSE_SENTINEL);
+            assertThat(AbstractCobolStep.IoOutcome.END_OF_FILE.applResult())
+                    .isNotEqualTo(ORACLE_COARSE_SENTINEL);
+            assertThat(AbstractCobolStep.IoOutcome.ERROR.applResult())
+                    .isNotEqualTo(ORACLE_COARSE_SENTINEL);
         }
 
         @Test
-        @DisplayName("end of file terminates normally for the read alone")
-        void endOfFileTerminatesNormallyForTheReadAlone() {
+        @DisplayName("an operation still carrying the sentinel is terminal, never success and never at "
+                + "end")
+        void anOperationStillCarryingTheSentinelIsTerminal() {
+            final AbstractCobolStep.IoOutcome fromSentinel =
+                    AbstractCobolStep.IoOutcome.fromApplResult(ORACLE_COARSE_SENTINEL);
+
+            assertThat(fromSentinel).isEqualTo(AbstractCobolStep.IoOutcome.ERROR);
+            assertThat(fromSentinel).isNotEqualTo(AbstractCobolStep.IoOutcome.OK);
+            assertThat(fromSentinel).isNotEqualTo(AbstractCobolStep.IoOutcome.END_OF_FILE);
+            assertThat(fromSentinel.applResult()).isEqualTo(ORACLE_COARSE_TERMINAL);
+        }
+
+        @Test
+        @DisplayName("an operation that reports no status at all ends the run and leaks no absent value")
+        void anOperationThatReportsNoStatusAtAllEndsTheRun() {
+            final ScriptedStep step = stepDelivering(List.of());
+            step.openFailure = new IOException("the device reported no status");
+
+            final AbendException thrown = catchThrowableOfType(AbendException.class,
+                    step::openResources);
+
+            assertThat(thrown).isNotNull();
+            assertThat(thrown.getCause()).isInstanceOf(IOException.class);
+            assertThat(errorDiagnostics()).hasSize(ORACLE_TERMINAL_DIAGNOSTIC_COUNT);
+            assertThat(errorDiagnostics().get(0))
+                    .contains(ORACLE_GERUND_OPEN)
+                    .contains(RESOURCE_NAME)
+                    .contains(ORACLE_STATUS_DISPLAY)
+                    .doesNotContain("null");
+            assertThat(errorDiagnostics().get(1)).contains(ORACLE_ABEND_ANNOUNCEMENT);
+        }
+
+        @Test
+        @DisplayName("a failure already diagnosed once is not diagnosed a second time")
+        void aFailureAlreadyDiagnosedIsNotDiagnosedTwice() {
+            final ScriptedStep step = stepDelivering(List.of());
+            step.readFailure = new AbendException(PROGRAM_NAME, "ALREADY DIAGNOSED DOWNSTREAM");
+
+            final AbendException thrown = catchThrowableOfType(AbendException.class,
+                    step::readNextRecord);
+
+            assertThat(thrown).isNotNull();
+            assertThat(thrown.reason()).isEqualTo("ALREADY DIAGNOSED DOWNSTREAM");
+            assertThat(diagnostics()).isEmpty();
+        }
+    }
+
+    // The abend code and the four-component work area the legacy abend routine fills in.
+
+    @Nested
+    @DisplayName("the abend: the published batch code and the four-component work area")
+    final class AbendCodeAndWorkArea {
+
+        @Test
+        @DisplayName("the abend carries the published batch code rather than a restated literal")
+        void theAbendCarriesThePublishedBatchCode() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final AbendException thrown = catchThrowableOfType(AbendException.class,
+                    () -> step.closeResource(RESOURCE_NAME, () -> STATUS_PERMANENT_ERROR));
+
+            assertThat(thrown).isNotNull();
+            assertThat(thrown.code()).isEqualTo(AbendException.BATCH_ABEND_CODE);
+            assertThat(encodedLength(AbendException.BATCH_ABEND_CODE))
+                    .isLessThanOrEqualTo(ORACLE_ABEND_CODE_WIDTH);
+            assertThat(errorDiagnostics().get(1)).contains(AbendException.BATCH_ABEND_CODE);
+        }
+
+        @Test
+        @DisplayName("the batch code is not the online code, so a batch failure is never mistaken for a "
+                + "screen abend")
+        void theBatchCodeIsNotTheOnlineCode() {
+            assertThat(AbendException.BATCH_ABEND_CODE).isNotEqualTo(AbendException.ONLINE_ABEND_CODE);
+        }
+
+        @Test
+        @DisplayName("the published component widths are the four the abend work area declares")
+        void thePublishedComponentWidthsAreTheDeclaredOnes() {
+            assertThat(AbendException.CODE_LENGTH).isEqualTo(ORACLE_ABEND_CODE_WIDTH);
+            assertThat(AbendException.CULPRIT_LENGTH).isEqualTo(ORACLE_ABEND_CULPRIT_WIDTH);
+            assertThat(AbendException.REASON_LENGTH).isEqualTo(ORACLE_ABEND_REASON_WIDTH);
+            assertThat(AbendException.MESSAGE_LENGTH).isEqualTo(ORACLE_ABEND_MESSAGE_WIDTH);
+            assertThat(AbendException.CONTEXT_LENGTH).isEqualTo(ORACLE_ABEND_CONTEXT_WIDTH);
+            assertThat(ORACLE_ABEND_CODE_WIDTH + ORACLE_ABEND_CULPRIT_WIDTH
+                    + ORACLE_ABEND_REASON_WIDTH + ORACLE_ABEND_MESSAGE_WIDTH)
+                    .isEqualTo(ORACLE_ABEND_CONTEXT_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the rendered work area encodes to the four component widths and to their total")
+        void theRenderedWorkAreaEncodesToItsComponentWidths() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final AbendException thrown = catchThrowableOfType(AbendException.class,
+                    () -> step.closeResource(REJECTS_RESOURCE_NAME, () -> STATUS_PERMANENT_ERROR));
+
+            assertThat(thrown).isNotNull();
+
+            final String workArea = thrown.toFixedWidthContext();
+            final int culpritOffset = ORACLE_ABEND_CODE_WIDTH;
+            final int reasonOffset = culpritOffset + ORACLE_ABEND_CULPRIT_WIDTH;
+            final int messageOffset = reasonOffset + ORACLE_ABEND_REASON_WIDTH;
+            final String code = component(workArea, 0, ORACLE_ABEND_CODE_WIDTH);
+            final String culprit = component(workArea, culpritOffset, ORACLE_ABEND_CULPRIT_WIDTH);
+            final String reason = component(workArea, reasonOffset, ORACLE_ABEND_REASON_WIDTH);
+            final String message = component(workArea, messageOffset, ORACLE_ABEND_MESSAGE_WIDTH);
+
+            assertThat(encodedLength(workArea)).isEqualTo(ORACLE_ABEND_CONTEXT_WIDTH);
+            assertThat(encodedLength(code)).isEqualTo(ORACLE_ABEND_CODE_WIDTH);
+            assertThat(encodedLength(culprit)).isEqualTo(ORACLE_ABEND_CULPRIT_WIDTH);
+            assertThat(encodedLength(reason)).isEqualTo(ORACLE_ABEND_REASON_WIDTH);
+            assertThat(encodedLength(message)).isEqualTo(ORACLE_ABEND_MESSAGE_WIDTH);
+            assertThat(encodedLength(code) + encodedLength(culprit) + encodedLength(reason)
+                    + encodedLength(message)).isEqualTo(ORACLE_ABEND_CONTEXT_WIDTH);
+        }
+
+        @Test
+        @DisplayName("each component holds what the legacy field of that name held, padded not trimmed")
+        void eachComponentHoldsWhatItsLegacyFieldHeld() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final AbendException thrown = catchThrowableOfType(AbendException.class,
+                    () -> step.closeResource(REJECTS_RESOURCE_NAME, () -> STATUS_PERMANENT_ERROR));
+
+            assertThat(thrown).isNotNull();
+
+            final String workArea = thrown.toFixedWidthContext();
+            final int culpritOffset = ORACLE_ABEND_CODE_WIDTH;
+            final int reasonOffset = culpritOffset + ORACLE_ABEND_CULPRIT_WIDTH;
+            final int messageOffset = reasonOffset + ORACLE_ABEND_REASON_WIDTH;
+            final String expectedCode = String.format(Locale.ROOT,
+                    "%-" + ORACLE_ABEND_CODE_WIDTH + "s", AbendException.BATCH_ABEND_CODE);
+
+            assertThat(component(workArea, 0, ORACLE_ABEND_CODE_WIDTH)).isEqualTo(expectedCode);
+            assertThat(component(workArea, culpritOffset, ORACLE_ABEND_CULPRIT_WIDTH))
+                    .isEqualTo(PROGRAM_NAME);
+            assertThat(component(workArea, reasonOffset, ORACLE_ABEND_REASON_WIDTH))
+                    .contains(STATUS_PERMANENT_ERROR)
+                    .contains(ORACLE_GERUND_CLOSE)
+                    .contains(REJECTS_RESOURCE_NAME);
+            assertThat(component(workArea, messageOffset, ORACLE_ABEND_MESSAGE_WIDTH))
+                    .contains(ORACLE_STATUS_DISPLAY)
+                    .contains(STATUS_PERMANENT_ERROR);
+            assertThat(thrown.culprit()).isEqualTo(PROGRAM_NAME);
+            assertThat(encodedLength(thrown.culprit())).isEqualTo(ORACLE_ABEND_CULPRIT_WIDTH);
+        }
+    }
+
+    // The documented source defect that must not be propagated: a diagnostic reporting one file's
+    // status while announcing another file's failure.
+
+    @Nested
+    @DisplayName("the diagnostic reports the status and the file of the operation that actually failed")
+    final class FailingOperationReportsItsOwnStatus {
+
+        @Test
+        @DisplayName("a failing close reports its own file and its own status, never a neighbour's")
+        void aFailingCloseReportsItsOwnFileAndStatus() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            step.closeResource(OTHER_RESOURCE_NAME, () -> STATUS_SUCCESS);
+            final AbendException thrown = catchThrowableOfType(AbendException.class,
+                    () -> step.closeResource(REJECTS_RESOURCE_NAME, () -> STATUS_PERMANENT_ERROR));
+
+            assertThat(thrown).isNotNull();
+            assertThat(errorDiagnostics()).hasSize(ORACLE_TERMINAL_DIAGNOSTIC_COUNT);
+            assertThat(errorDiagnostics().get(0))
+                    .contains(ORACLE_GERUND_CLOSE)
+                    .contains(REJECTS_RESOURCE_NAME)
+                    .contains(STATUS_PERMANENT_ERROR)
+                    .doesNotContain(OTHER_RESOURCE_NAME);
+            assertThat(thrown.reason())
+                    .contains(REJECTS_RESOURCE_NAME)
+                    .doesNotContain(OTHER_RESOURCE_NAME);
+            assertThat(thrown.getMessage())
+                    .contains(REJECTS_RESOURCE_NAME)
+                    .contains(STATUS_PERMANENT_ERROR)
+                    .doesNotContain(OTHER_RESOURCE_NAME);
+        }
+
+        @Test
+        @DisplayName("two operations failing on different files report two different files")
+        void twoOperationsFailingOnDifferentFilesReportDifferentFiles() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final AbendException first = catchThrowableOfType(AbendException.class,
+                    () -> step.openResource(RESOURCE_NAME, () -> STATUS_RECORD_NOT_FOUND));
+            final AbendException second = catchThrowableOfType(AbendException.class,
+                    () -> step.writeRecord(OTHER_RESOURCE_NAME, () -> STATUS_PERMANENT_ERROR));
+
+            assertThat(first).isNotNull();
+            assertThat(second).isNotNull();
+            assertThat(first.getMessage())
+                    .contains(RESOURCE_NAME)
+                    .contains(STATUS_RECORD_NOT_FOUND)
+                    .doesNotContain(OTHER_RESOURCE_NAME);
+            assertThat(second.getMessage())
+                    .contains(OTHER_RESOURCE_NAME)
+                    .contains(STATUS_PERMANENT_ERROR)
+                    .doesNotContain(RESOURCE_NAME);
+        }
+
+        @Test
+        @DisplayName("a guarded operation refuses to run without naming the file it acts on")
+        void aGuardedOperationRefusesToRunUnnamed() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            assertThat(catchThrowableOfType(NullPointerException.class,
+                    () -> step.closeResource(null, () -> STATUS_SUCCESS))).isNotNull();
+            assertThat(catchThrowableOfType(IllegalArgumentException.class,
+                    () -> step.closeResource("   ", () -> STATUS_SUCCESS))).isNotNull();
+            assertThat(diagnostics()).isEmpty();
+        }
+    }
+
+    // The batch timestamp image, asserted position by position on encoded bytes.
+
+    @Nested
+    @DisplayName("the batch timestamp image: twenty-six bytes in the batch form, not the online form")
+    final class BatchTimestampImage {
+
+        @Test
+        @DisplayName("the image is exactly twenty-six bytes when encoded")
+        void theImageIsExactlyTwentySixBytesWhenEncoded() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final String image = step.currentBatchTimestamp();
+
+            assertThat(encodedLength(image)).isEqualTo(ORACLE_TIMESTAMP_WIDTH);
+            assertThat(AbstractCobolStep.BATCH_TIMESTAMP_LENGTH).isEqualTo(ORACLE_TIMESTAMP_WIDTH);
+        }
+
+        @Test
+        @DisplayName("every position holds what the redefinition declares for it, separator by separator")
+        void everyPositionHoldsWhatTheRedefinitionDeclares() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final byte[] image = step.currentBatchTimestamp().getBytes(StandardCharsets.US_ASCII);
+
+            assertThat(image).hasSize(ORACLE_TIMESTAMP_WIDTH);
+            assertDigits(image, 0, 4);
+            assertThat(image[4]).as("position 5").isEqualTo(ORACLE_DATE_SEPARATOR);
+            assertDigits(image, 5, 2);
+            assertThat(image[7]).as("position 8").isEqualTo(ORACLE_DATE_SEPARATOR);
+            assertDigits(image, 8, 2);
+            assertThat(image[10]).as("position 11").isEqualTo(ORACLE_DATE_SEPARATOR);
+            assertDigits(image, 11, 2);
+            assertThat(image[13]).as("position 14").isEqualTo(ORACLE_TIME_SEPARATOR);
+            assertDigits(image, 14, 2);
+            assertThat(image[16]).as("position 17").isEqualTo(ORACLE_TIME_SEPARATOR);
+            assertDigits(image, 17, 2);
+            assertThat(image[19]).as("position 20").isEqualTo(ORACLE_TIME_SEPARATOR);
+            assertDigits(image, 20, 2);
+            assertThat(image[22]).as("position 23").isEqualTo(ORACLE_ZERO_DIGIT);
+            assertThat(image[23]).as("position 24").isEqualTo(ORACLE_ZERO_DIGIT);
+            assertThat(image[24]).as("position 25").isEqualTo(ORACLE_ZERO_DIGIT);
+            assertThat(image[25]).as("position 26").isEqualTo(ORACLE_ZERO_DIGIT);
+        }
+
+        @Test
+        @DisplayName("the whole image matches the one the pinned instant must produce")
+        void theWholeImageMatchesThePinnedExpectation() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            assertThat(step.currentBatchTimestamp()).isEqualTo(PINNED_TIMESTAMP_IMAGE);
+            assertThat(AbstractCobolStep.formatBatchTimestamp(
+                    LocalDateTime.of(2022, 7, 6, 14, 23, 41, PINNED_NANOSECONDS)))
+                    .isEqualTo(PINNED_TIMESTAMP_IMAGE);
+        }
+
+        @Test
+        @DisplayName("the trailing field is the four literal characters the populating paragraph moves")
+        void theTrailingFieldIsTheFourLiteralCharacters() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final String image = step.currentBatchTimestamp();
+            final String tail = component(image, ORACLE_TIMESTAMP_WIDTH - ORACLE_TIMESTAMP_TAIL_WIDTH,
+                    ORACLE_TIMESTAMP_TAIL_WIDTH);
+
+            assertThat(tail).isEqualTo(ORACLE_TIMESTAMP_TAIL);
+            assertThat(encodedLength(tail)).isEqualTo(ORACLE_TIMESTAMP_TAIL_WIDTH);
+            assertThat(encodedLength(ORACLE_TIMESTAMP_TAIL)).isEqualTo(ORACLE_TIMESTAMP_TAIL_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the image is the batch form and not the online form, which is the same width")
+        void theImageIsTheBatchFormAndNotTheOnlineForm() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final String text = step.currentBatchTimestamp();
+            final byte[] image = text.getBytes(StandardCharsets.US_ASCII);
+
+            assertThat(image[10]).as("position 11 divides the date from the time")
+                    .isEqualTo(ORACLE_DATE_SEPARATOR)
+                    .isNotEqualTo(ORACLE_ONLINE_DATE_AND_TIME_DIVIDER);
+            assertThat(text).doesNotContain(ORACLE_ONLINE_TIME_SEPARATOR_TEXT);
+            assertThat(text).doesNotContain(ORACLE_ONLINE_DATE_AND_TIME_DIVIDER_TEXT);
+            assertThat(component(text, ORACLE_TIMESTAMP_WIDTH - ORACLE_TIMESTAMP_TAIL_WIDTH,
+                    ORACLE_TIMESTAMP_TAIL_WIDTH))
+                    .isEqualTo(ORACLE_TIMESTAMP_TAIL);
+            assertThat(encodedLength(text)).isEqualTo(ORACLE_TIMESTAMP_WIDTH);
+        }
+
+        @Test
+        @DisplayName("precision below a hundredth of a second is truncated, never rounded")
+        void precisionBelowAHundredthIsTruncated() {
+            final String image = AbstractCobolStep.formatBatchTimestamp(
+                    LocalDateTime.of(2022, 7, 6, 14, 23, 41, TRUNCATED_NANOSECONDS));
+
+            assertThat(image).isEqualTo(PINNED_TIMESTAMP_IMAGE);
+            assertThat(encodedLength(image)).isEqualTo(ORACLE_TIMESTAMP_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the injected clock's zone decides the wall-clock reading, not the host's")
+        void theInjectedClocksZoneDecidesTheWallClockReading() {
+            final ScriptedStep shifted = new ScriptedStep(PROGRAM_NAME,
+                    AbstractCobolStepTest.this.meterRegistry,
+                    Clock.fixed(PINNED_INSTANT, SECOND_OFFSET));
+
+            final String image = shifted.currentBatchTimestamp();
+
+            assertThat(image).isEqualTo(PINNED_TIMESTAMP_IMAGE_AT_SECOND_OFFSET);
+            assertThat(image).isNotEqualTo(PINNED_TIMESTAMP_IMAGE);
+            assertThat(encodedLength(image)).isEqualTo(ORACLE_TIMESTAMP_WIDTH);
+            assertThat(component(image, ORACLE_TIMESTAMP_WIDTH - ORACLE_TIMESTAMP_TAIL_WIDTH,
+                    ORACLE_TIMESTAMP_TAIL_WIDTH)).isEqualTo(ORACLE_TIMESTAMP_TAIL);
+        }
+
+        @Test
+        @DisplayName("the same instant produces the same image twice, because the clock is injected")
+        void theSameInstantProducesTheSameImageTwice() {
+            final ScriptedStep step = stepDelivering(List.of());
+
+            final AbstractCobolStep.ExecutionSummary summary = step.run();
+
+            assertThat(summary.startedAt()).isEqualTo(summary.completedAt());
+            assertThat(summary.startedAt()).isEqualTo(PINNED_TIMESTAMP_IMAGE);
+        }
+
+        @Test
+        @DisplayName("a year the four-byte field cannot hold is refused rather than silently widened")
+        void anUnrepresentableYearIsRefused() {
+            final LocalDateTime aboveTheCeiling =
+                    LocalDateTime.of(ORACLE_SMALLEST_UNREPRESENTABLE_YEAR, 1, 1, 0, 0, 0, 0);
+            final LocalDateTime belowTheFloor =
+                    LocalDateTime.of(ORACLE_YEAR_BELOW_THE_FLOOR, 1, 1, 0, 0, 0, 0);
+
+            assertThat(catchThrowableOfType(IllegalArgumentException.class,
+                    () -> AbstractCobolStep.formatBatchTimestamp(aboveTheCeiling))).isNotNull();
+            assertThat(catchThrowableOfType(IllegalArgumentException.class,
+                    () -> AbstractCobolStep.formatBatchTimestamp(belowTheFloor))).isNotNull();
+        }
+
+        @Test
+        @DisplayName("the earliest and latest years the field can hold both render at the legacy width")
+        void theBoundaryYearsBothRenderAtTheLegacyWidth() {
+            final String earliest = AbstractCobolStep.formatBatchTimestamp(
+                    LocalDateTime.of(ORACLE_SMALLEST_REPRESENTABLE_YEAR, 1, 1, 0, 0, 0, 0));
+            final String latest = AbstractCobolStep.formatBatchTimestamp(
+                    LocalDateTime.of(ORACLE_LARGEST_REPRESENTABLE_YEAR, 12, 31, 23, 59, 59, 0));
+
+            assertThat(encodedLength(earliest)).isEqualTo(ORACLE_TIMESTAMP_WIDTH);
+            assertThat(encodedLength(latest)).isEqualTo(ORACLE_TIMESTAMP_WIDTH);
+            assertDigits(earliest.getBytes(StandardCharsets.US_ASCII), 0, 4);
+            assertDigits(latest.getBytes(StandardCharsets.US_ASCII), 0, 4);
+        }
+    }
+
+    // Shape: the nested types are reached through the template, and the template is a single-pass,
+    // sequential tasklet whose name reaches the step built around it.
+
+    @Nested
+    @DisplayName("the nested types are members of the template and are reached through it")
+    final class NestedTypesReachedThroughTheTemplate {
+
+        @Test
+        @DisplayName("the coarse-outcome type carries exactly the three outcomes and their values")
+        void theCoarseOutcomeTypeCarriesThreeOutcomes() {
+            assertThat(AbstractCobolStep.IoOutcome.values()).hasSize(3);
+            assertThat(AbstractCobolStep.IoOutcome.OK.applResult()).isEqualTo(ORACLE_COARSE_SUCCESS);
+            assertThat(AbstractCobolStep.IoOutcome.END_OF_FILE.applResult())
+                    .isEqualTo(ORACLE_COARSE_END_OF_FILE);
+            assertThat(AbstractCobolStep.IoOutcome.ERROR.applResult())
+                    .isEqualTo(ORACLE_COARSE_TERMINAL);
+        }
+
+        @Test
+        @DisplayName("the operation type carries exactly the four legacy verbs")
+        void theOperationTypeCarriesFourVerbs() {
+            assertThat(AbstractCobolStep.IoOperation.values()).hasSize(4);
             assertThat(AbstractCobolStep.IoOperation.READ.endOfFileTerminatesNormally()).isTrue();
             assertThat(AbstractCobolStep.IoOperation.OPEN.endOfFileTerminatesNormally()).isFalse();
             assertThat(AbstractCobolStep.IoOperation.WRITE.endOfFileTerminatesNormally()).isFalse();
             assertThat(AbstractCobolStep.IoOperation.CLOSE.endOfFileTerminatesNormally()).isFalse();
         }
-    }
-
-    @Nested
-    @DisplayName("the terminal path: diagnostic first, then the abend, naming the file that failed")
-    final class TerminalPath {
 
         @Test
-        @DisplayName("a failed open abends and never reaches the read loop")
-        void aFailedOpenAbendsBeforeTheReadLoop() {
-            final ScriptedStep step = stepDelivering(FIRST_RECORD);
-            step.openStatus = STATUS_PERMANENT_ERROR;
+        @DisplayName("the result type keeps the raw status travelling with the record it belongs to")
+        void theResultTypeKeepsTheStatusWithTheRecord() {
+            final AbstractCobolStep.IoResult<String> delivered =
+                    AbstractCobolStep.IoResult.of(STATUS_SUCCESS, FIRST_RECORD);
+            final AbstractCobolStep.IoResult<String> atEnd = AbstractCobolStep.IoResult.endOfFile();
 
-            assertThatExceptionOfType(AbendException.class).isThrownBy(step::run);
-
-            assertThat(step.processed).isEmpty();
-            assertThat(step.lifecycle).doesNotContain("process");
+            assertThat(delivered.rawStatus()).isEqualTo(STATUS_SUCCESS);
+            assertThat(delivered.record()).isEqualTo(FIRST_RECORD);
+            assertThat(atEnd.rawStatus()).isEqualTo(STATUS_END_OF_FILE);
+            assertThat(atEnd.record()).isNull();
         }
 
         @Test
-        @DisplayName("an at-end status on an open is a failure, not an empty file")
-        void anAtEndStatusOnAnOpenIsAFailure() {
-            final ScriptedStep step = stepDelivering();
-            step.openStatus = STATUS_END_OF_FILE;
+        @DisplayName("the summary type reports what one execution observed and refuses an absent part")
+        void theSummaryTypeReportsWhatOneExecutionObserved() {
+            final AbstractCobolStep.ExecutionSummary summary = new AbstractCobolStep.ExecutionSummary(
+                    PROGRAM_NAME, 2L, PINNED_TIMESTAMP_IMAGE, PINNED_TIMESTAMP_IMAGE);
 
-            assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(step::run)
-                    .withMessageContaining(ORACLE_GERUND_OPEN);
+            assertThat(summary.programName()).isEqualTo(PROGRAM_NAME);
+            assertThat(summary.recordsRead()).isEqualTo(2L);
+            assertThat(summary.startedAt()).isEqualTo(PINNED_TIMESTAMP_IMAGE);
+            assertThat(summary.completedAt()).isEqualTo(PINNED_TIMESTAMP_IMAGE);
+            assertThat(catchThrowableOfType(IllegalArgumentException.class,
+                    () -> new AbstractCobolStep.ExecutionSummary(PROGRAM_NAME, -1L,
+                            PINNED_TIMESTAMP_IMAGE, PINNED_TIMESTAMP_IMAGE))).isNotNull();
         }
 
         @Test
-        @DisplayName("a read reporting a non-success, non-at-end status abends")
-        void aBadReadStatusAbends() {
-            final ScriptedStep step = new ScriptedStep(PROGRAM_NAME, meterRegistry, fixedClock);
-            step.enqueueRead(AbstractCobolStep.IoResult.of(STATUS_PERMANENT_ERROR, FIRST_RECORD));
-
-            assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(step::run)
-                    .withMessageContaining(ORACLE_GERUND_READ)
-                    .withMessageContaining(STATUS_PERMANENT_ERROR);
-        }
-
-        @Test
-        @DisplayName("a failed close abends, exactly as an open and a read do")
-        void aFailedCloseAbends() {
-            final ScriptedStep step = stepDelivering(FIRST_RECORD);
-            step.closeStatus = STATUS_PERMANENT_ERROR;
-
-            assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(step::run)
-                    .withMessageContaining(ORACLE_GERUND_CLOSE);
-            assertThat(step.processed).as("the record was processed before the close failed")
-                    .containsExactly(FIRST_RECORD);
-        }
-
-        @Test
-        @DisplayName("a failed write abends and names the write verb")
-        void aFailedWriteAbends() {
-            final ScriptedStep step = stepDelivering();
-
-            assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(() -> step.write(OTHER_RESOURCE_NAME, STATUS_PERMANENT_ERROR))
-                    .withMessageContaining(ORACLE_GERUND_WRITE)
-                    .withMessageContaining(OTHER_RESOURCE_NAME);
-        }
-
-        @Test
-        @DisplayName("a successful write returns quietly")
-        void aSuccessfulWriteReturnsQuietly() {
-            final ScriptedStep step = stepDelivering();
-
-            step.write(OTHER_RESOURCE_NAME, STATUS_SUCCESS);
-        }
-
-        @Test
-        @DisplayName("the abend carries the batch code and the program name as its culprit")
-        void theAbendCarriesTheBatchCodeAndTheCulprit() {
-            final ScriptedStep step = stepDelivering();
-            step.openStatus = STATUS_PERMANENT_ERROR;
-
-            assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(step::run)
-                    .satisfies(abend -> {
-                        assertThat(abend.code()).isEqualTo(ORACLE_BATCH_ABEND_CODE);
-                        assertThat(abend.culprit()).isEqualTo(PROGRAM_NAME);
-                        assertThat(abend.reason()).contains(STATUS_PERMANENT_ERROR);
-                    });
-            assertThat(AbendException.BATCH_ABEND_CODE).isEqualTo(ORACLE_BATCH_ABEND_CODE);
-        }
-
-        @Test
-        @DisplayName("the abend's bounded fields never exceed the widths the legacy declares")
-        void theAbendsBoundedFieldsNeverExceedTheLegacyWidths() {
-            final ScriptedStep step = stepDelivering();
-            final String longResource = "R".repeat(200);
-
-            assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(() -> step.abend(AbstractCobolStep.IoOperation.READ, longResource,
-                            STATUS_PERMANENT_ERROR))
-                    .satisfies(abend -> {
-                        assertThat(abend.reason().length())
-                                .isLessThanOrEqualTo(AbendException.REASON_LENGTH);
-                        assertThat(abend.getMessage().length())
-                                .isLessThanOrEqualTo(AbendException.MESSAGE_LENGTH);
-                    });
-        }
-
-        @Test
-        @DisplayName("the diagnostic names the file that failed, not some other file")
-        void theDiagnosticNamesTheFileThatFailed() {
-            final ScriptedStep step = stepDelivering();
-
-            assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(() -> step.abend(AbstractCobolStep.IoOperation.CLOSE,
-                            OTHER_RESOURCE_NAME, STATUS_PERMANENT_ERROR))
-                    .withMessageContaining(OTHER_RESOURCE_NAME)
-                    .withMessageNotContaining(RESOURCE_NAME);
-        }
-
-        @Test
-        @DisplayName("the terminal path always throws, even on a status that reads as success")
-        void theTerminalPathAlwaysThrows() {
-            final ScriptedStep step = stepDelivering();
-
-            // The caller has already decided the status is fatal, so the helper does not re-judge it.
-            assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(() -> step.abend(AbstractCobolStep.IoOperation.READ, RESOURCE_NAME,
-                            STATUS_SUCCESS))
-                    .withMessageContaining(STATUS_SUCCESS);
-        }
-
-        @Test
-        @DisplayName("an absent status is rendered as absent rather than as a null literal")
-        void anAbsentStatusIsRenderedAsAbsent() {
-            final ScriptedStep step = stepDelivering();
-
-            assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(() -> step.abend(AbstractCobolStep.IoOperation.OPEN, RESOURCE_NAME,
-                            null))
-                    .withMessageContaining("(none)")
-                    .withMessageNotContaining("null");
-        }
-
-        @Test
-        @DisplayName("the terminal path requires an operation kind and a named file")
-        void theTerminalPathRequiresAnOperationAndAName() {
-            final ScriptedStep step = stepDelivering();
-
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> step.abend(null, RESOURCE_NAME, STATUS_SUCCESS))
-                    .withMessageContaining("operation");
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> step.abend(AbstractCobolStep.IoOperation.READ, null,
-                            STATUS_SUCCESS))
-                    .withMessageContaining("resource");
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> step.abend(AbstractCobolStep.IoOperation.READ, "  ",
-                            STATUS_SUCCESS))
-                    .withMessageContaining("must name the file");
-        }
-
-        @Test
-        @DisplayName("the lifecycle is timed on the abending path too, under a distinguishing tag")
-        void theLifecycleIsTimedOnTheAbendingPath() {
-            final ScriptedStep step = stepDelivering();
-            step.openStatus = STATUS_PERMANENT_ERROR;
-
-            assertThatExceptionOfType(AbendException.class).isThrownBy(step::run);
-
-            assertThat(meterRegistry.find("carddemo.batch.cobol.step")
-                    .tag("outcome", "ABENDED").timer())
-                    .isNotNull();
+        @DisplayName("the timestamp helper is a member of the template, reached through it")
+        void theTimestampHelperIsAMemberOfTheTemplate() {
+            assertThat(AbstractCobolStep.BATCH_TIMESTAMP_LENGTH).isEqualTo(ORACLE_TIMESTAMP_WIDTH);
+            assertThat(AbstractCobolStep.formatBatchTimestamp(
+                    LocalDateTime.of(2022, 7, 6, 14, 23, 41, PINNED_NANOSECONDS)))
+                    .isEqualTo(PINNED_TIMESTAMP_IMAGE);
         }
     }
 
     @Nested
-    @DisplayName("the sentinel: an operation that reports no status at all is terminal")
-    final class IncompleteOperationSentinel {
+    @DisplayName("step construction: the supplied name reaches the built step and execution stays "
+            + "sequential")
+    final class StepConstruction {
 
         @Test
-        @DisplayName("an open that fails outright abends with the status reported as absent")
-        void anOpenThatFailsOutrightAbends() {
-            final ScriptedStep step = stepDelivering();
-            step.openFailure = new IllegalStateException("device not ready");
+        @DisplayName("the program name is reported back verbatim and bounds itself to the culprit width")
+        void theProgramNameIsReportedBackVerbatim() {
+            final ScriptedStep step = stepDelivering(List.of());
 
-            assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(step::run)
-                    .withMessageContaining("(none)")
-                    .withMessageContaining(ORACLE_GERUND_OPEN)
-                    .havingCause()
-                    .withMessage("device not ready");
+            assertThat(step.programName()).isEqualTo(PROGRAM_NAME);
+            assertThat(encodedLength(step.programName()))
+                    .isLessThanOrEqualTo(ORACLE_ABEND_CULPRIT_WIDTH);
         }
 
         @Test
-        @DisplayName("a read that fails outright abends and chains the underlying failure")
-        void aReadThatFailsOutrightAbends() {
-            final ScriptedStep step = stepDelivering();
-            step.readFailure = new IllegalStateException("track read error");
-
-            assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(step::run)
-                    .withMessageContaining(ORACLE_GERUND_READ)
-                    .havingCause()
-                    .withMessage("track read error");
+        @DisplayName("a name longer than the legacy culprit field is refused at construction")
+        void anOverlongProgramNameIsRefusedAtConstruction() {
+            assertThat(catchThrowableOfType(IllegalArgumentException.class,
+                    () -> new ScriptedStep(PROGRAM_NAME + "X",
+                            AbstractCobolStepTest.this.meterRegistry,
+                            AbstractCobolStepTest.this.fixedClock))).isNotNull();
         }
 
         @Test
-        @DisplayName("a checked failure is admitted, because real input and output fails in checked ways")
-        void aCheckedFailureIsAdmitted() {
-            final ScriptedStep step = stepDelivering();
-            step.openFailure = new IOException("data set unavailable");
+        @DisplayName("the name supplied to the step builder reaches the built step")
+        void theSuppliedNameReachesTheBuiltStep() {
+            final ScriptedStep step = stepDelivering(List.of());
 
-            assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(step::run)
-                    .havingCause()
-                    .isInstanceOf(IOException.class);
+            final Step built = new StepBuilder(ORACLE_STEP_NAME,
+                    AbstractCobolStepTest.this.jobRepository)
+                    .tasklet(step, AbstractCobolStepTest.this.transactionManager)
+                    .build();
+
+            assertThat(built.getName()).isEqualTo(ORACLE_STEP_NAME);
+            assertThat(built).isInstanceOf(TaskletStep.class);
         }
 
         @Test
-        @DisplayName("an abend raised further down is rethrown untouched, so it is diagnosed exactly once")
-        void aNestedAbendIsRethrownUntouched() {
-            final ScriptedStep step = stepDelivering();
-            final AbendException alreadyDiagnosed = new AbendException(ORACLE_BATCH_ABEND_CODE,
-                    PROGRAM_NAME, "INNER REASON", "INNER MESSAGE");
-            step.openFailure = alreadyDiagnosed;
+        @DisplayName("the template is a single-pass tasklet, so one execution is one whole lifecycle")
+        void theTemplateIsASinglePassTasklet() {
+            final ScriptedStep step = stepDelivering(List.of(FIRST_RECORD));
 
-            assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(step::run)
-                    .isSameAs(alreadyDiagnosed);
+            assertThat(step).isInstanceOf(Tasklet.class);
+            assertThat(step.execute(null, null)).isEqualTo(RepeatStatus.FINISHED);
+            assertThat(step.lifecycle).containsExactly("open", "read", "process", "read", "close");
+            assertThat(step.processed).containsExactly(FIRST_RECORD);
+        }
+
+        @Test
+        @DisplayName("one instance keeps no per-execution state, so the same instance may run twice")
+        void oneInstanceMayRunTwice() {
+            final ScriptedStep step = stepDelivering(List.of(FIRST_RECORD));
+
+            final AbstractCobolStep.ExecutionSummary first = step.run();
+            step.deliverRecord(SECOND_RECORD);
+            final AbstractCobolStep.ExecutionSummary second = step.run();
+
+            assertThat(first.recordsRead()).isEqualTo(1L);
+            assertThat(second.recordsRead()).isEqualTo(1L);
+            assertThat(step.processed).containsExactly(FIRST_RECORD, SECOND_RECORD);
         }
     }
 
+    // Observability: the lifecycle timer is asserted for presence, name and tag shape only. No
+    // numeric latency, throughput, availability or capacity figure is asserted anywhere, because the
+    // repository documents no legacy performance baseline to compare one against.
+
     @Nested
-    @DisplayName("failure handling: resources are released once and the original failure propagates")
-    final class FailureRelease {
+    @DisplayName("the lifecycle timer: present, named, and tagged with the step and the outcome")
+    final class StepExecutionTimer {
 
         @Test
-        @DisplayName("a failure before the close sequence releases the handles exactly once and performs "
-                + "no CLOSE, because the legacy abend never reaches one")
-        void aFailureBeforeCloseReleasesExactlyOnce() {
-            final ScriptedStep step = stepDelivering(FIRST_RECORD);
-            step.processFailure = new IllegalStateException("posting failed");
-
-            assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(step::run)
-                    .withMessage("posting failed");
-
-            assertThat(step.releaseAttempts)
-                    .as("the JVM outlives the failure and must release its own files")
-                    .isEqualTo(1);
-            assertThat(step.closeAttempts)
-                    .as("9999-ABEND-PROGRAM ends in CALL 'CEE3ABD' and does not return, so the "
-                            + "PERFORM of the close family is unreachable [app/cbl/CBACT01C.cbl:L83, L173]")
-                    .isZero();
-            assertThat(step.lifecycle).containsExactly("open", "read", "process", "release");
-        }
-
-        @Test
-        @DisplayName("a failure of the close attempt is suppressed onto the original, never substituted")
-        void aSecondaryCloseFailureIsSuppressed() {
-            final ScriptedStep step = stepDelivering(FIRST_RECORD);
-            final IllegalStateException primary = new IllegalStateException("posting failed");
-            step.processFailure = primary;
-            step.releaseFailure = new IllegalStateException("release failed too");
-
-            assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(step::run)
-                    .isSameAs(primary)
-                    .satisfies(thrown -> assertThat(thrown.getSuppressed())
-                            .as("the secondary failure is retained, not discarded")
-                            .hasSize(1));
-        }
-
-        @Test
-        @DisplayName("a failure inside the close sequence is not followed by a second close attempt")
-        void aFailureInsideCloseIsNotRetried() {
-            final ScriptedStep step = stepDelivering();
-            step.closeFailure = new IllegalStateException("close failed");
-
-            assertThatExceptionOfType(IllegalStateException.class).isThrownBy(step::run);
-
-            assertThat(step.closeAttempts).as("the close sequence had already been entered")
-                    .isEqualTo(1);
-            assertThat(step.releaseAttempts)
-                    .as("the release that follows any failure does not re-enter the close family")
-                    .isEqualTo(1);
-        }
-
-        @Test
-        @DisplayName("a completing run closes exactly once and suppresses nothing")
-        void aCompletingRunClosesExactlyOnce() {
-            final ScriptedStep step = stepDelivering(FIRST_RECORD);
+        @DisplayName("a completing lifecycle registers the timer under the completed outcome")
+        void aCompletingLifecycleRegistersTheCompletedOutcome() {
+            final ScriptedStep step = stepDelivering(List.of(FIRST_RECORD));
 
             step.run();
 
-            assertThat(step.closeAttempts).isEqualTo(1);
-            assertThat(step.releaseAttempts)
-                    .as("the release hook belongs to the failure path alone")
-                    .isZero();
-        }
-    }
-
-    @Nested
-    @DisplayName("IoResult: the raw status always travels with the record")
-    final class IoResultContract {
-
-        @Test
-        @DisplayName("a success pairs the raw status with the delivered record")
-        void aSuccessPairsStatusWithRecord() {
-            final AbstractCobolStep.IoResult<String> result =
-                    AbstractCobolStep.IoResult.of(STATUS_SUCCESS, FIRST_RECORD);
-
-            assertThat(result.rawStatus()).isEqualTo(STATUS_SUCCESS);
-            assertThat(result.record()).isEqualTo(FIRST_RECORD);
+            final Timer timer = AbstractCobolStepTest.this.meterRegistry.find(ORACLE_METRIC_NAME)
+                    .timer();
+            assertThat(timer).isNotNull();
+            assertThat(timer.getId().getTags().stream().map(Tag::getKey).toList())
+                    .containsExactlyInAnyOrder(ORACLE_TAG_STEP, ORACLE_TAG_OUTCOME);
+            assertThat(timer.getId().getTag(ORACLE_TAG_STEP)).isEqualTo(PROGRAM_NAME);
+            assertThat(timer.getId().getTag(ORACLE_TAG_OUTCOME)).isEqualTo(ORACLE_OUTCOME_COMPLETED);
+            assertThat(timer.count()).isEqualTo(1L);
         }
 
         @Test
-        @DisplayName("the at-end result carries the at-end code and no record")
-        void theAtEndResultCarriesTheCodeAndNoRecord() {
-            final AbstractCobolStep.IoResult<String> result = AbstractCobolStep.IoResult.endOfFile();
+        @DisplayName("an abending lifecycle registers the timer under a distinguishing outcome")
+        void anAbendingLifecycleRegistersTheAbendedOutcome() {
+            final ScriptedStep step = stepDelivering(List.of());
+            step.openStatus = STATUS_PERMANENT_ERROR;
 
-            assertThat(result.rawStatus()).isEqualTo(STATUS_END_OF_FILE);
-            assertThat(result.rawStatus())
-                    .as("taken from the enumeration, so the raw vocabulary stays single-sourced")
-                    .isEqualTo(FileStatus.END_OF_FILE.getCode());
-            assertThat(result.record()).isNull();
+            final AbendException thrown = catchThrowableOfType(AbendException.class, step::run);
+
+            assertThat(thrown).isNotNull();
+
+            final Timer timer = AbstractCobolStepTest.this.meterRegistry.find(ORACLE_METRIC_NAME)
+                    .tag(ORACLE_TAG_OUTCOME, ORACLE_OUTCOME_ABENDED)
+                    .timer();
+            assertThat(timer).isNotNull();
+            assertThat(timer.getId().getTag(ORACLE_TAG_STEP)).isEqualTo(PROGRAM_NAME);
+            assertThat(timer.count()).isEqualTo(1L);
+            assertThat(AbstractCobolStepTest.this.meterRegistry.find(ORACLE_METRIC_NAME)
+                    .tag(ORACLE_TAG_OUTCOME, ORACLE_OUTCOME_COMPLETED).timer()).isNull();
         }
 
         @Test
-        @DisplayName("a status is always reported, so a result without one is refused")
-        void aStatusIsAlwaysReported() {
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new AbstractCobolStep.IoResult<String>(null, FIRST_RECORD))
-                    .withMessageContaining("rawStatus");
-        }
-
-        @Test
-        @DisplayName("the success factory refuses a missing record")
-        void theSuccessFactoryRefusesAMissingRecord() {
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> AbstractCobolStep.IoResult.of(STATUS_SUCCESS, null))
-                    .withMessageContaining("record");
-        }
-
-        @Test
-        @DisplayName("a read reporting success without a record is refused rather than dereferenced")
-        void aReadReportingSuccessWithoutARecordIsRefused() {
-            final ScriptedStep step = new ScriptedStep(PROGRAM_NAME, meterRegistry, fixedClock);
-            step.enqueueRead(new AbstractCobolStep.IoResult<>(STATUS_SUCCESS, null));
-
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(step::run)
-                    .withMessageContaining("without delivering a record");
-        }
-
-        @Test
-        @DisplayName("the result is a value type")
-        void theResultIsAValueType() {
-            final AbstractCobolStep.IoResult<String> first =
-                    AbstractCobolStep.IoResult.of(STATUS_SUCCESS, FIRST_RECORD);
-            final AbstractCobolStep.IoResult<String> second =
-                    AbstractCobolStep.IoResult.of(STATUS_SUCCESS, FIRST_RECORD);
-
-            assertThat(first).isEqualTo(second).hasSameHashCodeAs(second);
-            assertThat(first.toString()).contains(STATUS_SUCCESS);
-        }
-    }
-
-    @Nested
-    @DisplayName("ExecutionSummary: what one execution observed, owned entirely by the template")
-    final class ExecutionSummaryContract {
-
-        @Test
-        @DisplayName("a summary carries its four components verbatim")
-        void aSummaryCarriesItsComponents() {
-            final AbstractCobolStep.ExecutionSummary summary = new AbstractCobolStep.ExecutionSummary(
-                    PROGRAM_NAME, 300L, PINNED_TIMESTAMP_IMAGE, PINNED_TIMESTAMP_IMAGE);
-
-            assertThat(summary.programName()).isEqualTo(PROGRAM_NAME);
-            assertThat(summary.recordsRead()).isEqualTo(300L);
-            assertThat(summary.startedAt()).isEqualTo(PINNED_TIMESTAMP_IMAGE);
-            assertThat(summary.completedAt()).isEqualTo(PINNED_TIMESTAMP_IMAGE);
-        }
-
-        @Test
-        @DisplayName("a zero count is legitimate: an empty file is not an error")
-        void aZeroCountIsLegitimate() {
-            assertThat(new AbstractCobolStep.ExecutionSummary(PROGRAM_NAME, 0L,
-                    PINNED_TIMESTAMP_IMAGE, PINNED_TIMESTAMP_IMAGE).recordsRead()).isZero();
-        }
-
-        @Test
-        @DisplayName("a negative count is refused")
-        void aNegativeCountIsRefused() {
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new AbstractCobolStep.ExecutionSummary(PROGRAM_NAME, -1L,
-                            PINNED_TIMESTAMP_IMAGE, PINNED_TIMESTAMP_IMAGE))
-                    .withMessageContaining("recordsRead");
-        }
-
-        @Test
-        @DisplayName("no string component may be absent")
-        void noStringComponentMayBeAbsent() {
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new AbstractCobolStep.ExecutionSummary(null, 0L,
-                            PINNED_TIMESTAMP_IMAGE, PINNED_TIMESTAMP_IMAGE))
-                    .withMessageContaining("programName");
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new AbstractCobolStep.ExecutionSummary(PROGRAM_NAME, 0L, null,
-                            PINNED_TIMESTAMP_IMAGE))
-                    .withMessageContaining("startedAt");
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new AbstractCobolStep.ExecutionSummary(PROGRAM_NAME, 0L,
-                            PINNED_TIMESTAMP_IMAGE, null))
-                    .withMessageContaining("completedAt");
-        }
-
-        @Test
-        @DisplayName("the summary is a value type")
-        void theSummaryIsAValueType() {
-            final AbstractCobolStep.ExecutionSummary first = stepDelivering(FIRST_RECORD).run();
-            final AbstractCobolStep.ExecutionSummary second = stepDelivering(FIRST_RECORD).run();
-
-            assertThat(first).isEqualTo(second).hasSameHashCodeAs(second);
-            assertThat(first.toString()).contains(PROGRAM_NAME);
-        }
-    }
-
-    @Nested
-    @DisplayName("the batch timestamp image: YYYY-MM-DD-hh.mm.ss.hh0000, twenty-six bytes")
-    final class BatchTimestampImage {
-
-        @Test
-        @DisplayName("the image takes the batch shape, with a hyphen where the online form has a space")
-        void theImageTakesTheBatchShape() {
-            final String image = AbstractCobolStep.formatBatchTimestamp(
-                    LocalDateTime.of(2022, 7, 6, 14, 23, 41, 870_000_000));
-
-            assertThat(image).isEqualTo("2022-07-06-14.23.41.870000");
-            assertThat(image.charAt(10)).as("the third separator is a hyphen, not a space")
-                    .isEqualTo('-');
-            assertThat(image).doesNotContain(":");
-        }
-
-        @Test
-        @DisplayName("the image is exactly twenty-six bytes when encoded")
-        void theImageIsExactlyTwentySixBytes() {
-            final String image = AbstractCobolStep.formatBatchTimestamp(
-                    LocalDateTime.of(2022, 7, 6, 14, 23, 41, 870_000_000));
-
-            assertThat(image.getBytes(StandardCharsets.US_ASCII))
-                    .hasSize(ORACLE_BATCH_TIMESTAMP_LENGTH);
-            assertThat(AbstractCobolStep.BATCH_TIMESTAMP_LENGTH)
-                    .isEqualTo(ORACLE_BATCH_TIMESTAMP_LENGTH);
-        }
-
-        @Test
-        @DisplayName("the tail is the four-character literal the redefinition fixes")
-        void theTailIsTheFourCharacterLiteral() {
-            assertThat(AbstractCobolStep.formatBatchTimestamp(
-                    LocalDateTime.of(2022, 7, 6, 14, 23, 41, 0)))
-                    .endsWith(ORACLE_BATCH_TIMESTAMP_TAIL);
-        }
-
-        @Test
-        @DisplayName("sub-hundredth precision is truncated, never rounded")
-        void subHundredthPrecisionIsTruncated() {
-            assertThat(AbstractCobolStep.formatBatchTimestamp(
-                    LocalDateTime.of(2022, 7, 6, 14, 23, 41, 879_999_999)))
-                    .as("no arithmetic anywhere in the estate specifies rounding")
-                    .isEqualTo("2022-07-06-14.23.41.870000");
-            assertThat(AbstractCobolStep.formatBatchTimestamp(
-                    LocalDateTime.of(2022, 7, 6, 14, 23, 41, 9_999_999)))
-                    .isEqualTo("2022-07-06-14.23.41.000000");
-        }
-
-        @Test
-        @DisplayName("every field is zero padded to the width its redefinition declares")
-        void everyFieldIsZeroPadded() {
-            assertThat(AbstractCobolStep.formatBatchTimestamp(LocalDateTime.of(7, 1, 2, 3, 4, 5, 0)))
-                    .isEqualTo("0007-01-02-03.04.05.000000");
-        }
-
-        @Test
-        @DisplayName("a year the four-byte field cannot hold is refused")
-        void anUnrepresentableYearIsRefused() {
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> AbstractCobolStep.formatBatchTimestamp(
-                            LocalDateTime.of(10_000, 1, 1, 0, 0, 0)))
-                    .withMessageContaining("four-byte year field");
-        }
-
-        @Test
-        @DisplayName("the boundary years the field can hold are accepted")
-        void theBoundaryYearsAreAccepted() {
-            assertThat(AbstractCobolStep.formatBatchTimestamp(
-                    LocalDateTime.of(9999, 12, 31, 23, 59, 59, 990_000_000)))
-                    .isEqualTo("9999-12-31-23.59.59.990000");
-        }
-
-        @Test
-        @DisplayName("an absent moment is refused")
-        void anAbsentMomentIsRefused() {
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> AbstractCobolStep.formatBatchTimestamp(null))
-                    .withMessageContaining("moment");
-        }
-
-        @Test
-        @DisplayName("the instance accessor reads the injected clock, so a test can pin the instant")
-        void theInstanceAccessorReadsTheInjectedClock() {
-            assertThat(stepDelivering().timestamp()).isEqualTo(PINNED_TIMESTAMP_IMAGE);
-        }
-
-        @Test
-        @DisplayName("a clock in another zone still produces the image at the legacy width, because "
-                + "the zone belongs to the supplied clock and never to the host")
-        void aClockInAnotherZoneStillProducesAWellFormedImage() {
-            // The time source is always supplied: this class has one constructor and its clock is
-            // mandatory. A step that defaulted its own clock would read the host's regional
-            // settings instead of the single UTC clock the module publishes, so the same run would
-            // emit different bytes on two machines and no test could pin the instant. Handing in a
-            // clock pinned to the same instant in another zone proves the shape of the image is a
-            // property of the format rather than of the zone, while the reading itself moves.
-            final ScriptedStep step = new ScriptedStep(PROGRAM_NAME, meterRegistry,
-                    Clock.fixed(PINNED_INSTANT, ZoneId.of("Asia/Tokyo")));
-
-            assertThat(step.timestamp().getBytes(StandardCharsets.US_ASCII))
-                    .hasSize(ORACLE_BATCH_TIMESTAMP_LENGTH);
-            assertThat(step.timestamp()).endsWith(ORACLE_BATCH_TIMESTAMP_TAIL);
-            assertThat(step.timestamp())
-                    .as("the civil-time reading follows the clock's zone, so it is not the UTC image")
-                    .isNotEqualTo(PINNED_TIMESTAMP_IMAGE);
-            assertThat(step.run().recordsRead())
-                    .as("a step whose clock names another zone runs the same lifecycle")
-                    .isZero();
-        }
-    }
-
-    @Nested
-    @DisplayName("guarded helpers refuse an unnamed file, so no diagnostic can omit what failed")
-    final class ResourceNamingContract {
-
-        @Test
-        @DisplayName("a write refuses an absent or blank file name")
-        void aWriteRefusesAnUnnamedFile() {
-            final ScriptedStep step = stepDelivering();
-
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> step.write(null, STATUS_SUCCESS))
-                    .withMessageContaining("resource");
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> step.write("   ", STATUS_SUCCESS))
-                    .withMessageContaining("must name the file");
-        }
-
-        @Test
-        @DisplayName("a named file is reported in the diagnostic verbatim")
-        void aNamedFileIsReportedVerbatim() {
-            final ScriptedStep step = stepDelivering();
-
-            assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(() -> step.write(OTHER_RESOURCE_NAME, STATUS_OUTSIDE_VOCABULARY))
-                    .withMessageContaining(OTHER_RESOURCE_NAME);
+        @DisplayName("the two outcomes are distinct tag values, so one never masks the other")
+        void theTwoOutcomesAreDistinctTagValues() {
+            assertThat(ORACLE_OUTCOME_COMPLETED).isNotEqualTo(ORACLE_OUTCOME_ABENDED);
+            assertThat(ORACLE_TAG_STEP).isNotEqualTo(ORACLE_TAG_OUTCOME);
         }
     }
 }

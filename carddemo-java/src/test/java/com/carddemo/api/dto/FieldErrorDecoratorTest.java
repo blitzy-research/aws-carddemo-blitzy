@@ -27,6 +27,18 @@ import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.StreamWriteFeature;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -83,6 +95,30 @@ import static org.assertj.core.api.Assertions.tuple;
  * relationship between two test-owned constants, because such an assertion would pass whatever
  * the production type did.
  *
+ * <h2>Source oddities that are contract rather than defect</h2>
+ *
+ * <p>Four irregularities in the legacy source bear on what this file may assert, and all four are
+ * reproduced rather than tidied away, because tidying any of them would change behaviour a client
+ * already depends on.
+ *
+ * <ul>
+ *   <li>The macro's own descriptive line is corrupted - an unrelated screen field name runs on to
+ *       the end of it. The substitution tokens, not the commentary, define what the macro does,
+ *       and it is the tokens that were translated.</li>
+ *   <li>Two of the descriptive lines near the end of the expansion range are transposed relative
+ *       to the code they label, and one line repeats the state label immediately ahead of the
+ *       postal-code expansion. The same rule applies: the tokens govern, so the expansion order
+ *       this file pins is the order the tokens produce, which the boundary assertions state
+ *       explicitly.</li>
+ *   <li>Two of the 39 decorated fields - the middle name and the second address line - carry
+ *       source comments saying no edits are coded for them. They are therefore decorated but never
+ *       validated, so this type must be able to mark them although no caller ever will, and no
+ *       constraint may be attached to them anywhere.</li>
+ *   <li>The map declares 43 keyable fields but the macro decorates only 39. The four keyable but
+ *       undecorated fields are real and are derived here by difference rather than asserted, so a
+ *       reader who expects 43 finds the arithmetic rather than a bare claim.</li>
+ * </ul>
+ *
  * <h2>What this test deliberately does not do</h2>
  *
  * <p>It does not evaluate the re-entry gate. The legacy macro was gated on the program-context
@@ -97,6 +133,17 @@ import static org.assertj.core.api.Assertions.tuple;
  * <p>It reads no clock, opens no context, touches no file the fixtures aside, and asserts no
  * timing figure: the type carries no temporal component and no numeric component at all.
  *
+ * <p>It starts no application context even where it asserts the wire shape. The mapper used for
+ * that is built locally from the four settings the module's configuration file declares, so the
+ * shape assertions stay part of a unit suite; the separate question of whether a hand-built mapper
+ * is equivalent to the deployed bean belongs to the one suite in this package that does start a
+ * context, and is asserted there rather than assumed here.
+ *
+ * <p>It reproduces none of the macro's 3270 mechanisms. Neither the attribute-level colour change
+ * nor the marker character written over a blank field's displayed value has a REST counterpart, so
+ * only the two states they signified are asserted, and their absence from the payload is asserted
+ * as well.
+ *
  * <p>Provenance: behaviour cited, never transcribed, from the CardDemo COBOL estate at checkout
  * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
@@ -106,8 +153,9 @@ class FieldErrorDecoratorTest {
 
     /**
      * Class-loader path of the golden list of decorated screen field identifiers, extracted from
-     * the 39 {@code COPY CSSETATY REPLACING} sites of {@code app/cbl/COACTUPC.cbl} in expansion
-     * order.
+     * the 39 macro expansion sites of {@code app/cbl/COACTUPC.cbl}, lines 3208 to 3432, in
+     * expansion order. Only the substituted identifiers were extracted; no directive text,
+     * declaration or statement of the legacy source is reproduced anywhere in this file.
      */
     private static final String GOLDEN_DECORATED_PATH =
             "/fixtures/expected/decoration/coactupc-decorated-screen-fields.txt";
@@ -217,6 +265,102 @@ class FieldErrorDecoratorTest {
 
     /** Request-contract property name for the second address line. Likewise unconstrained. */
     private static final String PROP_ADDRESS_LINE_2 = "addressLine2";
+
+    /**
+     * An identifier belonging to neither fixture, used to prove the type holds no table.
+     *
+     * <p>It is shaped like a screen field identifier but is not one: the assertions that use it
+     * derive its absence from both fixtures rather than assuming it, so the proof survives any
+     * future re-extraction.
+     */
+    private static final String SCREEN_NOT_IN_THE_MAP = "ZZNOSUC";
+
+    /** A property name belonging to no request contract, paired with the identifier above. */
+    private static final String PROP_NOT_IN_ANY_CONTRACT = "propertyNoContractDeclares";
+
+    /**
+     * A value whose leading zeros are significant.
+     *
+     * <p>Eleven digits with two leading zeros. The legacy account identifier is an eleven-digit
+     * unsigned display field, so a value that begins with a zero is ordinary rather than
+     * exceptional, and a numeric parameter type would silently discard the zeros. The assertions
+     * that use this value demonstrate that loss independently rather than asserting it away.
+     */
+    private static final String LEADING_ZERO_VALUE = "00000000123";
+
+    /** A digits-only screen identifier with a leading zero, for the same reason. */
+    private static final String LEADING_ZERO_IDENTIFIER = "0123456";
+
+    /**
+     * A value long enough that any plausible length constraint would have rejected it.
+     *
+     * <p>Two hundred characters, well past the widest field the map declares. Carrying it
+     * unchanged is the behavioural proof that this type enforces no length of its own.
+     */
+    private static final String OVERLONG_VALUE = "A".repeat(200);
+
+    /**
+     * A value combining digits, punctuation and embedded spaces.
+     *
+     * <p>A pattern or alphabetic constraint would reject it. The legacy alphabetic edit accepted
+     * embedded spaces, and this type performs no character-class edit at all, so the value must
+     * come back exactly as supplied.
+     */
+    private static final String MIXED_CONTENT_VALUE = "12 ab-CD_ef.  34";
+
+    /**
+     * The single decoration operation, bound as an unbound instance-method reference.
+     *
+     * <p>This declaration is itself an assertion, discharged by the compiler rather than at run
+     * time, which is why no part of this file inspects a method table at run time. The reference
+     * resolves only if the production type declares exactly one applicable {@code mark} taking a
+     * property name, a screen field identifier and a flag state, in that order, and returning a
+     * new accumulation. A second overload would make the reference ambiguous, a fourth parameter
+     * - a re-entry flag, say, or the map name the macro's third token carried - would leave it
+     * unresolvable, and a numeric parameter in place of either identifier would reject the
+     * {@code String} arguments the interface supplies. Under warnings-as-errors compilation each
+     * of those is a build failure.
+     */
+    @FunctionalInterface
+    private interface MarkOperation {
+
+        /**
+         * Applies the production operation to a receiver.
+         *
+         * @param receiver   the accumulation to mark against
+         * @param field      the request-contract property name
+         * @param bmsFieldId the legacy screen field identifier
+         * @param flagState  the legacy validation-flag state
+         * @return the resulting accumulation
+         */
+        FieldErrorDecorator applyTo(FieldErrorDecorator receiver,
+                                    String field,
+                                    String bmsFieldId,
+                                    FieldErrorDecorator.FlagState flagState);
+    }
+
+    /**
+     * Builds a mapper configured exactly as the four wire settings of
+     * {@code src/main/resources/application.yml} configure the deployed one.
+     *
+     * <p>Built locally and by hand rather than obtained from a context: this suite starts no
+     * application context, so the settings are mirrored from the configuration file - {@code null}
+     * values omitted, dates not written as timestamps, unknown properties tolerated on read and
+     * plain rather than scientific rendering of decimals. The last of those cannot affect this
+     * type, which has no numeric component, and is mirrored anyway so that the mapper is the
+     * deployed one's equivalent and not a subset of it.
+     *
+     * @return a mapper equivalent to the deployed configuration
+     */
+    private static ObjectMapper deployedEquivalentMapper() {
+        return JsonMapper.builder()
+                .defaultPropertyInclusion(JsonInclude.Value.construct(
+                        JsonInclude.Include.NON_NULL, JsonInclude.Include.NON_NULL))
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+                .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
+                .build();
+    }
 
     /**
      * Reads a golden fixture as raw bytes so its digest can be pinned before it is trusted.
@@ -1192,6 +1336,804 @@ class FieldErrorDecoratorTest {
                     .extracting(ErrorResponse.FieldError::screenFieldId)
                     .containsExactlyElementsOf(decorated);
             assertThat(response.focusScreenFieldId()).isEqualTo(SCREEN_ACCT_STATUS);
+        }
+    }
+
+    @Nested
+    @DisplayName("The public surface: one decoration operation, three arguments, no fourth")
+    class PublicSurface {
+
+        @Test
+        @DisplayName("the one decoration operation binds to a three-argument reference and the bound "
+                + "form and the direct call are indistinguishable")
+        void theDecorationOperationIsSingleAndThreeArgument() {
+            final MarkOperation operation = FieldErrorDecorator::mark;
+
+            final FieldErrorDecorator viaReference = operation.applyTo(FieldErrorDecorator.none(),
+                    PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK);
+            final FieldErrorDecorator viaDirectCall = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK);
+
+            assertThat(viaReference)
+                    .as("a single applicable operation resolves identically through either form")
+                    .isEqualTo(viaDirectCall);
+            assertThat(viaReference.fieldErrors()).hasSize(1);
+        }
+
+        @Test
+        @DisplayName("the whole surface is the factory, the operation, the presence test and the entry "
+                + "accessor, each binding at its own declared arity")
+        void theSurfaceIsFourBindings() {
+            final Supplier<FieldErrorDecorator> emptyFactory = FieldErrorDecorator::none;
+            final MarkOperation operation = FieldErrorDecorator::mark;
+            final Predicate<FieldErrorDecorator> presenceTest = FieldErrorDecorator::isEmpty;
+            final Function<FieldErrorDecorator, List<ErrorResponse.FieldError>> entriesAccessor =
+                    FieldErrorDecorator::fieldErrors;
+
+            final FieldErrorDecorator empty = emptyFactory.get();
+            final FieldErrorDecorator marked = operation.applyTo(empty, PROP_CREDIT_LIMIT,
+                    SCREEN_CREDIT_LIMIT, FieldErrorDecorator.FlagState.NOT_OK);
+
+            assertThat(presenceTest.test(empty)).isTrue();
+            assertThat(presenceTest.test(marked)).isFalse();
+            assertThat(entriesAccessor.apply(empty)).isEmpty();
+            assertThat(entriesAccessor.apply(marked)).hasSize(1);
+        }
+
+        @Test
+        @DisplayName("one invocation contributes exactly one entry in either flag state, so 39 entries "
+                + "require 39 invocations and no bulk operation can be hiding")
+        void oneInvocationContributesExactlyOneEntry() {
+            for (final FieldErrorDecorator.FlagState flagState
+                    : FieldErrorDecorator.FlagState.values()) {
+                assertThat(FieldErrorDecorator.none()
+                        .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, flagState).fieldErrors())
+                        .as("flag state %s must contribute one entry, never a batch", flagState)
+                        .hasSize(1);
+            }
+        }
+
+        @Test
+        @DisplayName("the only collection-accepting entry point stores what it is handed and translates "
+                + "nothing, so no flag state is ever translated in bulk")
+        void theCollectionEntryPointTranslatesNothing() {
+            final List<FieldErrorDecorator.MarkedField> handedOver = List.of(
+                    new FieldErrorDecorator.MarkedField(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS,
+                            FieldErrorDecorator.FlagState.BLANK),
+                    new FieldErrorDecorator.MarkedField(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT,
+                            FieldErrorDecorator.FlagState.NOT_OK));
+
+            final FieldErrorDecorator fromEntries = new FieldErrorDecorator(handedOver);
+
+            assertThat(fromEntries.markedFields())
+                    .as("construction stores the entries untranslated, in the order handed over")
+                    .containsExactlyElementsOf(handedOver);
+            assertThat(fromEntries.fieldErrors())
+                    .as("translation happens once, on the projection, one entry at a time")
+                    .containsExactly(
+                            new ErrorResponse.FieldError(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS,
+                                    ErrorResponse.FieldState.MISSING),
+                            new ErrorResponse.FieldError(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT,
+                                    ErrorResponse.FieldState.INVALID));
+        }
+
+        @Test
+        @DisplayName("the empty value is usable the moment it is handed over, so no separate build or "
+                + "completion step exists to forget")
+        void theEmptyValueNeedsNoCompletionStep() {
+            final FieldErrorDecorator empty = FieldErrorDecorator.none();
+
+            assertThat(empty.isEmpty()).isTrue();
+            assertThat(empty.fieldErrors()).isEmpty();
+            assertThat(empty.mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS,
+                    FieldErrorDecorator.FlagState.BLANK).fieldErrors()).hasSize(1);
+        }
+    }
+
+    @Nested
+    @DisplayName("Purity: one receiver, invoked twice with the same arguments")
+    class PurityUnderRepetition {
+
+        @Test
+        @DisplayName("invoking twice with identical arguments from one receiver yields two equal but "
+                + "distinct values and leaves the receiver exactly as it was")
+        void twoIdenticalInvocationsFromOneReceiverAgree() {
+            final FieldErrorDecorator receiver = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK);
+
+            final FieldErrorDecorator first = receiver.mark(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT,
+                    FieldErrorDecorator.FlagState.NOT_OK);
+            final FieldErrorDecorator second = receiver.mark(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT,
+                    FieldErrorDecorator.FlagState.NOT_OK);
+
+            assertThat(first).isEqualTo(second).hasSameHashCodeAs(second).isNotSameAs(second);
+            assertThat(receiver.fieldErrors())
+                    .as("neither invocation may reach back into the value they were derived from")
+                    .hasSize(1);
+            assertThat(screenFieldsOf(receiver)).containsExactly(SCREEN_ACCT_STATUS);
+            assertThat(screenFieldsOf(first))
+                    .containsExactly(SCREEN_ACCT_STATUS, SCREEN_CREDIT_LIMIT);
+        }
+
+        @Test
+        @DisplayName("the arguments handed in are not altered either, so a caller can reuse the same "
+                + "names across several marks")
+        void theArgumentsAreNotAltered() {
+            final String propertyName = PROP_ACCT_STATUS;
+            final String screenFieldId = SCREEN_ACCT_STATUS;
+            final FieldErrorDecorator.FlagState flagState = FieldErrorDecorator.FlagState.BLANK;
+
+            final FieldErrorDecorator once = FieldErrorDecorator.none()
+                    .mark(propertyName, screenFieldId, flagState);
+            final FieldErrorDecorator twice = once.mark(propertyName, screenFieldId, flagState);
+
+            assertThat(propertyName).isEqualTo(PROP_ACCT_STATUS);
+            assertThat(screenFieldId).isEqualTo(SCREEN_ACCT_STATUS);
+            assertThat(flagState).isEqualTo(FieldErrorDecorator.FlagState.BLANK);
+            assertThat(twice.fieldErrors()).hasSize(2);
+            assertThat(twice.fieldErrors().get(0)).isEqualTo(twice.fieldErrors().get(1));
+        }
+
+        @Test
+        @DisplayName("a value re-read after being marked from reports the same content it did before, so "
+                + "reading is not a consuming operation")
+        void readingIsNotConsuming() {
+            final FieldErrorDecorator receiver = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK);
+            final List<ErrorResponse.FieldError> beforeMarking = receiver.fieldErrors();
+
+            receiver.mark(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT,
+                    FieldErrorDecorator.FlagState.NOT_OK);
+
+            assertThat(receiver.fieldErrors()).isEqualTo(beforeMarking).hasSize(1);
+            assertThat(receiver.isEmpty()).isFalse();
+        }
+    }
+
+    @Nested
+    @DisplayName("The two states are states, not a boolean")
+    class StatesAreNotBooleans {
+
+        @Test
+        @DisplayName("a boolean built from either accumulation is the same for both, which is precisely "
+                + "the distinction a single flag would have destroyed")
+        void aBooleanCannotTellTheTwoStatesApart() {
+            final FieldErrorDecorator blank = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK);
+            final FieldErrorDecorator notOk = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS,
+                            FieldErrorDecorator.FlagState.NOT_OK);
+
+            assertThat(blank.isEmpty())
+                    .as("reduced to a presence flag the two are indistinguishable")
+                    .isEqualTo(notOk.isEmpty());
+            assertThat(blank.fieldErrors().get(0).state())
+                    .as("carried as a state they are not")
+                    .isNotEqualTo(notOk.fieldErrors().get(0).state());
+            assertThat(blank).isNotEqualTo(notOk);
+        }
+
+        @Test
+        @DisplayName("both published states are constants of the enum nested in the response body, so "
+                + "neither can be coerced into the other or into a flag")
+        void bothStatesAreConstantsOfTheOneEnum() {
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK)
+                    .mark(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT,
+                            FieldErrorDecorator.FlagState.NOT_OK);
+
+            final List<ErrorResponse.FieldState> published =
+                    Arrays.asList(ErrorResponse.FieldState.values());
+
+            assertThat(errors.fieldErrors())
+                    .extracting(ErrorResponse.FieldError::state)
+                    .containsExactly(ErrorResponse.FieldState.MISSING,
+                            ErrorResponse.FieldState.INVALID)
+                    .allSatisfy(state -> assertThat(published).contains(state));
+            assertThat(published).containsExactly(ErrorResponse.FieldState.MISSING,
+                    ErrorResponse.FieldState.INVALID);
+        }
+
+        @Test
+        @DisplayName("the incoming vocabulary and the published vocabulary are the same size, so the "
+                + "translation loses nothing and invents nothing")
+        void theTwoVocabulariesAreTheSameSize() {
+            assertThat(FieldErrorDecorator.FlagState.values())
+                    .hasSameSizeAs(ErrorResponse.FieldState.values())
+                    .hasSize(2);
+        }
+
+        @Test
+        @DisplayName("the translation is injective across the whole incoming vocabulary, so no two flag "
+                + "states can ever land on one published state")
+        void theTranslationIsInjective() {
+            final Set<ErrorResponse.FieldState> reached = new LinkedHashSet<>();
+            for (final FieldErrorDecorator.FlagState flagState
+                    : FieldErrorDecorator.FlagState.values()) {
+                reached.add(FieldErrorDecorator.none()
+                        .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, flagState)
+                        .fieldErrors().get(0).state());
+            }
+
+            assertThat(reached).hasSize(FieldErrorDecorator.FlagState.values().length)
+                    .containsExactly(ErrorResponse.FieldState.MISSING,
+                            ErrorResponse.FieldState.INVALID);
+        }
+    }
+
+    /**
+     * The re-entry gate the macro carried is a caller decision and is asserted here to be absent
+     * from this type, not present in a weakened form.
+     *
+     * <p>The macro conjoined its whole body with the program-context re-enter condition, so the
+     * legacy screen showed no field-level decoration at all on a first submission. Nothing in this
+     * type reproduces that conjunction: there is no argument to pass it in, no component to hold it
+     * and no branch to test it. A first submission is realised by <em>not calling</em> the
+     * operation, which is why the end-to-end assertion for an undecorated first submission belongs
+     * to the response body's own suite and is made there against
+     * {@link ErrorResponse#ErrorResponse(String)}, not here.
+     */
+    @Nested
+    @DisplayName("The re-entry gate is the caller's, and is absent from this type")
+    class NoReEntryDecisionHere {
+
+        @Test
+        @DisplayName("the very first mark decorates, so nothing inside suppresses a first submission")
+        void theVeryFirstMarkAlreadyDecorates() {
+            final FieldErrorDecorator firstEver = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK);
+
+            assertThat(firstEver.isEmpty()).isFalse();
+            assertThat(firstEver.fieldErrors()).hasSize(1);
+            assertThat(firstEver.fieldErrors().get(0).state())
+                    .isEqualTo(ErrorResponse.FieldState.MISSING);
+        }
+
+        @Test
+        @DisplayName("the first mark and a later identical mark on a fresh value are equal, so no hidden "
+                + "counter distinguishes a first submission from a re-submission")
+        void noHiddenCounterDistinguishesSubmissions() {
+            final FieldErrorDecorator firstSubmission = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK);
+
+            final FieldErrorDecorator warmedUp = FieldErrorDecorator.none()
+                    .mark(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT,
+                            FieldErrorDecorator.FlagState.NOT_OK);
+            assertThat(warmedUp.fieldErrors()).hasSize(1);
+
+            final FieldErrorDecorator laterSubmission = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK);
+
+            assertThat(laterSubmission)
+                    .as("earlier use of the type cannot change what a later identical call produces")
+                    .isEqualTo(firstSubmission);
+        }
+
+        @Test
+        @DisplayName("an undecorated result is reachable only by not calling the operation, never by "
+                + "calling it in a way that declines to record")
+        void anUndecoratedResultComesOnlyFromNotCalling() {
+            assertThat(FieldErrorDecorator.none().isEmpty()).isTrue();
+
+            for (final FieldErrorDecorator.FlagState flagState
+                    : FieldErrorDecorator.FlagState.values()) {
+                assertThat(FieldErrorDecorator.none()
+                        .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, flagState).isEmpty())
+                        .as("no flag state may make the operation decline to record")
+                        .isFalse();
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("No table of the 39: both identifiers arrive as arguments and are never looked up")
+    class NoTableOfDecoratedFields {
+
+        @Test
+        @DisplayName("an identifier belonging to neither fixture is accepted and reported verbatim, so no "
+                + "membership of any list is consulted")
+        void anUnknownIdentifierIsAcceptedVerbatim() throws IOException {
+            assertThat(decoratedScreenFields())
+                    .as("the probe identifier must genuinely be outside the decorated set")
+                    .doesNotContain(SCREEN_NOT_IN_THE_MAP);
+            assertThat(unprotectedScreenFields())
+                    .as("and outside the map's keyable fields as well")
+                    .doesNotContain(SCREEN_NOT_IN_THE_MAP);
+
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(PROP_NOT_IN_ANY_CONTRACT, SCREEN_NOT_IN_THE_MAP,
+                            FieldErrorDecorator.FlagState.NOT_OK);
+
+            assertThat(errors.fieldErrors()).hasSize(1);
+            assertThat(errors.fieldErrors().get(0).fieldName())
+                    .isEqualTo(PROP_NOT_IN_ANY_CONTRACT);
+            assertThat(errors.fieldErrors().get(0).screenFieldId())
+                    .isEqualTo(SCREEN_NOT_IN_THE_MAP);
+        }
+
+        @Test
+        @DisplayName("one of the four editable-but-undecorated fields is accepted too, because the type "
+                + "enforces no membership rule - it is the caller that never marks them")
+        void evenAnUndecoratedMapFieldIsAccepted() throws IOException {
+            final String undecorated = undecoratedScreenFields().iterator().next();
+
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(propertyNameFor(undecorated), undecorated,
+                            FieldErrorDecorator.FlagState.BLANK);
+
+            assertThat(errors.fieldErrors()).hasSize(1);
+            assertThat(errors.fieldErrors().get(0).screenFieldId()).isEqualTo(undecorated);
+        }
+
+        @Test
+        @DisplayName("the property name is never derived from the screen identifier: an arbitrary pairing "
+                + "of the two survives exactly as paired")
+        void thePairingIsTheCallersOwn() {
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(PROP_ADDRESS_LINE_2, SCREEN_ACCT_STATUS,
+                            FieldErrorDecorator.FlagState.NOT_OK);
+            final ErrorResponse.FieldError entry = errors.fieldErrors().get(0);
+
+            assertThat(entry.fieldName()).isEqualTo(PROP_ADDRESS_LINE_2);
+            assertThat(entry.screenFieldId()).isEqualTo(SCREEN_ACCT_STATUS);
+        }
+
+        @Test
+        @DisplayName("marking every one of the 39 produces no entry the caller did not ask for, so no "
+                + "list is being consulted to add or to withhold")
+        void nothingIsAddedAndNothingIsWithheld() throws IOException {
+            final List<String> decorated = decoratedScreenFields();
+
+            final FieldErrorDecorator errors = markAll(decorated,
+                    FieldErrorDecorator.FlagState.NOT_OK);
+
+            assertThat(screenFieldsOf(errors))
+                    .hasSameSizeAs(decorated)
+                    .containsExactlyElementsOf(decorated);
+        }
+    }
+
+    @Nested
+    @DisplayName("No shared state: independent sequences interleaved")
+    class IndependentSequences {
+
+        @Test
+        @DisplayName("two accumulations grown in alternation each hold only their own entries, so no "
+                + "accumulator, collector or registry is shared between them")
+        void twoInterleavedSequencesStayIsolated() {
+            FieldErrorDecorator left = FieldErrorDecorator.none();
+            FieldErrorDecorator right = FieldErrorDecorator.none();
+
+            left = left.mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS,
+                    FieldErrorDecorator.FlagState.BLANK);
+            right = right.mark(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT,
+                    FieldErrorDecorator.FlagState.NOT_OK);
+            left = left.mark(PROP_MIDDLE_NAME, SCREEN_MIDDLE_NAME,
+                    FieldErrorDecorator.FlagState.NOT_OK);
+            right = right.mark(PROP_ADDRESS_LINE_2, SCREEN_ADDRESS_LINE_2,
+                    FieldErrorDecorator.FlagState.BLANK);
+
+            assertThat(screenFieldsOf(left))
+                    .containsExactly(SCREEN_ACCT_STATUS, SCREEN_MIDDLE_NAME);
+            assertThat(screenFieldsOf(right))
+                    .containsExactly(SCREEN_CREDIT_LIMIT, SCREEN_ADDRESS_LINE_2);
+            assertThat(left.fieldErrors()).doesNotContainAnyElementsOf(right.fieldErrors());
+            assertThat(right.fieldErrors()).doesNotContainAnyElementsOf(left.fieldErrors());
+        }
+
+        @Test
+        @DisplayName("the 39 sites split across two interleaved sequences partition exactly, with no "
+                + "entry appearing in both and none lost between them")
+        void theThirtyNineSplitCleanlyAcrossTwoSequences() throws IOException {
+            final List<String> decorated = decoratedScreenFields();
+            final List<String> evenSites = new ArrayList<>();
+            final List<String> oddSites = new ArrayList<>();
+
+            FieldErrorDecorator even = FieldErrorDecorator.none();
+            FieldErrorDecorator odd = FieldErrorDecorator.none();
+            for (int index = 0; index < decorated.size(); index++) {
+                final String screenFieldId = decorated.get(index);
+                if (index % 2 == 0) {
+                    evenSites.add(screenFieldId);
+                    even = even.mark(propertyNameFor(screenFieldId), screenFieldId,
+                            FieldErrorDecorator.FlagState.BLANK);
+                } else {
+                    oddSites.add(screenFieldId);
+                    odd = odd.mark(propertyNameFor(screenFieldId), screenFieldId,
+                            FieldErrorDecorator.FlagState.NOT_OK);
+                }
+            }
+
+            assertThat(screenFieldsOf(even)).containsExactlyElementsOf(evenSites);
+            assertThat(screenFieldsOf(odd)).containsExactlyElementsOf(oddSites);
+            assertThat(even.fieldErrors()).hasSize(evenSites.size());
+            assertThat(odd.fieldErrors()).hasSize(oddSites.size());
+            assertThat(evenSites.size() + oddSites.size()).isEqualTo(EXPANSION_SITE_COUNT);
+            assertThat(screenFieldsOf(even)).doesNotContainAnyElementsOf(screenFieldsOf(odd));
+            assertThat(even.fieldErrors())
+                    .extracting(ErrorResponse.FieldError::state)
+                    .containsOnly(ErrorResponse.FieldState.MISSING);
+            assertThat(odd.fieldErrors())
+                    .extracting(ErrorResponse.FieldError::state)
+                    .containsOnly(ErrorResponse.FieldState.INVALID);
+        }
+
+        @Test
+        @DisplayName("abandoning one sequence part-built leaves the other untouched, so nothing is being "
+                + "held anywhere beyond the values themselves")
+        void abandoningOneSequenceLeavesTheOtherIntact() {
+            final FieldErrorDecorator kept = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK);
+
+            FieldErrorDecorator.none()
+                    .mark(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT,
+                            FieldErrorDecorator.FlagState.NOT_OK)
+                    .mark(PROP_MIDDLE_NAME, SCREEN_MIDDLE_NAME,
+                            FieldErrorDecorator.FlagState.NOT_OK);
+
+            assertThat(screenFieldsOf(kept)).containsExactly(SCREEN_ACCT_STATUS);
+            assertThat(kept.fieldErrors()).hasSize(1);
+        }
+    }
+
+    @Nested
+    @DisplayName("Both identifiers are bounded text carried byte for byte")
+    class IdentifiersAreCarriedByteForByte {
+
+        @Test
+        @DisplayName("leading zeros survive on both identifiers, which a numeric parameter type could not "
+                + "have managed")
+        void leadingZerosSurvive() {
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(LEADING_ZERO_VALUE, LEADING_ZERO_IDENTIFIER,
+                            FieldErrorDecorator.FlagState.NOT_OK);
+            final ErrorResponse.FieldError entry = errors.fieldErrors().get(0);
+
+            assertThat(entry.fieldName()).isEqualTo(LEADING_ZERO_VALUE);
+            assertThat(entry.screenFieldId()).isEqualTo(LEADING_ZERO_IDENTIFIER);
+            assertThat(entry.fieldName())
+                    .as("the digits are text, so the width is preserved rather than normalised")
+                    .hasSameSizeAs(LEADING_ZERO_VALUE)
+                    .startsWith("0");
+        }
+
+        @Test
+        @DisplayName("a numeric round trip of the same value loses the zeros, which is the independent "
+                + "demonstration of why the parameter is text")
+        void aNumericRoundTripWouldHaveLostTheZeros() {
+            final String numericallyNormalised =
+                    Long.toString(Long.parseLong(LEADING_ZERO_VALUE));
+
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(LEADING_ZERO_VALUE, LEADING_ZERO_IDENTIFIER,
+                            FieldErrorDecorator.FlagState.BLANK);
+
+            assertThat(numericallyNormalised)
+                    .as("a numeric type drops the leading zeros and shortens the value")
+                    .isNotEqualTo(LEADING_ZERO_VALUE)
+                    .hasSizeLessThan(LEADING_ZERO_VALUE.length());
+            assertThat(errors.fieldErrors().get(0).fieldName())
+                    .as("the operation keeps them, because it takes text")
+                    .isEqualTo(LEADING_ZERO_VALUE)
+                    .isNotEqualTo(numericallyNormalised);
+        }
+
+        @Test
+        @DisplayName("trailing and leading spaces survive on both identifiers, because the fields these "
+                + "values derive from are fixed width and space significant")
+        void surroundingSpacesSurvive() {
+            final String paddedProperty = "acctStatus   ";
+            final String paddedIdentifier = "  ACSTTUS";
+
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(paddedProperty, paddedIdentifier, FieldErrorDecorator.FlagState.NOT_OK);
+            final ErrorResponse.FieldError entry = errors.fieldErrors().get(0);
+
+            assertThat(entry.fieldName()).isEqualTo(paddedProperty)
+                    .hasSameSizeAs(paddedProperty)
+                    .isNotEqualTo(PROP_ACCT_STATUS);
+            assertThat(entry.screenFieldId()).isEqualTo(paddedIdentifier)
+                    .hasSameSizeAs(paddedIdentifier)
+                    .isNotEqualTo(SCREEN_ACCT_STATUS);
+        }
+
+        @Test
+        @DisplayName("a value far longer than any field the map declares is carried unchanged, so this "
+                + "type enforces no width of its own")
+        void noWidthIsEnforced() {
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(OVERLONG_VALUE, OVERLONG_VALUE, FieldErrorDecorator.FlagState.BLANK);
+            final ErrorResponse.FieldError entry = errors.fieldErrors().get(0);
+
+            assertThat(entry.fieldName()).isEqualTo(OVERLONG_VALUE)
+                    .hasSize(OVERLONG_VALUE.length());
+            assertThat(entry.screenFieldId()).isEqualTo(OVERLONG_VALUE);
+            assertThat(OVERLONG_VALUE.length())
+                    .as("and it is genuinely wider than the widest identifier the map declares")
+                    .isGreaterThan(SCREEN_FIELD_ID_MAX_WIDTH);
+        }
+
+        @Test
+        @DisplayName("digits, punctuation and embedded spaces are all carried unchanged, so no character "
+                + "class is enforced either - the legacy alphabetic edit accepted embedded spaces")
+        void noCharacterClassIsEnforced() {
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(MIXED_CONTENT_VALUE, MIXED_CONTENT_VALUE,
+                            FieldErrorDecorator.FlagState.NOT_OK);
+            final ErrorResponse.FieldError entry = errors.fieldErrors().get(0);
+
+            assertThat(entry.fieldName()).isEqualTo(MIXED_CONTENT_VALUE);
+            assertThat(entry.screenFieldId()).isEqualTo(MIXED_CONTENT_VALUE);
+            assertThat(entry.message())
+                    .as("and still no per-field wording is invented for it")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("the two fields the source decorates but never validates accept any content at all, "
+                + "so no constraint may be attached to them that the legacy would have accepted")
+        void theTwoUnvalidatedFieldsAcceptAnything() {
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(PROP_MIDDLE_NAME, SCREEN_MIDDLE_NAME,
+                            FieldErrorDecorator.FlagState.BLANK)
+                    .mark(PROP_ADDRESS_LINE_2, SCREEN_ADDRESS_LINE_2,
+                            FieldErrorDecorator.FlagState.NOT_OK);
+
+            assertThat(errors.fieldErrors())
+                    .extracting(ErrorResponse.FieldError::fieldName)
+                    .containsExactly(PROP_MIDDLE_NAME, PROP_ADDRESS_LINE_2);
+
+            final FieldErrorDecorator withOddContent = FieldErrorDecorator.none()
+                    .mark(PROP_MIDDLE_NAME, SCREEN_MIDDLE_NAME,
+                            FieldErrorDecorator.FlagState.BLANK)
+                    .mark(PROP_ADDRESS_LINE_2, SCREEN_ADDRESS_LINE_2,
+                            FieldErrorDecorator.FlagState.BLANK);
+
+            assertThat(withOddContent.fieldErrors())
+                    .extracting(ErrorResponse.FieldError::state)
+                    .containsOnly(ErrorResponse.FieldState.MISSING);
+        }
+
+        @Test
+        @DisplayName("an empty identifier is accepted rather than rejected, because absence and emptiness "
+                + "are different and only absence is a caller defect")
+        void emptinessIsAcceptedWhereAbsenceIsNot() {
+            final FieldErrorDecorator accepted = FieldErrorDecorator.none()
+                    .mark("", "", FieldErrorDecorator.FlagState.BLANK);
+
+            assertThat(accepted.fieldErrors()).hasSize(1);
+            assertThat(accepted.fieldErrors().get(0).fieldName()).isEmpty();
+            assertThat(accepted.fieldErrors().get(0).screenFieldId()).isEmpty();
+
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> FieldErrorDecorator.none()
+                            .mark(null, "", FieldErrorDecorator.FlagState.BLANK));
+        }
+    }
+
+    /**
+     * The 3270 mechanisms the macro used are gone, and only the two states they signified remain.
+     *
+     * <p>The macro's two edits were a colour change on the field's attribute sub-field and a
+     * single-character marker written over its displayed value. Neither is a REST concept, and this
+     * group asserts that neither leaks: no entry carries a control byte, an attribute value, a
+     * marker character, a map coordinate or a field width, and the screen field identifier is an
+     * opaque label a client may ignore entirely.
+     */
+    @Nested
+    @DisplayName("No terminal presentation detail survives the translation")
+    class NoTerminalPresentationDetail {
+
+        @Test
+        @DisplayName("an entry carries exactly four components - two identifiers, a state and an absent "
+                + "wording - and nothing that could encode a screen attribute")
+        void anEntryCarriesOnlyItsFourComponents() {
+            final ErrorResponse.FieldError entry = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK)
+                    .fieldErrors().get(0);
+
+            assertThat(entry.fieldName()).isEqualTo(PROP_ACCT_STATUS);
+            assertThat(entry.screenFieldId()).isEqualTo(SCREEN_ACCT_STATUS);
+            assertThat(entry.state()).isEqualTo(ErrorResponse.FieldState.MISSING);
+            assertThat(entry.message()).isNull();
+            assertThat(entry).isEqualTo(new ErrorResponse.FieldError(PROP_ACCT_STATUS,
+                    SCREEN_ACCT_STATUS, ErrorResponse.FieldState.MISSING));
+        }
+
+        @Test
+        @DisplayName("the blank state adds no marker character of its own, so the state alone distinguishes "
+                + "it and the legacy overwrite is not reproduced in the payload")
+        void theBlankStateAddsNoMarkerCharacter() {
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK);
+            final ErrorResponse.FieldError entry = errors.fieldErrors().get(0);
+
+            assertThat(entry.fieldName()).doesNotContain("*");
+            assertThat(entry.screenFieldId()).doesNotContain("*");
+            assertThat(entry.state()).isEqualTo(ErrorResponse.FieldState.MISSING);
+            assertThat(errors.toString())
+                    .as("nor does the rendering acquire one")
+                    .doesNotContain("*");
+        }
+
+        @Test
+        @DisplayName("neither state names a colour, an attribute, a control byte or a coordinate, so a "
+                + "client is free to choose its own presentation")
+        void neitherStateNamesAPresentationMechanism() {
+            final List<String> stateNames = Arrays.stream(ErrorResponse.FieldState.values())
+                    .map(Enum::name)
+                    .toList();
+
+            assertThat(stateNames).containsExactly("MISSING", "INVALID");
+            assertThat(stateNames).allSatisfy(name -> assertThat(name)
+                    .doesNotContain("RED")
+                    .doesNotContain("COLOR")
+                    .doesNotContain("COLOUR")
+                    .doesNotContain("ATTR")
+                    .doesNotContain("BYTE")
+                    .doesNotContain("ROW")
+                    .doesNotContain("COLUMN"));
+        }
+
+        @Test
+        @DisplayName("the screen field identifier is opaque: a value that is plainly not an identifier is "
+                + "carried just the same, so it is never parsed as a coordinate or an attribute")
+        void theScreenFieldIdentifierIsOpaque() {
+            final String notAnIdentifier = "row 7, column 42";
+
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, notAnIdentifier, FieldErrorDecorator.FlagState.NOT_OK);
+
+            assertThat(errors.fieldErrors().get(0).screenFieldId()).isEqualTo(notAnIdentifier);
+            assertThat(errors.fieldErrors()).hasSize(1);
+        }
+    }
+
+    /**
+     * The wire shape of the entries this type produces, under a mapper configured exactly as the
+     * deployed one.
+     *
+     * <p>The mapper is built locally, by hand, from the four settings the module's configuration
+     * file declares. No application context is started and no framework test slice is used, so this
+     * group stays a unit test; the equivalence between a hand-built mapper and the deployed bean is
+     * itself asserted elsewhere, by the one suite in this package that does start a context.
+     */
+    @Nested
+    @DisplayName("Wire shape of the accumulated entries")
+    class WireShape {
+
+        @Test
+        @DisplayName("an entry publishes the two identifiers and the state, and omits the absent wording "
+                + "rather than rendering it as a null")
+        void anEntryPublishesThreePropertiesAndOmitsTheFourth() throws JsonProcessingException {
+            final ObjectMapper mapper = deployedEquivalentMapper();
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK);
+
+            final JsonNode entry = mapper.readTree(
+                    mapper.writeValueAsString(errors.fieldErrors().get(0)));
+
+            assertThat(entry.get("fieldName").asText()).isEqualTo(PROP_ACCT_STATUS);
+            assertThat(entry.get("screenFieldId").asText()).isEqualTo(SCREEN_ACCT_STATUS);
+            assertThat(entry.get("state").asText()).isEqualTo("MISSING");
+            assertThat(entry.has("message"))
+                    .as("an absent wording is omitted, not published as a null")
+                    .isFalse();
+            assertThat(entry.size()).isEqualTo(3);
+        }
+
+        @Test
+        @DisplayName("both states publish under their own names, so the two remedies stay distinguishable "
+                + "on the wire and neither becomes a boolean")
+        void bothStatesPublishUnderTheirOwnNames() throws JsonProcessingException {
+            final ObjectMapper mapper = deployedEquivalentMapper();
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK)
+                    .mark(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT,
+                            FieldErrorDecorator.FlagState.NOT_OK);
+
+            final JsonNode entries = mapper.readTree(mapper.writeValueAsString(errors.fieldErrors()));
+
+            assertThat(entries.isArray()).isTrue();
+            assertThat(entries).hasSize(2);
+            assertThat(entries.get(0).get("state").asText()).isEqualTo("MISSING");
+            assertThat(entries.get(1).get("state").asText()).isEqualTo("INVALID");
+            assertThat(entries.get(0).get("state").isTextual()).isTrue();
+            assertThat(entries.get(0).get("state").isBoolean()).isFalse();
+        }
+
+        @Test
+        @DisplayName("a digits-only identifier publishes as text and keeps its leading zeros, so nothing "
+                + "on the wire turns a display field into a number")
+        void digitsPublishAsTextAndKeepTheirZeros() throws JsonProcessingException {
+            final ObjectMapper mapper = deployedEquivalentMapper();
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark(LEADING_ZERO_VALUE, LEADING_ZERO_IDENTIFIER,
+                            FieldErrorDecorator.FlagState.NOT_OK);
+
+            final JsonNode entry = mapper.readTree(
+                    mapper.writeValueAsString(errors.fieldErrors().get(0)));
+
+            assertThat(entry.get("fieldName").isTextual()).isTrue();
+            assertThat(entry.get("fieldName").isNumber()).isFalse();
+            assertThat(entry.get("fieldName").asText()).isEqualTo(LEADING_ZERO_VALUE);
+            assertThat(entry.get("screenFieldId").asText()).isEqualTo(LEADING_ZERO_IDENTIFIER);
+        }
+
+        @Test
+        @DisplayName("space padding survives serialization untrimmed on both identifiers")
+        void paddingSurvivesSerialization() throws JsonProcessingException {
+            final ObjectMapper mapper = deployedEquivalentMapper();
+            final String paddedIdentifier = " ACSTTUS ";
+            final FieldErrorDecorator errors = FieldErrorDecorator.none()
+                    .mark("  padded  ", paddedIdentifier, FieldErrorDecorator.FlagState.BLANK);
+
+            final JsonNode entry = mapper.readTree(
+                    mapper.writeValueAsString(errors.fieldErrors().get(0)));
+
+            assertThat(entry.get("fieldName").asText()).isEqualTo("  padded  ");
+            assertThat(entry.get("screenFieldId").asText()).isEqualTo(paddedIdentifier);
+        }
+
+        @Test
+        @DisplayName("an unknown property on an inbound entry is tolerated rather than rejected, which is "
+                + "what the module's own deserialization setting requires")
+        void anUnknownInboundPropertyIsTolerated() throws JsonProcessingException {
+            final ObjectMapper mapper = deployedEquivalentMapper();
+            final String payload = "{\"fieldName\":\"" + PROP_ACCT_STATUS
+                    + "\",\"screenFieldId\":\"" + SCREEN_ACCT_STATUS
+                    + "\",\"state\":\"MISSING\",\"aPropertyNoVersionOfThisTypeDeclares\":true}";
+
+            final ErrorResponse.FieldError entry =
+                    mapper.readValue(payload, ErrorResponse.FieldError.class);
+
+            assertThat(entry.fieldName()).isEqualTo(PROP_ACCT_STATUS);
+            assertThat(entry.screenFieldId()).isEqualTo(SCREEN_ACCT_STATUS);
+            assertThat(entry.state()).isEqualTo(ErrorResponse.FieldState.MISSING);
+            assertThat(entry.message()).isNull();
+        }
+
+        @Test
+        @DisplayName("all 39 entries round trip through the wire in order and with their own states, so "
+                + "the sequence and the two remedies both survive publication")
+        void allThirtyNineRoundTripInOrder() throws IOException {
+            final ObjectMapper mapper = deployedEquivalentMapper();
+            final List<String> decorated = decoratedScreenFields();
+            final FieldErrorDecorator errors = markAll(decorated,
+                    FieldErrorDecorator.FlagState.BLANK);
+
+            final ErrorResponse published = new ErrorResponse("Account update rejected",
+                    errors.fieldErrors(), SCREEN_ACCT_STATUS);
+            final ErrorResponse returned = mapper.readValue(
+                    mapper.writeValueAsString(published), ErrorResponse.class);
+
+            assertThat(returned.fieldErrors()).hasSize(EXPANSION_SITE_COUNT)
+                    .containsExactlyElementsOf(errors.fieldErrors());
+            assertThat(returned.fieldErrors())
+                    .extracting(ErrorResponse.FieldError::screenFieldId)
+                    .containsExactlyElementsOf(decorated);
+            assertThat(returned.fieldErrors())
+                    .extracting(ErrorResponse.FieldError::state)
+                    .containsOnly(ErrorResponse.FieldState.MISSING);
+            assertThat(returned.focusScreenFieldId()).isEqualTo(SCREEN_ACCT_STATUS);
+        }
+
+        @Test
+        @DisplayName("an empty accumulation publishes the collection as an empty array rather than "
+                + "omitting it, so a client never has to test it for absence")
+        void anEmptyAccumulationPublishesAnEmptyArray() throws JsonProcessingException {
+            final ObjectMapper mapper = deployedEquivalentMapper();
+            final FieldErrorDecorator errors = FieldErrorDecorator.none();
+
+            final JsonNode payload = mapper.readTree(mapper.writeValueAsString(
+                    new ErrorResponse("Account update rejected", errors.fieldErrors())));
+
+            assertThat(payload.has("fieldErrors")).isTrue();
+            assertThat(payload.get("fieldErrors").isArray()).isTrue();
+            assertThat(payload.get("fieldErrors")).isEmpty();
+            assertThat(payload.has("focusScreenFieldId"))
+                    .as("while an absent focus hint is omitted")
+                    .isFalse();
         }
     }
 }

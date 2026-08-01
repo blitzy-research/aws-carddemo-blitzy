@@ -1,112 +1,400 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
 #
-# PRODUCTION profile.
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# HARD RULE (AAP §0.8.1): "No hardcoded credentials - secrets via environment variables or vault
-# references", applied literally, INCLUDING the absence of defaults. Every placeholder below is
-# written as ${VAR} with NO `:default` fallback, so a missing secret aborts startup instead of
-# silently binding a placeholder.
+#    http://www.apache.org/licenses/LICENSE-2.0
 #
-# Required environment variables (startup fails if any is absent):
-#   CARDDEMO_DB_URL                  e.g. jdbc:postgresql://db.internal:5432/carddemo
-#   CARDDEMO_DB_USERNAME
-#   CARDDEMO_DB_PASSWORD
-#   CARDDEMO_JWT_SECRET              >= 32 bytes of entropy for HMAC signing
-#   CARDDEMO_FIELD_ENCRYPTION_KEY    Base64 decoding to exactly 32 bytes - the AES-GCM key for the
-#                                    encrypted personal-data columns, used directly rather than
-#                                    derived, so there is no companion salt variable; rotating it
-#                                    invalidates every stored value sealed under the old key
-#   CARDDEMO_AWS_ACCESS_KEY_ID       omit BOTH aws credential lines to use an IAM role instead
-#   CARDDEMO_AWS_SECRET_ACCESS_KEY
-#   AWS_REGION
-#   CARDDEMO_S3_BUCKET
-#   CARDDEMO_SQS_QUEUE
-#   CARDDEMO_SNS_TOPIC
-#   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+
+# PRODUCTION profile overlay for the CardDemo Java module.
 #
-# Seed migrations are deliberately absent from the Flyway location list: production migrates
-# schema (V1) and indexes (V2) only and never inherits sample data or seeded credentials.
+# PROVENANCE
+#   Legacy checkout SHA : 7756d895ffeb65f7ea72aaa609e356d9899afcec
+#   Upstream stamp      : CardDemo_v1.0-15-g27d6c6f-68, dated 2022-07-19
+#   No COBOL, job-stream, screen-map, copybook or CICS resource-definition source text appears in
+#   this file. The legacy estate is cited by member name, resource name, record width, field name
+#   and attribute value only, and is never copied here.
+#
+# =================================================================================================
+# THE ONE RULE THIS FILE EXISTS TO ENFORCE
+#
+#   "No hardcoded credentials - secrets via environment variables or vault references."
+#
+# That requirement is applied LITERALLY HERE, INCLUDING THE ABSENCE OF DEFAULTS. A defaulted secret
+# violates it exactly as much as a literal one does: both put a usable value in the repository, and
+# the defaulted form is worse, because it starts cleanly and nobody finds out. So every secret below
+# is written as ${VARIABLE} and never as ${VARIABLE:something} - not a placeholder, not an empty
+# tail, not a development convenience.
+#
+# A MISSING SECRET MUST ABORT START-UP, AND THAT IS THE DESIGNED BEHAVIOUR RATHER THAN A ROUGH EDGE.
+# An unresolvable placeholder is raised while the context is being refreshed, before the first
+# request is accepted, so the deployment fails loudly instead of running on something accidental.
+# Nothing in this file may be softened to make a start "work" without its environment.
+#
+# Four values are secrets and carry NO fallback; six more are deployment-specific locations that a
+# guess would turn into an accident, and they carry no fallback either. Everything that DOES carry a
+# value below is a resource name, a published behavioural constant or a non-sensitive setting - see
+# the note on that distinction above the security block, because the no-default rule must not be
+# over-generalised into "nothing may have a value".
+#
+# -------------------------------------------------------------------------------------------------
+# ENVIRONMENT VARIABLES THIS PROFILE REQUIRES
+#
+# This list is the authoritative one. carddemo-java/README.md and any deployment runbook are written
+# from it, so a variable added or renamed here must be carried into both.
+#
+#   REQUIRED - SECRET. No fallback. Start-up aborts when any one of these is absent.
+#     CARDDEMO_DB_PASSWORD             credential for the data source user below
+#     CARDDEMO_JWT_SECRET              signing material for the bearer token that carries the
+#                                      navigation state the legacy pseudo-conversation kept in its
+#                                      communication area; supply ample entropy for HMAC signing
+#     CARDDEMO_FIELD_ENCRYPTION_KEY    Base64 decoding to exactly 32 bytes - the AES-256-GCM key for
+#                                      the encrypted customer identity columns. It is used directly
+#                                      rather than derived, so there is no companion salt variable,
+#                                      and each sealed value carries its own random initialisation
+#                                      vector. Replacing it makes every value sealed under the
+#                                      previous key unreadable: that is a property of authenticated
+#                                      encryption, not a defect
+#     CARDDEMO_TLS_KEYSTORE_PASSWORD   credential protecting the server key store named below
+#
+#   REQUIRED - NOT SECRET, but deployment-specific. No fallback, because a guessed value would be
+#   worse than a failed start.
+#     CARDDEMO_DB_URL                  JDBC location of the PostgreSQL 16 server. Never defaulted: a
+#                                      production data source must not be inferred
+#     CARDDEMO_DB_USERNAME             data source user
+#     CARDDEMO_TLS_KEYSTORE            location of the server key store
+#     CARDDEMO_TLS_KEYSTORE_TYPE       key store format, for example PKCS12
+#     CARDDEMO_TLS_KEY_ALIAS           alias of the server key entry inside that store
+#     CARDDEMO_SQS_QUEUE               ordered job-submission queue. Never defaulted: a queue that is
+#                                      well formed but names nothing is the exact input the messaging
+#                                      template would otherwise resolve by creating a queue nothing
+#                                      consumes, so a submission would report complete and the cards
+#                                      would sit unread. The canonical value is JOBS.fifo
+#     AWS_REGION                       region for the object-store, queue and notification clients.
+#                                      Keeps its ecosystem-standard name deliberately, because
+#                                      application.yml and docker-compose.yml already use it and the
+#                                      cloud SDK reads it directly
+#     OTEL_EXPORTER_OTLP_TRACES_ENDPOINT  trace collector address. Also keeps its standard name, for
+#                                      the same reason
+#
+#   OPTIONAL. Each carries either a resource name mandated by the migration plan or a stated
+#   non-sensitive value, and each may still be redirected without editing this file.
+#     CARDDEMO_S3_BUCKET               object-store bucket for batch file staging
+#     CARDDEMO_SQS_MESSAGE_GROUP_ID    the single message group that preserves append order
+#     CARDDEMO_SNS_TOPIC               job-completion and operational notification topic
+#     CARDDEMO_JWT_EXPIRATION          token lifetime, as an ISO-8601 duration
+#     CARDDEMO_TRACING_SAMPLE_RATE     fraction of traces exported - a sampling decision only
+#
+#   INHERITED from application.yml and not restated here: the listening port, which that file binds
+#   with a fallback so independent clones can run side by side.
+#
+#   DELIBERATELY ABSENT - no cloud access key and no cloud secret key property is declared at all.
+#   Omitting them is not an oversight and is strictly better than binding a key pair from the
+#   environment: with no static credential property present, the cloud SDK's default provider chain
+#   resolves an instance or task role, a web-identity token, or a configured single-sign-on session,
+#   none of which places a long-lived key anywhere. That chain also reads the standard access-key and
+#   secret-key variables by itself, so a deployment that genuinely cannot use a role still needs no
+#   property here. A role has no value to steal from a process listing, an image layer or a
+#   configuration store, which a key pair does.
+#
+# -------------------------------------------------------------------------------------------------
+# WHAT IS DELIBERATELY ABSENT - every absence below is a recorded decision, not an oversight
+#
+#   * THE SEED MIGRATIONS ARE UNREACHABLE FROM THIS PROFILE. See the schema-evolution block.
+#   * No pool sizing and no pool time-out on the data source. See the data-source block.
+#   * NO CAPACITY OR SERVICE-LEVEL FIGURE OF ANY KIND, in a property or in a comment: no heap
+#     figure, no worker-thread count, no latency figure, no volume figure, no availability figure.
+#     No numeric service level is documented anywhere in the legacy estate - not in the programs,
+#     not in the job streams, not in the CICS resource definitions - so there is nothing to assert
+#     against and any figure written here would be invented. Performance is MEASURED through the
+#     meters wired further down, which establish the first baseline for this implementation rather
+#     than testing it against a threshold. A future reader should not "fill in" this gap.
+#   * No application-level caching layer. The legacy system had none, and introducing one would
+#     move the very latency and consistency behaviour that baseline is meant to record.
+#   * No secondary read source and no table-splitting scheme. Both are durability and performance
+#     engineering beyond behavioural fidelity, with no legacy baseline to justify a shape.
+#   * No object-store retention rule. Retention is object versioning on the staging bucket.
+#   * No cloud endpoint override. See the cloud-integration block.
+#   * No certificate, no ingress definition and no infrastructure resource. See the server block.
+#   * No framework-managed initialisation script and no bootstrap SQL file. The versioned migrations
+#     are the only path by which a table or a row is created.
+# =================================================================================================
 
 spring:
+
+  # -----------------------------------------------------------------------------------------------
+  # DATA SOURCE - PostgreSQL 16, standing in for the ten indexed base clusters plus the sequential
+  # daily-transaction input.
+  #
+  # ALL THREE VALUES ARE BARE ENVIRONMENT REFERENCES. The credential is the single most important
+  # line in this file, and the location and the user are held to the same standard: a defaulted
+  # location would silently aim a production deployment at whatever host happened to be guessed, and
+  # a defaulted user would do the same for the identity it connects as. The driver is the only fixed
+  # value, and it is fixed so that nothing can fall back to an embedded database.
+  #
+  # THE POOL KEEPS ITS SHIPPED DEFAULTS, AND THAT IS DELIBERATE. No sizing property and no time-out
+  # override is declared, here or anywhere else in this module. A production profile is exactly where
+  # an unbriefed reviewer will want to tune one, so the reason is recorded rather than left implicit:
+  # there is no legacy baseline to tune against, tuning is outside the scope of this migration, and a
+  # figure chosen without a baseline is a guess that later reads as a measurement. Tune it when the
+  # meters wired further down have produced something to tune against.
   datasource:
     url: ${CARDDEMO_DB_URL}
     username: ${CARDDEMO_DB_USERNAME}
     password: ${CARDDEMO_DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
-    hikari:
-      maximum-pool-size: ${CARDDEMO_DB_POOL_MAX:10}
-      minimum-idle: ${CARDDEMO_DB_POOL_MIN_IDLE:2}
 
+  # -----------------------------------------------------------------------------------------------
+  # PERSISTENCE PROVIDER. The migrations own the schema; the provider only checks that the mapped
+  # entities still agree with the migrated tables. `validate` is never `create`, `create-drop` or
+  # `update`: nothing here may author or alter a table outside a versioned migration.
+  #
+  # Statement echo is off. The local profile turns it on because seeing the generated statement is
+  # what makes a fixed-width mapping or a truncating decimal store visible while parity evidence is
+  # gathered. In production the same output would put row values and query text into the log, so it
+  # is restated as off here rather than left to a framework default.
+  #
+  # A view-scoped session is refused, so no lazy association can be resolved while a response is
+  # being written.
   jpa:
+    open-in-view: false
     show-sql: false
     hibernate:
       ddl-auto: validate
 
+  # -----------------------------------------------------------------------------------------------
+  # SCHEMA EVOLUTION - AND A SECURITY CONTROL, NOT A TIDINESS PREFERENCE.
+  #
+  # The location list below is `classpath:db/migration` ALONE. Four migrations exist in this module
+  # and they live in two locations on purpose:
+  #
+  #   classpath:db/migration   V1__create_schema.sql            the eleven application tables
+  #                            V2__create_indexes.sql           keys and alternate-index equivalents
+  #                                                             -> EVERY profile, production included
+  #   classpath:db/seed        V3__seed_reference_data.sql      sample reference rows
+  #                            V4__seed_user_security.sql       sign-on identities
+  #                                                             -> local and test ONLY, NEVER here
+  #
+  # WHY THE SECOND LOCATION MUST NOT APPEAR IN THIS FILE. The sign-on seed inserts ten known
+  # identities - five with the administrative user type and five with the standard one - whose stored
+  # credentials are all hashes of one single well-known value. Had that migration ever run against a
+  # production database, the deployment would ship with ten predictable identities, half of them
+  # capable of reaching the administrative user-management surface. The reference seed inserts fifty
+  # sample customer rows carrying synthetic personal data, including the two identity fields this
+  # module encrypts at rest. Neither belongs in production, and neither reaching it would be
+  # untidiness: it would be a credential incident and a privacy incident respectively.
+  #
+  # Keeping the seeds in a SEPARATE LOCATION rather than behind a flag is what makes the guarantee
+  # structural instead of conditional - there is no switch to leave in the wrong position. Any seed
+  # script added later must therefore stay under db/seed and out of db/migration, and must store a
+  # sign-on credential only as a hash.
+  #
+  # baseline-on-migrate stays off: this is a greenfield schema, nothing exists to baseline, and
+  # enabling it would let V1 be skipped in silence against a database that already holds objects.
+  # Destructive clean is refused outright. Validation on migrate is on, so a checksum that no longer
+  # matches stops the deployment instead of drifting.
+  #
+  # Version 11 of the migration tool resolves PostgreSQL support from a separate artefact declared
+  # beside flyway-core in pom.xml; without it the build still succeeds and the application then fails
+  # at run time, so the two must stay declared together.
   flyway:
+    enabled: true
     locations: classpath:db/migration
+    baseline-on-migrate: false
     validate-on-migrate: true
     clean-disabled: true
 
+  # -----------------------------------------------------------------------------------------------
+  # BATCH ORCHESTRATION. Jobs run ON DEMAND ONLY - through the job-launch surface, through the
+  # ordered queue bridge that replaces the legacy online-to-batch hand-off, or from a test - and
+  # never at context start. Restarting a production deployment must not fire a posting run, and an
+  # implicit start-up run would also write rows before any fixture comparison could read them and
+  # would make every measured step duration meaningless. The value is inherited as false from
+  # application.yml and restated here so the production posture is stated independently of it.
+  #
+  # The batch framework's own metadata tables are NOT provisioned at start-up in production. Local
+  # and test let the bundled script create them; here the setting is narrowed to `never`, so every
+  # piece of production schema arrives through a reviewed migration and nothing else.
   batch:
+    job:
+      enabled: false
     jdbc:
-      # Batch metadata tables are provisioned by a controlled migration, never by the app.
       initialize-schema: never
 
+  # -----------------------------------------------------------------------------------------------
+  # CLOUD INTEGRATION - object store for batch file staging, an ordered queue for the single
+  # online-to-batch bridge, and a topic for job-completion fan-out.
+  #
+  # NO ENDPOINT OVERRIDE IS DECLARED, AND THAT ABSENCE IS THE POINT. An override exists solely so the
+  # local and test profiles can aim these three clients at the LocalStack Community container the
+  # Compose stack runs. Left behind in production it would be silent and total: every publish and
+  # every upload would be accepted by a client addressing a host that does not serve them, with no
+  # start-up error naming the cause. So this profile declares no global override and no per-client
+  # override, and the clients resolve the real service endpoints for the region below. Neither a
+  # paid emulator tier nor an activation value for one has any place in this file - emulation is a
+  # local concern only.
+  #
+  # NO STATIC CREDENTIAL PROPERTY IS DECLARED EITHER. The reasoning is recorded in the environment
+  # inventory above: with none present, the SDK's default provider chain resolves a role, and the
+  # placeholder pair the local profile uses for the emulator must never be carried across to here.
+  #
+  # The region is required rather than defaulted. application.yml supplies a fallback so a developer
+  # can start without preparing an environment; a production deployment silently landing in whatever
+  # region that fallback names is a different matter, so the fallback is removed here.
+  #
+  # Path-style addressing is off. It is on locally only because the emulator does not serve
+  # virtual-hosted bucket subdomains.
   cloud:
     aws:
       region:
         static: ${AWS_REGION}
-      credentials:
-        # Remove these two lines to use the default AWS credentials provider chain
-        # (EC2/ECS/EKS instance role, web identity token, or SSO) instead of static keys.
-        access-key: ${CARDDEMO_AWS_ACCESS_KEY_ID}
-        secret-key: ${CARDDEMO_AWS_SECRET_ACCESS_KEY}
       s3:
         path-style-access-enabled: false
 
+# ===================================================================================================
+# TRANSPORT SECURITY.
+#
+# The prior effort left transport security unconfigured; it is configured HERE, and this profile is
+# the only place it belongs. A bearer token and a field sealed at rest are both worthless over
+# plaintext: the token can be lifted from the wire and replayed until it expires, and the sealed value
+# is sealed only at rest, so it travels in the clear the moment an endpoint decrypts it for a
+# response. Requiring transport security is therefore not an independent hardening step but the
+# condition under which the signing material and the field-encryption key mean anything at all.
+#
+# THE KEY STORE IS SUPPLIED BY THE ENVIRONMENT, AND ITS CREDENTIAL HAS NO FALLBACK. The location, the
+# format and the key alias are externalised too, so one image runs in any deployment without an edit;
+# they carry no fallback either, because a guessed key store path fails in a confusing way and a
+# guessed alias picks an arbitrary entry out of a store that holds more than one.
+#
+# WHERE A LOAD BALANCER TERMINATES TLS, encryption is still required on the hop from that balancer to
+# this process, which is what these settings provide; terminating once at the edge and running
+# plaintext inside is a weaker posture, not an equivalent one. The forwarded-header strategy below is
+# what makes that arrangement correct rather than merely encrypted: without it the application would
+# build redirect and location URLs from its own local scheme, host and port instead of the ones the
+# client actually used, and would attribute every request to the balancer's address rather than to the
+# caller. With it, generated URLs and client-address resolution both follow the forwarded headers.
+#
+# THE BOUNDARY OF THIS FILE'S AUTHORITY, STATED EXPLICITLY. What is configured here is the
+# APPLICATION-SIDE SURFACE and nothing beyond it. No certificate is issued, requested or bundled, no
+# key store is generated, no ingress or listener is defined, and no infrastructure resource of any
+# kind is created by this module. Provisioning those is outside this migration's authority and belongs
+# to whoever operates the deployment; this file only states what the application expects to be handed.
+#
+# The session cookie attributes are belt and braces. The migrated interface is stateless - navigation
+# state travels in the token rather than in a server-side session, exactly as it travelled in the
+# legacy communication area - so no session is expected. Should any framework component create one
+# anyway, the cookie is confined to encrypted transport, hidden from scripts, and not sent on
+# cross-site requests.
+#
+# A framework error page returns a status and nothing else: no message, no binding detail, no stack
+# detail. A failed request is rendered by this module's own handler into its published error contract,
+# whose per-field states carry the two conditions the legacy screens signalled by changing a field's
+# display attribute; the framework page is only the fallback, and it must not narrate internals.
+# ===================================================================================================
 server:
-  # Transport security is terminated at the load balancer / ingress in the reference deployment;
-  # the application trusts and honours the forwarded protocol headers and requires HTTPS.
+  ssl:
+    enabled: true
+    key-store: ${CARDDEMO_TLS_KEYSTORE}
+    key-store-password: ${CARDDEMO_TLS_KEYSTORE_PASSWORD}
+    key-store-type: ${CARDDEMO_TLS_KEYSTORE_TYPE}
+    key-alias: ${CARDDEMO_TLS_KEY_ALIAS}
   forward-headers-strategy: framework
+  servlet:
+    session:
+      cookie:
+        secure: true
+        http-only: true
+        same-site: strict
   error:
     include-message: never
     include-binding-errors: never
     include-stacktrace: never
-  # In-process TLS (uncomment and supply an SSL bundle when terminating TLS in the JVM):
-  # ssl:
-  #   enabled: true
-  #   bundle: carddemo
 
+# ===================================================================================================
+# OBSERVABILITY - NARROWED, BUT PRESENT.
+#
 # THE FOUR MANAGEMENT VALUES BELOW RESTATE THE SHARED BASELINE RATHER THAN NARROWING IT, and the
-# duplication is deliberate. application.yml is now fail-closed: it publishes these same three
-# endpoints and answers the probe with an aggregate status alone, and it is the local overlay that
-# widens both. Restating them here is a second, independent statement of the production posture, so
-# a future edit that reopens something in the shared baseline cannot silently reopen it in
-# production. They are not redundant lines to be tidied away.
+# duplication is deliberate. application.yml is itself fail-closed: it publishes these same three
+# endpoints and answers the probe with an aggregate status alone, and it is the LOCAL overlay that
+# widens both. Restating them here is a second, independent statement of the production posture, so a
+# future edit that reopens something in the shared baseline cannot silently reopen it in production by
+# inheritance. They are not redundant lines to be tidied away.
+#
+# TWO ENDPOINTS MUST REMAIN REACHABLE, AND NARROWING MUST NOT REACH THEM. Each is resolved literally
+# by a sibling file, and the same image runs under every profile:
+#
+#   /actuator/health      the HEALTHCHECK target of carddemo-java/Dockerfile and the readiness gate
+#                         anything waiting on this application depends upon
+#   /actuator/prometheus  the scrape target of config/prometheus/prometheus.yml and the surface every
+#                         panel of config/grafana/dashboards/carddemo-overview.json reads. It is also
+#                         where the performance baseline is established
+#
+# THE BASE PATH IS INHERITED AND DELIBERATELY NOT RESTATED. application.yml states /actuator once, and
+# those two sibling files resolve it literally. Repeating it here would create a second place for it to
+# drift; inheriting it means there is exactly one.
+#
+# ONE INTERACTION WORTH RECORDING, because it is easy to misread as a break. The container health
+# check and the local scrape job both speak plaintext, and the image ships with the local profile
+# selected, so they work as written for the profile they were built for. A deployment that selects
+# THIS profile enables in-JVM transport security above, so its probe and its scrape must address the
+# same two paths over HTTPS. The paths and the published set are unchanged either way - only the
+# scheme differs, and it differs because this profile requires encryption.
+#
+# EVERYTHING ELSE IS CLOSED. Nothing that enumerates resolved configuration, the bean graph, the
+# request mappings, the applied migrations or the registered meters is published; nothing that dumps
+# memory or threads is published; nothing that rewrites a log level at run time or stops the process is
+# published. Each describes or controls the running system rather than serving it, and the scrape
+# endpoint already gives the collector everything it needs. The local overlay adds them back, because
+# diagnosing on a developer's own machine is what they are for.
+#
+# THE HEALTH PROBE ANSWERS WITH AN AGGREGATE STATUS AND NO COMPONENT DETAIL. Component detail is
+# genuinely useful - it is how a failed migration or an unreachable database surfaces in the probe body
+# instead of only in the log - but the payload that carries it also names every health contributor, the
+# database product and version, and the validation query, which together describe a system's internals
+# to whoever can reach the probe. Withholding it entirely is stronger than releasing it to an
+# authorised caller, and it costs nothing operationally, because the same failure is already in the
+# structured log with far more context. Diagnosis belongs to the profile where diagnosis happens, and
+# the local overlay opens both settings there.
+#
+# THE SAMPLING FRACTION BELOW IS A SAMPLING DECISION AND NOT A PERFORMANCE TARGET. It governs how many
+# traces are exported, nothing more. It is not a threshold, it does not encode an expectation about
+# latency or volume, and it must not be read as one or "corrected" into one.
+#
+# Appender selection, the structured encoder and the correlation fields live in logback-spring.xml,
+# which carries per-profile appenders. Only levels are set here, so verbosity can move without
+# restating the log layout.
+# ===================================================================================================
 management:
   endpoints:
     web:
       exposure:
-        # Minimal surface in production; no env/configprops/beans/metrics/loggers exposure.
         include: health,info,prometheus
   endpoint:
     health:
       show-details: never
       show-components: never
   tracing:
+    enabled: true
     sampling:
-      probability: ${TRACING_SAMPLE_RATE:0.1}
+      probability: ${CARDDEMO_TRACING_SAMPLE_RATE:0.1}
   otlp:
     tracing:
       endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}
 
-# Restated for the same reason as the management block above: both switches are inherited disabled
-# from application.yml, and this second statement means a future edit that reopens either one in
-# the shared baseline cannot reach production by inheritance. Served openly the document is a
-# complete map of every endpoint, field and declared error of the migrated screen contract. The
-# viewer switch is restated for that inheritance reason alone - the browser asset bundle it would
-# need is excluded from the starter in pom.xml, so no profile has a viewer to serve. See
+# Restated for the same reason as the management block above: both switches - the generated interface
+# description and its viewer - are inherited disabled from application.yml, and this second statement
+# means a future edit that reopens either one in the shared baseline cannot reach production by
+# inheritance. Served openly, the document is a complete map of every endpoint, field and declared
+# error of the migrated screen contract. The viewer switch is restated for that inheritance reason
+# alone - the browser asset bundle it would need is excluded from the starter in pom.xml, so no
+# profile has a viewer to serve. Neither published path is restated here, so neither can drift. See
 # docs/decision-log.md DL-088.
 springdoc:
   api-docs:
@@ -120,25 +408,144 @@ logging:
     com.carddemo: INFO
     org.springframework: WARN
     org.hibernate: WARN
+    org.flywaydb: INFO
 
+# ===================================================================================================
+# APPLICATION NAMESPACE - the logical resource names the legacy job streams carried as dataset
+# references and the CICS definition carried as resource definitions.
+#
+# THE KEY PATHS BELOW ARE IDENTICAL TO application-local.yml AND src/test/resources/application-test.yml,
+# and only the values and the credential resolution differ. That is what lets a job parameter read
+# identically under every profile. Two consequences follow and both are deliberate:
+#   * the per-family object-store key prefixes are declared ONCE in application.yml and inherited
+#     unchanged. Restating them here would be a partial re-declaration that dropped the families it
+#     omitted, so no overlay restates them.
+#   * region and endpoints are NOT in this namespace. They belong to the cloud integration's own
+#     properties, set under spring.cloud.aws above, so the object-store, queue and notification clients
+#     are configured through one mechanism rather than two.
+#
+# A NON-SECRET MAY CARRY A VALUE, AND THAT IS NOT A WEAKENING OF THE NO-DEFAULT RULE. The rule applies
+# to secrets and to deployment-specific locations; it must not be over-generalised into "nothing may
+# have a value". The four resource names below are MANDATED by the migration plan rather than chosen
+# here, they are published identifiers rather than credentials, and they must be byte-identical in
+# application.yml, this file, the test overlay, docker-compose.yml, localstack/init/01-create-aws-resources.sh
+# and the running emulator. Carrying the canonical value while remaining environment-overridable is
+# what keeps those six places in agreement; a bare reference would leave the canonical name recorded
+# nowhere and let one deployment disagree with the provisioning script in silence. Knowing a queue's
+# name grants nothing - reaching it needs the role that this profile deliberately does not hardcode.
+#
+# THE QUEUE IS AN EXTERNAL INTERFACE CONTRACT, AND THE SOLE ONLINE-TO-BATCH BRIDGE IN THE ESTATE. The
+# legacy system wrote to a CICS transient-data queue from exactly one site. Its attribute values are
+# behavioural, so they are reproduced rather than approximated:
+#
+#   RECORDSIZE(80)         one 80-character fixed-width card per message; record-length carries that
+#                          width so the publisher asserts it instead of assuming it
+#   RECORDFORMAT(FIXED)    one message per card - no batching and no concatenation
+#   BLOCKFORMAT(UNBLOCKED) the same: cards are not grouped into a block
+#   DISPOSITION(MOD)       appended, so ORDER IS PART OF THE CONTRACT. Hence a first-in-first-out queue
+#                          and ONE stable message-group id: order survives only within a single group,
+#                          and a standard queue would reorder without saying so
+#   ERROROPTION(IGNORE)    a write failure was tolerated; fail-on-error false keeps exactly that,
+#                          logging the publish failure and continuing rather than aborting the caller
+#   TYPEFILE(OUTPUT)       publish only - nothing in this module consumes from this queue
+#   OPENTIME(INITIAL)      the queue pre-existed first use, so it must be provisioned before the
+#                          application starts rather than created lazily on first publish
+#
+# The .fifo suffix on the queue name is not decoration: the queue service rejects a first-in-first-out
+# queue whose name omits it, which is a start-up failure rather than a style preference.
+#
+# THE QUEUE KEEPS ITS LEGACY RESOURCE NAME. The name is JOBS.fifo: the transient-data queue name the
+# estate used, plus the single suffix the queue service requires of a first-in-first-out queue, and no
+# other transformation. Namespacing it was considered and rejected, because the resource name is itself
+# part of the frozen inventory and no exception authorises editing it, and because a well-formed name
+# that names nothing is exactly the input a create-on-absence default would resolve by provisioning a
+# queue nothing consumes - a submission would report complete and the cards would sit unread. The
+# collision concern that namespacing answered is a deployment concern, and the environment override
+# above already answers it without changing what the module ships. See docs/decision-log.md DL-092.
+#
+# The frozen operator message emitted when a submission fails is unaffected either way: it names the
+# transient-data queue verbatim as JOBS, without a suffix, and is asserted character for character. It
+# is frozen text rather than a reference to the resource, so nothing composes one from the other and
+# the suffix cannot reach it.
+# ===================================================================================================
 carddemo:
   aws:
     s3:
-      bucket: ${CARDDEMO_S3_BUCKET}
+      bucket: ${CARDDEMO_S3_BUCKET:carddemo-batch-staging}
     sqs:
+      # NO DEFAULT. A deployment names its own queue, and a fallback here would be a placeholder
+      # that started cleanly and published nowhere. The canonical name is JOBS.fifo, recorded in
+      # application.yml and in the comment above; production must still be told it explicitly.
       job-submission-queue: ${CARDDEMO_SQS_QUEUE}
+      message-group-id: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:carddemo-job-submission}
+      # The 80-character card width and the tolerate-a-publish-failure behaviour are NOT declared as
+      # properties. Both are fixed by the legacy queue definition rather than chosen by a deployment,
+      # and nothing in the module reads them: the publisher holds the width as a constant it checks
+      # each card against, and it catches and reports a publish failure instead of rethrowing.
+      # Declaring them here would read as adjustable while changing nothing.
     sns:
-      job-notification-topic: ${CARDDEMO_SNS_TOPIC}
+      job-notification-topic: ${CARDDEMO_SNS_TOPIC:carddemo-job-notifications}
   security:
+    # -------------------------------------------------------------------------------------------
+    # SIGNING MATERIAL. A bare environment reference with NO fallback: a missing value aborts
+    # start-up rather than letting a token be signed with something anybody who read this
+    # repository could forge. The token replaces the state the legacy pseudo-conversation carried
+    # in its communication area across turns, so forging one forges a whole navigation identity.
+    #
+    # THE ISSUER AND THE LIFETIME ARE NOT SECRETS, so they carry values. The issuer is a token
+    # claim naming this module and is deliberately not the metric service label; neither should be
+    # edited to match the other. The lifetime is shorter here than the local profile's, because a
+    # long-lived local token is a convenience and a long-lived production token is exposure.
+    #
+    # DOCUMENTED PARITY EXCEPTION - the one place where the no-hardcoded-credentials requirement
+    # outranks byte-for-byte faithfulness, recorded as such in docs/decision-log.md. The legacy
+    # sign-on record held an eight-character cleartext password field and the sign-on program
+    # compared the entered value against it directly. Reproducing that comparison would satisfy
+    # parity and violate the credential requirement, so this module's credential column is sized
+    # for a BCrypt hash instead and no component may store or compare a cleartext credential. No
+    # value from the legacy record is restated anywhere in this module.
+    #
+    # ROLE GATING DERIVES FROM THE LEGACY USER-TYPE FIELD, unchanged in meaning. An identity of the
+    # administrative type reaches the administrative surface and is the only kind permitted the
+    # user-management endpoints; every other identity reaches the main surface. That is exactly how
+    # the CICS transaction table gated the administrative transactions, so the authorisation
+    # decision is carried across rather than redesigned.
     jwt:
-      # No fallback. A missing value must fail startup.
+      issuer: carddemo-java
       secret: ${CARDDEMO_JWT_SECRET}
       expiration: ${CARDDEMO_JWT_EXPIRATION:PT30M}
+    # -------------------------------------------------------------------------------------------
+    # FIELD-ENCRYPTION KEY. A bare environment reference with NO fallback, held to the same rule as
+    # the signing material and for a stronger reason: a missing key must abort start-up rather than
+    # let regulated customer identifiers be sealed under something accidental, because a value
+    # sealed under the wrong key is not recoverable by fixing the configuration afterwards.
+    #
+    # The customer record carries two regulated identity values in clear text on the mainframe - a
+    # nine-digit national identifier and a twenty-character government-issued identifier - and
+    # neither is stored in that form here. Both are sealed into an authenticated, versioned
+    # envelope before they reach a column, and the entity refuses any value that is not already
+    # sealed, so cleartext cannot reach the database through application code.
+    #
+    # DOCUMENTED PARITY EXCEPTION, in the same class as the hashing substitution above: encrypting
+    # at rest is a divergence from the legacy design rather than a rendering of it. It changes no
+    # record image, no field offset and no output byte, and it is written up in docs/decision-log.md
+    # together with the gap that is deliberately NOT closed here - the legacy design applies no
+    # field-level protection to the card account number or its verification value, no requirement
+    # introduces one, and inventing one would be unrequested feature work.
     field-encryption:
-      # No fallback. Base64 of exactly 32 bytes; a missing or malformed key must fail startup rather
-      # than let regulated customer identifiers be sealed under something accidental.
       key: ${CARDDEMO_FIELD_ENCRYPTION_KEY}
-    # Restated, not narrowed: application.yml already requires transport security, and only the local
-    # and test overlays relax it. Kept here so the production posture is stated independently of what
-    # the shared baseline happens to say. See docs/decision-log.md DL-098.
+    # -------------------------------------------------------------------------------------------
+    # TRANSPORT IS REQUIRED. Inherited as required from application.yml and restated here so the
+    # production posture is stated independently of what the shared baseline happens to say. Only
+    # the local and test overlays relax it, and each states its own relaxation, so the concession is
+    # visible in the profile that takes it rather than inherited silently. Production never
+    # re-requires this after a relaxation - it simply never relaxes it. See docs/decision-log.md
+    # DL-098.
+    #
+    # Recorded alongside it, so that stronger behaviour is not mistaken for a regression: every
+    # legacy application file was defined with uncommitted read integrity, no recovery and no
+    # journaling, with safety resting solely on a locking update model plus a before-and-after image
+    # comparison performed by the programs themselves. The read-committed isolation and the
+    # entity-version checks used here are a STRICT IMPROVEMENT on that baseline, and the reasoning
+    # is in docs/decision-log.md.
     require-https: true

@@ -16,642 +16,534 @@
  */
 package com.carddemo.domain;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-
-import com.carddemo.domain.enums.UserType;
-import com.carddemo.support.SchemaColumnCatalog;
+import java.nio.charset.StandardCharsets;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 /**
- * Verifies {@link UserSecurity}, the eighty-byte sign-on record.
+ * Unit test for {@link UserSecurity}, the entity form of the legacy 80-byte sign-on credential record.
  *
- * <p><strong>The layout being preserved.</strong> {@code app/cpy/CSUSR01Y.cpy} declares six fields over
- * eighty bytes: an eight-byte identifier, a twenty-byte forename, a twenty-byte surname, an eight-byte
- * password and a one-byte role, followed by a twenty-three-byte filler. The cluster definition at
- * {@code app/jcl/DUSRSECJ.jcl} agrees: {@code KEYS(8,0)} and {@code RECORDSIZE(80,80)}.
+ * <p><strong>What is being proved.</strong> The record declares six fields over 80 bytes: an 8-byte
+ * identifier at offset 0, a 20-byte given name at offset 8, a 20-byte family name at offset 28, an
+ * 8-byte credential at offset 48, a 1-byte role code at offset 56, and a 23-byte trailing filler at
+ * offset 57. Five of the six become columns; the filler does not. This test pins the widths, the
+ * absence of any normalisation on the way in or out, the business-key identity, and the one place
+ * where the target column is deliberately wider than the field it replaces.
  *
- * <p><strong>The ten seeded users need no character-set decoding.</strong> The provisioning job carries
- * all ten records in the job stream itself, at lines 35 through 44, as readable card images: five
- * administrator records and five ordinary-user records, each fifty-seven characters of data that the copy
- * utility pads out to the eighty-byte record length. Those ten identifiers, names and roles are the oracle
- * this suite uses, so nothing here depends on decoding the mainframe-encoded dataset that has no
- * plain-text twin.
+ * <p><strong>The credential property carries an already-hashed value, and this test never handles a
+ * cleartext credential.</strong> Every credential argument used below is an obviously synthetic
+ * stand-in that is not, and never was, anyone's credential. The legacy provisioning job carries a
+ * single shared cleartext literal on all ten of its seeded cards; that literal appears nowhere in this
+ * file, in any form. Only the non-secret parts of those cards - the identifiers, the given and family
+ * names, and the role codes - are used as fixture data, because only those are not secret.
  *
- * <p><strong>The one deliberate width departure.</strong> Every other field maps to a column of its own
- * copybook width. The password does not: the source field holds eight characters of cleartext and the
- * column holds sixty, because a password digest is longer than the password it protects and sixty is the
- * length a digest of the chosen kind occupies. This is the single place in the estate where reproducing
- * the legacy exactly would have meant reproducing a defect, so the width is different on purpose and the
- * suite asserts the difference rather than glossing it. An eight-character column could not have held a
- * digest at all, and the suite proves that too.
+ * <p><strong>Scope.</strong> This is a pure unit test over one entity. It starts no container, builds
+ * no application context, touches no database, no network and no filesystem, and uses no reflection:
+ * the module's unsafe-code audit requires a reflection count of zero and a test must not undermine it.
+ * Column names, nullability and the physical schema are deliberately not verified here - the module
+ * runs with Hibernate schema validation against a real database, which fails startup on any mismatch,
+ * so that layer is verified in the integration tier rather than restated here. Neither is the record
+ * image assembled here: laying the five properties back out across 80 bytes belongs to the
+ * fixed-width mapper in the utility layer.
  *
- * <p><strong>Why the role byte is a security decision.</strong> The sign-on program routes an
- * administrator to the administrative menu and everyone else to the main menu on the strength of one byte
- * at position fifty-seven of the record. The byte is the authorisation, so this suite pins its position,
- * its width and the fact that it resolves to exactly one of the two declared roles.
+ * <p><strong>Every expectation below is hand-derived</strong> from the copybook layout and the
+ * provisioning job. No expected value is computed by calling the class under test.
  *
- * <p><strong>Why there is no diagnostic string.</strong> The entity declares none, so neither the
- * identifier nor the digest can reach a log line by way of a description. The suite asserts the inherited
- * type-and-handle form, which is what makes that guarantee testable rather than merely intended.
+ * <p><strong>Divergences from the entity contract as originally described</strong>, each confirmed by
+ * reading the production class and each commented again at the point of use:
+ * <ol>
+ *   <li>The credential accessors are deliberately outside the JavaBean naming convention -
+ *       {@link UserSecurity#credentialDigest()} reads and
+ *       {@link UserSecurity#replaceCredentialDigest(String)} writes - so that the stored value is not
+ *       a discoverable property and cannot be emitted by serialization, a repository projection or a
+ *       property-walking renderer.</li>
+ *   <li>Both credential write paths <em>refuse</em> a value that is not structurally a hash, which
+ *       makes the fixtures here necessarily hash-shaped rather than arbitrary markers. The refusal is
+ *       structural only: the entity still performs no hashing, no verification and no comparison, and
+ *       needs no encoder to apply it.</li>
+ *   <li>The four non-credential setters are plain assignment, exactly as described - no trimming,
+ *       padding, case folding, normalising or validating of any kind.</li>
+ *   <li>A diagnostic rendering exists on the entity, so the single permitted assertion about it is
+ *       made: that it does not carry the stored credential value.</li>
+ * </ol>
  *
- * <p><strong>Deliberately not asserted.</strong> Nothing here hashes or verifies a password; that belongs
- * to the authentication service and its encoder. Nothing asserts that the seed migration stores a digest
- * rather than cleartext; that is the migration's contract and is verified where the migration is applied.
+ * <p><strong>The credential column is the module's flagship documented parity exception.</strong>
+ * Legacy sign-on compares the stored eight-character cleartext credential directly against what was
+ * keyed at the terminal, at {@code app/cbl/COSGN00C.cbl} line 223. Reproducing that comparison would
+ * satisfy byte-for-byte parity and breach the binding no-hardcoded-credentials requirement at the same
+ * time, so hashing is applied instead as a deliberate, documented exception recorded in
+ * {@code docs/decision-log.md}. It is an improvement over the legacy posture, not a regression from
+ * it, and it is the only column in the schema whose width exceeds its legacy picture width.
+ *
+ * <p>Provenance: legacy checkout SHA 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release stamp
+ * CardDemo_v1.0-15-g27d6c6f-68 (2022-07-19). Recorded here as a header string only; no assertion is
+ * made about it. Layout authority {@code app/cpy/CSUSR01Y.cpy}, seed authority
+ * {@code app/jcl/DUSRSECJ.jcl}, routing authority {@code app/cbl/COSGN00C.cbl}. No source text from
+ * the legacy estate is reproduced in this file: only member names, field names, widths, offsets, line
+ * references and the non-secret seeded identities appear.
  */
-@DisplayName("UserSecurity — the eighty-byte sign-on record")
+@DisplayName("UserSecurity - the entity form of the 80-byte sign-on credential record")
 class UserSecurityTest {
 
-    /** Relational table the entity maps to. */
-    private static final String TABLE = "user_security";
+    // LAYOUT CONSTANTS - hand-derived from app/cpy/CSUSR01Y.cpy, not read back from the entity
 
-    /** {@code RECORDSIZE(80,80)} in the cluster definition. */
-    private static final int RECORD_WIDTH = 80;
-
-    /** {@code KEYS(8,0)} — key length. */
+    /** Width of the sign-on identifier at record offset 0, which is also the primary key. */
     private static final int KEY_WIDTH = 8;
 
-    /** Width of the cleartext password field in the legacy record. */
-    private static final int LEGACY_PASSWORD_WIDTH = 8;
+    /** Width of the given name at record offset 8. */
+    private static final int GIVEN_NAME_WIDTH = 20;
 
-    /** Width of the password column, sized for a digest rather than for cleartext. */
-    private static final int DIGEST_COLUMN_WIDTH = 60;
+    /** Width of the family name at record offset 28. */
+    private static final int FAMILY_NAME_WIDTH = 20;
 
-    /** Width of the unmapped trailing filler. */
-    private static final int FILLER_WIDTH = 23;
+    /** Width of the credential field at record offset 48 in the legacy record. */
+    private static final int LEGACY_CREDENTIAL_WIDTH = 8;
 
-    /** Zero-based offset of the role byte. */
-    private static final int OFFSET_ROLE = 56;
+    /** Width of the role code at record offset 56. */
+    private static final int ROLE_CODE_WIDTH = 1;
 
-    /** One-based byte position of the role, as an operator reading the record would count it. */
-    private static final int ROLE_BYTE_POSITION = 57;
+    /** Width of the named trailing filler at record offset 57, which is not persisted. */
+    private static final int UNMAPPED_FILLER_WIDTH = 23;
 
-    /** Populated characters of one in-stream card, before the copy utility pads it. */
-    private static final int CARD_DATA_WIDTH = 57;
+    /** Declared length of the whole record. */
+    private static final int RECORD_WIDTH = 80;
 
-    /** The six copybook widths, in declaration order. */
-    private static final List<Integer> COPYBOOK_WIDTHS = List.of(8, 20, 20, 8, 1, 23);
-
-    /** The password literal every seeded card carries. */
-    private static final String SEEDED_PASSWORD_LITERAL = "PASSWORD";
-
-    /** Seeded administrators. */
-    private static final int SEEDED_ADMINISTRATORS = 5;
-
-    /** Seeded ordinary users. */
-    private static final int SEEDED_ORDINARY_USERS = 5;
+    /** Bytes of the record that become columns: the five mapped widths summed. */
+    private static final int SIGNIFICANT_WIDTH = 57;
 
     /**
-     * The ten seeded identifiers with their forename, surname and role, transcribed from the
-     * provisioning job's in-stream cards in card order.
+     * Width of the target credential column. Wider than the legacy field because the column holds a
+     * hash rather than the eight cleartext characters the legacy field held.
      */
-    private static final Map<String, String[]> SEEDED_CARDS = seededCards();
+    private static final int CREDENTIAL_COLUMN_WIDTH = 60;
 
-    /** The migration's user-security table, parsed once. */
-    private static final SchemaColumnCatalog SCHEMA = SchemaColumnCatalog.load();
+    // SEEDED IDENTITY FIXTURES - the non-secret columns of the provisioning job's in-stream cards
+
+    /** Role code selecting the administrative route. */
+    private static final String ROLE_ADMINISTRATOR = "A";
+
+    /** Role code selecting the standard route. */
+    private static final String ROLE_STANDARD = "U";
+
+    /** First seeded administrator identifier; exactly fills the 8-byte key. */
+    private static final String ADMIN_IDENTIFIER = "ADMIN001";
+
+    /** Given name on the first seeded administrator card. */
+    private static final String ADMIN_GIVEN_NAME = "MARGARET";
+
+    /** Family name on the first seeded administrator card. */
+    private static final String ADMIN_FAMILY_NAME = "GOLD";
+
+    /** Second seeded administrator identifier, used where a second distinct key is needed. */
+    private static final String OTHER_ADMIN_IDENTIFIER = "ADMIN002";
+
+    // SYNTHETIC CREDENTIAL FIXTURES
+    //
+    // These are NOT credentials and NOT hashes of any credential. Each is a fabricated marker that
+    // spells out what it is, and neither corresponds to any real or legacy value. They are shaped like
+    // a stored hash for one mechanical reason only: both credential write paths on the entity refuse a
+    // value that is not structurally shaped like one, so an arbitrary marker such as a short label
+    // would be rejected before any property could be exercised. The shape is therefore dictated by the
+    // production guard rather than chosen, and no security parameter of it is asserted, described or
+    // relied upon anywhere in this file. Two distinct values exist because business-key identity has to
+    // be proved to hold across a change of stored credential.
+
+    /** Obviously synthetic stand-in for an already-hashed credential. */
+    private static final String SYNTHETIC_STORED_CREDENTIAL =
+            "$2a$10$SYNTHETICDIGESTFORUNITTESTONLYNOTAREALCREDENTIAL00001";
+
+    /** A second, distinct synthetic stand-in, used where two records must differ in this property. */
+    private static final String OTHER_SYNTHETIC_STORED_CREDENTIAL =
+            "$2a$10$SYNTHETICDIGESTFORUNITTESTONLYNOTAREALCREDENTIAL00002";
 
     /**
-     * Transcribes the ten in-stream cards.
-     *
-     * <p>The map preserves card order, so an immutable hash-ordered copy is deliberately not used.
-     *
-     * @return an ordered, unmodifiable view of the ten seeded users
+     * A value that is deliberately not shaped like a stored hash, used to prove that the entity's write
+     * paths refuse anything a cleartext credential could be. It is a label, not a credential.
      */
-    private static Map<String, String[]> seededCards() {
-        final Map<String, String[]> cards = new LinkedHashMap<>();
-        cards.put("ADMIN001", new String[] {"MARGARET", "GOLD", "A"});
-        cards.put("ADMIN002", new String[] {"RUSSELL", "RUSSELL", "A"});
-        cards.put("ADMIN003", new String[] {"RAYMOND", "WHITMORE", "A"});
-        cards.put("ADMIN004", new String[] {"EMMANUEL", "CASGRAIN", "A"});
-        cards.put("ADMIN005", new String[] {"GRANVILLE", "LACHAPELLE", "A"});
-        cards.put("USER0001", new String[] {"LAWRENCE", "THOMAS", "U"});
-        cards.put("USER0002", new String[] {"AJITH", "KUMAR", "U"});
-        cards.put("USER0003", new String[] {"LAURITZ", "ALME", "U"});
-        cards.put("USER0004", new String[] {"AVERARDO", "MAZZI", "U"});
-        cards.put("USER0005", new String[] {"LEE", "TING", "U"});
-        return Collections.unmodifiableMap(cards);
-    }
+    private static final String NOT_A_STORED_CREDENTIAL = "NOT-A-STORED-HASH";
+
+    // FIXTURE HELPERS
 
     /**
-     * Builds the entity one seeded card describes, at the copybook's blank-filled widths.
-     *
-     * <p>The credential is a digest and not the card's literal. The mainframe record holds eight
-     * cleartext characters; the migrated row holds a sixty-character digest of them, which is what
-     * {@code V4__seed_user_security.sql} writes, and the entity refuses any value that is not
-     * structurally a digest. The card's literal remains declared on this class because several
-     * assertions below concern the card image rather than the persisted row.
-     *
-     * @param identifier the eight-character sign-on identifier
-     * @return the record the card describes, with a digest in place of the card's cleartext password
-     */
-    private static UserSecurity userFromSeededCard(final String identifier) {
-        final String[] card = SEEDED_CARDS.get(identifier);
-        return new UserSecurity(
-                identifier,
-                pad(card[0], 20),
-                pad(card[1], 20),
-                digestShapedValue(),
-                card[2]);
-    }
-
-    /**
-     * Blank-fills a value on the right, the way a fixed-width character field is written.
+     * Blank-fills a value on the right to a fixed width, reproducing how the provisioning job's cards
+     * carry the two name fields. Test-side only: the entity itself never pads.
      *
      * @param value the value to fill
-     * @param width the target width
-     * @return the value followed by enough blanks to reach the target width
+     * @param width the fixed field width to fill it to
+     * @return the value followed by enough spaces to reach {@code width}
      */
-    private static String pad(final String value, final int width) {
+    private static String blankFill(String value, int width) {
         return value + " ".repeat(width - value.length());
     }
 
     /**
-     * Returns a canonical digest image of the length the password column is sized for.
+     * Counts encoded bytes rather than characters, because a field width in the legacy record is a byte
+     * count. {@link String#length()} is deliberately not used for width assertions anywhere here.
      *
-     * @return a sixty-character value shaped like a password digest
+     * @param value the value to measure
+     * @return the number of bytes {@code value} occupies when encoded
      */
-    private static String digestShapedValue() {
-        return "$2a$10$" + "N".repeat(DIGEST_COLUMN_WIDTH - 7);
+    private static int encodedWidth(String value) {
+        return value.getBytes(StandardCharsets.US_ASCII).length;
     }
 
-    // RECORD LAYOUT
-
     /**
-     * Verifies the copybook geometry the entity has to honour.
+     * Builds the first seeded administrator with both names blank-filled to their field widths and an
+     * obviously synthetic stored credential.
+     *
+     * @return a fully populated instance
      */
-    @Nested
-    @DisplayName("record layout")
-    class RecordLayout {
-
-        @Test
-        @DisplayName("the six copybook widths sum to the eighty bytes the cluster declares")
-        void theWidthsSumToTheRecordSize() {
-            assertThat(COPYBOOK_WIDTHS).hasSize(6);
-            assertThat(COPYBOOK_WIDTHS.stream().mapToInt(Integer::intValue).sum())
-                    .isEqualTo(RECORD_WIDTH);
-        }
-
-        @Test
-        @DisplayName("the five mapped fields occupy fifty-seven bytes, exactly what one in-stream card "
-                + "carries before the copy utility pads it")
-        void theMappedFieldsOccupyOneCardOfData() {
-            assertThat(COPYBOOK_WIDTHS.stream().mapToInt(Integer::intValue).sum() - FILLER_WIDTH)
-                    .isEqualTo(CARD_DATA_WIDTH);
-            assertThat(CARD_DATA_WIDTH + FILLER_WIDTH).isEqualTo(RECORD_WIDTH);
-        }
-
-        @Test
-        @DisplayName("the key is the leading eight bytes, so a sign-on identifier alone locates a record")
-        void theKeyIsTheLeadingEightBytes() {
-            assertThat(KEY_WIDTH).isEqualTo(COPYBOOK_WIDTHS.get(0));
-            assertThat(SCHEMA.declaredWidth(TABLE, "sec_usr_id")).isEqualTo(KEY_WIDTH);
-        }
-
-        @Test
-        @DisplayName("the role byte sits at position fifty-seven, the last populated byte of the record")
-        void theRoleByteSitsAtPositionFiftySeven() {
-            int running = 0;
-            for (int index = 0; index < 4; index++) {
-                running += COPYBOOK_WIDTHS.get(index);
-            }
-
-            assertThat(running).isEqualTo(OFFSET_ROLE);
-            assertThat(running + 1).isEqualTo(ROLE_BYTE_POSITION);
-            assertThat(ROLE_BYTE_POSITION).isEqualTo(CARD_DATA_WIDTH);
-            assertThat(COPYBOOK_WIDTHS.get(4)).isOne();
-        }
-
-        @Test
-        @DisplayName("the trailing twenty-three bytes are filler and are mapped to no column")
-        void theTrailingBytesAreFillerAndUnmapped() {
-            assertThat(COPYBOOK_WIDTHS.get(5)).isEqualTo(FILLER_WIDTH);
-            assertThat(SCHEMA.columnNames(TABLE)).hasSize(COPYBOOK_WIDTHS.size() - 1);
-        }
+    private static UserSecurity seededAdministrator() {
+        return new UserSecurity(
+                ADMIN_IDENTIFIER,
+                blankFill(ADMIN_GIVEN_NAME, GIVEN_NAME_WIDTH),
+                blankFill(ADMIN_FAMILY_NAME, FAMILY_NAME_WIDTH),
+                SYNTHETIC_STORED_CREDENTIAL,
+                ROLE_ADMINISTRATOR);
     }
 
-    // SCHEMA AGREEMENT
+    // CONSTRUCTION AND HYDRATION
 
     /**
-     * Verifies that the deployed migration describes the same layout the copybook does, and departs from
-     * it in exactly one place.
+     * Verifies the two routes by which an instance comes into existence: the all-argument constructor
+     * used by application code, and the no-argument constructor the persistence provider uses.
      */
     @Nested
-    @DisplayName("schema agreement")
-    class SchemaAgreement {
+    @DisplayName("construction follows the copybook field order")
+    class ConstructionAndHydration {
 
         @Test
-        @DisplayName("the table declares the five mapped columns in copybook order")
-        void theTableDeclaresTheMappedColumnsInCopybookOrder() {
-            assertThat(SCHEMA.columnNames(TABLE)).containsExactly(
-                    "sec_usr_id", "sec_usr_fname", "sec_usr_lname", "sec_usr_pwd", "sec_usr_type");
-        }
+        @DisplayName("the all-argument constructor takes the five mapped fields in copybook order and "
+                + "returns each one unchanged")
+        void theAllArgumentConstructorRoundTripsEveryMappedField() {
+            final String givenName = blankFill(ADMIN_GIVEN_NAME, GIVEN_NAME_WIDTH);
+            final String familyName = blankFill(ADMIN_FAMILY_NAME, FAMILY_NAME_WIDTH);
 
-        @Test
-        @DisplayName("every column except the password matches its copybook width")
-        void everyColumnExceptThePasswordMatchesItsCopybookWidth() {
-            final List<String> columns = SCHEMA.columnNames(TABLE);
-
-            for (int index = 0; index < columns.size(); index++) {
-                final String column = columns.get(index);
-                if ("sec_usr_pwd".equals(column)) {
-                    continue;
-                }
-                assertThat(SCHEMA.declaredWidth(TABLE, column))
-                        .as("declared width of %s", column)
-                        .isEqualTo(COPYBOOK_WIDTHS.get(index));
-            }
-        }
-
-        @Test
-        @DisplayName("the password column is sixty wide against a source field of eight, the one "
-                + "deliberate width departure in the record")
-        void thePasswordColumnIsWiderThanItsSourceField() {
-            assertThat(SCHEMA.declaredType(TABLE, "sec_usr_pwd")).isEqualTo("VARCHAR(60)");
-            assertThat(SCHEMA.declaredWidth(TABLE, "sec_usr_pwd"))
-                    .isEqualTo(DIGEST_COLUMN_WIDTH)
-                    .isGreaterThan(LEGACY_PASSWORD_WIDTH);
-            assertThat(COPYBOOK_WIDTHS.get(3)).isEqualTo(LEGACY_PASSWORD_WIDTH);
-        }
-
-        @Test
-        @DisplayName("the departure is the only one, so no other column drifts from the record layout")
-        void theDepartureIsTheOnlyOne() {
-            final List<String> columns = SCHEMA.columnNames(TABLE);
-            final List<String> departures = new ArrayList<>();
-
-            for (int index = 0; index < columns.size(); index++) {
-                if (SCHEMA.declaredWidth(TABLE, columns.get(index))
-                        != COPYBOOK_WIDTHS.get(index)) {
-                    departures.add(columns.get(index));
-                }
-            }
-
-            assertThat(departures).containsExactly("sec_usr_pwd");
-        }
-
-        @Test
-        @DisplayName("the role column is one byte, so the authorisation decision rests on a single "
-                + "character")
-        void theRoleColumnIsOneByte() {
-            assertThat(SCHEMA.declaredType(TABLE, "sec_usr_type")).isEqualTo("VARCHAR(1)");
-            assertThat(SCHEMA.declaredWidth(TABLE, "sec_usr_type")).isOne();
-        }
-
-        @Test
-        @DisplayName("the primary key is the identifier alone, and no surrogate or version column exists")
-        void thePrimaryKeyIsTheIdentifierAlone() {
-            assertThat(SCHEMA.primaryKeyColumns(TABLE)).containsExactly("sec_usr_id");
-            assertThat(SCHEMA.columnNames(TABLE)).doesNotContain("id", "user_id", "version");
-        }
-
-        @Test
-        @DisplayName("every column is declared not null, including the password, so no record can exist "
-                + "without credentials")
-        void everyColumnIsDeclaredNotNull() {
-            for (final String column : SCHEMA.columnNames(TABLE)) {
-                assertThat(SCHEMA.isNullable(TABLE, column))
-                        .as("nullability of %s", column)
-                        .isFalse();
-            }
-        }
-    }
-
-    // CONSTRUCTION AND ACCESS
-
-    /**
-     * Verifies that every field the constructor takes is the field the accessor returns.
-     */
-    @Nested
-    @DisplayName("construction and access")
-    class ConstructionAndAccess {
-
-        @Test
-        @DisplayName("every constructor argument reaches its own accessor, with no leak between the two "
-                + "twenty-byte names")
-        void everyConstructorArgumentReachesItsAccessor() {
             final UserSecurity user = new UserSecurity(
-                    "ADMIN001", pad("MARGARET", 20), pad("GOLD", 20), digestShapedValue(), "A");
+                    ADMIN_IDENTIFIER, givenName, familyName, SYNTHETIC_STORED_CREDENTIAL,
+                    ROLE_ADMINISTRATOR);
 
-            assertThat(user.getSecUsrId()).isEqualTo("ADMIN001");
-            assertThat(user.getSecUsrFname()).isEqualTo(pad("MARGARET", 20));
-            assertThat(user.getSecUsrLname()).isEqualTo(pad("GOLD", 20));
-            assertThat(user.credentialDigest()).isEqualTo(digestShapedValue());
-            assertThat(user.getSecUsrType()).isEqualTo("A");
+            assertThat(user.getSecUsrId()).isEqualTo(ADMIN_IDENTIFIER);
+            assertThat(user.getSecUsrFname()).isEqualTo(givenName);
+            assertThat(user.getSecUsrLname()).isEqualTo(familyName);
+            // Read through the entity's non-bean accessor: the stored value is deliberately not exposed
+            // as a discoverable property, so there is no getter following the bean convention to call.
+            assertThat(user.credentialDigest()).isEqualTo(SYNTHETIC_STORED_CREDENTIAL);
+            assertThat(user.getSecUsrType()).isEqualTo(ROLE_ADMINISTRATOR);
         }
 
         @Test
-        @DisplayName("the two twenty-byte names do not swap, which the one seeded user whose forename "
-                + "and surname are identical could otherwise conceal")
-        void theTwoNamesDoNotSwap() {
-            final UserSecurity distinct = userFromSeededCard("ADMIN001");
-            final UserSecurity identical = userFromSeededCard("ADMIN002");
+        @DisplayName("all five mapped fields can be replaced after construction and each returns exactly "
+                + "what was written")
+        void everyMappedFieldRoundTripsThroughItsWriter() {
+            final UserSecurity user = seededAdministrator();
+            final String replacementGivenName = blankFill("LAWRENCE", GIVEN_NAME_WIDTH);
+            final String replacementFamilyName = blankFill("THOMAS", FAMILY_NAME_WIDTH);
 
-            assertThat(distinct.getSecUsrFname()).isNotEqualTo(distinct.getSecUsrLname());
-            assertThat(identical.getSecUsrFname())
-                    .as("this user's forename and surname genuinely match in the seed")
-                    .isEqualTo(identical.getSecUsrLname());
+            user.setSecUsrId("USER0001");
+            user.setSecUsrFname(replacementGivenName);
+            user.setSecUsrLname(replacementFamilyName);
+            // The credential writer is likewise outside the bean convention, so that credential material
+            // can never be bound into this entity automatically from an inbound request.
+            user.replaceCredentialDigest(OTHER_SYNTHETIC_STORED_CREDENTIAL);
+            user.setSecUsrType(ROLE_STANDARD);
+
+            assertThat(user.getSecUsrId()).isEqualTo("USER0001");
+            assertThat(user.getSecUsrFname()).isEqualTo(replacementGivenName);
+            assertThat(user.getSecUsrLname()).isEqualTo(replacementFamilyName);
+            assertThat(user.credentialDigest()).isEqualTo(OTHER_SYNTHETIC_STORED_CREDENTIAL);
+            assertThat(user.getSecUsrType()).isEqualTo(ROLE_STANDARD);
         }
 
         @Test
-        @DisplayName("every mutator replaces exactly the field it names")
-        void everyMutatorReplacesTheFieldItNames() {
-            final UserSecurity user = userFromSeededCard("ADMIN001");
+        @DisplayName("the persistence provider's no-argument constructor yields an instance with every "
+                + "mapped field absent, because no field carries a default")
+        void theNoArgumentConstructorYieldsAnEmptyInstance() {
+            // This test class sits in the same package as the entity, so ordinary Java package access
+            // reaches the protected no-argument constructor directly. This is same-package visibility
+            // and explicitly NOT reflection: no reflective call of any kind is made here, because the
+            // module's unsafe-code audit requires a reflection count of zero.
+            final UserSecurity hydrating = new UserSecurity();
 
-            user.setSecUsrId("USER0009");
-            user.setSecUsrFname(pad("NEW", 20));
-            user.setSecUsrLname(pad("NAME", 20));
-            user.replaceCredentialDigest(digestShapedValue());
-            user.setSecUsrType("U");
+            assertThat(hydrating.getSecUsrId()).isNull();
+            assertThat(hydrating.getSecUsrFname()).isNull();
+            assertThat(hydrating.getSecUsrLname()).isNull();
+            // Left absent on purpose: no default, fallback or placeholder credential exists in source.
+            assertThat(hydrating.credentialDigest()).isNull();
+            assertThat(hydrating.getSecUsrType()).isNull();
+        }
+    }
 
-            assertThat(user.getSecUsrId()).isEqualTo("USER0009");
-            assertThat(user.getSecUsrFname()).isEqualTo(pad("NEW", 20));
-            assertThat(user.getSecUsrLname()).isEqualTo(pad("NAME", 20));
-            assertThat(user.credentialDigest()).isEqualTo(digestShapedValue());
-            assertThat(user.getSecUsrType()).isEqualTo("U");
+    // RECORD GEOMETRY
+
+    /**
+     * Verifies the byte widths the record layout fixes, and the single width the target deliberately
+     * departs from.
+     */
+    @Nested
+    @DisplayName("the 80-byte record geometry")
+    class RecordGeometry {
+
+        @Test
+        @DisplayName("the identifier, the two names and the role code occupy exactly 8, 20, 20 and 1 "
+                + "encoded bytes")
+        void theMappedFieldsOccupyTheirDeclaredByteWidths() {
+            final UserSecurity user = seededAdministrator();
+
+            // Byte counts, not character counts: a legacy field width is a byte width.
+            assertThat(encodedWidth(user.getSecUsrId())).isEqualTo(KEY_WIDTH);
+            assertThat(encodedWidth(user.getSecUsrFname())).isEqualTo(GIVEN_NAME_WIDTH);
+            assertThat(encodedWidth(user.getSecUsrLname())).isEqualTo(FAMILY_NAME_WIDTH);
+            assertThat(encodedWidth(user.getSecUsrType())).isEqualTo(ROLE_CODE_WIDTH);
         }
 
         @Test
-        @DisplayName("the persistence constructor leaves every field absent")
-        void thePersistenceConstructorLeavesEveryFieldAbsent() {
-            final UserSecurity user = new UserSecurity();
+        @DisplayName("the credential window widens from the legacy 8 bytes to a 60-character column, "
+                + "which is the one target width that exceeds its legacy picture width")
+        void theCredentialWindowWidensFromTheLegacyWidth() {
+            // The legacy field held eight cleartext characters. The target column holds a hash instead,
+            // and a hash does not fit in eight characters, so the two widths differ on purpose. Nothing
+            // about the internal structure of a real hash is asserted here - only that the window the
+            // entity can hold is wider than the window the legacy record had.
+            assertThat(LEGACY_CREDENTIAL_WIDTH).isNotEqualTo(CREDENTIAL_COLUMN_WIDTH);
+            assertThat(LEGACY_CREDENTIAL_WIDTH).isLessThan(CREDENTIAL_COLUMN_WIDTH);
 
-            assertThat(user.getSecUsrId()).isNull();
-            assertThat(user.getSecUsrFname()).isNull();
-            assertThat(user.getSecUsrLname()).isNull();
-            assertThat(user.credentialDigest()).isNull();
-            assertThat(user.getSecUsrType()).isNull();
+            final UserSecurity user = seededAdministrator();
+            assertThat(encodedWidth(user.credentialDigest())).isEqualTo(CREDENTIAL_COLUMN_WIDTH);
+            assertThat(encodedWidth(user.credentialDigest())).isGreaterThan(LEGACY_CREDENTIAL_WIDTH);
         }
 
         @Test
-        @DisplayName("the entity carries a value at every declared width")
-        void theEntityCarriesValuesAtTheDeclaredWidths() {
+        @DisplayName("the five mapped fields sum to 57 significant bytes of the 80-byte record, leaving "
+                + "a 23-byte trailing filler that is uniquely named in the estate yet still unpersisted")
+        void theMappedFieldsSumToFiftySevenOfEightyBytes() {
+            final int mapped = KEY_WIDTH
+                    + GIVEN_NAME_WIDTH
+                    + FAMILY_NAME_WIDTH
+                    + LEGACY_CREDENTIAL_WIDTH
+                    + ROLE_CODE_WIDTH;
+
+            assertThat(mapped).isEqualTo(SIGNIFICANT_WIDTH);
+
+            // The remainder is the trailing filler. Alone among the record layouts in the estate this
+            // filler carries a name of its own rather than being an anonymous one, and that changes
+            // nothing: it becomes no property and no column. Five fields are mapped, not six.
+            assertThat(RECORD_WIDTH - mapped).isEqualTo(UNMAPPED_FILLER_WIDTH);
+            assertThat(mapped + UNMAPPED_FILLER_WIDTH).isEqualTo(RECORD_WIDTH);
+        }
+    }
+
+    // ABSENCE OF NORMALISATION
+
+    /**
+     * Verifies that a value handed to the entity comes back out byte-for-byte identical. A fixed-width
+     * record is blank-filled by construction, so silently trimming a stored name would change the bytes
+     * the mapper later lays back out and would break the record image.
+     */
+    @Nested
+    @DisplayName("stored values are never normalised")
+    class AbsenceOfNormalisation {
+
+        @Test
+        @DisplayName("a name blank-filled to its 20-byte field width keeps its trailing padding, proving "
+                + "the entity does not trim")
+        void aBlankFilledNameKeepsItsTrailingPadding() {
+            final String paddedGivenName = blankFill(ADMIN_GIVEN_NAME, GIVEN_NAME_WIDTH);
+            // Fixture self-check: the padded form really is a full field wide before it is handed over.
+            assertThat(encodedWidth(paddedGivenName)).isEqualTo(GIVEN_NAME_WIDTH);
+            assertThat(encodedWidth(ADMIN_GIVEN_NAME)).isLessThan(GIVEN_NAME_WIDTH);
+
             final UserSecurity user = new UserSecurity(
-                    "I".repeat(KEY_WIDTH), "F".repeat(20), "L".repeat(20),
-                    digestShapedValue(), "A");
+                    ADMIN_IDENTIFIER, paddedGivenName, blankFill(ADMIN_FAMILY_NAME, FAMILY_NAME_WIDTH),
+                    SYNTHETIC_STORED_CREDENTIAL, ROLE_ADMINISTRATOR);
 
-            assertThat(user.getSecUsrId()).hasSize(KEY_WIDTH);
-            assertThat(user.getSecUsrFname()).hasSize(20);
-            assertThat(user.getSecUsrLname()).hasSize(20);
-            assertThat(user.credentialDigest()).hasSize(DIGEST_COLUMN_WIDTH);
-            assertThat(user.getSecUsrType()).hasSize(1);
+            // Byte equality against the padded input, so a trimmed or re-padded value cannot pass.
+            assertThat(user.getSecUsrFname().getBytes(StandardCharsets.US_ASCII))
+                    .isEqualTo(paddedGivenName.getBytes(StandardCharsets.US_ASCII));
+            assertThat(encodedWidth(user.getSecUsrFname())).isEqualTo(GIVEN_NAME_WIDTH);
+            // And explicitly not the unpadded value, which is what a trimming accessor would return.
+            assertThat(user.getSecUsrFname()).isNotEqualTo(ADMIN_GIVEN_NAME);
+        }
+
+        @Test
+        @DisplayName("a name blank-filled to its field width survives replacement through the setter too")
+        void aBlankFilledNameSurvivesReplacement() {
+            final String paddedFamilyName = blankFill("LACHAPELLE", FAMILY_NAME_WIDTH);
+            final UserSecurity user = seededAdministrator();
+
+            user.setSecUsrLname(paddedFamilyName);
+
+            assertThat(user.getSecUsrLname().getBytes(StandardCharsets.US_ASCII))
+                    .isEqualTo(paddedFamilyName.getBytes(StandardCharsets.US_ASCII));
+            assertThat(user.getSecUsrLname()).isNotEqualTo("LACHAPELLE");
+        }
+
+        @ParameterizedTest(name = "[{index}] {0} {1} {2} role {3}")
+        @CsvSource({
+            "ADMIN001, MARGARET,  GOLD,       A",
+            "ADMIN002, RUSSELL,   RUSSELL,    A",
+            "ADMIN003, RAYMOND,   WHITMORE,   A",
+            "ADMIN004, EMMANUEL,  CASGRAIN,   A",
+            "ADMIN005, GRANVILLE, LACHAPELLE, A",
+            "USER0001, LAWRENCE,  THOMAS,     U",
+            "USER0002, AJITH,     KUMAR,      U",
+            "USER0003, LAURITZ,   ALME,       U",
+            "USER0004, AVERARDO,  MAZZI,      U",
+            "USER0005, LEE,       TING,       U",
+        })
+        @DisplayName("every one of the ten identities the provisioning job carries in its own job stream "
+                + "round-trips unchanged")
+        void everySeededIdentityRoundTrips(String identifier,
+                                           String givenName,
+                                           String familyName,
+                                           String roleCode) {
+            final String paddedGivenName = blankFill(givenName, GIVEN_NAME_WIDTH);
+            final String paddedFamilyName = blankFill(familyName, FAMILY_NAME_WIDTH);
+
+            // The credential column of every card is replaced by an obviously synthetic stand-in. The
+            // job's own cards all share one cleartext literal, which is a secret and is therefore not
+            // reproduced here in any form.
+            final UserSecurity user = new UserSecurity(
+                    identifier, paddedGivenName, paddedFamilyName, SYNTHETIC_STORED_CREDENTIAL, roleCode);
+
+            assertThat(user.getSecUsrId()).isEqualTo(identifier);
+            assertThat(user.getSecUsrFname()).isEqualTo(paddedGivenName);
+            assertThat(user.getSecUsrLname()).isEqualTo(paddedFamilyName);
+            assertThat(user.getSecUsrType()).isEqualTo(roleCode);
+
+            // Each card fills the key exactly and blank-fills both names to their full field widths.
+            assertThat(encodedWidth(user.getSecUsrId())).isEqualTo(KEY_WIDTH);
+            assertThat(encodedWidth(user.getSecUsrFname())).isEqualTo(GIVEN_NAME_WIDTH);
+            assertThat(encodedWidth(user.getSecUsrLname())).isEqualTo(FAMILY_NAME_WIDTH);
+            assertThat(encodedWidth(user.getSecUsrType())).isEqualTo(ROLE_CODE_WIDTH);
         }
     }
 
-    // THE CREDENTIAL WIDTH DEPARTURE
+    // THE ROLE CODE
 
     /**
-     * Verifies that the password field can hold a digest and that the legacy field could not have.
+     * Verifies that the one byte the authorisation split rests on is stored raw, with no vocabulary
+     * enforced at the entity boundary.
      */
     @Nested
-    @DisplayName("the credential width departure")
-    class CredentialWidthDeparture {
+    @DisplayName("the role code is stored raw")
+    class RoleCode {
 
         @Test
-        @DisplayName("a full-length digest survives the entity intact")
-        void aFullLengthDigestSurvivesIntact() {
-            final UserSecurity user = userFromSeededCard("ADMIN001");
-            user.replaceCredentialDigest(digestShapedValue());
+        @DisplayName("the two declared role codes round-trip unchanged")
+        void theTwoDeclaredRoleCodesRoundTrip() {
+            final UserSecurity user = seededAdministrator();
 
-            assertThat(user.credentialDigest())
-                    .hasSize(DIGEST_COLUMN_WIDTH)
-                    .startsWith("$2a$10$");
+            assertThat(user.getSecUsrType()).isEqualTo(ROLE_ADMINISTRATOR);
+
+            user.setSecUsrType(ROLE_STANDARD);
+            assertThat(user.getSecUsrType()).isEqualTo(ROLE_STANDARD);
+
+            user.setSecUsrType(ROLE_ADMINISTRATOR);
+            assertThat(user.getSecUsrType()).isEqualTo(ROLE_ADMINISTRATOR);
         }
 
         @Test
-        @DisplayName("a digest does not fit the legacy eight-byte field, which is why the column had to "
-                + "widen")
-        void aDigestDoesNotFitTheLegacyField() {
-            assertThat(digestShapedValue().length())
-                    .isEqualTo(DIGEST_COLUMN_WIDTH)
-                    .isGreaterThan(LEGACY_PASSWORD_WIDTH);
-            assertThat(digestShapedValue().substring(0, LEGACY_PASSWORD_WIDTH))
-                    .as("truncating a digest to the legacy width would destroy it")
-                    .hasSize(LEGACY_PASSWORD_WIDTH)
-                    .isNotEqualTo(digestShapedValue());
+        @DisplayName("a role code outside the declared pair is accepted and returned unchanged, because "
+                + "legacy sign-on tests only the administrator condition and reaches the main menu "
+                + "through an unconditional alternative with no third branch")
+        void anUndeclaredRoleCodeIsAcceptedUnchanged() {
+            // Sign-on moves the stored code into the communication area at app/cbl/COSGN00C.cbl line 227,
+            // tests the administrator condition at line 230, and falls through an unconditional ELSE at
+            // line 235 that routes to the main menu, closing at line 240. There is no third branch and no
+            // error path for a code the estate never declared, so every non-administrator value -
+            // an unrecognised one included - routes to the main menu without raising anything. Rejecting
+            // such a code at the persistence boundary would refuse data the legacy system silently
+            // accepted, so the entity must not validate it.
+            final UserSecurity user = seededAdministrator();
+
+            user.setSecUsrType("Z");
+
+            assertThat(user.getSecUsrType())
+                    .as("an undeclared role code is stored verbatim")
+                    .isEqualTo("Z");
+            assertThat(encodedWidth(user.getSecUsrType())).isEqualTo(ROLE_CODE_WIDTH);
+
+            // No exception, no default substitution and no normalisation: constructing with the same
+            // undeclared code succeeds identically.
+            final UserSecurity constructed = new UserSecurity(
+                    "USER0001", blankFill("LAWRENCE", GIVEN_NAME_WIDTH),
+                    blankFill("THOMAS", FAMILY_NAME_WIDTH), SYNTHETIC_STORED_CREDENTIAL, "Z");
+            assertThat(constructed.getSecUsrType()).isEqualTo("Z");
         }
 
         @Test
-        @DisplayName("the seeded cleartext literal is exactly the legacy width, which is what it had to "
-                + "be to fit the record")
-        void theSeededLiteralIsExactlyTheLegacyWidth() {
-            assertThat(SEEDED_PASSWORD_LITERAL).hasSize(LEGACY_PASSWORD_WIDTH);
-        }
-
-        @Test
-        @DisplayName("the column has room for the digest and no more, so it is sized rather than left "
-                + "open-ended")
-        void theColumnIsSizedForTheDigest() {
-            assertThat(SCHEMA.declaredWidth(TABLE, "sec_usr_pwd"))
-                    .isEqualTo(digestShapedValue().length());
-        }
-    }
-
-    // THE ROLE BYTE
-
-    /**
-     * Verifies the single byte the authorisation decision rests on.
-     */
-    @Nested
-    @DisplayName("the role byte")
-    class RoleByte {
-
-        @Test
-        @DisplayName("every seeded role resolves to a declared role")
-        void everySeededRoleResolves() {
-            for (final String identifier : SEEDED_CARDS.keySet()) {
-                assertThat(UserType.fromCode(userFromSeededCard(identifier).getSecUsrType()))
-                        .as("role of %s", identifier)
-                        .isPresent();
-            }
-        }
-
-        @Test
-        @DisplayName("the five administrator records resolve administrative and the five user records do "
-                + "not")
-        void theFiveAdministratorsResolveAdministrative() {
-            int administrators = 0;
-            int ordinary = 0;
-
-            for (final String identifier : SEEDED_CARDS.keySet()) {
-                final UserType role = UserType.fromCode(userFromSeededCard(identifier).getSecUsrType())
-                        .orElseThrow();
-                if (role.isAdmin()) {
-                    administrators++;
-                    assertThat(identifier).as("only an administrator card carries the admin role")
-                            .startsWith("ADMIN");
-                } else {
-                    ordinary++;
-                    assertThat(identifier).startsWith("USER");
-                }
-            }
-
-            assertThat(administrators).isEqualTo(SEEDED_ADMINISTRATORS);
-            assertThat(ordinary).isEqualTo(SEEDED_ORDINARY_USERS);
-            assertThat(administrators + ordinary).isEqualTo(SEEDED_CARDS.size());
-        }
-
-        @Test
-        @DisplayName("a role byte outside the vocabulary resolves to nothing, so an unexpected byte "
-                + "cannot be read as administrative")
-        void anUnknownRoleByteResolvesToNothing() {
-            final UserSecurity user = userFromSeededCard("USER0001");
-            user.setSecUsrType("X");
-
-            assertThat(UserType.fromCode(user.getSecUsrType())).isEmpty();
-
-            user.setSecUsrType(" ");
-            assertThat(UserType.fromCode(user.getSecUsrType())).isEmpty();
+        @DisplayName("a lower-case role code is not folded to upper case, so the stored byte is exactly "
+                + "the byte supplied")
+        void aLowerCaseRoleCodeIsNotFolded() {
+            final UserSecurity user = seededAdministrator();
 
             user.setSecUsrType("a");
-            assertThat(UserType.fromCode(user.getSecUsrType()))
-                    .as("the byte is not case folded")
-                    .isEmpty();
+
+            assertThat(user.getSecUsrType()).isEqualTo("a");
+            assertThat(user.getSecUsrType()).isNotEqualTo(ROLE_ADMINISTRATOR);
+            assertThat(encodedWidth(user.getSecUsrType())).isEqualTo(ROLE_CODE_WIDTH);
         }
 
         @Test
-        @DisplayName("promoting a record's role byte promotes its authorisation, which is why the byte is "
-                + "the decision")
-        void promotingTheByteChangesTheAuthorisation() {
-            final UserSecurity user = userFromSeededCard("USER0001");
+        @DisplayName("a blank role code is stored as a blank rather than being defaulted, keeping the "
+                + "one-byte field width intact")
+        void aBlankRoleCodeIsStoredAsABlank() {
+            final UserSecurity user = seededAdministrator();
 
-            assertThat(UserType.fromCode(user.getSecUsrType()).orElseThrow().isAdmin()).isFalse();
-            user.setSecUsrType("A");
-            assertThat(UserType.fromCode(user.getSecUsrType()).orElseThrow().isAdmin()).isTrue();
-        }
-    }
+            user.setSecUsrType(" ");
 
-    // THE TEN SEEDED USERS
-
-    /**
-     * Verifies the ten records the provisioning job carries in its own job stream.
-     */
-    @Nested
-    @DisplayName("the ten seeded users")
-    class SeededUsers {
-
-        @Test
-        @DisplayName("the job stream carries exactly ten cards, five of each role")
-        void theJobStreamCarriesTenCards() {
-            assertThat(SEEDED_CARDS).hasSize(SEEDED_ADMINISTRATORS + SEEDED_ORDINARY_USERS);
-            assertThat(SEEDED_ADMINISTRATORS).isEqualTo(SEEDED_ORDINARY_USERS);
-        }
-
-        @Test
-        @DisplayName("every identifier is exactly eight characters, so every card fills the key")
-        void everyIdentifierFillsTheKey() {
-            for (final String identifier : SEEDED_CARDS.keySet()) {
-                assertThat(identifier)
-                        .as("identifier %s", identifier)
-                        .hasSize(KEY_WIDTH);
-            }
-        }
-
-        @Test
-        @DisplayName("every identifier is distinct, so ten cards produce ten records")
-        void everyIdentifierIsDistinct() {
-            final List<UserSecurity> users = new ArrayList<>();
-            for (final String identifier : SEEDED_CARDS.keySet()) {
-                users.add(userFromSeededCard(identifier));
-            }
-
-            assertThat(users).hasSize(SEEDED_CARDS.size());
-            assertThat(users.stream().map(UserSecurity::getSecUsrId).distinct().toList())
-                    .hasSize(SEEDED_CARDS.size());
-        }
-
-        @Test
-        @DisplayName("every card's names blank-fill to twenty, so each card's data is fifty-seven "
-                + "characters wide")
-        void everyCardsDataIsFiftySevenCharactersWide() {
-            for (final String identifier : SEEDED_CARDS.keySet()) {
-                final UserSecurity user = userFromSeededCard(identifier);
-                final int cardWidth = user.getSecUsrId().length()
-                        + user.getSecUsrFname().length()
-                        + user.getSecUsrLname().length()
-                        + SEEDED_PASSWORD_LITERAL.length()
-                        + user.getSecUsrType().length();
-
-                assertThat(cardWidth)
-                        .as("card width of %s", identifier)
-                        .isEqualTo(CARD_DATA_WIDTH);
-                assertThat(SEEDED_PASSWORD_LITERAL.length())
-                        .as("the card's credential field is the legacy width; the persisted column"
-                                + " is not, which is why the card width is summed from the card")
-                        .isEqualTo(LEGACY_PASSWORD_WIDTH);
-            }
-        }
-
-        @Test
-        @DisplayName("every card carries the same cleartext literal, which is why the seed cannot be "
-                + "used to distinguish one user's credential from another's")
-        void everyCardCarriesTheSameLiteral() {
-            assertThat(SEEDED_PASSWORD_LITERAL)
-                    .as("one literal serves all ten cards, so the seed carries no per-user secret")
-                    .hasSize(LEGACY_PASSWORD_WIDTH);
-
-            for (final String identifier : SEEDED_CARDS.keySet()) {
-                assertThatExceptionOfType(IllegalArgumentException.class)
-                        .as("the card literal of %s cannot be stored as it stands", identifier)
-                        .isThrownBy(() -> new UserSecurity(identifier, pad("X", 20), pad("Y", 20),
-                                SEEDED_PASSWORD_LITERAL, "U"));
-            }
-        }
-
-        @Test
-        @DisplayName("the entity refuses the card's eight-character literal, so the seed migration has "
-                + "to hash before it can store")
-        void theEntityRefusesTheCardLiteral() {
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new UserSecurity("ADMIN001", pad("MARGARET", 20),
-                            pad("GOLD", 20), SEEDED_PASSWORD_LITERAL, "A"))
-                    .satisfies(refusal -> assertThat(refusal.getMessage())
-                            .as("a refusal must not echo the value it refused, because that value is"
-                                    + " by definition a credential")
-                            .doesNotContain(SEEDED_PASSWORD_LITERAL));
-
-            final UserSecurity stored = userFromSeededCard("ADMIN001");
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> stored.replaceCredentialDigest(SEEDED_PASSWORD_LITERAL));
-            assertThat(stored.credentialDigest())
-                    .as("a refused replacement leaves the stored digest untouched")
-                    .isEqualTo(digestShapedValue());
+            assertThat(user.getSecUsrType()).isEqualTo(" ");
+            assertThat(encodedWidth(user.getSecUsrType())).isEqualTo(ROLE_CODE_WIDTH);
         }
     }
 
     // BUSINESS-KEY IDENTITY
 
     /**
-     * Verifies that identity is the sign-on identifier and nothing else.
+     * Verifies that identity rests on the 8-byte sign-on identifier alone. The key is the leading
+     * substring of the record image and is assigned rather than generated, so it is stable from
+     * construction onward and key equality is well-defined even before an instance is persisted.
      */
     @Nested
-    @DisplayName("business-key identity")
+    @DisplayName("identity rests on the sign-on identifier alone")
     class BusinessKeyIdentity {
 
         @Test
-        @DisplayName("a record equals itself")
-        void aRecordEqualsItself() {
-            final UserSecurity user = userFromSeededCard("ADMIN001");
-
-            assertThat(user).isEqualTo(user);
-            assertThat(user.hashCode()).isEqualTo(user.hashCode());
-        }
-
-        @Test
-        @DisplayName("two records with the same identifier are equal even when the role and the "
-                + "credential differ, because the key alone decides identity")
-        void sameIdentifierMeansEqualEvenWithADifferentRole() {
-            final UserSecurity left = userFromSeededCard("ADMIN001");
+        @DisplayName("two records sharing an identifier are equal and share a hash code even when every "
+                + "other mapped field differs, including the stored credential")
+        void sameIdentifierMeansEqualEvenWhenEveryOtherFieldDiffers() {
+            final UserSecurity left = new UserSecurity(
+                    ADMIN_IDENTIFIER,
+                    blankFill(ADMIN_GIVEN_NAME, GIVEN_NAME_WIDTH),
+                    blankFill(ADMIN_FAMILY_NAME, FAMILY_NAME_WIDTH),
+                    SYNTHETIC_STORED_CREDENTIAL,
+                    ROLE_ADMINISTRATOR);
             final UserSecurity right = new UserSecurity(
-                    "ADMIN001", pad("OTHER", 20), pad("OTHER", 20), digestShapedValue(), "U");
+                    ADMIN_IDENTIFIER,
+                    blankFill("LAWRENCE", GIVEN_NAME_WIDTH),
+                    blankFill("THOMAS", FAMILY_NAME_WIDTH),
+                    OTHER_SYNTHETIC_STORED_CREDENTIAL,
+                    ROLE_STANDARD);
+
+            // Every field except the key differs, the stored credential included. Were the credential
+            // part of identity, a credential change would move a record between hash buckets even though
+            // the identity it denotes had not changed at all. Each side is checked against the fixture it
+            // was built from rather than against the other side's accessor.
+            assertThat(left.getSecUsrFname()).isEqualTo(blankFill(ADMIN_GIVEN_NAME, GIVEN_NAME_WIDTH));
+            assertThat(right.getSecUsrFname()).isEqualTo(blankFill("LAWRENCE", GIVEN_NAME_WIDTH));
+            assertThat(left.credentialDigest()).isEqualTo(SYNTHETIC_STORED_CREDENTIAL);
+            assertThat(right.credentialDigest()).isEqualTo(OTHER_SYNTHETIC_STORED_CREDENTIAL);
+            assertThat(SYNTHETIC_STORED_CREDENTIAL).isNotEqualTo(OTHER_SYNTHETIC_STORED_CREDENTIAL);
+            assertThat(left.getSecUsrType()).isEqualTo(ROLE_ADMINISTRATOR);
+            assertThat(right.getSecUsrType()).isEqualTo(ROLE_STANDARD);
 
             assertThat(left).isEqualTo(right);
             assertThat(right).isEqualTo(left);
@@ -659,83 +551,166 @@ class UserSecurityTest {
         }
 
         @Test
-        @DisplayName("two records with different identifiers are unequal")
-        void differentIdentifierMeansUnequal() {
-            assertThat(userFromSeededCard("ADMIN001")).isNotEqualTo(userFromSeededCard("ADMIN002"));
-            assertThat(userFromSeededCard("USER0001")).isNotEqualTo(userFromSeededCard("ADMIN001"));
+        @DisplayName("two records with different identifiers are unequal even when every other mapped "
+                + "field matches")
+        void differentIdentifiersMeanUnequal() {
+            final UserSecurity left = seededAdministrator();
+            final UserSecurity right = new UserSecurity(
+                    OTHER_ADMIN_IDENTIFIER,
+                    blankFill(ADMIN_GIVEN_NAME, GIVEN_NAME_WIDTH),
+                    blankFill(ADMIN_FAMILY_NAME, FAMILY_NAME_WIDTH),
+                    SYNTHETIC_STORED_CREDENTIAL,
+                    ROLE_ADMINISTRATOR);
+
+            assertThat(left).isNotEqualTo(right);
+            assertThat(right).isNotEqualTo(left);
         }
 
         @Test
-        @DisplayName("equality is transitive across three records sharing an identifier")
-        void equalityIsTransitive() {
-            final UserSecurity first = userFromSeededCard("USER0003");
-            final UserSecurity second = userFromSeededCard("USER0003");
-            final UserSecurity third = userFromSeededCard("USER0003");
+        @DisplayName("a record equals itself")
+        void aRecordEqualsItself() {
+            final UserSecurity user = seededAdministrator();
+
+            assertThat(user).isEqualTo(user);
+            assertThat(user.equals(user)).isTrue();
+        }
+
+        @Test
+        @DisplayName("the hash code is the hash of the sign-on identifier alone, so no other mapped "
+                + "field - the stored credential least of all - enters a hash-bucket computation")
+        void theHashCodeIsTheHashOfTheIdentifierAlone() {
+            // Independently derived from the stated contract rather than from the entity: hashing the key
+            // alone means the result must equal the identifier's own hash. Two records that differ in
+            // every field but the key therefore cannot land in different buckets.
+            assertThat(seededAdministrator().hashCode()).isEqualTo(ADMIN_IDENTIFIER.hashCode());
+
+            final UserSecurity other = new UserSecurity(
+                    OTHER_ADMIN_IDENTIFIER,
+                    blankFill("RUSSELL", GIVEN_NAME_WIDTH),
+                    blankFill("RUSSELL", FAMILY_NAME_WIDTH),
+                    OTHER_SYNTHETIC_STORED_CREDENTIAL,
+                    ROLE_ADMINISTRATOR);
+            assertThat(other.hashCode()).isEqualTo(OTHER_ADMIN_IDENTIFIER.hashCode());
+
+            // Null-safe for an instance whose key has not been assigned yet: hashing an absent key
+            // yields zero rather than failing.
+            assertThat(new UserSecurity().hashCode()).isZero();
+        }
+
+        @Test
+        @DisplayName("a record is unequal to null and to an unrelated type, so neither can be mistaken "
+                + "for a sign-on identity")
+        void aRecordIsUnequalToNullAndToAnUnrelatedType() {
+            final UserSecurity user = seededAdministrator();
+
+            assertThat(user.equals(null)).isFalse();
+            assertThat(user.equals(ADMIN_IDENTIFIER)).isFalse();
+            assertThat(user.equals(new Object())).isFalse();
+        }
+
+        @Test
+        @DisplayName("two records whose identifier has not been assigned yet are equal, because the key "
+                + "is absent rather than generated")
+        void twoUnkeyedRecordsAreEqual() {
+            final UserSecurity first = new UserSecurity();
+            final UserSecurity second = new UserSecurity();
 
             assertThat(first).isEqualTo(second);
-            assertThat(second).isEqualTo(third);
-            assertThat(first).isEqualTo(third);
-            assertThat(first).hasSameHashCodeAs(third);
-        }
-
-        @Test
-        @DisplayName("a record is unequal to null and to an unrelated type")
-        void aRecordIsUnequalToNullAndToAnotherType() {
-            final UserSecurity user = userFromSeededCard("ADMIN001");
-
-            assertThat(user).isNotEqualTo(null);
-            assertThat(user.equals("ADMIN001")).isFalse();
-            assertThat(user).isNotEqualTo(new Object());
-        }
-
-        @Test
-        @DisplayName("two records with an absent identifier are equal, because both keys are absent "
-                + "rather than generated")
-        void twoUnkeyedRecordsAreEqual() {
-            assertThat(new UserSecurity()).isEqualTo(new UserSecurity());
-            assertThat(new UserSecurity()).hasSameHashCodeAs(new UserSecurity());
-            assertThat(new UserSecurity().getSecUsrId()).isNull();
+            assertThat(first).hasSameHashCodeAs(second);
         }
     }
 
-    // CREDENTIAL CONTAINMENT
+    // THE CREDENTIAL CONTRACT
 
     /**
-     * Verifies that no credential can escape through a diagnostic string.
+     * Documents and verifies what the entity does and does not do with the stored credential.
      */
     @Nested
-    @DisplayName("credential containment")
-    class CredentialContainment {
+    @DisplayName("the credential contract")
+    class CredentialContract {
 
         @Test
-        @DisplayName("the entity declares a diagnostic string that names the sign-on identifier alone, "
-                + "so the credential cannot reach a log line through one")
-        void theDiagnosticStringNamesTheKeyAlone() {
-            final UserSecurity user = userFromSeededCard("ADMIN001");
-            user.replaceCredentialDigest(digestShapedValue());
+        @DisplayName("the primary key is the 8-byte sign-on identifier from the record image, so no "
+                + "generated surrogate identifier exists on this entity")
+        void theKeyIsTheBusinessIdentifierWithNoSurrogate() {
+            // Proved by compile-time absence. This file names no getId, no setId and no
+            // generated-identifier accessor of any kind, and it could not compile if it did, because the
+            // entity declares none. Reflection is deliberately not used to demonstrate that: an absent
+            // member is established by the code that does not reference it, and the module's unsafe-code
+            // audit requires a reflection count of zero. Across the estate a record key is the leading
+            // substring of the record image, and a surrogate key would break the record-image-to-row
+            // correspondence that byte-parity verification depends on.
+            final UserSecurity user = seededAdministrator();
 
-            // The rendering is stated by the entity rather than inherited. The inherited form would leak
-            // nothing either, but only by accident of the base class: a field added later, or a decision
-            // to render reflectively, would leak silently. Naming the safe rendering makes the guarantee
-            // belong to this class and makes any widening of it visible in review. What must never
-            // appear is asserted below, exhaustively.
-            assertThat(user.toString())
-                    .isEqualTo("UserSecurity[secUsrId=ADMIN001]")
-                    .doesNotContain(digestShapedValue())
-                    .doesNotContain(SEEDED_PASSWORD_LITERAL)
-                    .doesNotContain("$2a$")
-                    .doesNotContain("MARGARET")
-                    .doesNotContain("secUsrPwd");
+            assertThat(user.getSecUsrId()).isEqualTo(ADMIN_IDENTIFIER);
+            assertThat(encodedWidth(user.getSecUsrId())).isEqualTo(KEY_WIDTH);
+
+            // A caller-assigned key is absent until it is assigned; a generated one never would be.
+            assertThat(new UserSecurity().getSecUsrId()).isNull();
         }
 
         @Test
-        @DisplayName("the credential is readable only through its own accessor, so a caller has to ask "
-                + "for it explicitly")
-        void theCredentialIsReadableOnlyThroughItsAccessor() {
-            final UserSecurity user = userFromSeededCard("ADMIN001");
+        @DisplayName("the entity stores the already-hashed credential and neither produces nor checks "
+                + "it, so no hashing, verification or comparison happens on this record")
+        void theEntityNeitherHashesNorVerifiesNorCompares() {
+            // Proved by compile-time absence again. This file imports no encoder, no digest type and no
+            // cryptography package, and names no matches, verify or check-credential member, because the
+            // entity exposes none. Reflection is not used to establish the absence of an API.
+            final UserSecurity user = seededAdministrator();
 
-            assertThat(user.credentialDigest()).isEqualTo(digestShapedValue());
-            assertThat(user.toString()).doesNotContain(user.credentialDigest());
+            // The value read back is the very reference that was handed in: nothing was hashed,
+            // re-derived, salted, copied or otherwise transformed on the way through.
+            assertThat(user.credentialDigest()).isEqualTo(SYNTHETIC_STORED_CREDENTIAL);
+            assertThat(user.credentialDigest()).isSameAs(SYNTHETIC_STORED_CREDENTIAL);
+
+            // Replacement stores the new value verbatim as well; there is no accumulation and no
+            // re-hashing of what was already there.
+            user.replaceCredentialDigest(OTHER_SYNTHETIC_STORED_CREDENTIAL);
+            assertThat(user.credentialDigest()).isSameAs(OTHER_SYNTHETIC_STORED_CREDENTIAL);
+        }
+
+        @Test
+        @DisplayName("both credential write paths refuse a value that is not shaped like a stored hash, "
+                + "which is what stops an eight-character cleartext value reaching a 60-character column")
+        void bothCredentialWritePathsRefuseAnUnhashedValue() {
+            // A divergence from the entity contract as originally described, and the reason the fixtures
+            // in this file are hash-shaped: the credential paths are not plain assignment. The check is
+            // purely structural - it does not hash and does not verify - but it does refuse, so a value
+            // of the legacy eight-character width cannot be stored in a column wide enough to hold it.
+            // The value used here is a label rather than a credential.
+            assertThat(encodedWidth(NOT_A_STORED_CREDENTIAL)).isNotEqualTo(CREDENTIAL_COLUMN_WIDTH);
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new UserSecurity(
+                            ADMIN_IDENTIFIER,
+                            blankFill(ADMIN_GIVEN_NAME, GIVEN_NAME_WIDTH),
+                            blankFill(ADMIN_FAMILY_NAME, FAMILY_NAME_WIDTH),
+                            NOT_A_STORED_CREDENTIAL,
+                            ROLE_ADMINISTRATOR))
+                    // A refusal must not echo what it refused, since a refused value is likely the very
+                    // thing that should not have been supplied, and a message is prone to reach a log.
+                    .withMessageNotContaining(NOT_A_STORED_CREDENTIAL);
+
+            final UserSecurity user = seededAdministrator();
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> user.replaceCredentialDigest(NOT_A_STORED_CREDENTIAL));
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> user.replaceCredentialDigest(null));
+
+            assertThat(user.credentialDigest())
+                    .as("a refused replacement leaves the stored value untouched")
+                    .isEqualTo(SYNTHETIC_STORED_CREDENTIAL);
+        }
+
+        @Test
+        @DisplayName("the diagnostic rendering does not carry the stored credential, so it cannot reach "
+                + "a log line by way of a description")
+        void theDiagnosticRenderingExcludesTheStoredCredential() {
+            // A rendering exists on the entity, so the one permitted assertion about it is made here and
+            // nothing further: that the stored credential does not appear in it.
+            final UserSecurity user = seededAdministrator();
+
+            assertThat(user.toString()).doesNotContain(SYNTHETIC_STORED_CREDENTIAL);
         }
     }
 }

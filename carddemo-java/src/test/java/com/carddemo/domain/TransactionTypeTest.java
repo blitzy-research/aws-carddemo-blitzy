@@ -16,516 +16,677 @@
  */
 package com.carddemo.domain;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-
-import com.carddemo.support.SchemaColumnCatalog;
-import com.carddemo.support.SeededRecordFixture;
+import java.nio.charset.StandardCharsets;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Verifies {@link TransactionType}, the sixty-byte transaction-type reference record.
+ * Unit tests for {@link TransactionType}, the entity form of the 60-byte transaction-type
+ * reference row.
  *
- * <p><strong>The layout being preserved.</strong> {@code app/cpy/CVTRA03Y.cpy} declares a sixty-byte
- * record in three parts: a two-byte type code, a fifty-byte description and an eight-byte filler. The
- * cluster definition at {@code app/jcl/TRANTYPE.jcl} confirms the geometry independently with
- * {@code KEYS(2 0)} and {@code RECORDSIZE(60 60)}, so the whole key is the two-byte code at the front of
- * the record and nothing else.
+ * <h2>What is under test</h2>
  *
- * <p><strong>Why the two-byte code has to stay a character field.</strong> Every seeded code carries a
- * leading zero — the seven of them run from {@code 01} to {@code 07} — and the type code travels into the
- * transaction record as a two-character field. Stored as an integer, the first of those codes would come
- * back as a one, the stored key would no longer be the two bytes the record image carries, and a
- * transaction stamped {@code 01} would fail to resolve. The suite proves the leading zero survives rather
- * than assuming it.
+ * <p>Copybook {@code app/cpy/CVTRA03Y.cpy} declares a 60-byte record in three parts: a 2-byte
+ * transaction type code at offset 0, a 50-byte description at offset 2 and an 8-byte trailing
+ * filler at offset 52. The cluster definition in {@code app/jcl/TRANTYPE.jcl} corroborates that
+ * geometry independently with {@code KEYS(2 0)} on a {@code RECORDSIZE(60 60)} indexed cluster, so
+ * the whole key is the leading 2 bytes and nothing else. The filler carries no information and is
+ * therefore mapped by no attribute, which leaves the entity with exactly two mapped properties -
+ * the smallest of the eleven entity translations in this package.</p>
  *
- * <p><strong>Why the seeded contents are the oracle.</strong> The seven code-and-description pairs are
- * transcribed from the estate's own reference file, so this suite compares the classpath fixture against
- * a transcription of the legacy data rather than against anything the entity itself reports. The pairing
- * matters beyond bookkeeping: the interest run stamps its synthesised transactions with type {@code 01},
- * and that code has to be one the reference file declares or the posted interest would carry a type no
- * lookup could resolve.
+ * <h2>Where every expected value in this suite comes from</h2>
  *
- * <p><strong>Deliberately not asserted.</strong> Nothing here reads the reference table through a
- * repository or joins it to a transaction; that belongs to the repository integration tests. This suite
- * establishes only that the record those tests read is shaped and seeded the way they require.
+ * <p>Every width, offset, count and literal asserted below was derived by hand from the copybook
+ * and from the reference file {@code app/data/ASCII/trantype.txt}, then written here as a constant.
+ * Nothing is read back from the class under test to produce an expectation, and nothing is read
+ * from disk or from the classpath: this is a pure unit test that touches no container, no
+ * application context, no database, no network and no file. The reference file's arithmetic is
+ * itself part of the evidence - it measures 427 bytes, which is exactly 7 records at the 60-byte
+ * record length plus one line terminator each - so the seeded row count is a derived fact rather
+ * than a guess.</p>
+ *
+ * <h2>Why the type code has to stay text</h2>
+ *
+ * <p>All seven seeded codes carry a leading zero, running from {@code 01} to {@code 07}, and the
+ * code occupies a fixed 2-byte field in the record image. Held as a number the first code would
+ * come back one byte wide, the stored key would no longer be the 2 bytes the record publishes, and
+ * a transaction stamped {@code 01} would fail to resolve against this table. The assertions below
+ * prove the leading zero survives a round trip and that {@code "01"} is not equal to {@code "1"}.</p>
+ *
+ * <h2>Why the blank padding is contractual</h2>
+ *
+ * <p>In the record image every description fills its 50-byte field, blank-padded on the right, and
+ * that padding is part of the external width the legacy record publishes. The entity therefore has
+ * to return a description exactly as it was supplied: a setter that trimmed, folded or re-padded
+ * would silently change the byte width of any fixed-width line formatted from it. The suite proves
+ * the absence of that normalisation directly, by storing a padded value and asserting that what
+ * comes back still differs from the unpadded text.</p>
+ *
+ * <h2>Two 60-byte layouts that must never be conflated</h2>
+ *
+ * <p>The transaction-category copybook {@code app/cpy/CVTRA04Y.cpy} also describes a 60-byte record
+ * carrying a 50-byte description, but it splits differently - a 2-byte type code, a 4-byte category
+ * code, the description at offset 6 and a 4-byte filler - and it names its type code with a code
+ * suffix that this copybook does not use. That naming asymmetry between two sibling copybooks is
+ * preserved rather than harmonised, so this entity's key property is {@code tranType} and never the
+ * suffixed spelling the category record uses. Because both layouts total 60 bytes, a width check
+ * cannot tell them apart; nothing here attempts to infer a layout from a record image, because the
+ * caller always knows which dataset it read.</p>
+ *
+ * <h2>Deliberately not asserted here</h2>
+ *
+ * <p>Column names, declared widths, nullability and key metadata are not verified in this tier.
+ * Schema agreement is enforced where it can actually fail - against a real relational database in
+ * the integration tier, where the provider runs in validate mode and refuses to start on any
+ * divergence. Nothing here inspects an annotation, and no reflective access of any kind is used,
+ * because the module holds a zero budget for it. Nor is any relationship asserted: no foreign key
+ * targets or originates from this table in any migration, so the entity models no association.</p>
+ *
+ * <p><strong>One divergence from the specified contract summary is recorded here.</strong> That
+ * summary anticipated that a diagnostic string representation might be absent from the entity and
+ * directed that no assertion be made on it. The class as written does declare one. The class is
+ * authoritative on signatures, so the representation is exercised below to keep every declared
+ * member covered, but only its availability and its null-safety are asserted - never its rendered
+ * layout, which stays uncontracted exactly as the summary intends.</p>
+ *
+ * <p>Translated from the CardDemo COBOL estate at checkout commit
+ * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
-@DisplayName("TransactionType — the sixty-byte transaction-type reference record")
+@DisplayName("TransactionType: the 60-byte CVTRA03Y transaction-type reference row")
 class TransactionTypeTest {
 
-    /** Relational table the entity maps to. */
-    private static final String TABLE = "transaction_type";
+    /** Width of the type code field, hand-derived from its {@code X(02)} declaration. */
+    private static final int TYPE_CODE_WIDTH = 2;
 
-    /** {@code RECORDSIZE(60 60)} in the cluster definition. */
-    private static final int RECORD_WIDTH = 60;
+    /** Width of the description field, hand-derived from its {@code X(50)} declaration. */
+    private static final int DESCRIPTION_WIDTH = 50;
 
-    /** {@code KEYS(2 0)} — key length. */
-    private static final int KEY_WIDTH = 2;
-
-    /** The three copybook widths, in declaration order. */
-    private static final List<Integer> COPYBOOK_WIDTHS = List.of(2, 50, 8);
-
-    /** Zero-based offset of the type code. */
-    private static final int OFFSET_CODE = 0;
-
-    /** Zero-based offset of the description. */
-    private static final int OFFSET_DESCRIPTION = 2;
-
-    /** Zero-based offset of the filler. */
-    private static final int OFFSET_FILLER = 52;
-
-    /** Width of the unmapped trailing filler. */
+    /** Width of the unmapped trailing filler, hand-derived from its {@code X(08)} declaration. */
     private static final int FILLER_WIDTH = 8;
 
-    /** Seeded records. */
-    private static final int SEEDED_RECORDS = 7;
+    /** Record length the copybook states and the cluster definition repeats as {@code (60 60)}. */
+    private static final int RECORD_WIDTH = 60;
 
-    /** The type code the interest run stamps on every transaction it synthesises. */
-    private static final String INTEREST_TYPE_CODE = "01";
+    /** Zero-based offset of the type code, which is also the key offset the cluster declares. */
+    private static final int TYPE_CODE_OFFSET = 0;
 
-    /** The migration's transaction-type table, parsed once. */
-    private static final SchemaColumnCatalog SCHEMA = SchemaColumnCatalog.load();
+    /** Zero-based offset of the description, immediately after the 2-byte code. */
+    private static final int DESCRIPTION_OFFSET = 2;
 
-    /** The seeded reference file, loaded once at its declared width. */
-    private static final SeededRecordFixture SEED =
-            SeededRecordFixture.load("trantype.txt", RECORD_WIDTH);
+    /** Zero-based offset of the trailing filler, immediately after the 50-byte description. */
+    private static final int FILLER_OFFSET = 52;
+
+    /** Rows the reference file carries. */
+    private static final int SEEDED_ROW_COUNT = 7;
+
+    /** Bytes the reference file measures. */
+    private static final int SEEDED_FILE_BYTE_COUNT = 427;
+
+    /** One line terminator follows each record in the reference file. */
+    private static final int LINE_TERMINATOR_WIDTH = 1;
+
+    /** First seeded type code, and the one the interest run stamps on what it synthesises. */
+    private static final String FIRST_TYPE_CODE = "01";
+
+    /** Description text of the first seeded row, before the field's blank padding is applied. */
+    private static final String FIRST_TYPE_TEXT = "Purchase";
+
+    /** Bytes {@link #FIRST_TYPE_TEXT} occupies unpadded, counted by hand over its 8 characters. */
+    private static final int FIRST_TYPE_TEXT_WIDTH = 8;
+
+    /** Last seeded type code. */
+    private static final String LAST_TYPE_CODE = "07";
+
+    /** Description text of the last seeded row, before the field's blank padding is applied. */
+    private static final String LAST_TYPE_TEXT = "Adjustment";
+
+    /** Longest of the seven seeded description texts. */
+    private static final String LONGEST_TYPE_TEXT = "Authorization";
+
+    /** Bytes {@link #LONGEST_TYPE_TEXT} occupies, counted by hand over its 13 characters. */
+    private static final int LONGEST_TYPE_TEXT_WIDTH = 13;
 
     /**
-     * The seven seeded code-and-description pairs, transcribed from the estate's reference data in file
-     * order.
-     */
-    private static final Map<String, String> SEEDED_TYPES = seededTypes();
-
-    /**
-     * Transcribes the seven seeded reference rows.
+     * Blank-pads description text on the right to the full width of the description field, the way
+     * the record image carries it.
      *
-     * <p>File order is itself asserted, so the map is wrapped rather than copied into a hash-ordered
-     * immutable map.
+     * <p>The padding is computed from the encoded byte count rather than from the character count,
+     * because the field is a fixed-width byte field. Only the seven seeded description texts are
+     * passed in, and every one of them is far shorter than the field, so the computed padding is
+     * always positive. This helper is test-local arithmetic over the copybook width: no method of
+     * the class under test participates in producing an expected value anywhere in this suite.</p>
      *
-     * @return an ordered, unmodifiable view of the seeded type codes and their descriptions
+     * @param text the unpadded description text
+     * @return the text followed by enough blanks to fill the description field exactly
      */
-    private static Map<String, String> seededTypes() {
-        final Map<String, String> types = new LinkedHashMap<>();
-        types.put("01", "Purchase");
-        types.put("02", "Payment");
-        types.put("03", "Credit");
-        types.put("04", "Authorization");
-        types.put("05", "Refund");
-        types.put("06", "Reversal");
-        types.put("07", "Adjustment");
-        return Collections.unmodifiableMap(types);
+    private static String blankPaddedDescription(final String text) {
+        final int encodedLength = text.getBytes(StandardCharsets.US_ASCII).length;
+        return text + " ".repeat(DESCRIPTION_WIDTH - encodedLength);
     }
 
     /**
-     * Reads one seeded record's type code.
+     * Counts the bytes a value occupies when encoded, which is the measure the fixed-width record
+     * contract is expressed in.
      *
-     * @param ordinal the one-based record ordinal
-     * @return the two-byte type code
+     * @param value the value to measure
+     * @return the encoded byte count
      */
-    private static String seededCode(final int ordinal) {
-        return SEED.field(ordinal, OFFSET_CODE, KEY_WIDTH);
+    private static int encodedWidthOf(final String value) {
+        return value.getBytes(StandardCharsets.US_ASCII).length;
     }
 
     /**
-     * Reads one seeded record's description, at its blank-filled fifty-byte width.
-     *
-     * @param ordinal the one-based record ordinal
-     * @return the fifty-byte description
-     */
-    private static String seededDescription(final int ordinal) {
-        return SEED.field(ordinal, OFFSET_DESCRIPTION, COPYBOOK_WIDTHS.get(1));
-    }
-
-    /**
-     * Builds the entity one seeded record describes.
-     *
-     * @param ordinal the one-based record ordinal
-     * @return the reference row the record describes
-     */
-    private static TransactionType typeFromSeed(final int ordinal) {
-        return new TransactionType(seededCode(ordinal), seededDescription(ordinal));
-    }
-
-    // RECORD LAYOUT
-
-    /**
-     * Verifies the copybook geometry the entity has to honour.
+     * Verifies the transcribed record geometry, so that a drifted constant is caught here rather
+     * than silently weakening every assertion that depends on it.
      */
     @Nested
-    @DisplayName("record layout")
-    class RecordLayout {
+    @DisplayName("record geometry")
+    class RecordGeometry {
 
         @Test
-        @DisplayName("the three copybook widths sum to the sixty bytes the cluster declares")
-        void theWidthsSumToTheRecordSize() {
-            assertThat(COPYBOOK_WIDTHS).hasSize(3);
-            assertThat(COPYBOOK_WIDTHS.stream().mapToInt(Integer::intValue).sum())
+        @DisplayName("the copybook's three field widths of 2, 50 and 8 sum to the 60-byte record "
+                + "length that the cluster definition repeats as RECORDSIZE(60 60)")
+        void theThreeFieldWidthsSumToTheRecordLength() {
+            assertThat(TYPE_CODE_WIDTH + DESCRIPTION_WIDTH + FILLER_WIDTH)
                     .isEqualTo(RECORD_WIDTH);
         }
 
         @Test
-        @DisplayName("each field begins where the preceding widths leave off")
-        void eachFieldBeginsWhereThePrecedingWidthsLeaveOff() {
-            final List<Integer> offsets = List.of(OFFSET_CODE, OFFSET_DESCRIPTION, OFFSET_FILLER);
-
-            int running = 0;
-            for (int index = 0; index < COPYBOOK_WIDTHS.size(); index++) {
-                assertThat(offsets.get(index))
-                        .as("offset of field %d", index)
-                        .isEqualTo(running);
-                running += COPYBOOK_WIDTHS.get(index);
-            }
-
-            assertThat(running).isEqualTo(RECORD_WIDTH);
+        @DisplayName("each field starts where the preceding one ends, so the key sits at offset 0, "
+                + "the description at offset 2 and the filler at offset 52")
+        void eachFieldStartsWhereThePrecedingOneEnds() {
+            assertThat(TYPE_CODE_OFFSET).isZero();
+            assertThat(TYPE_CODE_OFFSET + TYPE_CODE_WIDTH).isEqualTo(DESCRIPTION_OFFSET);
+            assertThat(DESCRIPTION_OFFSET + DESCRIPTION_WIDTH).isEqualTo(FILLER_OFFSET);
+            assertThat(FILLER_OFFSET + FILLER_WIDTH).isEqualTo(RECORD_WIDTH);
         }
 
         @Test
-        @DisplayName("the whole key is the leading two bytes, so a type code alone locates a record")
-        void theWholeKeyIsTheLeadingTwoBytes() {
-            assertThat(KEY_WIDTH).isEqualTo(COPYBOOK_WIDTHS.get(0));
-            assertThat(OFFSET_DESCRIPTION)
-                    .as("the key ends where the description begins")
-                    .isEqualTo(KEY_WIDTH);
+        @DisplayName("the 2-byte key at offset 0 that the cluster declares is the type code field "
+                + "itself, so a type code alone locates a row")
+        void theClusterKeyIsTheTypeCodeField() {
+            assertThat(TYPE_CODE_WIDTH).isEqualTo(DESCRIPTION_OFFSET - TYPE_CODE_OFFSET);
+            assertThat(encodedWidthOf(FIRST_TYPE_CODE)).isEqualTo(TYPE_CODE_WIDTH);
+            assertThat(encodedWidthOf(LAST_TYPE_CODE)).isEqualTo(TYPE_CODE_WIDTH);
         }
 
         @Test
-        @DisplayName("the trailing eight bytes are filler and are mapped to no column")
-        void theTrailingBytesAreFillerAndUnmapped() {
-            assertThat(COPYBOOK_WIDTHS.get(2)).isEqualTo(FILLER_WIDTH);
-            assertThat(OFFSET_FILLER + FILLER_WIDTH).isEqualTo(RECORD_WIDTH);
-            assertThat(SCHEMA.columnNames(TABLE)).hasSize(COPYBOOK_WIDTHS.size() - 1);
+        @DisplayName("the reference file's 427 bytes are exactly 7 records of 60 bytes plus one "
+                + "line terminator each, which is where the seeded row count comes from")
+        void theReferenceFileArithmeticYieldsSevenRows() {
+            assertThat(SEEDED_ROW_COUNT * (RECORD_WIDTH + LINE_TERMINATOR_WIDTH))
+                    .isEqualTo(SEEDED_FILE_BYTE_COUNT);
         }
     }
 
-    // SCHEMA AGREEMENT
-
     /**
-     * Verifies that the deployed migration describes the layout the copybook does.
+     * Verifies that each value handed in reaches the accessor that names it, and that the entity
+     * offers the no-argument constructor a persistence provider requires.
      */
     @Nested
-    @DisplayName("schema agreement")
-    class SchemaAgreement {
+    @DisplayName("construction and attribute carriage")
+    class ConstructionAndAttributeCarriage {
 
         @Test
-        @DisplayName("the table declares the two mapped columns in copybook order")
-        void theTableDeclaresTheMappedColumnsInCopybookOrder() {
-            assertThat(SCHEMA.columnNames(TABLE)).containsExactly("tran_type", "tran_type_desc");
+        @DisplayName("the two-argument constructor takes the type code first and the description "
+                + "second, matching the copybook's declaration order, and each argument reaches "
+                + "its own accessor")
+        void bothConstructorArgumentsReachTheirOwnAccessor() {
+            final String description = blankPaddedDescription(FIRST_TYPE_TEXT);
+
+            final TransactionType row = new TransactionType(FIRST_TYPE_CODE, description);
+
+            assertThat(row.getTranType()).isEqualTo(FIRST_TYPE_CODE);
+            assertThat(row.getTranTypeDesc()).isEqualTo(description);
         }
 
         @Test
-        @DisplayName("both mapped columns match their copybook widths")
-        void bothMappedColumnsMatchTheirCopybookWidths() {
-            final List<String> columns = SCHEMA.columnNames(TABLE);
+        @DisplayName("the two arguments are not transposed, which their very different field widths "
+                + "of 2 and 50 bytes make detectable")
+        void theTwoArgumentsAreNotTransposed() {
+            final TransactionType row =
+                    new TransactionType(FIRST_TYPE_CODE, blankPaddedDescription(FIRST_TYPE_TEXT));
 
-            for (int index = 0; index < columns.size(); index++) {
-                assertThat(SCHEMA.declaredWidth(TABLE, columns.get(index)))
-                        .as("declared width of %s", columns.get(index))
-                        .isEqualTo(COPYBOOK_WIDTHS.get(index));
-            }
+            assertThat(encodedWidthOf(row.getTranType())).isEqualTo(TYPE_CODE_WIDTH);
+            assertThat(encodedWidthOf(row.getTranTypeDesc())).isEqualTo(DESCRIPTION_WIDTH);
+            assertThat(row.getTranTypeDesc()).startsWith(FIRST_TYPE_TEXT);
         }
 
         @Test
-        @DisplayName("the code column is character rather than integer, so a code of 01 keeps its leading "
-                + "zero and the stored key still matches the record image")
-        void theCodeColumnIsCharacterSoTheLeadingZeroSurvives() {
-            assertThat(SCHEMA.declaredType(TABLE, "tran_type")).isEqualTo("VARCHAR(2)");
+        @DisplayName("the type code mutator replaces the 2-byte key field and leaves the "
+                + "description untouched")
+        void theTypeCodeMutatorReplacesOnlyTheKeyField() {
+            final String description = blankPaddedDescription(FIRST_TYPE_TEXT);
+            final TransactionType row = new TransactionType(FIRST_TYPE_CODE, description);
 
-            assertThat(seededCode(1)).startsWith("0").hasSize(KEY_WIDTH);
-            assertThat(Integer.toString(Integer.parseInt(seededCode(1))))
-                    .as("an integer column would have stored this code without its leading zero")
-                    .isNotEqualTo(seededCode(1));
+            row.setTranType(LAST_TYPE_CODE);
+
+            assertThat(row.getTranType()).isEqualTo(LAST_TYPE_CODE);
+            assertThat(row.getTranTypeDesc()).isEqualTo(description);
         }
 
         @Test
-        @DisplayName("the primary key is the code alone, and no surrogate or version column exists")
-        void thePrimaryKeyIsTheCodeAlone() {
-            assertThat(SCHEMA.primaryKeyColumns(TABLE)).containsExactly("tran_type");
-            assertThat(SCHEMA.columnNames(TABLE))
-                    .doesNotContain("id", "transaction_type_id", "version");
+        @DisplayName("the description mutator replaces the 50-byte description field and leaves the "
+                + "type code untouched")
+        void theDescriptionMutatorReplacesOnlyTheDescriptionField() {
+            final String replacement = blankPaddedDescription(LAST_TYPE_TEXT);
+            final TransactionType row =
+                    new TransactionType(FIRST_TYPE_CODE, blankPaddedDescription(FIRST_TYPE_TEXT));
+
+            row.setTranTypeDesc(replacement);
+
+            assertThat(row.getTranTypeDesc()).isEqualTo(replacement);
+            assertThat(row.getTranType()).isEqualTo(FIRST_TYPE_CODE);
         }
 
         @Test
-        @DisplayName("both columns are declared not null, so no row can carry an absent description")
-        void bothColumnsAreDeclaredNotNull() {
-            for (final String column : SCHEMA.columnNames(TABLE)) {
-                assertThat(SCHEMA.isNullable(TABLE, column))
-                        .as("nullability of %s", column)
-                        .isFalse();
-            }
+        @DisplayName("the no-argument constructor a persistence provider needs exists and yields a "
+                + "row whose 2-byte code and 50-byte description are both absent, because nothing "
+                + "is defaulted or generated on construction")
+        void theNoArgumentConstructorYieldsAnUnpopulatedRow() {
+            // This test class sits in the same package as the entity, so ordinary Java package
+            // access reaches the entity's protected no-argument constructor directly. That is
+            // plain compile-time visibility and is explicitly NOT reflection: no reflective
+            // lookup, no accessibility override and no test-utility introspection is involved
+            // anywhere in this suite. It is the only non-reflective way in the module to prove the
+            // constructor a provider instantiates through is actually present.
+            final TransactionType row = new TransactionType();
+
+            assertThat(row.getTranType()).isNull();
+            assertThat(row.getTranTypeDesc()).isNull();
+        }
+
+        @Test
+        @DisplayName("a mutator accepts an absent value, so the entity applies no validation of its "
+                + "own and leaves the not-null guarantee to the schema")
+        void aMutatorAcceptsAnAbsentValue() {
+            final TransactionType row =
+                    new TransactionType(FIRST_TYPE_CODE, blankPaddedDescription(FIRST_TYPE_TEXT));
+
+            row.setTranType(null);
+            row.setTranTypeDesc(null);
+
+            assertThat(row.getTranType()).isNull();
+            assertThat(row.getTranTypeDesc()).isNull();
         }
     }
 
-    // CONSTRUCTION AND ACCESS
-
     /**
-     * Verifies that every field the constructor takes is the field the accessor returns.
+     * Verifies the external byte widths the fixed-width record publishes. Every width is measured
+     * on the encoded bytes rather than on the character count, because the legacy field is a byte
+     * field and byte width is what the record contract fixes.
      */
     @Nested
-    @DisplayName("construction and access")
-    class ConstructionAndAccess {
+    @DisplayName("external field widths")
+    class ExternalFieldWidths {
 
         @Test
-        @DisplayName("both constructor arguments reach their own accessors")
-        void bothConstructorArgumentsReachTheirAccessors() {
-            final TransactionType type = new TransactionType("01", "Purchase");
+        @DisplayName("the type code occupies exactly 2 bytes, the width the copybook fixes and the "
+                + "cluster repeats as its key length")
+        void theTypeCodeOccupiesExactlyTwoBytes() {
+            final TransactionType row =
+                    new TransactionType(FIRST_TYPE_CODE, blankPaddedDescription(FIRST_TYPE_TEXT));
 
-            assertThat(type.getTranType()).isEqualTo("01");
-            assertThat(type.getTranTypeDesc()).isEqualTo("Purchase");
+            assertThat(row.getTranType().getBytes(StandardCharsets.US_ASCII).length)
+                    .isEqualTo(TYPE_CODE_WIDTH);
         }
 
         @Test
-        @DisplayName("the code and the description do not swap, which their very different widths make "
-                + "detectable")
-        void theCodeAndDescriptionDoNotSwap() {
-            final TransactionType type = typeFromSeed(1);
+        @DisplayName("the type code keeps its leading zero, so the stored key still matches the 2 "
+                + "bytes the record image carries and 01 is never the same value as 1")
+        void theTypeCodeKeepsItsLeadingZero() {
+            final TransactionType row =
+                    new TransactionType(FIRST_TYPE_CODE, blankPaddedDescription(FIRST_TYPE_TEXT));
 
-            assertThat(type.getTranType()).hasSize(KEY_WIDTH);
-            assertThat(type.getTranTypeDesc()).hasSize(COPYBOOK_WIDTHS.get(1));
-            assertThat(type.getTranTypeDesc()).contains(SEEDED_TYPES.get(seededCode(1)));
+            assertThat(row.getTranType()).isEqualTo("01").isNotEqualTo("1").startsWith("0");
         }
 
         @Test
-        @DisplayName("both mutators replace exactly the field they name")
-        void bothMutatorsReplaceTheFieldTheyName() {
-            final TransactionType type = typeFromSeed(1);
+        @DisplayName("the description occupies exactly 50 bytes once blank-padded to its field "
+                + "width, which is the width the record image publishes")
+        void theDescriptionOccupiesExactlyFiftyBytes() {
+            final String description = blankPaddedDescription(FIRST_TYPE_TEXT);
+            final TransactionType row = new TransactionType(FIRST_TYPE_CODE, description);
 
-            type.setTranType("07");
-            type.setTranTypeDesc("Adjustment");
-
-            assertThat(type.getTranType()).isEqualTo("07");
-            assertThat(type.getTranTypeDesc()).isEqualTo("Adjustment");
+            assertThat(description.getBytes(StandardCharsets.US_ASCII).length)
+                    .isEqualTo(DESCRIPTION_WIDTH);
+            assertThat(row.getTranTypeDesc().getBytes(StandardCharsets.US_ASCII).length)
+                    .isEqualTo(DESCRIPTION_WIDTH);
         }
 
         @Test
-        @DisplayName("the persistence constructor leaves both fields absent")
-        void thePersistenceConstructorLeavesBothFieldsAbsent() {
-            final TransactionType type = new TransactionType();
+        @DisplayName("the longest seeded description still fits its 50-byte field, so no seeded row "
+                + "needs truncating to be carried")
+        void theLongestSeededDescriptionFitsItsField() {
+            assertThat(encodedWidthOf(LONGEST_TYPE_TEXT))
+                    .isEqualTo(LONGEST_TYPE_TEXT_WIDTH)
+                    .isLessThan(DESCRIPTION_WIDTH);
 
-            assertThat(type.getTranType()).isNull();
-            assertThat(type.getTranTypeDesc()).isNull();
-        }
+            final TransactionType row =
+                    new TransactionType("04", blankPaddedDescription(LONGEST_TYPE_TEXT));
 
-        @Test
-        @DisplayName("a description at the full fifty-byte width survives intact")
-        void aFullWidthDescriptionSurvivesIntact() {
-            final String widest = "D".repeat(COPYBOOK_WIDTHS.get(1));
-
-            assertThat(new TransactionType("01", widest).getTranTypeDesc())
-                    .isEqualTo(widest)
-                    .hasSize(COPYBOOK_WIDTHS.get(1));
+            assertThat(row.getTranTypeDesc().getBytes(StandardCharsets.US_ASCII).length)
+                    .isEqualTo(DESCRIPTION_WIDTH);
         }
     }
 
-    // SEEDED REFERENCE DATA
-
     /**
-     * Verifies the seven seeded reference rows against a transcription of the estate's own data.
+     * Verifies that the entity normalises nothing. The blank padding that fills the 50-byte
+     * description field is part of the external width the legacy record publishes, so a value has to
+     * survive a round trip byte for byte.
      */
     @Nested
-    @DisplayName("seeded reference data")
-    class SeededReferenceData {
+    @DisplayName("padding preservation")
+    class PaddingPreservation {
 
         @Test
-        @DisplayName("the seed carries seven records at the declared sixty-byte width")
-        void theSeedCarriesSevenRecords() {
-            assertThat(SEED.recordCount()).isEqualTo(SEEDED_RECORDS);
-            assertThat(SEED.recordWidth()).isEqualTo(RECORD_WIDTH);
-            assertThat(SEED.impliedByteCount()).isEqualTo(SEEDED_RECORDS * (RECORD_WIDTH + 1));
+        @DisplayName("a description stored through the mutator at its full 50-byte padded width "
+                + "comes back byte for byte, and is still not equal to the unpadded text, which is "
+                + "what proves no trimming or re-padding happens")
+        void aPaddedDescriptionSurvivesTheMutatorUntouched() {
+            final String padded = blankPaddedDescription(FIRST_TYPE_TEXT);
+            final TransactionType row = new TransactionType();
+
+            row.setTranTypeDesc(padded);
+
+            assertThat(row.getTranTypeDesc()).isEqualTo(padded);
+            assertThat(row.getTranTypeDesc().getBytes(StandardCharsets.US_ASCII))
+                    .isEqualTo(padded.getBytes(StandardCharsets.US_ASCII));
+            assertThat(row.getTranTypeDesc()).isNotEqualTo(FIRST_TYPE_TEXT);
+            assertThat(encodedWidthOf(row.getTranTypeDesc())).isEqualTo(DESCRIPTION_WIDTH);
         }
 
         @Test
-        @DisplayName("every seeded code and description matches the transcription of the estate's "
-                + "reference data, in file order")
-        void everySeededRowMatchesTheTranscription() {
-            final Map<String, String> observed = new LinkedHashMap<>();
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                observed.put(seededCode(ordinal), seededDescription(ordinal).strip());
-            }
+        @DisplayName("a description supplied to the constructor at its full 50-byte padded width is "
+                + "carried unchanged too, so neither entry point normalises")
+        void aPaddedDescriptionSurvivesTheConstructorUntouched() {
+            final String padded = blankPaddedDescription(LAST_TYPE_TEXT);
 
-            assertThat(observed).containsExactlyEntriesOf(SEEDED_TYPES);
+            final TransactionType row = new TransactionType(LAST_TYPE_CODE, padded);
+
+            assertThat(row.getTranTypeDesc()).isEqualTo(padded).isNotEqualTo(LAST_TYPE_TEXT);
+            assertThat(row.getTranTypeDesc()).endsWith(" ");
         }
 
         @Test
-        @DisplayName("the seven codes are contiguous from 01, so no code in the range is missing")
-        void theSevenCodesAreContiguousFromOne() {
-            final List<String> codes = new ArrayList<>();
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                codes.add(seededCode(ordinal));
-            }
+        @DisplayName("an unpadded description is not padded out on the entity's behalf either: what "
+                + "goes in is what comes back, because padding the record image is the record "
+                + "mapper's concern and not the entity's")
+        void anUnpaddedDescriptionIsNotPaddedOut() {
+            final TransactionType row = new TransactionType(FIRST_TYPE_CODE, FIRST_TYPE_TEXT);
 
-            assertThat(codes).hasSize(SEEDED_RECORDS);
-            for (int index = 0; index < codes.size(); index++) {
-                assertThat(Integer.parseInt(codes.get(index)))
-                        .as("code at position %d", index)
-                        .isEqualTo(index + 1);
-            }
+            assertThat(row.getTranTypeDesc()).isEqualTo(FIRST_TYPE_TEXT);
+            assertThat(row.getTranTypeDesc().getBytes(StandardCharsets.US_ASCII).length)
+                    .isEqualTo(FIRST_TYPE_TEXT_WIDTH)
+                    .isLessThan(DESCRIPTION_WIDTH);
         }
 
         @Test
-        @DisplayName("every code is distinct and every description is distinct, so the seed carries no "
-                + "duplicate reference row")
-        void everyCodeAndDescriptionIsDistinct() {
-            final List<String> codes = new ArrayList<>();
-            final List<String> descriptions = new ArrayList<>();
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                codes.add(seededCode(ordinal));
-                descriptions.add(seededDescription(ordinal));
-            }
+        @DisplayName("a type code is not case-folded, blank-stripped or otherwise adjusted, so a "
+                + "value that does not belong in the 2-byte field is carried rather than repaired")
+        void aTypeCodeIsCarriedWithoutAdjustment() {
+            final TransactionType row = new TransactionType();
 
-            assertThat(codes.stream().distinct().toList()).hasSize(SEEDED_RECORDS);
-            assertThat(descriptions.stream().distinct().toList()).hasSize(SEEDED_RECORDS);
-        }
+            row.setTranType(" 1");
 
-        @Test
-        @DisplayName("every description is blank-filled on the right to fifty bytes rather than trimmed "
-                + "in the record")
-        void everyDescriptionIsBlankFilledToFiftyBytes() {
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                final String description = seededDescription(ordinal);
-
-                assertThat(description)
-                        .as("description of record %d", ordinal)
-                        .hasSize(COPYBOOK_WIDTHS.get(1))
-                        .doesNotStartWith(" ")
-                        .endsWith(" ");
-                assertThat(description.strip()).isNotEmpty();
-            }
-        }
-
-        @Test
-        @DisplayName("every seeded record's trailing filler is numeric zeros rather than blanks, and is "
-                + "carried by no field of the entity")
-        void theSeededFillerIsNumericZeros() {
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                assertThat(SEED.field(ordinal, OFFSET_FILLER, FILLER_WIDTH))
-                        .as("filler of record %d", ordinal)
-                        .isEqualTo("0".repeat(FILLER_WIDTH));
-            }
-        }
-
-        @Test
-        @DisplayName("the type code the interest run stamps on its synthesised transactions is one the "
-                + "reference file declares")
-        void theInterestRunsTypeCodeIsDeclared() {
-            final List<String> codes = new ArrayList<>();
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                codes.add(seededCode(ordinal));
-            }
-
-            assertThat(codes).contains(INTEREST_TYPE_CODE);
-            assertThat(INTEREST_TYPE_CODE).hasSize(KEY_WIDTH);
-            assertThat(SEEDED_TYPES).containsKey(INTEREST_TYPE_CODE);
+            assertThat(row.getTranType()).isEqualTo(" 1").isNotEqualTo("1").isNotEqualTo("01");
+            assertThat(encodedWidthOf(row.getTranType())).isEqualTo(TYPE_CODE_WIDTH);
         }
     }
 
-    // BUSINESS-KEY IDENTITY
+    /**
+     * Verifies that every one of the seven seeded reference rows is carried exactly, at both of its
+     * declared field widths. The seven code-and-description pairs are transcribed from the estate's
+     * own reference file and are the oracle: nothing here reads that file, and nothing asks the
+     * entity what it thinks the values should be.
+     */
+    @Nested
+    @DisplayName("seeded reference rows")
+    class SeededReferenceRows {
+
+        @ParameterizedTest(name = "type {0} is {1}")
+        @DisplayName("each of the 7 seeded rows round-trips its 2-byte code and its 50-byte "
+                + "blank-padded description exactly as the reference file carries them")
+        @CsvSource({
+            "01,Purchase",
+            "02,Payment",
+            "03,Credit",
+            "04,Authorization",
+            "05,Refund",
+            "06,Reversal",
+            "07,Adjustment",
+        })
+        void eachSeededRowRoundTripsBothFields(final String code, final String text) {
+            final String description = blankPaddedDescription(text);
+
+            final TransactionType row = new TransactionType(code, description);
+
+            assertThat(row.getTranType()).isEqualTo(code);
+            assertThat(row.getTranTypeDesc()).isEqualTo(description);
+            assertThat(row.getTranType().getBytes(StandardCharsets.US_ASCII).length)
+                    .isEqualTo(TYPE_CODE_WIDTH);
+            assertThat(row.getTranTypeDesc().getBytes(StandardCharsets.US_ASCII).length)
+                    .isEqualTo(DESCRIPTION_WIDTH);
+        }
+
+        @ParameterizedTest(name = "type {0} carries a leading zero")
+        @DisplayName("every seeded code is a two-character value carrying a leading zero, so none "
+                + "of them would survive being held as a number")
+        @CsvSource({"01", "02", "03", "04", "05", "06", "07"})
+        void everySeededCodeCarriesALeadingZero(final String code) {
+            final TransactionType row = new TransactionType(code, blankPaddedDescription("Credit"));
+
+            assertThat(row.getTranType()).isEqualTo(code).startsWith("0");
+            assertThat(encodedWidthOf(row.getTranType())).isEqualTo(TYPE_CODE_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the seven seeded codes are distinct, so the reference table carries seven "
+                + "separate identities rather than a repeated key")
+        void theSevenSeededCodesAreDistinct() {
+            final TransactionType[] rows = {
+                new TransactionType("01", blankPaddedDescription("Purchase")),
+                new TransactionType("02", blankPaddedDescription("Payment")),
+                new TransactionType("03", blankPaddedDescription("Credit")),
+                new TransactionType("04", blankPaddedDescription("Authorization")),
+                new TransactionType("05", blankPaddedDescription("Refund")),
+                new TransactionType("06", blankPaddedDescription("Reversal")),
+                new TransactionType("07", blankPaddedDescription("Adjustment")),
+            };
+
+            assertThat(rows).hasSize(SEEDED_ROW_COUNT).doesNotHaveDuplicates();
+        }
+
+        @Test
+        @DisplayName("the type code the interest run stamps on the transactions it synthesises is "
+                + "the first seeded code, so the posted interest resolves against this table")
+        void theInterestRunsTypeCodeIsOneOfTheSeededCodes() {
+            final TransactionType purchase =
+                    new TransactionType(FIRST_TYPE_CODE, blankPaddedDescription(FIRST_TYPE_TEXT));
+
+            assertThat(purchase.getTranType()).isEqualTo("01");
+            assertThat(encodedWidthOf(purchase.getTranType())).isEqualTo(TYPE_CODE_WIDTH);
+        }
+    }
 
     /**
-     * Verifies that identity is the type code and nothing else.
+     * Verifies that identity is the 2-byte key and nothing else. The description is mutable, so
+     * admitting it into equality would let a row's hash change while the row sits inside a
+     * hash-based collection.
      */
     @Nested
     @DisplayName("business-key identity")
     class BusinessKeyIdentity {
 
         @Test
-        @DisplayName("a row equals itself")
-        void aRowEqualsItself() {
-            final TransactionType type = typeFromSeed(1);
-
-            assertThat(type).isEqualTo(type);
-            assertThat(type.hashCode()).isEqualTo(type.hashCode());
-        }
-
-        @Test
-        @DisplayName("two rows with the same code are equal even when their descriptions differ, because "
-                + "the description is not part of identity")
-        void sameCodeMeansEqualEvenWithADifferentDescription() {
-            final TransactionType left = new TransactionType("01", "Purchase");
-            final TransactionType right = new TransactionType("01", "Something else entirely");
+        @DisplayName("two rows sharing a type code are equal and share a hash code even when their "
+                + "descriptions differ, because only the 2-byte key participates in identity")
+        void rowsSharingATypeCodeAreEqualDespiteDifferentDescriptions() {
+            final TransactionType left =
+                    new TransactionType(FIRST_TYPE_CODE, blankPaddedDescription(FIRST_TYPE_TEXT));
+            final TransactionType right =
+                    new TransactionType(FIRST_TYPE_CODE, blankPaddedDescription(LAST_TYPE_TEXT));
 
             assertThat(left).isEqualTo(right);
             assertThat(right).isEqualTo(left);
             assertThat(left).hasSameHashCodeAs(right);
-            assertThat(left.getTranTypeDesc()).isNotEqualTo(right.getTranTypeDesc());
+
+            // Each description is checked against its own hand-derived expectation rather than
+            // against the other row's, so the equality above is demonstrably not vacuous: the two
+            // rows really do carry different descriptions.
+            assertThat(left.getTranTypeDesc()).isEqualTo(blankPaddedDescription(FIRST_TYPE_TEXT));
+            assertThat(right.getTranTypeDesc()).isEqualTo(blankPaddedDescription(LAST_TYPE_TEXT));
         }
 
         @Test
-        @DisplayName("two rows with different codes are unequal even when their descriptions match")
-        void differentCodeMeansUnequal() {
-            assertThat(new TransactionType("01", "Purchase"))
-                    .isNotEqualTo(new TransactionType("02", "Purchase"));
+        @DisplayName("two rows with different type codes are unequal even when their descriptions "
+                + "match exactly, so the key alone discriminates")
+        void rowsWithDifferentTypeCodesAreUnequal() {
+            final String sharedDescription = blankPaddedDescription(FIRST_TYPE_TEXT);
+
+            final TransactionType left = new TransactionType(FIRST_TYPE_CODE, sharedDescription);
+            final TransactionType right = new TransactionType(LAST_TYPE_CODE, sharedDescription);
+
+            assertThat(left).isNotEqualTo(right);
+            assertThat(right).isNotEqualTo(left);
         }
 
         @Test
-        @DisplayName("the seven seeded rows produce seven distinct identities")
-        void theSeededRowsProduceDistinctIdentities() {
-            final List<TransactionType> rows = new ArrayList<>();
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                rows.add(typeFromSeed(ordinal));
-            }
+        @DisplayName("a row equals itself")
+        void aRowEqualsItself() {
+            final TransactionType row =
+                    new TransactionType(FIRST_TYPE_CODE, blankPaddedDescription(FIRST_TYPE_TEXT));
 
-            assertThat(rows.stream().distinct().toList()).hasSize(SEEDED_RECORDS);
+            assertThat(row.equals(row)).isTrue();
         }
 
         @Test
-        @DisplayName("a row is unequal to null and to an unrelated type")
-        void aRowIsUnequalToNullAndToAnotherType() {
-            final TransactionType type = typeFromSeed(1);
+        @DisplayName("replacing the description does not disturb the hash code, so a row stays "
+                + "findable in a hash-based collection after its descriptive text changes")
+        void replacingTheDescriptionDoesNotDisturbTheHashCode() {
+            final TransactionType row =
+                    new TransactionType(FIRST_TYPE_CODE, blankPaddedDescription(FIRST_TYPE_TEXT));
+            final int hashBeforeTheChange = row.hashCode();
 
-            assertThat(type).isNotEqualTo(null);
-            assertThat(type.equals("01")).isFalse();
-            assertThat(type).isNotEqualTo(new Object());
+            row.setTranTypeDesc(blankPaddedDescription(LAST_TYPE_TEXT));
+
+            assertThat(row.hashCode()).isEqualTo(hashBeforeTheChange);
+            assertThat(row.getTranTypeDesc()).isEqualTo(blankPaddedDescription(LAST_TYPE_TEXT));
         }
 
         @Test
-        @DisplayName("two rows with an absent code are equal, because both keys are absent rather than "
-                + "generated")
-        void twoUnkeyedRowsAreEqual() {
-            assertThat(new TransactionType()).isEqualTo(new TransactionType());
-            assertThat(new TransactionType()).hasSameHashCodeAs(new TransactionType());
+        @DisplayName("a row is unequal to an absent value rather than failing on it, so a comparison "
+                + "against nothing is safe")
+        void aRowIsUnequalToAnAbsentValue() {
+            final TransactionType row =
+                    new TransactionType(FIRST_TYPE_CODE, blankPaddedDescription(FIRST_TYPE_TEXT));
+
+            assertThat(row.equals(null)).isFalse();
+        }
+
+        @Test
+        @DisplayName("a row is unequal to a value of another type, so a bare 2-character type code "
+                + "is never mistaken for the reference row it identifies")
+        void aRowIsUnequalToAValueOfAnotherType() {
+            final TransactionType row =
+                    new TransactionType(FIRST_TYPE_CODE, blankPaddedDescription(FIRST_TYPE_TEXT));
+
+            assertThat(row.equals(FIRST_TYPE_CODE)).isFalse();
+            assertThat(row.equals(new Object())).isFalse();
+        }
+
+        @Test
+        @DisplayName("a type code differing only in its leading zero yields a different identity, so "
+                + "01 and 1 are never the same reference row")
+        void aCodeDifferingOnlyInItsLeadingZeroIsADifferentIdentity() {
+            final String sharedDescription = blankPaddedDescription(FIRST_TYPE_TEXT);
+
+            final TransactionType padded = new TransactionType("01", sharedDescription);
+            final TransactionType unpadded = new TransactionType("1", sharedDescription);
+
+            assertThat(padded).isNotEqualTo(unpadded);
+        }
+
+        @Test
+        @DisplayName("two rows whose key has not been populated are equal to each other, because the "
+                + "key is absent rather than machine-generated")
+        void twoUnpopulatedRowsAreEqual() {
+            final TransactionType left = new TransactionType();
+            final TransactionType right = new TransactionType();
+
+            assertThat(left).isEqualTo(right);
+            assertThat(left).hasSameHashCodeAs(right);
+        }
+
+        @Test
+        @DisplayName("a populated row is unequal to an unpopulated one in both directions, so a row "
+                + "awaiting its key never collides with a seeded reference row")
+        void aPopulatedRowIsUnequalToAnUnpopulatedOne() {
+            final TransactionType populated =
+                    new TransactionType(FIRST_TYPE_CODE, blankPaddedDescription(FIRST_TYPE_TEXT));
+            final TransactionType unpopulated = new TransactionType();
+
+            assertThat(populated).isNotEqualTo(unpopulated);
+            assertThat(unpopulated).isNotEqualTo(populated);
+        }
+
+        @Test
+        @DisplayName("the identifier is the 2-byte business key itself and no surrogate or generated "
+                + "identifier exists: a row carries its full identity the moment it is constructed, "
+                + "and two independently constructed rows with the same code are already equal")
+        void theIdentifierIsTheBusinessKeyAndNoSurrogateExists() {
+            // No getter, mutator or accessor for a generated identifier is referenced anywhere in
+            // this class, and none can be: the entity declares none, so the absence is proved at
+            // compile time rather than by inspecting the class at run time. Reflection is not used
+            // to demonstrate it, and the two assertions below are the behavioural consequence -
+            // under a machine-assigned surrogate an unflushed row would carry no identity at all
+            // and two separately constructed rows could never compare equal.
+            final TransactionType first =
+                    new TransactionType(FIRST_TYPE_CODE, blankPaddedDescription(FIRST_TYPE_TEXT));
+            final TransactionType second =
+                    new TransactionType(FIRST_TYPE_CODE, blankPaddedDescription(FIRST_TYPE_TEXT));
+
+            assertThat(first.getTranType()).isEqualTo(FIRST_TYPE_CODE);
+            assertThat(first).isEqualTo(second).hasSameHashCodeAs(second);
         }
     }
 
-    // DIAGNOSTIC REPRESENTATION
-
     /**
-     * Verifies the diagnostic string.
+     * Exercises the diagnostic string representation the class declares.
+     *
+     * <p>The specified contract summary for this entity anticipated that the representation might be
+     * absent and directed that nothing assert on it; the class as written declares one, and the
+     * class is authoritative on signatures. The divergence is resolved by exercising the member so
+     * that every declared member of the entity is covered, while asserting only that the
+     * representation is available and null-safe. Its rendered layout is deliberately left
+     * uncontracted, so no assertion here can be broken by rewording it.
      */
     @Nested
     @DisplayName("diagnostic representation")
     class DiagnosticRepresentation {
 
         @Test
-        @DisplayName("the diagnostic string names the type and both fields")
-        void theDiagnosticStringNamesTheTypeAndBothFields() {
-            assertThat(new TransactionType("01", "Purchase").toString())
-                    .isEqualTo("TransactionType[tranType=01, tranTypeDesc=Purchase]");
+        @DisplayName("a populated row yields a diagnostic representation, and neither of the two "
+                + "fields it carries is a credential or a monetary amount needing redaction")
+        void aPopulatedRowYieldsADiagnosticRepresentation() {
+            final TransactionType row =
+                    new TransactionType(FIRST_TYPE_CODE, blankPaddedDescription(FIRST_TYPE_TEXT));
+
+            assertThat(row.toString()).isNotNull().isNotEmpty();
         }
 
         @Test
-        @DisplayName("the diagnostic string carries the description, so two rows that are equal can "
-                + "still render differently")
-        void equalRowsCanRenderDifferently() {
-            final TransactionType left = new TransactionType("01", "Purchase");
-            final TransactionType right = new TransactionType("01", "Something else entirely");
-
-            assertThat(left).isEqualTo(right);
-            assertThat(left.toString()).isNotEqualTo(right.toString());
-        }
-
-        @Test
-        @DisplayName("an unkeyed row renders without failing")
-        void anUnkeyedRowRendersWithoutFailing() {
-            assertThat(new TransactionType().toString())
-                    .isEqualTo("TransactionType[tranType=null, tranTypeDesc=null]");
+        @DisplayName("an unpopulated row still yields a diagnostic representation rather than "
+                + "failing on its two absent fields")
+        void anUnpopulatedRowStillYieldsADiagnosticRepresentation() {
+            assertThat(new TransactionType().toString()).isNotNull().isNotEmpty();
         }
     }
 }

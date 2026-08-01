@@ -16,9 +16,11 @@
  */
 package com.carddemo.service;
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.EnumSet;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import com.carddemo.domain.enums.DateFormat;
 import com.carddemo.service.DateValidationService.DateEditFlag;
@@ -29,10 +31,16 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 /**
  * Verifies {@code DateValidationService} against the two legacy artefacts it translates.
@@ -74,6 +82,20 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
  *       witness that this is not decorative: {@code 1900 % 4 == 0}, so a single-divisor translation
  *       would accept a 29 February 1900 that the legacy rejects.</li>
  * </ol>
+ *
+ * <p><strong>Every width asserted below is a byte width.</strong> The eight-character cascade input
+ * field, the two ten-character linkage parameters and the eighty-character result area are all
+ * {@code PIC X(n)} declarations, and a {@code PIC X(n)} field reserves <em>n bytes</em>. Width
+ * assertions therefore measure {@code getBytes(StandardCharsets.US_ASCII).length} rather than a
+ * {@code String} character count, and no fixed-width comparison anywhere below is trimmed: a trailing
+ * space that the layout reserves is part of the value, so trimming it would assert a contract the
+ * legacy does not have.
+ *
+ * <p><strong>Deliberately not covered here.</strong> The five-paragraph range
+ * {@code 1260-EDIT-US-PHONE-NUM THRU 1260-EDIT-US-PHONE-NUM-EXIT}, invoked from two sites in
+ * {@code app/cbl/COACTUPC.cbl}, is <em>not</em> a member of either range this service translates and
+ * the service exposes no phone-number entry point. It belongs to the account-update translation and is
+ * covered there; duplicating it here would assert a member this class does not own.
  */
 @DisplayName("DateValidationService: the copybook cascade and the callable subprogram")
 final class DateValidationServiceTest {
@@ -291,6 +313,101 @@ final class DateValidationServiceTest {
     /** The hyphenated mask, {@code WS-DATE-FORMAT VALUE 'YYYY-MM-DD'}, {@code [app/cbl/CORPT00C.cbl:L72]}. */
     private static final String HYPHENATED_DATE = "2022-01-01";
 
+    // Inputs and oracles used by the dispatch, exemption and byte-width proofs below. Each is written
+    // out as a literal, because an oracle computed by the code under test asserts only that the code
+    // agrees with itself.
+
+    /** Ten spaces: the whole hyphenated slot supplied blank, so the picture gets no digits at all. */
+    private static final String HYPHENATED_ALL_SPACES = "          ";
+
+    /** A non-digit in a month position the hyphenated picture requires to be numeric. */
+    private static final String HYPHENATED_NON_NUMERIC_MONTH = "2022-1X-01";
+
+    /** Year zero: accepted by proleptic parsing, refused by the date service, so tested before parsing. */
+    private static final String HYPHENATED_YEAR_ZERO = "0000-01-01";
+
+    /** Month thirteen in the hyphenated mask. */
+    private static final String HYPHENATED_MONTH_ABOVE_RANGE = "2022-13-01";
+
+    /** A 30th of February: well formed, not a calendar date, so strict resolution must refuse it. */
+    private static final String HYPHENATED_THIRTIETH_OF_FEBRUARY = "2022-02-30";
+
+    /** A 31st of April: well formed, not a calendar date. */
+    private static final String HYPHENATED_THIRTY_FIRST_OF_SHORT_MONTH = "2022-04-31";
+
+    /** A 29th of February in a common year: well formed, not a calendar date. */
+    private static final String HYPHENATED_LEAP_DAY_COMMON_YEAR = "2023-02-29";
+
+    /** A 29th of February in a leap year: a real calendar date that must be accepted. */
+    private static final String HYPHENATED_LEAP_DAY = "2024-02-29";
+
+    /** The first day the Lilian day count covers, rendered in the hyphenated mask. */
+    private static final String HYPHENATED_LILIAN_FIRST_DAY = "1582-10-15";
+
+    /** The day before the Lilian count begins: resolvable, but outside the supported range. */
+    private static final String HYPHENATED_BEFORE_LILIAN = "1582-10-14";
+
+    /** Year zero <em>and</em> month thirteen: two detectable conditions in one value. */
+    private static final String HYPHENATED_YEAR_ZERO_AND_BAD_MONTH = "0000-13-01";
+
+    /** A non-digit <em>and</em> month thirteen: two detectable conditions in one value. */
+    private static final String HYPHENATED_NON_NUMERIC_AND_BAD_MONTH = "2X22-13-01";
+
+    /** The compact mask value the copybook places in the format field, {@code [app/cpy/CSUTLDPY.cpy:L291]}. */
+    private static final String COMPACT_MASK_VALUE = "YYYYMMDD  ";
+
+    /** The hyphenated mask value both callers hold in their format work field. */
+    private static final String HYPHENATED_MASK_VALUE = "YYYY-MM-DD";
+
+    /** A mask the estate never transmits, so the picture string cannot be used. */
+    private static final String UNSUPPORTED_MASK_VALUE = "DD/MM/YYYY";
+
+    /** A month bad in the month stage and a day bad in the day stage, in one image. */
+    private static final String BAD_MONTH_AND_BAD_DAY_DATE = "20221332";
+
+    /** A century bad in the year stage and a month bad in the month stage, in one image. */
+    private static final String BAD_CENTURY_AND_BAD_MONTH_DATE = "18221301";
+
+    /** All three field slices bad at once: bad century, month thirteen, day thirty-two. */
+    private static final String BAD_YEAR_MONTH_AND_DAY_DATE = "18221332";
+
+    /** A ten-character image whose rightmost two characters the eight-character move must discard. */
+    private static final String OVERLONG_DATE = "2022010199";
+
+    /** Four characters only: the year slice fills, the month and day slices arrive blank. */
+    private static final String SHORT_DATE = "2022";
+
+    /** The empty sender, which a fixed-width move turns into an all-spaces field. */
+    private static final String EMPTY_DATE = "";
+
+    /**
+     * The three-character image the head paragraph alone leaves behind,
+     * {@code [app/cpy/CSUTLDPY.cpy:L19]} writing the group value at {@code [app/cpy/CSUTLDWY.cpy:L45]}.
+     * It is also the value the Language-Environment guard tests against and never matches.
+     */
+    private static final String ORACLE_HEAD_PARAGRAPH_FLAG_GROUP = "000";
+
+    /**
+     * The three-character image of an all-valid group: the {@code LOW-VALUES} the group-level condition
+     * name at {@code [app/cpy/CSUTLDWY.cpy:L44]} compares against.
+     */
+    private static final String ORACLE_ALL_VALID_FLAG_GROUP = "\u0000\u0000\u0000";
+
+    /** Offset of the severity code in the eighty-byte block: it is the leading field. */
+    private static final int ORACLE_SEVERITY_OFFSET = 0;
+
+    /** Offset of the message number: four bytes of severity plus the eleven-byte label. */
+    private static final int ORACLE_MESSAGE_NUMBER_OFFSET = 15;
+
+    /** The eleven-byte label between severity and message number, {@code [app/cbl/CSUTLDTC.cbl:L45]}. */
+    private static final String ORACLE_MESSAGE_CODE_LABEL = "Mesg Code: ";
+
+    /** The nine-byte label preceding the tested date, {@code [app/cbl/CSUTLDTC.cbl:L51]}. */
+    private static final String ORACLE_TESTED_DATE_LABEL = "TstDate: ";
+
+    /** The ten-byte label preceding the mask, {@code [app/cbl/CSUTLDTC.cbl:L54]}, which carries no padding. */
+    private static final String ORACLE_MASK_USED_LABEL = "Mask used:";
+
     /** A message an earlier field on the same screen has already claimed. */
     private static final String CARRIED_IN_MESSAGE = "Account Filter Number must be a non zero";
 
@@ -313,6 +430,38 @@ final class DateValidationServiceTest {
      */
     private static String readableFlags(final String image) {
         return image.replace('\u0000', '.');
+    }
+
+    /**
+     * Measures a value the way a {@code PIC X(n)} field measures it: in bytes.
+     *
+     * <p>Declared here rather than reached for through the production class, so that a width assertion
+     * cannot silently inherit whatever the code under test happens to believe a width is. Nothing is
+     * trimmed and no platform default charset is consulted.
+     *
+     * @param value the value to measure
+     * @return the number of bytes the value occupies in the single-byte character set of the legacy
+     *         fields
+     */
+    private static int encodedBytes(final String value) {
+        return value.getBytes(StandardCharsets.US_ASCII).length;
+    }
+
+    /**
+     * Cuts a byte range out of a rendered fixed-width block, the way a caller's group overlay cuts it.
+     *
+     * <p>The overlay both callers declare is a byte overlay onto an eighty-byte area, so the slice is
+     * taken from the encoded image at a byte offset rather than from the character sequence at a
+     * character index.
+     *
+     * @param block  the rendered block
+     * @param offset the byte offset the overlay begins at
+     * @param width  the byte width the overlay declares
+     * @return the slice, with every reserved space retained
+     */
+    private static String byteSlice(final String block, final int offset, final int width) {
+        return new String(block.getBytes(StandardCharsets.US_ASCII), offset, width,
+                StandardCharsets.US_ASCII);
     }
 
     // ENTRY POINT TWO: the callable subprogram, CALL 'CSUTLDTC'.
@@ -648,8 +797,12 @@ final class DateValidationServiceTest {
 
             assertThat(result.severityCode()).hasSize(ORACLE_CODE_WIDTH);
             assertThat(result.messageNumber()).hasSize(ORACLE_CODE_WIDTH);
-            assertThat(result.numericSeverity()).as("taken from the outcome, never parsed back")
-                    .isEqualTo(result.feedback().getSeverity());
+            assertThat(result.severityCode()).isEqualTo(ORACLE_FAILURE_SEVERITY);
+            assertThat(result.messageNumber()).isEqualTo(ORACLE_TOLERATED_MESSAGE_NUMBER);
+            assertThat(result.numericSeverity())
+                    .as("the numeric view of the severity, stated as a literal rather than read back "
+                            + "off the outcome the service chose")
+                    .isEqualTo(3);
         }
 
         @Test
@@ -1260,11 +1413,22 @@ final class DateValidationServiceTest {
         }
 
         @Test
-        @DisplayName("the convenience overload starts from the blank state")
+        @DisplayName("the convenience overload starts from the blank state, and both overloads are "
+                + "pinned to the same explicit literal so a shared defect cannot hide behind their "
+                + "agreement")
         void theConvenienceOverloadStartsBlank() {
-            assertThat(service.validateCcyymmddDate(ALL_SPACES_DATE).returnMessage())
-                    .isEqualTo(service.validateCcyymmddDate(ALL_SPACES_DATE, ORACLE_NO_MESSAGE)
-                            .returnMessage());
+            final DateEditResult implicitBlank = service.validateCcyymmddDate(ALL_SPACES_DATE);
+            final DateEditResult explicitBlank =
+                    service.validateCcyymmddDate(ALL_SPACES_DATE, ORACLE_NO_MESSAGE);
+
+            assertAll("each side judged against the literal, then against the other",
+                    () -> assertThat(implicitBlank.returnMessage())
+                            .isEqualTo(ORACLE_YEAR_NOT_SUPPLIED),
+                    () -> assertThat(explicitBlank.returnMessage())
+                            .isEqualTo(ORACLE_YEAR_NOT_SUPPLIED),
+                    () -> assertThat(implicitBlank.returnMessage())
+                            .isEqualTo(explicitBlank.returnMessage()),
+                    () -> assertThat(implicitBlank).isEqualTo(explicitBlank));
         }
 
         @Test
@@ -1534,6 +1698,1603 @@ final class DateValidationServiceTest {
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> service.validateCcyymmddDate(VALID_DATE, null))
                     .withMessageContaining("currentReturnMessage");
+        }
+    }
+
+    // THE DECISIVE PROOF: the eleven-paragraph THRU range really is an ordered cascade.
+
+    /**
+     * Proves that the behaviour of the range lives in the paragraphs the {@code THRU} falls through and
+     * not in its head.
+     *
+     * <p>The head paragraph {@code EDIT-DATE-CCYYMMDD} at {@code [app/cpy/CSUTLDPY.cpy:L18]} has a body
+     * of exactly one statement, at {@code [app/cpy/CSUTLDPY.cpy:L19]}: it writes the all-invalid value
+     * into the three-byte flag group and returns. It compares nothing, so a translation that mapped the
+     * head paragraph alone would produce, for <em>every</em> input in the table below, an outcome with no
+     * input error, the flag group {@code 000} and an empty message.
+     *
+     * <p>Each row therefore pins three independent things at once - the input-error contribution, the
+     * exact three-flag triple, and the exact message suffix - so a head-only translation fails on all
+     * three counts rather than being caught by luck. Every value in the table is well formed as far as
+     * the head paragraph is concerned and is refused only by an inner stage.
+     */
+    @Nested
+    @DisplayName("the THRU range is a genuine ordered cascade: if any of these inner-stage values were "
+            + "accepted, the cascade was not translated and the head paragraph alone was")
+    final class CascadeIsGenuinelyACascade {
+
+        /**
+         * The inner-stage rejections, one row per stage that can refuse a head-clean value.
+         *
+         * <p>Every expected value is a literal read from {@code app/cpy/CSUTLDPY.cpy}, never a value
+         * obtained by asking the service what it thinks.
+         *
+         * @return rows of candidate image, the stage that refuses it, and the expected year, month and
+         *         day flags followed by the expected message suffix
+         */
+        static Stream<Arguments> innerStageRejections() {
+            return Stream.of(
+                    arguments(INVALID_CENTURY_DATE, "year stage, century neither 19 nor 20",
+                            DateEditFlag.NOT_OK, DateEditFlag.VALID, DateEditFlag.VALID,
+                            ORACLE_CENTURY_NOT_VALID),
+                    arguments(MONTH_BELOW_RANGE_DATE, "month stage, month 00 below the declared range",
+                            DateEditFlag.VALID, DateEditFlag.NOT_OK, DateEditFlag.VALID,
+                            ORACLE_MONTH_OUT_OF_RANGE),
+                    arguments(MONTH_ABOVE_RANGE_DATE, "month stage, month 13 above the declared range",
+                            DateEditFlag.VALID, DateEditFlag.NOT_OK, DateEditFlag.VALID,
+                            ORACLE_MONTH_OUT_OF_RANGE),
+                    arguments(DAY_BELOW_RANGE_DATE, "day stage, day 00 below the declared range",
+                            DateEditFlag.VALID, DateEditFlag.VALID, DateEditFlag.NOT_OK,
+                            ORACLE_DAY_OUT_OF_RANGE),
+                    arguments(DAY_ABOVE_RANGE_DATE, "day stage, day 32 above the declared range",
+                            DateEditFlag.VALID, DateEditFlag.VALID, DateEditFlag.NOT_OK,
+                            ORACLE_DAY_OUT_OF_RANGE),
+                    arguments(THIRTY_FIRST_OF_SHORT_MONTH_DATE,
+                            "combination stage, a 31st in a 30-day month",
+                            DateEditFlag.VALID, DateEditFlag.NOT_OK, DateEditFlag.NOT_OK,
+                            ORACLE_CANNOT_HAVE_31_DAYS),
+                    arguments(THIRTIETH_OF_FEBRUARY_DATE, "combination stage, a 30th of February",
+                            DateEditFlag.VALID, DateEditFlag.NOT_OK, DateEditFlag.NOT_OK,
+                            ORACLE_CANNOT_HAVE_30_DAYS),
+                    arguments(LEAP_DAY_COMMON_YEAR,
+                            "combination stage, a 29th of February in a common year",
+                            DateEditFlag.NOT_OK, DateEditFlag.NOT_OK, DateEditFlag.NOT_OK,
+                            ORACLE_NOT_A_LEAP_YEAR),
+                    arguments(LEAP_DAY_CENTURY_REJECTED,
+                            "combination stage, the four-hundred divisor witness",
+                            DateEditFlag.NOT_OK, DateEditFlag.NOT_OK, DateEditFlag.NOT_OK,
+                            ORACLE_NOT_A_LEAP_YEAR));
+        }
+
+        @ParameterizedTest(name = "[{0}] is refused by the {1}")
+        @MethodSource("innerStageRejections")
+        @DisplayName("each value below clears the head paragraph and is refused only by an inner stage, "
+                + "so acceptance here would prove the eleven fall-through paragraphs were dropped")
+        void anInnerStageValueIsRefusedByTheStageThatOwnsIt(final String candidate,
+                                                            final String refusingStage,
+                                                            final DateEditFlag expectedYearFlag,
+                                                            final DateEditFlag expectedMonthFlag,
+                                                            final DateEditFlag expectedDayFlag,
+                                                            final String expectedMessage) {
+            final DateEditResult result = service.validateCcyymmddDate(candidate);
+
+            assertAll("[" + candidate + "] must be refused by the " + refusingStage,
+                    () -> assertThat(result.inputError())
+                            .as("the input-error contribution a head-only translation never makes")
+                            .isTrue(),
+                    () -> assertThat(result.yearFlag()).as("year flag").isEqualTo(expectedYearFlag),
+                    () -> assertThat(result.monthFlag()).as("month flag").isEqualTo(expectedMonthFlag),
+                    () -> assertThat(result.dayFlag()).as("day flag").isEqualTo(expectedDayFlag),
+                    () -> assertThat(result.returnMessage()).as("message suffix, byte for byte")
+                            .isEqualTo(expectedMessage),
+                    () -> assertThat(result.returnMessage())
+                            .as("a claimed message is the witness a head-only translation never leaves, "
+                                    + "because the head paragraph writes the pessimistic flag group and "
+                                    + "nothing else")
+                            .isNotEqualTo(ORACLE_NO_MESSAGE),
+                    () -> assertThat(encodedBytes(result.flagsImage()))
+                            .as("the group keeps its declared width whatever verdict it carries")
+                            .isEqualTo(ORACLE_FLAG_GROUP_WIDTH));
+        }
+
+        @Test
+        @DisplayName("the flag group alone is NOT a valid cascade witness: the leap-year branch lands on "
+                + "exactly the pessimistic group the head paragraph writes, so only the input-error flag "
+                + "and the message distinguish a real refusal from an untranslated cascade")
+        void theFlagGroupAloneIsNotAValidCascadeWitness() {
+            final DateEditResult leapYearRefusal = service.validateCcyymmddDate(LEAP_DAY_COMMON_YEAR);
+
+            assertAll("the group coincides, so the other two witnesses carry the whole proof",
+                    () -> assertThat(leapYearRefusal.flagsImage())
+                            .as("all three flags unfavourable is byte-identical to the head constant")
+                            .isEqualTo(ORACLE_HEAD_PARAGRAPH_FLAG_GROUP),
+                    () -> assertThat(leapYearRefusal.inputError())
+                            .as("the first witness the head paragraph never provides")
+                            .isTrue(),
+                    () -> assertThat(leapYearRefusal.returnMessage())
+                            .as("the second witness the head paragraph never provides")
+                            .isEqualTo(ORACLE_NOT_A_LEAP_YEAR),
+                    () -> assertThat(leapYearRefusal.returnMessage()).isNotEqualTo(ORACLE_NO_MESSAGE));
+        }
+
+        /**
+         * The control group: values that clear every stage and therefore reach the end of the range.
+         *
+         * @return candidate images that the whole cascade accepts
+         */
+        static Stream<Arguments> valuesEveryStageAccepts() {
+            return Stream.of(arguments(VALID_DATE, "an unremarkable first of January"),
+                    arguments(VALID_LAST_DAY_OF_YEAR, "the 31st of a 31-day month"),
+                    arguments(LEAP_DAY_ORDINARY, "a leap day under the divisor of four"),
+                    arguments(LEAP_DAY_CENTURY_ACCEPTED, "a leap day under the divisor of four hundred"));
+        }
+
+        @ParameterizedTest(name = "[{0}] is accepted: {1}")
+        @MethodSource("valuesEveryStageAccepts")
+        @DisplayName("a value that clears all five stages carries no input error, an all-valid group and "
+                + "no message, which is what makes the rejections above meaningful rather than blanket")
+        void aValueThatClearsEveryStageIsAccepted(final String candidate, final String description) {
+            final DateEditResult result = service.validateCcyymmddDate(candidate);
+
+            assertAll("[" + candidate + "] is " + description,
+                    () -> assertThat(result.inputError()).isFalse(),
+                    () -> assertThat(result.yearFlag()).isEqualTo(DateEditFlag.VALID),
+                    () -> assertThat(result.monthFlag()).isEqualTo(DateEditFlag.VALID),
+                    () -> assertThat(result.dayFlag()).isEqualTo(DateEditFlag.VALID),
+                    () -> assertThat(result.returnMessage()).isEqualTo(ORACLE_NO_MESSAGE),
+                    () -> assertThat(result.flagsImage()).isEqualTo(ORACLE_ALL_VALID_FLAG_GROUP));
+        }
+
+        @Test
+        @DisplayName("the combination stage is the only stage that judges the combination, so a 31st and "
+                + "a 29th of February pass the day stage on their own before it refuses them")
+        void theCombinationStageIsWhereTheCombinationIsJudged() {
+            final DateEditResult thirtyFirstInLongMonth =
+                    service.validateCcyymmddDate(VALID_LAST_DAY_OF_YEAR);
+            final DateEditResult twentyNinthInLeapYear = service.validateCcyymmddDate(LEAP_DAY_ORDINARY);
+
+            assertAll("a 31 and a 29 are in range for the day stage and only the combination refuses them",
+                    () -> assertThat(thirtyFirstInLongMonth.dayFlag()).isEqualTo(DateEditFlag.VALID),
+                    () -> assertThat(thirtyFirstInLongMonth.inputError()).isFalse(),
+                    () -> assertThat(twentyNinthInLeapYear.dayFlag()).isEqualTo(DateEditFlag.VALID),
+                    () -> assertThat(twentyNinthInLeapYear.inputError()).isFalse(),
+                    () -> assertThat(service.validateCcyymmddDate(THIRTY_FIRST_OF_SHORT_MONTH_DATE)
+                            .returnMessage()).isEqualTo(ORACLE_CANNOT_HAVE_31_DAYS),
+                    () -> assertThat(service.validateCcyymmddDate(LEAP_DAY_COMMON_YEAR).returnMessage())
+                            .isEqualTo(ORACLE_NOT_A_LEAP_YEAR));
+        }
+    }
+
+    /**
+     * Proves that each stage keeps its own early exit, in the source's order.
+     *
+     * <p>Two properties are separable and both are asserted. First, a stage that fails does <em>not</em>
+     * abandon the range: its jump lands on its own {@code -EXIT} paragraph, which is only the exit of
+     * that stage, so the following stages still run and still set their flags. Second, the accumulated
+     * message is first-wins, guarded by the message-off condition at {@code [app/cbl/COACTUPC.cbl:L480]},
+     * so the <em>earliest</em> failing stage owns the text while later stages contribute flags silently.
+     *
+     * <p>Together these give the observable proof that an early failure stops the later stages from
+     * reporting: the service holds no collaborator to verify against, so the reported message is the
+     * evidence, and it is the earlier stage's in every doubly-bad case below.
+     */
+    @Nested
+    @DisplayName("stage ordering and early exit: the earliest failing stage owns the message while the "
+            + "later stages still set their own flags")
+    final class CascadeStageOrderingAndEarlyExit {
+
+        @Test
+        @DisplayName("a bad month and a bad day together report the month stage, because the month stage "
+                + "runs first and claims the message")
+        void aBadMonthAndABadDayReportTheMonthStage() {
+            final DateEditResult result = service.validateCcyymmddDate(BAD_MONTH_AND_BAD_DAY_DATE);
+
+            assertAll("month 13 with day 32: the month stage precedes the day stage",
+                    () -> assertThat(result.returnMessage())
+                            .as("the earlier stage's suffix, not the day stage's")
+                            .isEqualTo(ORACLE_MONTH_OUT_OF_RANGE),
+                    () -> assertThat(result.returnMessage())
+                            .as("the later stage never overwrites the claimed message")
+                            .isNotEqualTo(ORACLE_DAY_OUT_OF_RANGE),
+                    () -> assertThat(result.monthFlag()).isEqualTo(DateEditFlag.NOT_OK),
+                    () -> assertThat(result.dayFlag())
+                            .as("the day stage still ran and still set its own flag")
+                            .isEqualTo(DateEditFlag.NOT_OK),
+                    () -> assertThat(result.inputError()).isTrue());
+        }
+
+        @Test
+        @DisplayName("a bad century and a bad month together report the year stage, because the year "
+                + "stage is the first of the five")
+        void aBadCenturyAndABadMonthReportTheYearStage() {
+            final DateEditResult result = service.validateCcyymmddDate(BAD_CENTURY_AND_BAD_MONTH_DATE);
+
+            assertAll("century 18 with month 13: the year stage precedes the month stage",
+                    () -> assertThat(result.returnMessage()).isEqualTo(ORACLE_CENTURY_NOT_VALID),
+                    () -> assertThat(result.returnMessage()).isNotEqualTo(ORACLE_MONTH_OUT_OF_RANGE),
+                    () -> assertThat(result.yearFlag()).isEqualTo(DateEditFlag.NOT_OK),
+                    () -> assertThat(result.monthFlag())
+                            .as("the month stage still ran despite the year stage having failed")
+                            .isEqualTo(DateEditFlag.NOT_OK),
+                    () -> assertThat(result.inputError()).isTrue());
+        }
+
+        @Test
+        @DisplayName("all three field stages failing still reports the year stage, and all three flags "
+                + "carry their own failure")
+        void allThreeFieldStagesFailingReportsTheFirstOfThem() {
+            final DateEditResult result = service.validateCcyymmddDate(BAD_YEAR_MONTH_AND_DAY_DATE);
+
+            assertAll("the first stage to fail owns the message; every stage owns its flag",
+                    () -> assertThat(result.returnMessage()).isEqualTo(ORACLE_CENTURY_NOT_VALID),
+                    () -> assertThat(result.yearFlag()).isEqualTo(DateEditFlag.NOT_OK),
+                    () -> assertThat(result.monthFlag()).isEqualTo(DateEditFlag.NOT_OK),
+                    () -> assertThat(result.dayFlag()).isEqualTo(DateEditFlag.NOT_OK),
+                    () -> assertThat(result.flagsImage())
+                            .as("three failures spell the same image the head paragraph writes, which is "
+                                    + "why the message and the input-error flag carry the proof here")
+                            .isEqualTo(ORACLE_HEAD_PARAGRAPH_FLAG_GROUP));
+        }
+
+        @Test
+        @DisplayName("a blank year and a bad month are both reported on one pass, which is only possible "
+                + "because the year stage's exit falls through to the month stage")
+        void aBlankYearAndABadMonthAreBothReportedOnOnePass() {
+            final DateEditResult result = service.validateCcyymmddDate("    1301");
+
+            assertAll("a blank year does not end the range",
+                    () -> assertThat(result.yearFlag()).isEqualTo(DateEditFlag.BLANK),
+                    () -> assertThat(result.monthFlag()).isEqualTo(DateEditFlag.NOT_OK),
+                    () -> assertThat(result.returnMessage()).isEqualTo(ORACLE_YEAR_NOT_SUPPLIED));
+        }
+
+        @Test
+        @DisplayName("a combination failure leaves the range early, so the stage that follows it never "
+                + "re-marks the flag group as valid")
+        void aCombinationFailureLeavesTheRangeEarly() {
+            final DateEditResult result = service.validateCcyymmddDate(LEAP_DAY_COMMON_YEAR);
+
+            assertAll("the combination stage jumps to the exit of the whole range",
+                    () -> assertThat(result.flagsImage()).isNotEqualTo(ORACLE_ALL_VALID_FLAG_GROUP),
+                    () -> assertThat(result.returnMessage()).isEqualTo(ORACLE_NOT_A_LEAP_YEAR),
+                    () -> assertThat(result.inputError()).isTrue());
+        }
+    }
+
+    // The one construct that could not be carried across: the Language Environment date service becomes
+    // strict java.time resolution. Asserted by outcome, never by inspecting a formatter.
+
+    /**
+     * Proves that resolution refuses to normalise.
+     *
+     * <p>The legacy converts a date through the Lilian day services, which reject a value that is not a
+     * real calendar date. The Java substitution is only behaviour preserving under
+     * {@code ResolverStyle.STRICT}: the default resolution would roll a 31st in a 30-day month back to
+     * the 30th and would pull a 29 February in a common year back to the 28th, and both of those are
+     * acceptances the legacy never makes.
+     *
+     * <p>Every expectation below is the <em>outcome</em>, stated as a literal. None of them is obtained
+     * by parsing the same value with the same library the way the service does, because that would
+     * assert only that two identical parses agree.
+     */
+    @Nested
+    @DisplayName("strict resolution: a value that is not a real calendar date is refused, never rolled "
+            + "forward and never adjusted backwards")
+    final class StrictCalendarResolution {
+
+        /**
+         * Values that are well formed digit by digit and are still not calendar dates.
+         *
+         * @return the value, and the acceptance a normalising resolver would wrongly have produced
+         */
+        static Stream<Arguments> valuesNoNormalisingResolverMayAccept() {
+            return Stream.of(
+                    arguments(HYPHENATED_THIRTY_FIRST_OF_SHORT_MONTH,
+                            "a normalising resolver would roll this back to the 30th"),
+                    arguments(HYPHENATED_THIRTIETH_OF_FEBRUARY,
+                            "a normalising resolver would roll this forward into March"),
+                    arguments(HYPHENATED_LEAP_DAY_COMMON_YEAR,
+                            "a normalising resolver would adjust this to the 28th"));
+        }
+
+        @ParameterizedTest(name = "[{0}] is refused: {1}")
+        @MethodSource("valuesNoNormalisingResolverMayAccept")
+        @DisplayName("the subprogram reports a bad date value rather than normalising, and the tested "
+                + "date comes back with its own characters untouched")
+        void anImpossibleCalendarDateIsRefusedRatherThanNormalised(final String candidate,
+                                                                   final String whatNormalisingWouldDo) {
+            final SubprogramResult result = service.validateDate(candidate, DateFormat.YYYY_MM_DD);
+
+            assertAll("[" + candidate + "]: " + whatNormalisingWouldDo,
+                    () -> assertThat(result.feedback()).isEqualTo(DateFeedback.BAD_DATE_VALUE),
+                    () -> assertThat(result.severityCode()).isEqualTo(ORACLE_FAILURE_SEVERITY),
+                    () -> assertThat(result.messageNumber()).isEqualTo("2508"),
+                    () -> assertThat(result.resultText()).isEqualTo(ORACLE_TEXT_DATEVALUE_ERROR),
+                    () -> assertThat(service.isDateAcceptable(result))
+                            .as("a bad date value carries neither the accepted severity nor 2513")
+                            .isFalse(),
+                    () -> assertThat(result.testedDate())
+                            .as("the date is reported back as sent, not as a resolver would rewrite it")
+                            .isEqualTo(candidate));
+        }
+
+        @ParameterizedTest(name = "the cascade also refuses [{0}]")
+        @ValueSource(strings = {"20220431", "20220230", "20230229", "19000229"})
+        @DisplayName("the cascade reaches the same conclusion through its own combination stage, so the "
+                + "two entry points do not disagree about which dates exist")
+        void theCascadeRefusesTheSameImpossibleDates(final String candidate) {
+            final DateEditResult result = service.validateCcyymmddDate(candidate);
+
+            assertAll("[" + candidate + "] is not a calendar date",
+                    () -> assertThat(result.inputError()).isTrue(),
+                    () -> assertThat(result.returnMessage()).isNotEqualTo(ORACLE_NO_MESSAGE),
+                    () -> assertThat(result.flagsImage()).isNotEqualTo(ORACLE_ALL_VALID_FLAG_GROUP));
+        }
+
+        @Test
+        @DisplayName("a 29th of February in a leap year is a real date and is accepted through both "
+                + "entry points")
+        void aLeapDayInALeapYearIsAccepted() {
+            final SubprogramResult subprogram = service.validateDate(HYPHENATED_LEAP_DAY,
+                    DateFormat.YYYY_MM_DD);
+            final DateEditResult cascade = service.validateCcyymmddDate(LEAP_DAY_ORDINARY);
+
+            assertAll("29 February 2024 exists",
+                    () -> assertThat(subprogram.feedback()).isEqualTo(DateFeedback.DATE_IS_VALID),
+                    () -> assertThat(subprogram.severityCode()).isEqualTo(ORACLE_ACCEPTED_SEVERITY),
+                    () -> assertThat(service.isDateAcceptable(subprogram)).isTrue(),
+                    () -> assertThat(cascade.inputError()).isFalse(),
+                    () -> assertThat(cascade.flagsImage()).isEqualTo(ORACLE_ALL_VALID_FLAG_GROUP));
+        }
+
+        @Test
+        @DisplayName("a well-formed date round-trips with its input characters unchanged: no reformatting, "
+                + "no zero-stripping and no separator substitution")
+        void aWellFormedDateRoundTripsUnchanged() {
+            final SubprogramResult hyphenated = service.validateDate(HYPHENATED_DATE,
+                    DateFormat.YYYY_MM_DD);
+            final SubprogramResult compact = service.validateDate(VALID_DATE, DateFormat.YYYYMMDD);
+
+            assertAll("the tested date is echoed, not rendered",
+                    () -> assertThat(hyphenated.testedDate()).isEqualTo(HYPHENATED_DATE),
+                    () -> assertThat(hyphenated.maskUsed()).isEqualTo(HYPHENATED_MASK_VALUE),
+                    () -> assertThat(compact.testedDate())
+                            .as("padded into the ten-byte slot, with the eight sent characters intact")
+                            .isEqualTo("20220101  "),
+                    () -> assertThat(compact.maskUsed()).isEqualTo(COMPACT_MASK_VALUE),
+                    () -> assertThat(encodedBytes(hyphenated.testedDate()))
+                            .isEqualTo(ORACLE_LINKAGE_TEXT_WIDTH),
+                    () -> assertThat(encodedBytes(compact.testedDate()))
+                            .isEqualTo(ORACLE_LINKAGE_TEXT_WIDTH));
+        }
+
+        @Test
+        @DisplayName("the leading zeros of a single-digit month and day survive, because the picture "
+                + "describes fixed digit positions rather than a numeric value")
+        void leadingZerosSurvive() {
+            final SubprogramResult result = service.validateDate("2022-01-02", DateFormat.YYYY_MM_DD);
+
+            assertAll("nothing is parsed back out and re-rendered",
+                    () -> assertThat(result.feedback()).isEqualTo(DateFeedback.DATE_IS_VALID),
+                    () -> assertThat(result.testedDate()).isEqualTo("2022-01-02"),
+                    () -> assertThat(result.testedDate()).doesNotContain("2022-1-2"));
+        }
+
+        @Test
+        @DisplayName("the Lilian boundary is inclusive on its first day and exclusive the day before, "
+                + "which is the condition the tolerated message number reports")
+        void theLilianBoundaryIsExact() {
+            final SubprogramResult firstSupportedDay = service.validateDate(HYPHENATED_LILIAN_FIRST_DAY,
+                    DateFormat.YYYY_MM_DD);
+            final SubprogramResult dayBefore = service.validateDate(HYPHENATED_BEFORE_LILIAN,
+                    DateFormat.YYYY_MM_DD);
+
+            assertAll("the day count begins on 15 October 1582",
+                    () -> assertThat(ORACLE_LILIAN_RANGE_START).isEqualTo(LocalDate.of(1582, 10, 15)),
+                    () -> assertThat(firstSupportedDay.feedback()).isEqualTo(DateFeedback.DATE_IS_VALID),
+                    () -> assertThat(dayBefore.feedback()).isEqualTo(DateFeedback.UNSUPPORTED_RANGE),
+                    () -> assertThat(dayBefore.messageNumber())
+                            .isEqualTo(ORACLE_TOLERATED_MESSAGE_NUMBER));
+        }
+    }
+
+    // The two-level acceptance test, driven from a table so that a collapsed boolean cannot survive.
+
+    /**
+     * Proves the escape hatch that every one of the four genuine call sites applies.
+     *
+     * <p>All four sites - {@code [app/cbl/CORPT00C.cbl:L392]}, {@code [app/cbl/CORPT00C.cbl:L412]},
+     * {@code [app/cbl/COTRN02C.cbl:L393]} and {@code [app/cbl/COTRN02C.cbl:L413]} - test the severity
+     * code first and, only when it is not the accepted value, test the message number against
+     * {@code 2513}. A non-zero severity carrying that message number is therefore accepted <em>silently</em>.
+     *
+     * <p>This is the single most likely place for a downstream service to collapse the two-field result
+     * into one boolean and start rejecting input the legacy accepts, so the table below drives the
+     * decision from the two code fields alone. The rows pair codes that no single classifier outcome
+     * would produce together on purpose: that is what proves the decision reads the two fields
+     * independently rather than deriving one from the other or from the outcome constant.
+     */
+    @Nested
+    @DisplayName("the tolerated message number is an escape hatch, not decoration: severity and message "
+            + "number are two separate levels and neither collapses into the other")
+    final class ToleratedMessageNumberExemption {
+
+        /**
+         * The acceptance table, expressed purely in the two four-character code fields.
+         *
+         * @return the severity code, the message number, whether the callers would proceed, and why
+         */
+        static Stream<Arguments> acceptanceDecisions() {
+            return Stream.of(
+                    arguments("0000", "0000", true, "the accepted severity, decided at the first level"),
+                    arguments("0000", "2513", true, "a zero severity is accepted whatever the number"),
+                    arguments("0000", "2508", true, "a zero severity is accepted whatever the number"),
+                    arguments("0000", "9999", true, "a zero severity is accepted whatever the number"),
+                    arguments("0003", "2513", true, "the exemption itself: non-zero severity, tolerated "
+                            + "number, accepted silently"),
+                    arguments("0001", "2513", true, "any non-zero severity is exempted by the number, "
+                            + "because the first level tests only against the accepted value"),
+                    arguments("0003", "2507", false, "the same severity with any other number is refused"),
+                    arguments("0003", "2508", false, "the same severity with any other number is refused"),
+                    arguments("0003", "2517", false, "the same severity with any other number is refused"),
+                    arguments("0003", "2512", false, "one away from the tolerated number is still refused"),
+                    arguments("0003", "0000", false, "the unrecognised tail: non-zero severity with a "
+                            + "zero message number is refused"));
+        }
+
+        @ParameterizedTest(name = "severity [{0}] with message number [{1}] is accepted={2}")
+        @MethodSource("acceptanceDecisions")
+        @DisplayName("acceptance is decided from the severity code and the message number as two "
+                + "independent character comparisons, exactly as all four call sites decide it")
+        void acceptanceIsDecidedFromTwoIndependentFields(final String severityCode,
+                                                         final String messageNumber,
+                                                         final boolean expectedAcceptance,
+                                                         final String reason) {
+            final SubprogramResult result = new SubprogramResult(DateFeedback.UNSUPPORTED_RANGE,
+                    severityCode, messageNumber, ORACLE_TEXT_UNSUPPORTED_RANGE, HYPHENATED_DATE,
+                    HYPHENATED_MASK_VALUE);
+
+            assertThat(service.isDateAcceptable(result)).as(reason).isEqualTo(expectedAcceptance);
+        }
+
+        @Test
+        @DisplayName("the exemption is exercised end to end: a date before the Lilian range carries a "
+                + "non-zero severity and is still accepted")
+        void theExemptionIsReachedByARealInput() {
+            final SubprogramResult beforeLilian = service.validateDate(HYPHENATED_BEFORE_LILIAN,
+                    DateFormat.YYYY_MM_DD);
+
+            assertAll("the unsupported-range condition is the one both callers tolerate",
+                    () -> assertThat(beforeLilian.severityCode())
+                            .as("the severity is genuinely not the accepted value")
+                            .isEqualTo(ORACLE_FAILURE_SEVERITY),
+                    () -> assertThat(beforeLilian.numericSeverity()).isEqualTo(3),
+                    () -> assertThat(beforeLilian.messageNumber())
+                            .isEqualTo(ORACLE_TOLERATED_MESSAGE_NUMBER),
+                    () -> assertThat(service.isDateAcceptable(beforeLilian))
+                            .as("collapsing the two levels into one would reject a date the legacy takes")
+                            .isTrue());
+        }
+
+        @Test
+        @DisplayName("a failure that is not the tolerated condition is rejected end to end, so the "
+                + "exemption does not leak into every non-zero severity")
+        void anUntoleratedFailureIsStillRejected() {
+            final SubprogramResult badValue = service.validateDate(HYPHENATED_THIRTIETH_OF_FEBRUARY,
+                    DateFormat.YYYY_MM_DD);
+            final SubprogramResult badMonth = service.validateDate(HYPHENATED_MONTH_ABOVE_RANGE,
+                    DateFormat.YYYY_MM_DD);
+
+            assertAll("the same severity, different message numbers, opposite decisions",
+                    () -> assertThat(badValue.severityCode()).isEqualTo(ORACLE_FAILURE_SEVERITY),
+                    () -> assertThat(badMonth.severityCode()).isEqualTo(ORACLE_FAILURE_SEVERITY),
+                    () -> assertThat(service.isDateAcceptable(badValue)).isFalse(),
+                    () -> assertThat(service.isDateAcceptable(badMonth)).isFalse());
+        }
+
+        @Test
+        @DisplayName("exactly one of the ten outcomes carries the tolerated message number, so the "
+                + "exemption is as narrow as the source makes it")
+        void exactlyOneOutcomeCarriesTheToleratedNumber() {
+            final Set<DateFeedback> tolerated = EnumSet.noneOf(DateFeedback.class);
+            for (final DateFeedback feedback : DateFeedback.values()) {
+                if (feedback.getMessageNumber() == 2513) {
+                    tolerated.add(feedback);
+                }
+            }
+
+            assertThat(tolerated).containsExactly(DateFeedback.UNSUPPORTED_RANGE);
+        }
+    }
+
+    // The ten-clause outcome selection: clause order is the contract.
+
+    /**
+     * Proves the ten-clause selection at {@code [app/cbl/CSUTLDTC.cbl:L128]} through
+     * {@code [app/cbl/CSUTLDTC.cbl:L149]} in both of its aspects.
+     *
+     * <p><strong>Order.</strong> The source evaluates the clauses top down and stops at the first match,
+     * so a value that satisfies two conditions must report the earlier one. The rows below that pair two
+     * conditions in one value are the ones that pin this; reordering the classification would flip them.
+     *
+     * <p><strong>Coverage.</strong> Eight of the ten clauses are reachable by supplying an input. The
+     * remaining two are reachable in the legacy only through a feedback token the substituted parser
+     * cannot produce, and inventing an input for them would be inventing behaviour:
+     * <ul>
+     *   <li>the era clause needs an era field, and neither of the two masks this estate transmits carries
+     *       one - a fact asserted below rather than asserted about;</li>
+     *   <li>the {@code WHEN OTHER} clause fires precisely when none of the nine declared tokens matched,
+     *       and the substituted parser classifies every failure it can detect into one of the nine, so
+     *       the clause is the defensive tail of the chain.</li>
+     * </ul>
+     * Both are therefore covered through their outcome contract - the decoded severity and message
+     * number that make them behave correctly if they ever were selected - with the reason they are
+     * unreachable stated rather than papered over.
+     */
+    @Nested
+    @DisplayName("the ten-clause outcome selection: first match wins and every clause reachable by input "
+            + "is reached")
+    final class TenClauseDispatchOrdering {
+
+        /**
+         * One row per clause that an input can select, with the severity, message number and outcome text
+         * the source declares for it.
+         *
+         * @return the candidate, the mask, and the four expected outcome components
+         */
+        static Stream<Arguments> clausesReachableByInput() {
+            return Stream.of(
+                    arguments(HYPHENATED_DATE, DateFormat.YYYY_MM_DD, DateFeedback.DATE_IS_VALID,
+                            ORACLE_ACCEPTED_SEVERITY, ORACLE_ZERO_MESSAGE_NUMBER,
+                            ORACLE_TEXT_DATE_IS_VALID),
+                    arguments(HYPHENATED_ALL_SPACES, DateFormat.YYYY_MM_DD,
+                            DateFeedback.INSUFFICIENT_DATA, ORACLE_FAILURE_SEVERITY, "2507",
+                            ORACLE_TEXT_INSUFFICIENT),
+                    arguments(HYPHENATED_THIRTIETH_OF_FEBRUARY, DateFormat.YYYY_MM_DD,
+                            DateFeedback.BAD_DATE_VALUE, ORACLE_FAILURE_SEVERITY, "2508",
+                            ORACLE_TEXT_DATEVALUE_ERROR),
+                    arguments(HYPHENATED_BEFORE_LILIAN, DateFormat.YYYY_MM_DD,
+                            DateFeedback.UNSUPPORTED_RANGE, ORACLE_FAILURE_SEVERITY,
+                            ORACLE_TOLERATED_MESSAGE_NUMBER, ORACLE_TEXT_UNSUPPORTED_RANGE),
+                    arguments(HYPHENATED_MONTH_ABOVE_RANGE, DateFormat.YYYY_MM_DD,
+                            DateFeedback.INVALID_MONTH, ORACLE_FAILURE_SEVERITY, "2517",
+                            ORACLE_TEXT_INVALID_MONTH),
+                    arguments(HYPHENATED_NON_NUMERIC_MONTH, DateFormat.YYYY_MM_DD,
+                            DateFeedback.NON_NUMERIC_DATA, ORACLE_FAILURE_SEVERITY, "2520",
+                            ORACLE_TEXT_NON_NUMERIC_DATA),
+                    arguments(HYPHENATED_YEAR_ZERO, DateFormat.YYYY_MM_DD,
+                            DateFeedback.YEAR_IN_ERA_ZERO, ORACLE_FAILURE_SEVERITY, "2521",
+                            ORACLE_TEXT_YEAR_IN_ERA_ZERO),
+                    arguments(VALID_DATE, DateFormat.YYYYMMDD, DateFeedback.DATE_IS_VALID,
+                            ORACLE_ACCEPTED_SEVERITY, ORACLE_ZERO_MESSAGE_NUMBER,
+                            ORACLE_TEXT_DATE_IS_VALID),
+                    arguments(HYPHENATED_LILIAN_FIRST_DAY, DateFormat.YYYY_MM_DD,
+                            DateFeedback.DATE_IS_VALID, ORACLE_ACCEPTED_SEVERITY,
+                            ORACLE_ZERO_MESSAGE_NUMBER, ORACLE_TEXT_DATE_IS_VALID));
+        }
+
+        @ParameterizedTest(name = "[{0}] under {1} selects {2} with severity {3} and number {4}")
+        @MethodSource("clausesReachableByInput")
+        @DisplayName("each clause an input can select carries its own decoded severity, its own message "
+                + "number and its own outcome text padded to the receiving field's width")
+        void everyClauseReachableByInputIsReached(final String candidate,
+                                                 final DateFormat mask,
+                                                 final DateFeedback expectedFeedback,
+                                                 final String expectedSeverity,
+                                                 final String expectedMessageNumber,
+                                                 final String expectedText) {
+            final SubprogramResult result = service.validateDate(candidate, mask);
+
+            assertAll("[" + candidate + "] must select " + expectedFeedback,
+                    () -> assertThat(result.feedback()).isEqualTo(expectedFeedback),
+                    () -> assertThat(result.severityCode()).isEqualTo(expectedSeverity),
+                    () -> assertThat(result.messageNumber()).isEqualTo(expectedMessageNumber),
+                    () -> assertThat(result.resultText())
+                            .as("the outcome text, with the padding the receiving field's width implies")
+                            .isEqualTo(expectedText),
+                    () -> assertThat(encodedBytes(result.resultText()))
+                            .isEqualTo(ORACLE_RESULT_TEXT_WIDTH));
+        }
+
+        @Test
+        @DisplayName("the bad-picture-string clause is selected by a mask the estate never transmits, "
+                + "which is the ninth of the ten reachable outcomes")
+        void theBadPictureStringClauseIsSelectedByAnUnknownMask() {
+            final SubprogramResult result = service.validateDate(HYPHENATED_DATE, UNSUPPORTED_MASK_VALUE);
+
+            assertAll("an unresolvable mask is reported, never guessed at",
+                    () -> assertThat(result.feedback()).isEqualTo(DateFeedback.BAD_PICTURE_STRING),
+                    () -> assertThat(result.severityCode()).isEqualTo(ORACLE_FAILURE_SEVERITY),
+                    () -> assertThat(result.messageNumber()).isEqualTo("2518"),
+                    () -> assertThat(result.resultText()).isEqualTo(ORACLE_TEXT_BAD_PICTURE_STRING),
+                    () -> assertThat(result.maskUsed())
+                            .as("the mask is reported back as sent, so a reader can see what was refused")
+                            .isEqualTo(UNSUPPORTED_MASK_VALUE),
+                    () -> assertThat(service.isDateAcceptable(result))
+                            .as("a guessed mask would have returned a confidently wrong verdict")
+                            .isFalse());
+        }
+
+        /**
+         * Values that satisfy two detectable conditions at once.
+         *
+         * <p>The winning message number is carried as an explicit literal rather than read back off the
+         * expected outcome constant, so the row states the whole answer and does not borrow any part of
+         * it from the code under test.
+         *
+         * @return the candidate, the outcome the earlier test must win with, its message number, the
+         *         outcome a reordered classification would have produced instead, and why
+         */
+        static Stream<Arguments> valuesSatisfyingTwoConditions() {
+            return Stream.of(
+                    arguments(HYPHENATED_YEAR_ZERO_AND_BAD_MONTH, DateFeedback.YEAR_IN_ERA_ZERO, "2521",
+                            DateFeedback.INVALID_MONTH,
+                            "year zero is tested before the month range"),
+                    arguments(HYPHENATED_NON_NUMERIC_AND_BAD_MONTH, DateFeedback.NON_NUMERIC_DATA, "2520",
+                            DateFeedback.INVALID_MONTH,
+                            "the digit-position test precedes the month range"),
+                    arguments(HYPHENATED_ALL_SPACES, DateFeedback.INSUFFICIENT_DATA, "2507",
+                            DateFeedback.NON_NUMERIC_DATA,
+                            "a blank slot supplies no digits at all, and insufficiency is tested first"));
+        }
+
+        @ParameterizedTest(name = "[{0}] selects {1} and not {3}")
+        @MethodSource("valuesSatisfyingTwoConditions")
+        @DisplayName("first match wins: a value satisfying two conditions reports the earlier one, so the "
+                + "clause order may not be rearranged")
+        void firstMatchWins(final String candidate,
+                            final DateFeedback expectedEarlier,
+                            final String expectedMessageNumber,
+                            final DateFeedback rejectedLater,
+                            final String why) {
+            final SubprogramResult result = service.validateDate(candidate, DateFormat.YYYY_MM_DD);
+
+            assertAll(why,
+                    () -> assertThat(result.feedback()).isEqualTo(expectedEarlier),
+                    () -> assertThat(result.feedback()).isNotEqualTo(rejectedLater),
+                    () -> assertThat(result.messageNumber()).isEqualTo(expectedMessageNumber));
+        }
+
+        @Test
+        @DisplayName("declaration order is the evaluation order, and the catch-all is last of the ten")
+        void declarationOrderIsEvaluationOrder() {
+            final DateFeedback[] declared = DateFeedback.values();
+
+            assertAll("the nine declared tokens in source order, then the WHEN OTHER tail",
+                    () -> assertThat(declared).hasSize(10),
+                    () -> assertThat(declared).containsExactly(DateFeedback.DATE_IS_VALID,
+                            DateFeedback.INSUFFICIENT_DATA,
+                            DateFeedback.BAD_DATE_VALUE,
+                            DateFeedback.INVALID_ERA,
+                            DateFeedback.UNSUPPORTED_RANGE,
+                            DateFeedback.INVALID_MONTH,
+                            DateFeedback.BAD_PICTURE_STRING,
+                            DateFeedback.NON_NUMERIC_DATA,
+                            DateFeedback.YEAR_IN_ERA_ZERO,
+                            DateFeedback.UNRECOGNISED_FEEDBACK),
+                    () -> assertThat(declared[declared.length - 1])
+                            .as("the catch-all must be evaluated last or it would shadow the nine")
+                            .isEqualTo(DateFeedback.UNRECOGNISED_FEEDBACK));
+        }
+
+        @Test
+        @DisplayName("the era clause cannot be selected by any input, because neither mask the estate "
+                + "transmits carries an era field, and it still honours its own outcome contract")
+        void theEraClauseIsUnreachableByInputAndStillContractual() {
+            for (final DateFormat mask : DateFormat.values()) {
+                assertThat(mask.getValue().chars().allMatch(character -> character == 'Y'
+                                || character == 'M' || character == 'D' || character == '-'
+                                || character == ' '))
+                        .as("mask [%s] describes only year, month and day positions", mask.getValue())
+                        .isTrue();
+            }
+
+            assertAll("the constant exists because the clause exists",
+                    () -> assertThat(DateFormat.values()).hasSize(2),
+                    () -> assertThat(DateFeedback.INVALID_ERA.getSeverity()).isEqualTo(3),
+                    () -> assertThat(DateFeedback.INVALID_ERA.getMessageNumber()).isEqualTo(2509));
+        }
+
+        @Test
+        @DisplayName("the catch-all clause is unreachable by input because every detectable failure is "
+                + "classified onto one of the nine, and it is rejected if it ever were selected")
+        void theCatchAllClauseIsTheDefensiveTail() {
+            final SubprogramResult unrecognised = new SubprogramResult(
+                    DateFeedback.UNRECOGNISED_FEEDBACK, ORACLE_FAILURE_SEVERITY,
+                    ORACLE_ZERO_MESSAGE_NUMBER, ORACLE_TEXT_DATE_IS_INVALID, HYPHENATED_DATE,
+                    HYPHENATED_MASK_VALUE);
+
+            assertAll("neither the accepted severity nor the tolerated message number",
+                    () -> assertThat(DateFeedback.UNRECOGNISED_FEEDBACK.getSeverity()).isEqualTo(3),
+                    () -> assertThat(DateFeedback.UNRECOGNISED_FEEDBACK.getMessageNumber()).isZero(),
+                    () -> assertThat(service.isDateAcceptable(unrecognised)).isFalse(),
+                    () -> assertThat(unrecognised.resultText()).isEqualTo(ORACLE_TEXT_DATE_IS_INVALID));
+        }
+
+        @Test
+        @DisplayName("the ten outcome texts are distinct, so no clause can be mistaken for another")
+        void theTenOutcomeTextsAreDistinct() {
+            assertThat(Set.of(ORACLE_TEXT_DATE_IS_VALID, ORACLE_TEXT_INSUFFICIENT,
+                    ORACLE_TEXT_DATEVALUE_ERROR, ORACLE_TEXT_INVALID_ERA, ORACLE_TEXT_UNSUPPORTED_RANGE,
+                    ORACLE_TEXT_INVALID_MONTH, ORACLE_TEXT_BAD_PICTURE_STRING,
+                    ORACLE_TEXT_NON_NUMERIC_DATA, ORACLE_TEXT_YEAR_IN_ERA_ZERO,
+                    ORACLE_TEXT_DATE_IS_INVALID)).hasSize(10);
+        }
+    }
+
+    @Nested
+    @DisplayName("the result block measured in ENCODED BYTES, which is the only width a fixed-width "
+            + "linkage area understands")
+    final class EncodedByteWidthContract {
+
+        @Test
+        @DisplayName("the rendered block is exactly eighty encoded bytes for every one of the ten "
+                + "outcomes, not merely eighty characters")
+        void theRenderedBlockIsExactlyEightyEncodedBytes() {
+            for (final DateFeedback feedback : DateFeedback.values()) {
+                final SubprogramResult result = new SubprogramResult(feedback,
+                        ORACLE_FAILURE_SEVERITY,
+                        ORACLE_TOLERATED_MESSAGE_NUMBER,
+                        ORACLE_TEXT_DATE_IS_INVALID,
+                        HYPHENATED_DATE,
+                        HYPHENATED_MASK_VALUE);
+
+                assertThat(encodedBytes(result.render()))
+                        .as("encoded block width for %s", feedback)
+                        .isEqualTo(ORACLE_RESULT_BLOCK_WIDTH);
+            }
+        }
+
+        @Test
+        @DisplayName("every field sits at the byte offset its declaration implies, and the offsets sum "
+                + "to eighty with no gap and no overlap")
+        void everyFieldSitsAtItsDeclaredByteOffset() {
+            final String block =
+                    service.validateDate(HYPHENATED_DATE, DateFormat.YYYY_MM_DD).render();
+
+            assertAll("the thirteen declared items, read back by byte offset",
+                    () -> assertThat(byteSlice(block, ORACLE_SEVERITY_OFFSET, ORACLE_CODE_WIDTH))
+                            .isEqualTo(ORACLE_ACCEPTED_SEVERITY),
+                    () -> assertThat(byteSlice(block, 4, 11)).isEqualTo(ORACLE_MESSAGE_CODE_LABEL),
+                    () -> assertThat(byteSlice(block, ORACLE_MESSAGE_NUMBER_OFFSET, ORACLE_CODE_WIDTH))
+                            .isEqualTo(ORACLE_ZERO_MESSAGE_NUMBER),
+                    () -> assertThat(byteSlice(block, 19, 1)).isEqualTo(" "),
+                    () -> assertThat(byteSlice(block, 20, ORACLE_RESULT_TEXT_WIDTH))
+                            .isEqualTo(ORACLE_TEXT_DATE_IS_VALID),
+                    () -> assertThat(byteSlice(block, 35, 1)).isEqualTo(" "),
+                    () -> assertThat(byteSlice(block, 36, 9)).isEqualTo(ORACLE_TESTED_DATE_LABEL),
+                    () -> assertThat(byteSlice(block, 45, ORACLE_LINKAGE_TEXT_WIDTH))
+                            .isEqualTo(HYPHENATED_DATE),
+                    () -> assertThat(byteSlice(block, 55, 1)).isEqualTo(" "),
+                    () -> assertThat(byteSlice(block, 56, 10)).isEqualTo(ORACLE_MASK_USED_LABEL),
+                    () -> assertThat(byteSlice(block, 66, ORACLE_LINKAGE_TEXT_WIDTH))
+                            .isEqualTo(HYPHENATED_MASK_VALUE),
+                    () -> assertThat(byteSlice(block, 76, 1)).isEqualTo(" "),
+                    () -> assertThat(byteSlice(block, 77, 3)).isEqualTo("   "),
+                    () -> assertThat(4 + 11 + 4 + 1 + 15 + 1 + 9 + 10 + 1 + 10 + 10 + 1 + 3)
+                            .as("the thirteen widths sum to the declared block")
+                            .isEqualTo(ORACLE_RESULT_BLOCK_WIDTH));
+        }
+
+        @Test
+        @DisplayName("the coarser caller-side overlay of four, eleven, four and sixty-one bytes reads "
+                + "the very same eighty bytes, which is the documented layout mismatch")
+        void theCallerSideOverlayReadsTheSameEightyBytes() {
+            final SubprogramResult result =
+                    service.validateDate(HYPHENATED_BEFORE_LILIAN, DateFormat.YYYY_MM_DD);
+            final String block = result.render();
+
+            assertAll("the callers slice four items where the callee declares thirteen",
+                    () -> assertThat(4 + 11 + 4 + ORACLE_MESSAGE_SEGMENT_WIDTH)
+                            .isEqualTo(ORACLE_RESULT_BLOCK_WIDTH),
+                    () -> assertThat(byteSlice(block, ORACLE_SEVERITY_OFFSET, ORACLE_CODE_WIDTH))
+                            .as("the severity the callers test first")
+                            .isEqualTo(ORACLE_FAILURE_SEVERITY),
+                    () -> assertThat(byteSlice(block, 4, 11)).isEqualTo(ORACLE_MESSAGE_CODE_LABEL),
+                    () -> assertThat(byteSlice(block, ORACLE_MESSAGE_NUMBER_OFFSET, ORACLE_CODE_WIDTH))
+                            .as("the message number the callers test second")
+                            .isEqualTo(ORACLE_TOLERATED_MESSAGE_NUMBER),
+                    () -> assertThat(byteSlice(block, 19, ORACLE_MESSAGE_SEGMENT_WIDTH))
+                            .as("the caller's tail, judged against the literal it must contain rather "
+                                    + "than against whatever the service chose to publish")
+                            .startsWith(" " + ORACLE_TEXT_UNSUPPORTED_RANGE),
+                    () -> assertThat(encodedBytes(byteSlice(block, 19, ORACLE_MESSAGE_SEGMENT_WIDTH)))
+                            .isEqualTo(ORACLE_MESSAGE_SEGMENT_WIDTH),
+                    () -> assertThat(byteSlice(block, 19, ORACLE_MESSAGE_SEGMENT_WIDTH))
+                            .as("and only then cross-checked against the published accessor, so the two "
+                                    + "views of the same bytes are proven to agree")
+                            .isEqualTo(result.messageSegment()));
+        }
+
+        @Test
+        @DisplayName("the message segment is sixty-one encoded bytes taken from byte nineteen, and it "
+                + "opens with the filler space that follows the message number")
+        void theMessageSegmentIsSixtyOneEncodedBytesFromByteNineteen() {
+            final SubprogramResult result =
+                    service.validateDate(HYPHENATED_DATE, DateFormat.YYYY_MM_DD);
+
+            assertAll("the tail the callers overlay",
+                    () -> assertThat(encodedBytes(result.messageSegment()))
+                            .isEqualTo(ORACLE_MESSAGE_SEGMENT_WIDTH),
+                    () -> assertThat(result.messageSegment())
+                            .isEqualTo(byteSlice(result.render(), 19, ORACLE_MESSAGE_SEGMENT_WIDTH)),
+                    () -> assertThat(result.messageSegment())
+                            .startsWith(" " + ORACLE_TEXT_DATE_IS_VALID));
+        }
+
+        @Test
+        @DisplayName("a short value is padded on the right to its declared byte width, never truncated, "
+                + "so its own bytes survive intact")
+        void aShortValueIsPaddedToItsDeclaredByteWidth() {
+            final SubprogramResult result = service.validateDate(SHORT_DATE, DateFormat.YYYY_MM_DD);
+
+            assertAll("pad, do not truncate",
+                    () -> assertThat(encodedBytes(result.testedDate()))
+                            .isEqualTo(ORACLE_LINKAGE_TEXT_WIDTH),
+                    () -> assertThat(result.testedDate()).isEqualTo("2022      "),
+                    () -> assertThat(result.testedDate()).startsWith(SHORT_DATE),
+                    () -> assertThat(byteSlice(result.render(), 45, ORACLE_LINKAGE_TEXT_WIDTH))
+                            .as("the padded image is what reaches the block")
+                            .isEqualTo("2022      "),
+                    () -> assertThat(encodedBytes(result.render()))
+                            .isEqualTo(ORACLE_RESULT_BLOCK_WIDTH));
+        }
+
+        @Test
+        @DisplayName("an over-long value loses its rightmost excess so the declared byte width is never "
+                + "exceeded, which is what keeps the block renderable")
+        void anOverLongValueLosesItsRightmostExcess() {
+            final SubprogramResult result = service.validateDate(OVERLONG_DATE, DateFormat.YYYYMMDD);
+
+            assertAll("truncation is on the right, and only past the declared width",
+                    () -> assertThat(encodedBytes(result.testedDate()))
+                            .isEqualTo(ORACLE_LINKAGE_TEXT_WIDTH),
+                    () -> assertThat(result.testedDate()).isEqualTo(OVERLONG_DATE),
+                    () -> assertThat(encodedBytes(result.render()))
+                            .isEqualTo(ORACLE_RESULT_BLOCK_WIDTH));
+        }
+
+        @Test
+        @DisplayName("nothing in the block may be trimmed: the trailing filler is contract, and trimming "
+                + "would shorten the block below its declared width")
+        void nothingInTheBlockMayBeTrimmed() {
+            final String block = service.validateDate(
+                    " ".repeat(ORACLE_LINKAGE_TEXT_WIDTH), DateFormat.YYYY_MM_DD).render();
+
+            assertAll("the padding carries meaning",
+                    () -> assertThat(encodedBytes(block)).isEqualTo(ORACLE_RESULT_BLOCK_WIDTH),
+                    () -> assertThat(byteSlice(block, 45, ORACLE_LINKAGE_TEXT_WIDTH))
+                            .as("a blank date stays blank across all ten of its bytes")
+                            .isEqualTo(" ".repeat(ORACLE_LINKAGE_TEXT_WIDTH)),
+                    () -> assertThat(byteSlice(block, 77, 3)).isEqualTo("   "),
+                    () -> assertThat(encodedBytes(block.trim()))
+                            .as("trimming would destroy the fixed-width contract, so it is never done")
+                            .isLessThan(ORACLE_RESULT_BLOCK_WIDTH));
+        }
+
+        @Test
+        @DisplayName("severity and message number are two separate four-byte fields and are never "
+                + "collapsed into one verdict")
+        void severityAndMessageNumberAreNeverCollapsed() {
+            final SubprogramResult tolerated =
+                    service.validateDate(HYPHENATED_BEFORE_LILIAN, DateFormat.YYYY_MM_DD);
+            final SubprogramResult untolerated =
+                    service.validateDate(HYPHENATED_MONTH_ABOVE_RANGE, DateFormat.YYYY_MM_DD);
+
+            assertAll("one severity, two message numbers, two different verdicts",
+                    () -> assertThat(encodedBytes(tolerated.severityCode()))
+                            .isEqualTo(ORACLE_CODE_WIDTH),
+                    () -> assertThat(encodedBytes(tolerated.messageNumber()))
+                            .isEqualTo(ORACLE_CODE_WIDTH),
+                    () -> assertThat(tolerated.severityCode()).isEqualTo(ORACLE_FAILURE_SEVERITY),
+                    () -> assertThat(untolerated.severityCode()).isEqualTo(ORACLE_FAILURE_SEVERITY),
+                    () -> assertThat(tolerated.messageNumber())
+                            .isEqualTo(ORACLE_TOLERATED_MESSAGE_NUMBER),
+                    () -> assertThat(untolerated.messageNumber()).isEqualTo("2517"),
+                    () -> assertThat(service.isDateAcceptable(tolerated))
+                            .as("same severity, tolerated number, accepted")
+                            .isTrue(),
+                    () -> assertThat(service.isDateAcceptable(untolerated))
+                            .as("same severity, other number, rejected")
+                            .isFalse());
+        }
+
+        @Test
+        @DisplayName("the two outcomes carrying an all-zero message number are separated by their "
+                + "severity and their result text, never by the message number alone")
+        void theAllZeroMessageNumberOutcomesAreSeparatedBySeverityAndText() {
+            final SubprogramResult valid =
+                    service.validateDate(HYPHENATED_DATE, DateFormat.YYYY_MM_DD);
+            final SubprogramResult unrecognised = new SubprogramResult(
+                    DateFeedback.UNRECOGNISED_FEEDBACK, ORACLE_FAILURE_SEVERITY,
+                    ORACLE_ZERO_MESSAGE_NUMBER, ORACLE_TEXT_DATE_IS_INVALID, HYPHENATED_DATE,
+                    HYPHENATED_MASK_VALUE);
+
+            assertAll("the all-zero token is ambiguous on its number and unambiguous on the pair",
+                    () -> assertThat(valid.messageNumber()).isEqualTo(ORACLE_ZERO_MESSAGE_NUMBER),
+                    () -> assertThat(unrecognised.messageNumber())
+                            .as("the number alone cannot tell them apart")
+                            .isEqualTo(ORACLE_ZERO_MESSAGE_NUMBER),
+                    () -> assertThat(valid.severityCode()).isEqualTo(ORACLE_ACCEPTED_SEVERITY),
+                    () -> assertThat(unrecognised.severityCode()).isEqualTo(ORACLE_FAILURE_SEVERITY),
+                    () -> assertThat(valid.resultText()).isEqualTo(ORACLE_TEXT_DATE_IS_VALID),
+                    () -> assertThat(unrecognised.resultText()).isEqualTo(ORACLE_TEXT_DATE_IS_INVALID),
+                    () -> assertThat(service.isDateAcceptable(valid)).isTrue(),
+                    () -> assertThat(service.isDateAcceptable(unrecognised)).isFalse());
+        }
+
+        @Test
+        @DisplayName("a block whose components no longer fill eighty bytes is refused rather than "
+                + "silently shipped short")
+        void anUnderfilledBlockIsRefused() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new SubprogramResult(DateFeedback.DATE_IS_VALID,
+                            ORACLE_ACCEPTED_SEVERITY, ORACLE_ZERO_MESSAGE_NUMBER,
+                            ORACLE_TEXT_DATE_IS_VALID, "short", HYPHENATED_MASK_VALUE))
+                    .withMessageContaining("testedDate");
+        }
+    }
+
+    @Nested
+    @DisplayName("the format-mask parameter: two declared masks, an exact ten-byte match, and no "
+            + "silent fallback")
+    final class DateFormatParameterContract {
+
+        @Test
+        @DisplayName("exactly two masks are declared, which is the whole vocabulary the subprogram accepts")
+        void exactlyTwoMasksAreDeclared() {
+            assertThat(DateFormat.values()).hasSize(2);
+            assertThat(EnumSet.allOf(DateFormat.class))
+                    .containsExactly(DateFormat.YYYY_MM_DD, DateFormat.YYYYMMDD);
+        }
+
+        @Test
+        @DisplayName("each declared mask is exactly ten encoded bytes, and the compact one carries two "
+                + "contractual trailing spaces that pad it to the linkage width")
+        void eachDeclaredMaskIsTenEncodedBytes() {
+            assertAll("the mask field is ten bytes wide in the linkage area",
+                    () -> assertThat(DateFormat.YYYY_MM_DD.getValue())
+                            .isEqualTo(HYPHENATED_MASK_VALUE),
+                    () -> assertThat(encodedBytes(DateFormat.YYYY_MM_DD.getValue()))
+                            .isEqualTo(ORACLE_LINKAGE_TEXT_WIDTH),
+                    () -> assertThat(DateFormat.YYYYMMDD.getValue()).isEqualTo(COMPACT_MASK_VALUE),
+                    () -> assertThat(encodedBytes(DateFormat.YYYYMMDD.getValue()))
+                            .isEqualTo(ORACLE_LINKAGE_TEXT_WIDTH),
+                    () -> assertThat(DateFormat.YYYYMMDD.getValue())
+                            .as("the two trailing spaces are part of the declared value")
+                            .endsWith("  "));
+        }
+
+        @Test
+        @DisplayName("both declared masks are honoured, each against the date shape it describes")
+        void bothDeclaredMasksAreHonoured() {
+            final SubprogramResult hyphenated =
+                    service.validateDate(HYPHENATED_DATE, DateFormat.YYYY_MM_DD);
+            final SubprogramResult compact = service.validateDate(VALID_DATE, DateFormat.YYYYMMDD);
+
+            assertAll("each mask parses its own shape",
+                    () -> assertThat(hyphenated.feedback()).isEqualTo(DateFeedback.DATE_IS_VALID),
+                    () -> assertThat(hyphenated.maskUsed()).isEqualTo(HYPHENATED_MASK_VALUE),
+                    () -> assertThat(compact.feedback()).isEqualTo(DateFeedback.DATE_IS_VALID),
+                    () -> assertThat(compact.maskUsed()).isEqualTo(COMPACT_MASK_VALUE));
+        }
+
+        @Test
+        @DisplayName("a date presented under the wrong declared mask is never a bad mask, because the "
+                + "mask itself resolved: the shape mismatch surfaces at the digit-position test, which "
+                + "the source evaluates before the date-value test")
+        void aDateUnderTheWrongDeclaredMaskFailsTheDigitPositionTest() {
+            final SubprogramResult compactUnderHyphenated =
+                    service.validateDate(VALID_DATE, DateFormat.YYYY_MM_DD);
+            final SubprogramResult hyphenatedUnderCompact =
+                    service.validateDate(HYPHENATED_DATE, DateFormat.YYYYMMDD);
+
+            assertAll("both directions of the mismatch land on the earlier clause",
+                    () -> assertThat(compactUnderHyphenated.feedback())
+                            .as("the separators the resolved mask demands are digits instead")
+                            .isEqualTo(DateFeedback.NON_NUMERIC_DATA),
+                    () -> assertThat(compactUnderHyphenated.messageNumber()).isEqualTo("2520"),
+                    () -> assertThat(compactUnderHyphenated.resultText())
+                            .isEqualTo(ORACLE_TEXT_NON_NUMERIC_DATA),
+                    () -> assertThat(compactUnderHyphenated.maskUsed())
+                            .as("the mask resolved, so it is echoed back rather than faulted")
+                            .isEqualTo(HYPHENATED_MASK_VALUE),
+                    () -> assertThat(hyphenatedUnderCompact.feedback())
+                            .as("the digits the compact mask demands are separators instead")
+                            .isEqualTo(DateFeedback.NON_NUMERIC_DATA),
+                    () -> assertThat(hyphenatedUnderCompact.messageNumber()).isEqualTo("2520"),
+                    () -> assertThat(hyphenatedUnderCompact.maskUsed()).isEqualTo(COMPACT_MASK_VALUE),
+                    () -> assertThat(service.isDateAcceptable(compactUnderHyphenated)).isFalse(),
+                    () -> assertThat(service.isDateAcceptable(hyphenatedUnderCompact)).isFalse());
+        }
+
+        @Test
+        @DisplayName("a correctly shaped but impossible date under a resolved mask is the bad-value "
+                + "outcome, which is the clause that follows the digit-position test")
+        void aCorrectlyShapedImpossibleDateIsTheBadValueOutcome() {
+            final SubprogramResult result =
+                    service.validateDate(HYPHENATED_THIRTY_FIRST_OF_SHORT_MONTH, DateFormat.YYYY_MM_DD);
+
+            assertAll("every digit is in place, so the value itself is what fails",
+                    () -> assertThat(result.feedback()).isEqualTo(DateFeedback.BAD_DATE_VALUE),
+                    () -> assertThat(result.messageNumber()).isEqualTo("2508"),
+                    () -> assertThat(result.resultText()).isEqualTo(ORACLE_TEXT_DATEVALUE_ERROR),
+                    () -> assertThat(result.maskUsed()).isEqualTo(HYPHENATED_MASK_VALUE));
+        }
+
+        /**
+         * Masks that no declared value can match once the ten-byte linkage move has been applied.
+         *
+         * @return unrecognised mask images
+         */
+        static Stream<Arguments> unrecognisedMasks() {
+            return Stream.of(
+                    arguments(UNSUPPORTED_MASK_VALUE),
+                    arguments("MM-DD-YYYY"),
+                    arguments("YYYY/MM/DD"),
+                    arguments("yyyy-mm-dd"),
+                    arguments("CCYYMMDD  "),
+                    arguments("          "),
+                    arguments(""));
+        }
+
+        @ParameterizedTest(name = "mask [{0}] is a bad picture string")
+        @MethodSource("unrecognisedMasks")
+        @DisplayName("an unrecognised mask is reported as a bad picture string rather than silently "
+                + "falling back to a supported one")
+        void anUnrecognisedMaskIsABadPictureString(final String mask) {
+            final SubprogramResult result = service.validateDate(HYPHENATED_DATE, mask);
+
+            assertAll("no fallback, and the offending mask is echoed back",
+                    () -> assertThat(result.feedback()).isEqualTo(DateFeedback.BAD_PICTURE_STRING),
+                    () -> assertThat(result.severityCode()).isEqualTo(ORACLE_FAILURE_SEVERITY),
+                    () -> assertThat(result.messageNumber()).isEqualTo("2518"),
+                    () -> assertThat(result.resultText()).isEqualTo(ORACLE_TEXT_BAD_PICTURE_STRING),
+                    () -> assertThat(encodedBytes(result.maskUsed()))
+                            .isEqualTo(ORACLE_LINKAGE_TEXT_WIDTH),
+                    () -> assertThat(service.isDateAcceptable(result))
+                            .as("2518 is not the tolerated number")
+                            .isFalse());
+        }
+
+        @Test
+        @DisplayName("the mask is resolved after the ten-byte linkage move, so an eight-character "
+                + "compact mask pads into the declared value and is accepted")
+        void theMaskIsResolvedAfterTheLinkageMove() {
+            final SubprogramResult result = service.validateDate(VALID_DATE, "YYYYMMDD");
+
+            assertAll("padding happens first, resolution second",
+                    () -> assertThat(result.maskUsed()).isEqualTo(COMPACT_MASK_VALUE),
+                    () -> assertThat(result.feedback()).isEqualTo(DateFeedback.DATE_IS_VALID),
+                    () -> assertThat(DateFormat.fromValue("YYYYMMDD"))
+                            .as("resolution on its own is exact and does not pad")
+                            .isEmpty());
+        }
+
+        @Test
+        @DisplayName("mask resolution is an exact ten-byte match with no fallback and no case folding")
+        void maskResolutionIsExactWithNoFallback() {
+            assertAll("the lookup is literal",
+                    () -> assertThat(DateFormat.fromValue(HYPHENATED_MASK_VALUE))
+                            .contains(DateFormat.YYYY_MM_DD),
+                    () -> assertThat(DateFormat.fromValue(COMPACT_MASK_VALUE))
+                            .contains(DateFormat.YYYYMMDD),
+                    () -> assertThat(DateFormat.fromValue(UNSUPPORTED_MASK_VALUE)).isEmpty(),
+                    () -> assertThat(DateFormat.fromValue("yyyy-mm-dd"))
+                            .as("no case folding")
+                            .isEmpty(),
+                    () -> assertThat(DateFormat.fromValue("YYYY-MM-DD "))
+                            .as("eleven bytes is not the declared value")
+                            .isEmpty(),
+                    () -> assertThat(DateFormat.fromValue(null))
+                            .as("null is tolerated and resolves to nothing")
+                            .isEmpty());
+        }
+
+        @Test
+        @DisplayName("a null mask is refused on both overloads, and the cast that picks the overload is "
+                + "part of the calling contract")
+        void aNullMaskIsRefusedOnBothOverloads() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> service.validateDate(HYPHENATED_DATE, (DateFormat) null))
+                    .withMessageContaining("dateFormat");
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> service.validateDate(HYPHENATED_DATE, (String) null))
+                    .withMessageContaining("formatMask");
+        }
+
+        @Test
+        @DisplayName("a null date is refused on both overloads, because an absent field is not a blank one")
+        void aNullDateIsRefusedOnBothOverloads() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> service.validateDate(null, DateFormat.YYYY_MM_DD))
+                    .withMessageContaining("candidateDate");
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> service.validateDate(null, HYPHENATED_MASK_VALUE))
+                    .withMessageContaining("candidateDate");
+        }
+    }
+
+    @Nested
+    @DisplayName("the flag-group guard that gates the fifth stage: it reproduces the pessimistic constant "
+            + "the head paragraph writes, so the stage opens only when all three field stages have cleared")
+    final class LanguageEnvironmentStageGuard {
+
+        @Test
+        @DisplayName("the head paragraph writes the pessimistic three-character constant, so nothing is "
+                + "presumed valid before a stage has said so")
+        void theHeadParagraphWritesThePessimisticConstant() {
+            final DateEditResult headOnly = service.validateCcyymmddDate(ALL_SPACES_DATE);
+
+            assertAll("the group starts wholly unfavourable and the guard tests for its opposite",
+                    () -> assertThat(encodedBytes(ORACLE_HEAD_PARAGRAPH_FLAG_GROUP))
+                            .isEqualTo(ORACLE_FLAG_GROUP_WIDTH),
+                    () -> assertThat(encodedBytes(ORACLE_ALL_VALID_FLAG_GROUP))
+                            .as("the favourable state is the same width, written as low values")
+                            .isEqualTo(ORACLE_FLAG_GROUP_WIDTH),
+                    () -> assertThat(ORACLE_HEAD_PARAGRAPH_FLAG_GROUP)
+                            .isNotEqualTo(ORACLE_ALL_VALID_FLAG_GROUP),
+                    () -> assertThat(headOnly.flagsImage())
+                            .as("a wholly blank date never clears a single stage")
+                            .isNotEqualTo(ORACLE_ALL_VALID_FLAG_GROUP),
+                    () -> assertThat(headOnly.inputError()).isTrue());
+        }
+
+        @Test
+        @DisplayName("the guard opens only on the wholly favourable group, which is the one state the "
+                + "head paragraph never writes")
+        void theGuardOpensOnlyOnTheWhollyFavourableGroup() {
+            assertAll("open on all-clear, closed on anything else",
+                    () -> assertThat(service.validateCcyymmddDate(VALID_DATE).flagsImage())
+                            .as("every stage cleared, so the guard opened and the stage exit re-marked "
+                                    + "the group")
+                            .isEqualTo(ORACLE_ALL_VALID_FLAG_GROUP),
+                    () -> assertThat(service.validateCcyymmddDate(MONTH_ABOVE_RANGE_DATE).flagsImage())
+                            .isNotEqualTo(ORACLE_ALL_VALID_FLAG_GROUP),
+                    () -> assertThat(service.validateCcyymmddDate(DAY_ABOVE_RANGE_DATE).flagsImage())
+                            .isNotEqualTo(ORACLE_ALL_VALID_FLAG_GROUP),
+                    () -> assertThat(service.validateCcyymmddDate(INVALID_CENTURY_DATE).flagsImage())
+                            .isNotEqualTo(ORACLE_ALL_VALID_FLAG_GROUP),
+                    () -> assertThat(
+                            service.validateCcyymmddDate(THIRTY_FIRST_OF_SHORT_MONTH_DATE).flagsImage())
+                            .as("a combination failure closes the guard just as a field failure does")
+                            .isNotEqualTo(ORACLE_ALL_VALID_FLAG_GROUP));
+        }
+
+        /**
+         * An independent day-count oracle written straight from the copybook's own rules, so that the
+         * sweep below never asks the code under test what the answer is.
+         *
+         * <p>The sweep is restricted to two years whose century is inside the accepted pair and whose
+         * leap status follows the plain four-year rule, which keeps the century-boundary subtlety out of
+         * this oracle; the two century witnesses are asserted separately.
+         *
+         * @param year  the four-digit year
+         * @param month the month slot, which may be outside one to twelve
+         * @param day   the day slot, which may be outside one to thirty-one
+         * @return whether the copybook's rules admit the combination
+         */
+        private static boolean admittedByIndependentOracle(final int year, final int month,
+                                                           final int day) {
+            final int century = year / 100;
+            if (century != ORACLE_THIS_CENTURY && century != ORACLE_LAST_CENTURY) {
+                return false;
+            }
+            if (month < 1 || month > 12 || day < 1 || day > 31) {
+                return false;
+            }
+            if (ORACLE_THIRTY_ONE_DAY_MONTHS.contains(month)) {
+                return true;
+            }
+            if (month == ORACLE_FEBRUARY) {
+                return day <= (year % 4 == 0 ? 29 : 28);
+            }
+            return day <= 30;
+        }
+
+        @Test
+        @DisplayName("across every month and day slot the cascade admits exactly what the copybook's own "
+                + "rules admit, which is what makes the fifth stage redundant rather than load-bearing")
+        void theCascadeAdmitsExactlyWhatTheCopybookRulesAdmit() {
+            final StringBuilder disagreements = new StringBuilder();
+
+            for (final int year : new int[] {2022, 2024}) {
+                for (int month = 0; month <= 13; month++) {
+                    for (int day = 0; day <= 32; day++) {
+                        final String candidate =
+                                String.format("%04d%02d%02d", year, month, day);
+                        if (encodedBytes(candidate) != ORACLE_CCYYMMDD_WIDTH) {
+                            continue;
+                        }
+                        final boolean expected = admittedByIndependentOracle(year, month, day);
+                        final boolean actual = !service.validateCcyymmddDate(candidate).inputError();
+                        if (expected != actual) {
+                            disagreements.append('[').append(candidate)
+                                    .append("] expected admitted=").append(expected)
+                                    .append(" but was ").append(actual).append(System.lineSeparator());
+                        }
+                    }
+                }
+            }
+
+            assertThat(disagreements.toString())
+                    .as("a head-paragraph-only translation would admit every one of these")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the redundant fifth stage cannot change the verdict, because the two century leap "
+                + "witnesses are already settled by the combination stage")
+        void theRedundantFifthStageCannotChangeTheVerdict() {
+            assertAll("the stage runs on the cleared path and finds nothing left to reject",
+                    () -> assertThat(service.validateCcyymmddDate(LEAP_DAY_CENTURY_ACCEPTED).inputError())
+                            .as("a four-hundred-year leap day is admitted before the stage is entered")
+                            .isFalse(),
+                    () -> assertThat(service.validateCcyymmddDate(LEAP_DAY_CENTURY_ACCEPTED).flagsImage())
+                            .isEqualTo(ORACLE_ALL_VALID_FLAG_GROUP),
+                    () -> assertThat(service.validateCcyymmddDate(LEAP_DAY_CENTURY_REJECTED).inputError())
+                            .as("a hundred-year non-leap day is rejected before the stage is reached")
+                            .isTrue(),
+                    () -> assertThat(
+                            service.validateCcyymmddDate(LEAP_DAY_CENTURY_REJECTED).returnMessage())
+                            .isEqualTo(ORACLE_NOT_A_LEAP_YEAR),
+                    () -> assertThat(service.validateCcyymmddDate(LEAP_DAY_CENTURY_REJECTED).flagsImage())
+                            .as("the guard is therefore closed for it")
+                            .isNotEqualTo(ORACLE_ALL_VALID_FLAG_GROUP));
+        }
+
+        @Test
+        @DisplayName("the stage's own verification agrees with the cascade for every date that reaches "
+                + "it, which is exactly why its rejection branch is unreachable from outside")
+        void theStageAgreesWithTheCascadeForEveryDateThatReachesIt() {
+            final String[] datesThatClearEveryStage = {VALID_DATE, VALID_LAST_DAY_OF_YEAR,
+                LEAP_DAY_ORDINARY, LEAP_DAY_CENTURY_ACCEPTED};
+
+            for (final String candidate : datesThatClearEveryStage) {
+                final DateEditResult cascade = service.validateCcyymmddDate(candidate);
+                final SubprogramResult stage = service.validateDate(candidate, DateFormat.YYYYMMDD);
+
+                assertAll("agreement for [" + candidate + "]",
+                        () -> assertThat(cascade.inputError()).isFalse(),
+                        () -> assertThat(cascade.flagsImage()).isEqualTo(ORACLE_ALL_VALID_FLAG_GROUP),
+                        () -> assertThat(stage.feedback()).isEqualTo(DateFeedback.DATE_IS_VALID),
+                        () -> assertThat(stage.severityCode()).isEqualTo(ORACLE_ACCEPTED_SEVERITY),
+                        () -> assertThat(service.isDateAcceptable(stage)).isTrue());
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("the birth-date range sits outside the main cascade, so it is a supplement to the "
+            + "cascade and never a substitute for it")
+    final class DateOfBirthEntryPointIsSeparate {
+
+        /**
+         * Values the cascade rejects at an inner stage and which are not resolvable calendar dates.
+         *
+         * @return candidate images
+         */
+        static Stream<Arguments> innerStageFailuresThatAreNotCalendarDates() {
+            return Stream.of(
+                    arguments(MONTH_BELOW_RANGE_DATE),
+                    arguments(MONTH_ABOVE_RANGE_DATE),
+                    arguments(DAY_BELOW_RANGE_DATE),
+                    arguments(DAY_ABOVE_RANGE_DATE),
+                    arguments(THIRTY_FIRST_OF_SHORT_MONTH_DATE),
+                    arguments(THIRTIETH_OF_FEBRUARY_DATE),
+                    arguments(LEAP_DAY_COMMON_YEAR),
+                    arguments(BAD_MONTH_AND_BAD_DAY_DATE));
+        }
+
+        @ParameterizedTest(name = "[{0}] is stopped by the cascade before the birth check is reached")
+        @MethodSource("innerStageFailuresThatAreNotCalendarDates")
+        @DisplayName("the composition the callers use stops an inner-stage failure at the cascade, so the "
+                + "birth check is never asked to judge a value the cascade has already refused")
+        void theCompositionStopsAnInnerStageFailureAtTheCascade(final String candidate) {
+            final DateEditResult cascade = service.validateCcyymmddDate(candidate);
+
+            assertAll("the caller's guard is the cascade's own verdict",
+                    () -> assertThat(cascade.inputError()).isTrue(),
+                    () -> assertThat(cascade.flagsImage()).isNotEqualTo(ORACLE_ALL_VALID_FLAG_GROUP),
+                    () -> assertThat(cascade.returnMessage()).isNotEqualTo(ORACLE_NO_MESSAGE));
+        }
+
+        @ParameterizedTest(name = "[{0}] is refused loudly if the birth check is entered out of order")
+        @MethodSource("innerStageFailuresThatAreNotCalendarDates")
+        @DisplayName("entered out of order on an unresolvable image the birth check refuses loudly rather "
+                + "than accepting silently, so no caller can use it to bypass the cascade")
+        void theBirthCheckRefusesAnUnresolvableImageLoudly(final String candidate) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> service.validateDateOfBirth(candidate, CURRENT_DATE))
+                    .withMessageContaining(candidate);
+        }
+
+        @Test
+        @DisplayName("the birth check runs none of the field stages: a century the cascade refuses is "
+                + "still an ordinary past date to the birth check alone")
+        void theBirthCheckRunsNoneOfTheFieldStages() {
+            final DateEditResult cascade = service.validateCcyymmddDate(INVALID_CENTURY_DATE);
+            final DateEditResult birthOnly =
+                    service.validateDateOfBirth(INVALID_CENTURY_DATE, CURRENT_DATE);
+
+            assertAll("two different questions about the same image",
+                    () -> assertThat(cascade.inputError())
+                            .as("the cascade owns the century rule")
+                            .isTrue(),
+                    () -> assertThat(cascade.returnMessage()).isEqualTo(ORACLE_CENTURY_NOT_VALID),
+                    () -> assertThat(birthOnly.inputError())
+                            .as("the birth check asks only whether the date is in the past")
+                            .isFalse(),
+                    () -> assertThat(birthOnly.returnMessage()).isEqualTo(ORACLE_NO_MESSAGE),
+                    () -> assertThat(birthOnly.flagsImage()).isEqualTo(ORACLE_ALL_VALID_FLAG_GROUP));
+        }
+
+        @Test
+        @DisplayName("the two verdicts compose the way the caller composes them: a well-formed future "
+                + "date clears the cascade and is then refused by the birth check")
+        void theTwoVerdictsComposeTheWayTheCallerComposesThem() {
+            final String futureDate = "20991231";
+            final DateEditResult cascade = service.validateCcyymmddDate(futureDate);
+            final DateEditResult birthCheck = service.validateDateOfBirth(futureDate, CURRENT_DATE);
+
+            assertAll("cascade first, birth check second",
+                    () -> assertThat(cascade.inputError())
+                            .as("well formed, so the cascade passes it through")
+                            .isFalse(),
+                    () -> assertThat(cascade.flagsImage()).isEqualTo(ORACLE_ALL_VALID_FLAG_GROUP),
+                    () -> assertThat(birthCheck.inputError())
+                            .as("only the birth check knows it is unreasonable")
+                            .isTrue(),
+                    () -> assertThat(birthCheck.returnMessage()).isEqualTo(ORACLE_DATE_IN_FUTURE),
+                    () -> assertThat(birthCheck.flagsImage())
+                            .isEqualTo(ORACLE_HEAD_PARAGRAPH_FLAG_GROUP));
+        }
+
+        @Test
+        @DisplayName("a value that clears both is accepted by both, so the supplement adds a rule and "
+                + "removes none")
+        void aValueThatClearsBothIsAcceptedByBoth() {
+            final DateEditResult cascade = service.validateCcyymmddDate(VALID_DATE);
+            final DateEditResult birthCheck = service.validateDateOfBirth(VALID_DATE, CURRENT_DATE);
+
+            assertAll("both verdicts favourable",
+                    () -> assertThat(cascade.inputError()).isFalse(),
+                    () -> assertThat(birthCheck.inputError()).isFalse(),
+                    () -> assertThat(cascade.returnMessage()).isEqualTo(ORACLE_NO_MESSAGE),
+                    () -> assertThat(birthCheck.returnMessage()).isEqualTo(ORACLE_NO_MESSAGE));
+        }
+    }
+
+    @Nested
+    @DisplayName("every message is contract data reproduced byte for byte, with no trimming and no "
+            + "tidying of the source's own punctuation")
+    final class MessageTextIsContractData {
+
+        @Test
+        @DisplayName("the leap-year message runs two sentences together with NO space after its first "
+                + "period, and that is asserted on the byte that follows the period")
+        void theLeapYearMessageHasNoSpaceAfterItsFirstPeriod() {
+            final int firstPeriod = ORACLE_NOT_A_LEAP_YEAR.indexOf('.');
+            final DateEditResult produced = service.validateCcyymmddDate(LEAP_DAY_COMMON_YEAR);
+
+            assertAll("the run-together punctuation is the contract",
+                    () -> assertThat(firstPeriod).isPositive(),
+                    () -> assertThat(ORACLE_NOT_A_LEAP_YEAR.charAt(firstPeriod + 1))
+                            .as("the character after the first period is a capital, not a space")
+                            .isEqualTo('C'),
+                    () -> assertThat(ORACLE_NOT_A_LEAP_YEAR).doesNotContain(". "),
+                    () -> assertThat(produced.returnMessage())
+                            .as("and the service reproduces it exactly")
+                            .isEqualTo(ORACLE_NOT_A_LEAP_YEAR),
+                    () -> assertThat(encodedBytes(produced.returnMessage()))
+                            .isEqualTo(encodedBytes(ORACLE_NOT_A_LEAP_YEAR)));
+        }
+
+        /**
+         * Each candidate paired with the exact message the copybook writes for it.
+         *
+         * @return the candidate and its verbatim message
+         */
+        static Stream<Arguments> messagesTheCascadeCanWrite() {
+            return Stream.of(
+                    arguments(ALL_SPACES_DATE, ORACLE_YEAR_NOT_SUPPLIED),
+                    arguments(NON_NUMERIC_YEAR_DATE, ORACLE_YEAR_NOT_FOUR_DIGITS),
+                    arguments(INVALID_CENTURY_DATE, ORACLE_CENTURY_NOT_VALID),
+                    arguments(BLANK_MONTH_DATE, ORACLE_MONTH_NOT_SUPPLIED),
+                    arguments(MONTH_ABOVE_RANGE_DATE, ORACLE_MONTH_OUT_OF_RANGE),
+                    arguments(MONTH_BELOW_RANGE_DATE, ORACLE_MONTH_OUT_OF_RANGE),
+                    arguments(BLANK_DAY_DATE, ORACLE_DAY_NOT_SUPPLIED),
+                    arguments(DAY_ABOVE_RANGE_DATE, ORACLE_DAY_OUT_OF_RANGE),
+                    arguments(DAY_BELOW_RANGE_DATE, ORACLE_DAY_OUT_OF_RANGE),
+                    arguments(THIRTY_FIRST_OF_SHORT_MONTH_DATE, ORACLE_CANNOT_HAVE_31_DAYS),
+                    arguments(THIRTIETH_OF_FEBRUARY_DATE, ORACLE_CANNOT_HAVE_30_DAYS),
+                    arguments(LEAP_DAY_COMMON_YEAR, ORACLE_NOT_A_LEAP_YEAR),
+                    arguments(VALID_DATE, ORACLE_NO_MESSAGE));
+        }
+
+        @ParameterizedTest(name = "[{0}] writes [{1}]")
+        @MethodSource("messagesTheCascadeCanWrite")
+        @DisplayName("every message the cascade can write matches its literal byte for byte, and its "
+                + "encoded byte count matches too, so nothing has been trimmed on either side")
+        void everyMessageMatchesItsLiteralByteForByte(final String candidate, final String expected) {
+            final String actual = service.validateCcyymmddDate(candidate).returnMessage();
+
+            assertAll("verbatim, and the same number of bytes",
+                    () -> assertThat(actual).isEqualTo(expected),
+                    () -> assertThat(encodedBytes(actual)).isEqualTo(encodedBytes(expected)));
+        }
+
+        @Test
+        @DisplayName("the four supply messages open with a spaced colon, and the year-width message is "
+                + "the single exception that carries no colon at all")
+        void theSupplyMessagesOpenWithASpacedColonExceptOne() {
+            assertAll("the source's own inconsistency, preserved",
+                    () -> assertThat(ORACLE_YEAR_NOT_SUPPLIED).startsWith(" : "),
+                    () -> assertThat(ORACLE_CENTURY_NOT_VALID).startsWith(" : "),
+                    () -> assertThat(ORACLE_MONTH_NOT_SUPPLIED).startsWith(" : "),
+                    () -> assertThat(ORACLE_DAY_NOT_SUPPLIED).startsWith(" : "),
+                    () -> assertThat(ORACLE_YEAR_NOT_FOUR_DIGITS)
+                            .as("no colon anywhere in the one exception")
+                            .doesNotContain(":")
+                            .startsWith(" must"));
+        }
+
+        @Test
+        @DisplayName("the range and combination messages open with a bare colon, and only the month one "
+                + "puts a space after it")
+        void theRangeMessagesOpenWithABareColon() {
+            assertAll("bare colon, and one space that only the month message has",
+                    () -> assertThat(ORACLE_MONTH_OUT_OF_RANGE).startsWith(": Month"),
+                    () -> assertThat(ORACLE_DAY_OUT_OF_RANGE)
+                            .as("lower-case day, and no space after the colon")
+                            .startsWith(":day"),
+                    () -> assertThat(ORACLE_CANNOT_HAVE_31_DAYS).startsWith(":Cannot"),
+                    () -> assertThat(ORACLE_CANNOT_HAVE_30_DAYS).startsWith(":Cannot"),
+                    () -> assertThat(ORACLE_NOT_A_LEAP_YEAR).startsWith(":Not"),
+                    () -> assertThat(ORACLE_DATE_IN_FUTURE).startsWith(":cannot"));
+        }
+
+        @Test
+        @DisplayName("the future message keeps the trailing space the source literal carries, which a "
+                + "trimming comparison would silently lose")
+        void theFutureMessageKeepsItsTrailingSpace() {
+            final DateEditResult refused = service.validateDateOfBirth("20991231", CURRENT_DATE);
+
+            assertAll("the trailing space is contract",
+                    () -> assertThat(ORACLE_DATE_IN_FUTURE).endsWith(" "),
+                    () -> assertThat(refused.returnMessage()).isEqualTo(ORACLE_DATE_IN_FUTURE),
+                    () -> assertThat(refused.returnMessage()).endsWith(" "),
+                    () -> assertThat(encodedBytes(refused.returnMessage()))
+                            .as("a trimmed comparison would have lost a byte")
+                            .isGreaterThan(encodedBytes(ORACLE_DATE_IN_FUTURE.trim())));
+        }
+
+        @Test
+        @DisplayName("all twelve messages are distinct, so no failure can be reported as another")
+        void allTwelveMessagesAreDistinct() {
+            assertThat(Set.of(ORACLE_YEAR_NOT_SUPPLIED, ORACLE_YEAR_NOT_FOUR_DIGITS,
+                    ORACLE_CENTURY_NOT_VALID, ORACLE_MONTH_NOT_SUPPLIED, ORACLE_MONTH_OUT_OF_RANGE,
+                    ORACLE_DAY_NOT_SUPPLIED, ORACLE_DAY_OUT_OF_RANGE, ORACLE_CANNOT_HAVE_31_DAYS,
+                    ORACLE_CANNOT_HAVE_30_DAYS, ORACLE_NOT_A_LEAP_YEAR, ORACLE_DATE_IN_FUTURE,
+                    ORACLE_NO_MESSAGE)).hasSize(12);
+        }
+    }
+
+    @Nested
+    @DisplayName("absent, blank and malformed input: every one produces the documented verdict and none "
+            + "escapes as an unchecked runtime failure")
+    final class MalformedAndAbsentInput {
+
+        @ParameterizedTest(name = "[{0}] is handled rather than thrown")
+        @ValueSource(strings = {"", " ", "  ", "        ", "2022", "202201", "2022010199", "2X220101",
+            "202201XX", "20221332", "ABCDEFGH", "-1234567", "20 20101", "0000-01-01", "        99"})
+        @DisplayName("no malformed image escapes as a null-pointer or number-format failure: each is "
+                + "classified and returned")
+        void noMalformedImageEscapesAsARuntimeFailure(final String candidate) {
+            assertThatNoException()
+                    .isThrownBy(() -> service.validateCcyymmddDate(candidate));
+            assertThatNoException()
+                    .isThrownBy(() -> service.validateCcyymmddDate(candidate, CARRIED_IN_MESSAGE));
+            assertThatNoException()
+                    .isThrownBy(() -> service.validateDate(candidate, DateFormat.YYYYMMDD));
+            assertThatNoException()
+                    .isThrownBy(() -> service.validateDate(candidate, DateFormat.YYYY_MM_DD));
+        }
+
+        @ParameterizedTest(name = "[{0}] is rejected with a message")
+        @ValueSource(strings = {"", " ", "  ", "        ", "2022", "202201", "2X220101", "202201XX",
+            "20221332", "ABCDEFGH", "-1234567", "20 20101"})
+        @DisplayName("every malformed image is rejected and claims a message, so nothing malformed is "
+                + "waved through in silence")
+        void everyMalformedImageIsRejectedWithAMessage(final String candidate) {
+            final DateEditResult result = service.validateCcyymmddDate(candidate);
+
+            assertAll("rejected, flagged and explained",
+                    () -> assertThat(result.inputError()).isTrue(),
+                    () -> assertThat(result.returnMessage()).isNotEqualTo(ORACLE_NO_MESSAGE),
+                    () -> assertThat(result.flagsImage()).isNotEqualTo(ORACLE_ALL_VALID_FLAG_GROUP),
+                    () -> assertThat(encodedBytes(result.flagsImage()))
+                            .isEqualTo(ORACLE_FLAG_GROUP_WIDTH));
+        }
+
+        @Test
+        @DisplayName("the empty string is an all-blank field rather than an absent one, and is reported "
+                + "as a missing year")
+        void theEmptyStringIsAnAllBlankFieldRatherThanAbsent() {
+            final DateEditResult result = service.validateCcyymmddDate(EMPTY_DATE);
+
+            assertAll("blank, not absent",
+                    () -> assertThat(result.inputError()).isTrue(),
+                    () -> assertThat(result.yearFlag()).isEqualTo(DateEditFlag.BLANK),
+                    () -> assertThat(result.monthFlag()).isEqualTo(DateEditFlag.BLANK),
+                    () -> assertThat(result.dayFlag()).isEqualTo(DateEditFlag.BLANK),
+                    () -> assertThat(result.returnMessage()).isEqualTo(ORACLE_YEAR_NOT_SUPPLIED));
+        }
+
+        @Test
+        @DisplayName("an over-long image is judged on its leading eight bytes only, so truncation is "
+                + "visible in the verdict rather than hidden")
+        void anOverLongImageIsJudgedOnItsLeadingEightBytes() {
+            final DateEditResult truncated = service.validateCcyymmddDate(OVERLONG_DATE);
+
+            assertAll("only the declared width is examined",
+                    () -> assertThat(OVERLONG_DATE).startsWith(VALID_DATE),
+                    () -> assertThat(truncated.inputError()).isFalse(),
+                    () -> assertThat(truncated.flagsImage()).isEqualTo(ORACLE_ALL_VALID_FLAG_GROUP));
+        }
+
+        @Test
+        @DisplayName("a null date is refused loudly at every entry point, because an absent field is not "
+                + "a blank field")
+        void aNullDateIsRefusedLoudlyAtEveryEntryPoint() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> service.validateCcyymmddDate(null))
+                    .withMessageContaining("candidateDate");
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> service.validateCcyymmddDate(null, CARRIED_IN_MESSAGE))
+                    .withMessageContaining("candidateDate");
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> service.validateDateOfBirth(null, CURRENT_DATE))
+                    .withMessageContaining("candidateDate");
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> service.validateDate(null, DateFormat.YYYYMMDD))
+                    .withMessageContaining("candidateDate");
+        }
+
+        @Test
+        @DisplayName("a null carried-in message is refused, because the blank state is an empty string "
+                + "and not an absent reference")
+        void aNullCarriedInMessageIsRefused() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> service.validateCcyymmddDate(VALID_DATE, null))
+                    .withMessageContaining("currentReturnMessage");
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> service.validateDateOfBirth(VALID_DATE, CURRENT_DATE, null))
+                    .withMessageContaining("currentReturnMessage");
+        }
+
+        @Test
+        @DisplayName("a null current date is refused on the birth check, since the comparison has no "
+                + "meaning without it")
+        void aNullCurrentDateIsRefusedOnTheBirthCheck() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> service.validateDateOfBirth(VALID_DATE, null))
+                    .withMessageContaining("currentDate");
+        }
+
+        @ParameterizedTest(name = "[{0}] reaches the subprogram as a classified outcome")
+        @ValueSource(strings = {"", "  ", "ABCDEFGHIJ", "----------", "2022-1X-01", "9999-99-99"})
+        @DisplayName("the subprogram entry point classifies malformed input into one of its ten outcomes "
+                + "instead of failing, and never reports it acceptable")
+        void theSubprogramClassifiesMalformedInputInsteadOfFailing(final String candidate) {
+            final SubprogramResult result = service.validateDate(candidate, DateFormat.YYYY_MM_DD);
+
+            assertAll("classified, rendered and refused",
+                    () -> assertThat(result.feedback()).isNotNull(),
+                    () -> assertThat(encodedBytes(result.render()))
+                            .isEqualTo(ORACLE_RESULT_BLOCK_WIDTH),
+                    () -> assertThat(result.severityCode()).isEqualTo(ORACLE_FAILURE_SEVERITY),
+                    () -> assertThat(service.isDateAcceptable(result)).isFalse());
         }
     }
 }

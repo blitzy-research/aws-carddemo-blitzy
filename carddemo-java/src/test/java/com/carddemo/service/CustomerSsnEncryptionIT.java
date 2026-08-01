@@ -74,6 +74,15 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * No identifier value from {@code app/data/ASCII/custdata.txt} is reproduced here. The identifiers
  * below are invented and share only the shape of the legacy field. The key material is the same
  * throwaway pair the test overlay declares.
+ *
+ * <h2>Coexistence with the seeded reference data</h2>
+ * {@code src/main/resources/db/seed/V3__seed_reference_data.sql} loads the fifty fixture
+ * customers under the zero-padded keys {@code 000000001} through {@code 000000050}, and loads fifty
+ * {@code card_cross_reference} rows that point at them through {@code fk_card_xref_customer}. This
+ * test therefore keys every row it writes under {@link #TEST_KEY_PREFIX}, a range the seed never
+ * occupies, and scopes both its cleanup and its own row counting to that range. Nothing here deletes
+ * or counts a seeded row, so the seed's referential integrity is never disturbed and no assertion
+ * below depends on the customer table being empty.
  */
 @DisplayName("customer national identifier, verified against a real database")
 class CustomerSsnEncryptionIT extends AbstractPostgresIT {
@@ -89,6 +98,16 @@ class CustomerSsnEncryptionIT extends AbstractPostgresIT {
 
     /** An invented identifier whose leading zeros must survive storage. */
     private static final String IDENTIFIER_WITH_LEADING_ZEROS = "000000042";
+
+    /**
+     * Primary-key prefix reserved for the rows this test writes. Every {@code cust_id} used below
+     * begins with it, and no seeded row does: {@code V3__seed_reference_data.sql} loads its fifty
+     * fixture customers under {@code 000000001} through {@code 000000050}, so the two ranges are
+     * disjoint by construction. Cleanup and self-counting are scoped to this prefix rather than to the
+     * whole table, which keeps every assertion about this test's own rows exact while leaving the
+     * seeded reference data - and the {@code card_cross_reference} rows that depend on it - intact.
+     */
+    private static final String TEST_KEY_PREFIX = "1000000";
 
     /** The scheme tag every stored value carries, taken from the codec so the two cannot drift apart. */
     private static final String ENVELOPE_PREFIX = SensitiveFieldCodec.ENVELOPE_PREFIX;
@@ -117,10 +136,23 @@ class CustomerSsnEncryptionIT extends AbstractPostgresIT {
         this.service = new SensitiveFieldEncryptionService(TEST_KEY);
     }
 
+    /**
+     * Removes only the rows this test wrote, identified by {@link #TEST_KEY_PREFIX}.
+     *
+     * <p>An unscoped delete would also remove the fifty seeded fixture customers, which the fifty
+     * seeded cross-reference rows point at, and would therefore be rejected by
+     * {@code fk_card_xref_customer}. Scoping the delete keeps the suite independent of the seed
+     * without suppressing, deferring or weakening that constraint.
+     *
+     * @throws SQLException if the delete fails
+     */
     @AfterEach
     void clearCustomers() throws SQLException {
-        try (Connection connection = connect(); Statement statement = connection.createStatement()) {
-            statement.executeUpdate("DELETE FROM customer");
+        try (Connection connection = connect();
+             PreparedStatement statement = connection.prepareStatement(
+                     "DELETE FROM customer WHERE cust_id LIKE ?")) {
+            statement.setString(1, TEST_KEY_PREFIX + "%");
+            statement.executeUpdate();
         }
     }
 
@@ -253,12 +285,18 @@ class CustomerSsnEncryptionIT extends AbstractPostgresIT {
     @Test
     @DisplayName("stops cleartext at the persistence boundary, so no row is written at all")
     void guardStopsCleartextBeforeItReachesTheDatabase() throws SQLException {
+        final int rowsBefore = countCustomers();
+
         assertThatExceptionOfType(IllegalArgumentException.class)
                 .isThrownBy(() -> insertCustomer("100000006", service.requireProtectedOrNull(
                         SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD, IDENTIFIER)))
                 .withMessageNotContaining(IDENTIFIER);
 
-        assertThat(countCustomers()).isZero();
+        // Nothing was written under any key this test uses, and the table as a whole is unchanged.
+        // The pair is strictly stronger than a bare emptiness check: it would also catch a row
+        // written under some other key, which an assertion about this test's own range could miss.
+        assertThat(countTestCustomers()).isZero();
+        assertThat(countCustomers()).isEqualTo(rowsBefore);
     }
 
     /**
@@ -314,7 +352,7 @@ class CustomerSsnEncryptionIT extends AbstractPostgresIT {
     }
 
     /**
-     * Counts the rows currently present in the customer table.
+     * Counts every row currently present in the customer table, seeded rows included.
      *
      * @return the row count
      * @throws SQLException if the count fails
@@ -325,6 +363,24 @@ class CustomerSsnEncryptionIT extends AbstractPostgresIT {
              ResultSet resultSet = statement.executeQuery("SELECT count(*) FROM customer")) {
             assertThat(resultSet.next()).isTrue();
             return resultSet.getInt(1);
+        }
+    }
+
+    /**
+     * Counts only the rows this test writes, identified by {@link #TEST_KEY_PREFIX}.
+     *
+     * @return the number of rows present under this test's reserved key range
+     * @throws SQLException if the count fails
+     */
+    private static int countTestCustomers() throws SQLException {
+        try (Connection connection = connect();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT count(*) FROM customer WHERE cust_id LIKE ?")) {
+            statement.setString(1, TEST_KEY_PREFIX + "%");
+            try (ResultSet resultSet = statement.executeQuery()) {
+                assertThat(resultSet.next()).isTrue();
+                return resultSet.getInt(1);
+            }
         }
     }
 }

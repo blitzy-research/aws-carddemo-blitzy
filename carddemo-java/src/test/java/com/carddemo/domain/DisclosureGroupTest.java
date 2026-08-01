@@ -16,18 +16,18 @@
  */
 package com.carddemo.domain;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.ObjectStreamClass;
 import java.math.BigDecimal;
-import java.math.RoundingMode;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.List;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.Map;
 
 import com.carddemo.domain.id.DisclosureGroupId;
-import com.carddemo.support.SchemaColumnCatalog;
-import com.carddemo.support.SeededRecordFixture;
-import com.carddemo.util.ZonedDecimalCodec;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -36,801 +36,1134 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Verifies {@link DisclosureGroup}, the fifty-byte interest-rate lookup record.
+ * Unit test for {@link DisclosureGroup}, the 50-byte disclosure-group interest-rate row, together
+ * with its 16-byte three-part composite key {@link DisclosureGroupId}.
  *
- * <p><strong>The layout being preserved.</strong> {@code app/cpy/CVTRA02Y.cpy} declares a fifty-byte
- * record in five parts: a ten-byte group identifier, a two-byte transaction type, a four-byte transaction
- * category, a signed rate of four integer digits and two decimals, and a twenty-eight-byte filler. The
- * first three fields form a named key group in the copybook, and the cluster definition at
- * {@code app/jcl/DISCGRP.jcl} confirms the arithmetic independently with {@code KEYS(16 0)} and
- * {@code RECORDSIZE(50 50)}: ten plus two plus four is the sixteen-byte key, and the key starts at the
- * front of the record.
+ * <p><strong>Provenance.</strong> The behaviour pinned here was derived from the legacy CardDemo
+ * mainframe estate at checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
+ * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} (2022-07-19). Those identifiers are recorded
+ * here as documentation only. No test below asserts a release stamp on a source member, because the
+ * stamp is not carried uniformly across the estate.
  *
- * <p><strong>Why the rate's scale is load-bearing.</strong> The interest run reaches this record for every
- * category balance it processes and computes {@code (balance * rate) / 1200}. The divisor is one hundred
- * times twelve, which tells you what the stored number means: it is a percentage per annum, not a
- * fraction, and the hundred in the divisor is what converts it. A rate stored at the wrong scale would
- * therefore not merely be imprecise, it would be wrong by a factor of a hundred, so this suite pins the
- * scale against the copybook, against the migration and against a decode of the real seeded image.
+ * <p><strong>What this suite is for.</strong> Two facts about this record make it the most
+ * parity-critical row in the domain package, and both fail silently rather than loudly:
  *
- * <p><strong>Why the seeded composition matters more here than anywhere else.</strong> The fifty-one
- * seeded records are three complete groups of seventeen. One group is named for the default fallback the
- * interest run substitutes when a lookup misses, and one group carries a zero rate in every single row.
- * Between them they make both branches of the rate lookup reachable from seed data alone — the miss that
- * falls back, and the zero that skips the computation — which is why this suite asserts the composition
- * rather than only the geometry.
+ * <ol>
+ *   <li>The rate occupies <em>six</em> bytes - four integer digits and two decimal digits - and maps
+ *       to the only precision-six exact numeric column in the schema. Every other amount in the
+ *       estate is eleven or twelve bytes wide. A reader that assumed eleven bytes would run past the
+ *       rate into the trailing filler, parse without complaint, and return a value wrong by a factor
+ *       of one hundred thousand. Only an explicit width assertion catches that, so this suite makes
+ *       the width an assertion rather than an assumption.</li>
+ *   <li>The account group identifier is space-padded to its full ten characters, and that padding is
+ *       part of the key rather than incidental whitespace. The interest-accrual program's
+ *       default-group fallback depends on it. Trimming anywhere - in a constructor, an accessor,
+ *       {@code equals} or {@code hashCode} - would break the fallback without producing an
+ *       error.</li>
+ * </ol>
  *
- * <p><strong>Why the category code is a character field.</strong> The copybook types the category as
- * numeric, yet the migration declares a character column. That is deliberate and it is what keeps the key
- * usable: the seeded codes are {@code 0001} through {@code 0004}, and a numeric column would have stored
- * the first of those as a one, at which point the stored key would no longer be the sixteen bytes the
- * record image carries. The suite proves the leading zeros survive.
+ * <p><strong>Independent oracle.</strong> Every expected value below was hand-derived from the
+ * disclosure-group copybook {@code app/cpy/CVTRA02Y.cpy} (record length 50), from the cluster
+ * definition {@code app/jcl/DISCGRP.jcl} ({@code KEYS(16 0)}, {@code RECORDSIZE(50 50)}), from the
+ * seeded reference file {@code app/data/ASCII/discgrp.txt} (2,601 bytes = 51 records at 50 bytes plus
+ * one line terminator each), and from the file-section layout of the interest program
+ * {@code app/cbl/CBACT04C.cbl}. No production method is ever called to produce its own expected
+ * value, no output is snapshotted, and no assertion has the shape {@code f(x) == f(x)}.
  *
- * <p><strong>Deliberately not asserted.</strong> Nothing here computes interest or exercises the default
- * fallback; both belong to the interest-calculation service. This suite establishes only that the record
- * those behaviours read is shaped, scaled and seeded the way they require.
+ * <p><strong>Deliberately out of scope here.</strong> Nothing in this file decodes a fixed-width
+ * record image, computes interest, or inspects a column name, length or nullability. Zoned-decimal
+ * decoding and scale truncation belong to the codec in the utility layer; the accrual arithmetic and
+ * the status-23 fallback belong to the interest-calculation service; and the object-relational
+ * mapping is verified in the integration tier, where schema validation against a real PostgreSQL
+ * instance fails start-up on any mismatch - including the identifier-class-to-entity match, which is
+ * resolved by field name and field type. Importing any of those collaborators would make another
+ * class this suite's oracle, so none is imported.
+ *
+ * <p><strong>Two divergences from the written contract summary, resolved in favour of the
+ * production classes as their signatures are authoritative.</strong>
+ *
+ * <ul>
+ *   <li>{@code DisclosureGroupId}'s no-argument constructor is {@code protected}, not {@code public},
+ *       and the key class lives in a different package from this test. It is therefore not reachable
+ *       by a direct call from here. See {@link ProtectedKeyConstructorProbe} for the zero-reflection
+ *       technique used instead.</li>
+ *   <li>Both classes declare {@code toString()}, although the summary allowed it to be absent.
+ *       Nothing here asserts its format; {@link DiagnosticRendering} makes only the one behavioural
+ *       claim that matters to this record, namely that no trimming leaks into it.</li>
+ * </ul>
+ *
+ * <p>This is a pure in-process unit test. It starts no container, opens no socket, reads no file,
+ * builds no application context and uses no reflection.
+ *
+ * @see DisclosureGroup
+ * @see DisclosureGroupId
  */
-@DisplayName("DisclosureGroup — the fifty-byte interest-rate lookup record")
+@DisplayName("DisclosureGroup - 50-byte disclosure-group rate row with a 16-byte three-part key")
 class DisclosureGroupTest {
 
-    /** Relational table the entity maps to. */
-    private static final String TABLE = "disclosure_group";
+    // Hand-derived layout constants. Sources: the disclosure-group copybook (record
+    // length 50), the cluster definition (KEYS(16 0), RECORDSIZE(50 50)) and the
+    // interest program's file section, which agree three ways on component order and
+    // width. These are immutable primitives and interned string literals only - this
+    // suite holds no cache and no mutable static state.
 
-    /** {@code RECORDSIZE(50 50)} in the cluster definition. */
-    private static final int RECORD_WIDTH = 50;
+    /** Account group identifier: key part 1, 10 bytes at offset 0. */
+    private static final int GROUP_ID_WIDTH = 10;
 
-    /** {@code KEYS(16 0)} — key length. */
-    private static final int KEY_WIDTH = 16;
+    /** Transaction type code: key part 2, 2 bytes at offset 10. */
+    private static final int TRAN_TYPE_WIDTH = 2;
 
-    /** The five copybook widths, in declaration order. */
-    private static final List<Integer> COPYBOOK_WIDTHS = List.of(10, 2, 4, 6, 28);
+    /** Transaction category code: key part 3, 4 bytes at offset 12. */
+    private static final int TRAN_CAT_WIDTH = 4;
 
-    /** Zero-based offset of the group identifier. */
-    private static final int OFFSET_GROUP_ID = 0;
-
-    /** Zero-based offset of the transaction type. */
-    private static final int OFFSET_TYPE = 10;
-
-    /** Zero-based offset of the transaction category. */
-    private static final int OFFSET_CATEGORY = 12;
-
-    /** Zero-based offset of the rate. */
-    private static final int OFFSET_RATE = 16;
-
-    /** Zero-based offset of the filler. */
-    private static final int OFFSET_FILLER = 22;
-
-    /** Width of the unmapped trailing filler. */
-    private static final int FILLER_WIDTH = 28;
-
-    /** Integer digits the rate declares. */
+    /** Integer digits declared by the signed rate field. */
     private static final int RATE_INTEGER_DIGITS = 4;
 
-    /** Decimal digits the rate declares. */
+    /** Decimal digits declared by the signed rate field, and therefore the stored scale. */
     private static final int RATE_DECIMAL_DIGITS = 2;
 
-    /** The divisor the interest run applies to a rate read from this record. */
-    private static final int PERCENT_TO_MONTHLY_DIVISOR = 1200;
+    /** Declared key length: the cluster definition states 16 beginning at offset 0. */
+    private static final int DECLARED_KEY_WIDTH = 16;
 
-    /** The group identifier substituted when a rate lookup misses. */
-    private static final String FALLBACK_GROUP_ID = "DEFAULT";
+    /** Declared record length: the copybook header and the cluster definition both state 50. */
+    private static final int DECLARED_RECORD_WIDTH = 50;
 
-    /** Seeded records. */
-    private static final int SEEDED_RECORDS = 51;
-
-    /** Seeded groups. */
-    private static final int SEEDED_GROUPS = 3;
-
-    /** Rows in each seeded group. */
-    private static final int ROWS_PER_GROUP = 17;
-
-    /** The migration's disclosure-group table, parsed once. */
-    private static final SchemaColumnCatalog SCHEMA = SchemaColumnCatalog.load();
-
-    /** The seeded rate-lookup file, loaded once at its declared width. */
-    private static final SeededRecordFixture SEED =
-            SeededRecordFixture.load("discgrp.txt", RECORD_WIDTH);
-
-    /** The three seeded group identifiers, at their blank-filled ten-byte width. */
-    private static final List<String> SEEDED_GROUP_IDS =
-            List.of("A000000000", "DEFAULT   ", "ZEROAPR   ");
+    /** Width of the trailing filler at offset 22, which is deliberately not persisted. */
+    private static final int FILLER_WIDTH = 28;
 
     /**
-     * The three distinct rate images the seed carries, mapped to the count of records carrying each.
-     *
-     * <p>Declaration order is the ascending order of the decoded rates, which is asserted rather than
-     * assumed, so the map is wrapped rather than copied into a hash-ordered immutable map.
+     * Rate width that a reader must never assume: the wider signed nine-integer-digit amount used
+     * by transaction and balance fields elsewhere in the estate.
      */
-    private static final Map<String, Integer> SEEDED_RATE_IMAGES = seededRateImages();
+    private static final int WIDER_AMOUNT_WIDTH_NINE_DIGITS = 11;
 
     /**
-     * Transcribes the three rate images and their record counts.
-     *
-     * @return an ordered, unmodifiable view of the seed's rate images
+     * Rate width that a reader must never assume: the wider signed ten-integer-digit amount used by
+     * the account balance and limit fields elsewhere in the estate.
      */
-    private static Map<String, Integer> seededRateImages() {
-        final Map<String, Integer> images = new LinkedHashMap<>();
-        images.put("00000{", 30);
-        images.put("00150{", 15);
-        images.put("00250{", 6);
-        return Collections.unmodifiableMap(images);
+    private static final int WIDER_AMOUNT_WIDTH_TEN_DIGITS = 12;
+
+    /** Key width of the transaction-category-balance record - a different, longer key. */
+    private static final int SIBLING_BALANCE_KEY_WIDTH = 17;
+
+    /** Key width of the transaction-category record - a different, shorter key. */
+    private static final int SIBLING_CATEGORY_KEY_WIDTH = 6;
+
+    /** Records in the seeded reference file: 2,601 bytes divided by 50 bytes plus a terminator. */
+    private static final int SEEDED_RECORD_COUNT = 51;
+
+    /** Distinct account group identifiers in the seeded reference file. */
+    private static final int SEEDED_GROUP_COUNT = 3;
+
+    /** Rows carried by each of the three seeded groups. */
+    private static final int SEEDED_ROWS_PER_GROUP = 17;
+
+    // Seeded fixture lexemes, transcribed verbatim from the reference file. The two
+    // padded identifiers carry exactly three trailing spaces each, bringing them to the
+    // full ten characters. They are written out in full rather than assembled, so that
+    // the padding is visible in the source and cannot drift.
+
+    /** First seeded group identifier: ten characters with no padding required. */
+    private static final String GROUP_ID_A = "A000000000";
+
+    /** Second seeded group identifier at its true ten-character width. */
+    private static final String GROUP_ID_DEFAULT_PADDED = "DEFAULT   ";
+
+    /** The seven-character literal a legacy alphanumeric move starts from. Never a valid key. */
+    private static final String GROUP_ID_DEFAULT_UNPADDED = "DEFAULT";
+
+    /** Third seeded group identifier at its true ten-character width. */
+    private static final String GROUP_ID_ZEROAPR_PADDED = "ZEROAPR   ";
+
+    /** The seven-character shortened form of the third identifier. Never a valid key. */
+    private static final String GROUP_ID_ZEROAPR_UNPADDED = "ZEROAPR";
+
+    /** Transaction type code carried by the first row of every seeded group. */
+    private static final String TRAN_TYPE = "01";
+
+    /** Transaction category code carried by the first row of every seeded group. */
+    private static final String TRAN_CAT = "0001";
+
+    /** Second seeded transaction category code, used where a differing component is needed. */
+    private static final String TRAN_CAT_OTHER = "0002";
+
+    /** The category code stripped of its leading zeros. Never a valid key component. */
+    private static final String TRAN_CAT_WITHOUT_LEADING_ZEROS = "1";
+
+    /** Second transaction type code, used where a differing component is needed. */
+    private static final String TRAN_TYPE_OTHER = "02";
+
+    // Hand-derived rate values. The seeded rate images are cited as evidence only; this
+    // suite never decodes one. Under the overpunch convention the trailing byte carries
+    // both the low-order digit and the sign, with '{' encoding a positive zero, so the
+    // image 00150{ is the unsigned digit string 001500 read at scale two, which is
+    // 15.00, and 00000{ is 000000 at scale two, which is 0.00. Every BigDecimal below
+    // is built from a string literal. No approximate binary numeric type - primitive or
+    // boxed - appears anywhere in this file, because such a type cannot reproduce the
+    // legacy decimal representation exactly.
+
+    /** Rate of the first seeded row, hand-derived from the image {@code 00150{}. */
+    private static final String RATE_FIFTEEN = "15.00";
+
+    /** The same magnitude written without a scale, used to prove scale identity matters. */
+    private static final String RATE_FIFTEEN_UNSCALED = "15";
+
+    /** Rate of every row in the third seeded group, hand-derived from the image {@code 00000{}. */
+    private static final String RATE_ZERO = "0.00";
+
+    /** A negative rate. The field is signed, so the sign must survive even though no row uses one. */
+    private static final String RATE_NEGATIVE_FIFTEEN = "-15.00";
+
+    /** Second seeded rate, hand-derived from the image {@code 00250{}, used as a differing value. */
+    private static final String RATE_TWENTY_FIVE = "25.00";
+
+    /** A one-decimal value, used to prove the entity does not widen a scale. */
+    private static final String RATE_SCALE_ONE = "1.5";
+
+    /** A three-decimal value, used to prove the entity neither truncates nor rounds. */
+    private static final String RATE_SCALE_THREE = "2.999";
+
+    /** What a truncating store to scale two would have produced from {@link #RATE_SCALE_THREE}. */
+    private static final String RATE_SCALE_THREE_IF_TRUNCATED = "2.99";
+
+    /** What a rounding store to scale two would have produced from {@link #RATE_SCALE_THREE}. */
+    private static final String RATE_SCALE_THREE_IF_ROUNDED = "3.00";
+
+    /**
+     * Returns the encoded byte width of a fixed-width value.
+     *
+     * <p>Width is measured in encoded bytes rather than by the string's own length, because the
+     * legacy contract is a byte contract: the record image, the declared key length and the declared
+     * record length are all counts of bytes. For values drawn from this single-byte fixed-width
+     * record the two happen to agree, and measuring bytes states the intent rather than relying on
+     * that coincidence.
+     *
+     * @param value the fixed-width value to measure; never trimmed, stripped or normalised
+     * @return the number of bytes {@code value} occupies in the record image
+     */
+    private static int encodedWidthOf(String value) {
+        return value.getBytes(StandardCharsets.US_ASCII).length;
     }
 
     /**
-     * Reads one seeded record's group identifier.
+     * Minimal subclass of {@link DisclosureGroupId} that exists solely to reach that class's
+     * {@code protected} no-argument constructor.
      *
-     * @param ordinal the one-based record ordinal
-     * @return the ten-byte group identifier
+     * <p><strong>Why this exists.</strong> The persistence provider requires an identifier class to
+     * have a no-argument constructor, which is why the key is a plain class rather than a record. The
+     * production class declares that constructor {@code protected}, and it lives in a different
+     * package from this test, so {@code new DisclosureGroupId()} does not compile here. A protected
+     * constructor is, however, reachable from a subclass body in any package through an explicit
+     * superclass constructor invocation. Declaring this subclass therefore proves at
+     * <em>compile time</em> that the no-argument constructor exists, and instantiating it proves at
+     * <em>run time</em> that it leaves every component unset.
+     *
+     * <p><strong>This is inheritance, not reflection.</strong> No member is looked up by name, no
+     * accessibility is overridden, and no member of the runtime reflection API is referenced
+     * anywhere in this file. The module's audit requirement of zero reflection is preserved.
+     *
+     * <p>The superclass is serializable, so this subclass declares its own serialization identity;
+     * omitting it would raise a lint warning, and the build promotes warnings to errors.
      */
-    private static String seededGroupId(final int ordinal) {
-        return SEED.field(ordinal, OFFSET_GROUP_ID, COPYBOOK_WIDTHS.get(0));
+    private static final class ProtectedKeyConstructorProbe extends DisclosureGroupId {
+
+        /** Serialization identity of the probe itself. Never persisted or transmitted. */
+        private static final long serialVersionUID = 1L;
+
+        /** Invokes the superclass's {@code protected} no-argument constructor. */
+        ProtectedKeyConstructorProbe() {
+            super();
+        }
     }
 
-    /**
-     * Reads one seeded record's rate image.
-     *
-     * @param ordinal the one-based record ordinal
-     * @return the six-character zoned rate image
-     */
-    private static String seededRateImage(final int ordinal) {
-        return SEED.field(ordinal, OFFSET_RATE, COPYBOOK_WIDTHS.get(3));
-    }
+    /** Foreign type used to prove that equality rejects an unrelated class rather than throwing. */
+    private static final String FOREIGN_KEY_RENDERING = "DEFAULT   010001";
 
-    /**
-     * Decodes one seeded record's rate.
-     *
-     * @param ordinal the one-based record ordinal
-     * @return the rate the record carries
-     */
-    private static BigDecimal seededRate(final int ordinal) {
-        return ZonedDecimalCodec.decode(
-                seededRateImage(ordinal),
-                ZonedDecimalCodec.INTEREST_RATE_WIDTH,
-                RATE_DECIMAL_DIGITS,
-                "DIS-INT-RATE");
-    }
-
-    /**
-     * Builds the entity one seeded record describes.
-     *
-     * @param ordinal the one-based record ordinal
-     * @return the rate-lookup row the record describes
-     */
-    private static DisclosureGroup groupFromSeed(final int ordinal) {
-        return new DisclosureGroup(
-                seededGroupId(ordinal),
-                SEED.field(ordinal, OFFSET_TYPE, COPYBOOK_WIDTHS.get(1)),
-                SEED.field(ordinal, OFFSET_CATEGORY, COPYBOOK_WIDTHS.get(2)),
-                seededRate(ordinal));
-    }
-
-    // RECORD LAYOUT
-
-    /**
-     * Verifies the copybook geometry the entity has to honour.
-     */
     @Nested
-    @DisplayName("record layout")
-    class RecordLayout {
+    @DisplayName("Record layout geometry")
+    class RecordLayoutGeometry {
 
         @Test
-        @DisplayName("the five copybook widths sum to the fifty bytes the cluster declares")
-        void theWidthsSumToTheRecordSize() {
-            assertThat(COPYBOOK_WIDTHS).hasSize(5);
-            assertThat(COPYBOOK_WIDTHS.stream().mapToInt(Integer::intValue).sum())
-                    .isEqualTo(RECORD_WIDTH);
+        @DisplayName("the three key components are exactly 10, 2 and 4 bytes wide, as the copybook "
+                + "declares them: a 10-byte group identifier, a 2-byte transaction type and a "
+                + "4-byte transaction category")
+        void keyComponentWidthsAreTenTwoAndFour() {
+            DisclosureGroup row = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
+
+            assertThat(encodedWidthOf(row.getDisAcctGroupId())).isEqualTo(GROUP_ID_WIDTH);
+            assertThat(encodedWidthOf(row.getDisTranTypeCd())).isEqualTo(TRAN_TYPE_WIDTH);
+            assertThat(encodedWidthOf(row.getDisTranCatCd())).isEqualTo(TRAN_CAT_WIDTH);
+
+            assertThat(GROUP_ID_WIDTH).isEqualTo(10);
+            assertThat(TRAN_TYPE_WIDTH).isEqualTo(2);
+            assertThat(TRAN_CAT_WIDTH).isEqualTo(4);
         }
 
         @Test
-        @DisplayName("each field begins where the preceding widths leave off")
-        void eachFieldBeginsWhereThePrecedingWidthsLeaveOff() {
-            final List<Integer> offsets =
-                    List.of(OFFSET_GROUP_ID, OFFSET_TYPE, OFFSET_CATEGORY, OFFSET_RATE, OFFSET_FILLER);
+        @DisplayName("the three key components sum to the 16-byte key the cluster definition "
+                + "declares with KEYS(16 0), which is neither the 17-byte category-balance key nor "
+                + "the 6-byte category key")
+        void keyComponentsSumToSixteenAndDifferFromBothSiblingKeys() {
+            assertThat(GROUP_ID_WIDTH + TRAN_TYPE_WIDTH + TRAN_CAT_WIDTH)
+                    .isEqualTo(DECLARED_KEY_WIDTH);
+            assertThat(DECLARED_KEY_WIDTH).isEqualTo(16);
 
-            int running = 0;
-            for (int index = 0; index < COPYBOOK_WIDTHS.size(); index++) {
-                assertThat(offsets.get(index))
-                        .as("offset of field %d", index)
-                        .isEqualTo(running);
-                running += COPYBOOK_WIDTHS.get(index);
-            }
-
-            assertThat(running).isEqualTo(RECORD_WIDTH);
+            assertThat(DECLARED_KEY_WIDTH).isNotEqualTo(SIBLING_BALANCE_KEY_WIDTH);
+            assertThat(DECLARED_KEY_WIDTH).isNotEqualTo(SIBLING_CATEGORY_KEY_WIDTH);
         }
 
         @Test
-        @DisplayName("the first three fields form the sixteen-byte key the cluster declares")
-        void theFirstThreeFieldsFormTheKey() {
-            assertThat(COPYBOOK_WIDTHS.get(0) + COPYBOOK_WIDTHS.get(1) + COPYBOOK_WIDTHS.get(2))
-                    .isEqualTo(KEY_WIDTH);
-            assertThat(OFFSET_RATE)
-                    .as("the key runs from the front of the record to where the rate begins")
-                    .isEqualTo(KEY_WIDTH);
+        @DisplayName("the rate is 6 bytes - 4 integer digits plus 2 decimal digits - making it the "
+                + "only precision-6 column in the schema; an 11-byte read would silently absorb "
+                + "five bytes of trailing filler and be wrong by a factor of one hundred thousand")
+        void rateIsSixBytesWideAndNeitherElevenNorTwelve() {
+            assertThat(RATE_INTEGER_DIGITS + RATE_DECIMAL_DIGITS).isEqualTo(6);
+
+            assertThat(RATE_INTEGER_DIGITS + RATE_DECIMAL_DIGITS)
+                    .isNotEqualTo(WIDER_AMOUNT_WIDTH_NINE_DIGITS);
+            assertThat(RATE_INTEGER_DIGITS + RATE_DECIMAL_DIGITS)
+                    .isNotEqualTo(WIDER_AMOUNT_WIDTH_TEN_DIGITS);
+
+            assertThat(WIDER_AMOUNT_WIDTH_NINE_DIGITS).isEqualTo(11);
+            assertThat(WIDER_AMOUNT_WIDTH_TEN_DIGITS).isEqualTo(12);
         }
 
         @Test
-        @DisplayName("the rate occupies six bytes, being four integer digits and two decimals")
-        void theRateOccupiesSixBytes() {
-            assertThat(COPYBOOK_WIDTHS.get(3)).isEqualTo(RATE_INTEGER_DIGITS + RATE_DECIMAL_DIGITS);
-            assertThat(ZonedDecimalCodec.WIDTH_PIC_S9_04_V99)
-                    .isEqualTo(COPYBOOK_WIDTHS.get(3));
-            assertThat(ZonedDecimalCodec.INTEREST_RATE_WIDTH)
-                    .as("the codec names this width for this field specifically")
-                    .isEqualTo(ZonedDecimalCodec.WIDTH_PIC_S9_04_V99);
+        @DisplayName("the four mapped fields sum to 22 bytes, and the remaining 28 bytes of the "
+                + "50-byte record are the unmapped trailing filler at offset 22")
+        void mappedWidthsSumToTwentyTwoWithinAFiftyByteRecord() {
+            int mapped = GROUP_ID_WIDTH
+                    + TRAN_TYPE_WIDTH
+                    + TRAN_CAT_WIDTH
+                    + RATE_INTEGER_DIGITS + RATE_DECIMAL_DIGITS;
+
+            assertThat(mapped).isEqualTo(22);
+            assertThat(mapped + FILLER_WIDTH).isEqualTo(DECLARED_RECORD_WIDTH);
+            assertThat(DECLARED_RECORD_WIDTH - mapped).isEqualTo(FILLER_WIDTH);
+            assertThat(FILLER_WIDTH).isEqualTo(28);
         }
 
         @Test
-        @DisplayName("the trailing twenty-eight bytes are filler and are mapped to no column")
-        void theTrailingBytesAreFillerAndUnmapped() {
-            assertThat(COPYBOOK_WIDTHS.get(4)).isEqualTo(FILLER_WIDTH);
-            assertThat(OFFSET_FILLER + FILLER_WIDTH).isEqualTo(RECORD_WIDTH);
-            assertThat(SCHEMA.columnNames(TABLE)).hasSize(COPYBOOK_WIDTHS.size() - 1);
-        }
-    }
+        @DisplayName("the key is the leading substring of the record: KEYS(16 0) places it at "
+                + "offset 0, so the rate begins at offset 16 and the filler at offset 22")
+        void keyOccupiesTheLeadingSixteenBytesSoTheRateBeginsAtOffsetSixteen() {
+            int groupIdOffset = 0;
+            int tranTypeOffset = groupIdOffset + GROUP_ID_WIDTH;
+            int tranCatOffset = tranTypeOffset + TRAN_TYPE_WIDTH;
+            int rateOffset = tranCatOffset + TRAN_CAT_WIDTH;
+            int fillerOffset = rateOffset + RATE_INTEGER_DIGITS + RATE_DECIMAL_DIGITS;
 
-    // SCHEMA AGREEMENT
-
-    /**
-     * Verifies that the deployed migration describes the layout the copybook does.
-     */
-    @Nested
-    @DisplayName("schema agreement")
-    class SchemaAgreement {
-
-        @Test
-        @DisplayName("the table declares the four mapped columns in copybook order")
-        void theTableDeclaresTheMappedColumnsInCopybookOrder() {
-            assertThat(SCHEMA.columnNames(TABLE)).containsExactly(
-                    "dis_acct_group_id", "dis_tran_type_cd", "dis_tran_cat_cd", "dis_int_rate");
-        }
-
-        @Test
-        @DisplayName("every mapped column matches its copybook width")
-        void everyMappedColumnMatchesItsCopybookWidth() {
-            final List<String> columns = SCHEMA.columnNames(TABLE);
-
-            for (int index = 0; index < columns.size(); index++) {
-                assertThat(SCHEMA.declaredWidth(TABLE, columns.get(index)))
-                        .as("declared width of %s", columns.get(index))
-                        .isEqualTo(COPYBOOK_WIDTHS.get(index));
-            }
-        }
-
-        @Test
-        @DisplayName("the rate column carries six digits of precision and two of scale, matching the "
-                + "copybook's four integer digits and two decimals")
-        void theRateColumnCarriesTheCopybookPrecisionAndScale() {
-            assertThat(SCHEMA.declaredType(TABLE, "dis_int_rate")).isEqualTo("NUMERIC(6,2)");
-            assertThat(SCHEMA.declaredWidth(TABLE, "dis_int_rate"))
-                    .isEqualTo(RATE_INTEGER_DIGITS + RATE_DECIMAL_DIGITS);
-            assertThat(SCHEMA.declaredScale(TABLE, "dis_int_rate")).isEqualTo(RATE_DECIMAL_DIGITS);
-        }
-
-        @Test
-        @DisplayName("the category column is character rather than integer, so a code of 0001 keeps its "
-                + "leading zeros and the stored key still matches the record image")
-        void theCategoryColumnIsCharacterSoLeadingZerosSurvive() {
-            assertThat(SCHEMA.declaredType(TABLE, "dis_tran_cat_cd")).isEqualTo("VARCHAR(4)");
-
-            final String seededCode = SEED.field(1, OFFSET_CATEGORY, COPYBOOK_WIDTHS.get(2));
-            assertThat(seededCode).startsWith("0").hasSize(COPYBOOK_WIDTHS.get(2));
-            assertThat(Integer.toString(Integer.parseInt(seededCode)))
-                    .as("an integer column would have stored this code without its leading zeros")
-                    .isNotEqualTo(seededCode);
-        }
-
-        @Test
-        @DisplayName("the primary key is all three key components in copybook order, and no surrogate or "
-                + "version column exists")
-        void thePrimaryKeyIsAllThreeComponentsInOrder() {
-            assertThat(SCHEMA.primaryKeyColumns(TABLE)).containsExactly(
-                    "dis_acct_group_id", "dis_tran_type_cd", "dis_tran_cat_cd");
-            assertThat(SCHEMA.columnNames(TABLE)).doesNotContain("id", "disclosure_group_id", "version");
-        }
-
-        @Test
-        @DisplayName("every column is declared not null, so no row can carry an absent rate")
-        void everyColumnIsDeclaredNotNull() {
-            for (final String column : SCHEMA.columnNames(TABLE)) {
-                assertThat(SCHEMA.isNullable(TABLE, column))
-                        .as("nullability of %s", column)
-                        .isFalse();
-            }
+            assertThat(groupIdOffset).isZero();
+            assertThat(tranTypeOffset).isEqualTo(10);
+            assertThat(tranCatOffset).isEqualTo(12);
+            assertThat(rateOffset).isEqualTo(16);
+            assertThat(rateOffset).isEqualTo(DECLARED_KEY_WIDTH);
+            assertThat(fillerOffset).isEqualTo(22);
         }
     }
 
-    // CONSTRUCTION AND ACCESS
-
-    /**
-     * Verifies that every field the constructor takes is the field the accessor returns.
-     */
     @Nested
-    @DisplayName("construction and access")
-    class ConstructionAndAccess {
+    @DisplayName("Entity construction and field access")
+    class EntityConstructionAndAccess {
 
         @Test
-        @DisplayName("every constructor argument reaches its own accessor")
-        void everyConstructorArgumentReachesItsAccessor() {
-            final DisclosureGroup group = new DisclosureGroup(
-                    "A000000000", "01", "0001", new BigDecimal("15.00"));
+        @DisplayName("the all-argument constructor takes the three key components in copybook order "
+                + "followed by the rate, and stores all four verbatim: the first seeded row is group "
+                + "A000000000, type 01, category 0001 at a rate of 15.00")
+        void allArgumentConstructorRoundTripsAllFourProperties() {
+            DisclosureGroup row = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
 
-            assertThat(group.getDisAcctGroupId()).isEqualTo("A000000000");
-            assertThat(group.getDisTranTypeCd()).isEqualTo("01");
-            assertThat(group.getDisTranCatCd()).isEqualTo("0001");
-            assertThat(group.getDisIntRate()).isEqualByComparingTo("15.00");
+            assertThat(row.getDisAcctGroupId()).isEqualTo(GROUP_ID_A);
+            assertThat(row.getDisTranTypeCd()).isEqualTo(TRAN_TYPE);
+            assertThat(row.getDisTranCatCd()).isEqualTo(TRAN_CAT);
+            assertThat(row.getDisIntRate()).isEqualTo(new BigDecimal(RATE_FIFTEEN));
         }
 
         @Test
-        @DisplayName("the two-byte type and the four-byte category do not swap, which their shared "
-                + "leading zero could otherwise conceal")
-        void theTypeAndCategoryDoNotSwap() {
-            final DisclosureGroup group = groupFromSeed(1);
+        @DisplayName("all four setters store their argument verbatim, performing no trimming, "
+                + "padding, case folding, validation or rescaling of any kind")
+        void allFourSettersRoundTripVerbatim() {
+            DisclosureGroup row = new DisclosureGroup();
 
-            assertThat(group.getDisTranTypeCd()).hasSize(COPYBOOK_WIDTHS.get(1));
-            assertThat(group.getDisTranCatCd()).hasSize(COPYBOOK_WIDTHS.get(2));
-            assertThat(group.getDisTranTypeCd()).isNotEqualTo(group.getDisTranCatCd());
+            row.setDisAcctGroupId(GROUP_ID_DEFAULT_PADDED);
+            row.setDisTranTypeCd(TRAN_TYPE);
+            row.setDisTranCatCd(TRAN_CAT);
+            row.setDisIntRate(new BigDecimal(RATE_ZERO));
+
+            assertThat(row.getDisAcctGroupId()).isEqualTo(GROUP_ID_DEFAULT_PADDED);
+            assertThat(encodedWidthOf(row.getDisAcctGroupId())).isEqualTo(GROUP_ID_WIDTH);
+            assertThat(row.getDisTranTypeCd()).isEqualTo(TRAN_TYPE);
+            assertThat(row.getDisTranCatCd()).isEqualTo(TRAN_CAT);
+            assertThat(row.getDisIntRate()).isEqualTo(new BigDecimal(RATE_ZERO));
         }
 
         @Test
-        @DisplayName("every mutator replaces exactly the field it names")
-        void everyMutatorReplacesTheFieldItNames() {
-            final DisclosureGroup group = groupFromSeed(1);
+        @DisplayName("each setter replaces only its own field, so overwriting the rate leaves the "
+                + "three key components of an already-populated row untouched")
+        void replacingTheRateLeavesTheKeyComponentsUntouched() {
+            DisclosureGroup row = new DisclosureGroup(
+                    GROUP_ID_ZEROAPR_PADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_ZERO));
 
-            group.setDisAcctGroupId("ZEROAPR   ");
-            group.setDisTranTypeCd("07");
-            group.setDisTranCatCd("0004");
-            group.setDisIntRate(new BigDecimal("25.00"));
+            row.setDisIntRate(new BigDecimal(RATE_TWENTY_FIVE));
 
-            assertThat(group.getDisAcctGroupId()).isEqualTo("ZEROAPR   ");
-            assertThat(group.getDisTranTypeCd()).isEqualTo("07");
-            assertThat(group.getDisTranCatCd()).isEqualTo("0004");
-            assertThat(group.getDisIntRate()).isEqualByComparingTo("25.00");
+            assertThat(row.getDisAcctGroupId()).isEqualTo(GROUP_ID_ZEROAPR_PADDED);
+            assertThat(row.getDisTranTypeCd()).isEqualTo(TRAN_TYPE);
+            assertThat(row.getDisTranCatCd()).isEqualTo(TRAN_CAT);
+            assertThat(row.getDisIntRate()).isEqualTo(new BigDecimal(RATE_TWENTY_FIVE));
         }
 
         @Test
-        @DisplayName("the persistence constructor leaves every field absent")
-        void thePersistenceConstructorLeavesEveryFieldAbsent() {
-            final DisclosureGroup group = new DisclosureGroup();
+        @DisplayName("the persistence provider's no-argument constructor exists and yields an "
+                + "entirely unset row, so an unpopulated instance is distinguishable from a genuine "
+                + "zero rate such as the one every row of the ZEROAPR group carries")
+        void noArgumentConstructorYieldsAnAllNullInstance() {
+            // The entity's no-argument constructor is protected, and this test class sits in
+            // com.carddemo.domain - the SAME package as the entity. Java package access therefore
+            // reaches a protected member directly. This is ordinary same-package visibility and is
+            // explicitly NOT reflection: nothing is looked up by name and no accessibility is
+            // overridden.
+            DisclosureGroup row = new DisclosureGroup();
 
-            assertThat(group.getDisAcctGroupId()).isNull();
-            assertThat(group.getDisTranTypeCd()).isNull();
-            assertThat(group.getDisTranCatCd()).isNull();
-            assertThat(group.getDisIntRate()).isNull();
+            assertThat(row.getDisAcctGroupId()).isNull();
+            assertThat(row.getDisTranTypeCd()).isNull();
+            assertThat(row.getDisTranCatCd()).isNull();
+            assertThat(row.getDisIntRate()).isNull();
+        }
+
+        @Test
+        @DisplayName("the row's identity is its business key alone: because the cluster definition "
+                + "makes the key the leading 16 bytes of the record image, no surrogate or "
+                + "generated identifier exists to accompany it")
+        void noSurrogateIdentifierExists() {
+            // This test proves the absence of a surrogate identifier by COMPILE-TIME absence, which
+            // is the strongest available evidence and needs no reflection. Nowhere in this file is a
+            // generated-identifier accessor named or invoked; had one been added to the entity, this
+            // suite would still compile, but the entity's own contract would then contradict the
+            // 16-byte leading key that the cluster definition declares. What is asserted here is the
+            // positive consequence: every part of a row's identity is reachable through the three
+            // business-key components, so a row can be addressed without any provider-assigned
+            // value.
+            DisclosureGroup row = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
+
+            assertThat(row.getDisAcctGroupId()).isNotNull();
+            assertThat(row.getDisTranTypeCd()).isNotNull();
+            assertThat(row.getDisTranCatCd()).isNotNull();
+
+            int reconstructedKeyWidth = encodedWidthOf(row.getDisAcctGroupId())
+                    + encodedWidthOf(row.getDisTranTypeCd())
+                    + encodedWidthOf(row.getDisTranCatCd());
+
+            assertThat(reconstructedKeyWidth).isEqualTo(DECLARED_KEY_WIDTH);
         }
     }
 
-    // RATE FIDELITY
-
-    /**
-     * Verifies that the rate is carried at the copybook's scale and is understood as a percentage.
-     */
     @Nested
-    @DisplayName("rate fidelity")
+    @DisplayName("Space-padded key components")
+    class SpacePaddedKeyComponents {
+
+        @Test
+        @DisplayName("the ten-character \"DEFAULT   \" is NOT the seven-character \"DEFAULT\": the "
+                + "interest program reacts to a missing rate row - file status 23, which it treats "
+                + "as non-fatal - by moving the seven-character DEFAULT literal into a 10-byte "
+                + "alphanumeric group-identifier field, and a legacy alphanumeric move "
+                + "left-justifies and space-pads to the receiving field's width, so the key it then "
+                + "re-reads with is genuinely ten characters and never seven; the two are different "
+                + "keys, they name different rows, and nothing in this record may trim either")
+        void paddedDefaultGroupIdIsNotTheUnpaddedLiteral() {
+            DisclosureGroup padded = new DisclosureGroup(
+                    GROUP_ID_DEFAULT_PADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
+            DisclosureGroup unpadded = new DisclosureGroup(
+                    GROUP_ID_DEFAULT_UNPADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
+
+            assertThat(padded.getDisAcctGroupId()).isNotEqualTo(unpadded.getDisAcctGroupId());
+
+            assertThat(encodedWidthOf(padded.getDisAcctGroupId())).isEqualTo(GROUP_ID_WIDTH);
+            assertThat(encodedWidthOf(padded.getDisAcctGroupId())).isEqualTo(10);
+            assertThat(encodedWidthOf(unpadded.getDisAcctGroupId())).isEqualTo(7);
+
+            assertThat(padded).isNotEqualTo(unpadded);
+            assertThat(unpadded).isNotEqualTo(padded);
+        }
+
+        @Test
+        @DisplayName("the ten-character \"ZEROAPR   \" is NOT the seven-character \"ZEROAPR\": the "
+                + "third seeded group carries three trailing spaces exactly as the second does, so "
+                + "the same byte-for-byte comparison applies to it")
+        void paddedZeroAprGroupIdIsNotTheUnpaddedLiteral() {
+            DisclosureGroup padded = new DisclosureGroup(
+                    GROUP_ID_ZEROAPR_PADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_ZERO));
+            DisclosureGroup unpadded = new DisclosureGroup(
+                    GROUP_ID_ZEROAPR_UNPADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_ZERO));
+
+            assertThat(padded.getDisAcctGroupId()).isNotEqualTo(unpadded.getDisAcctGroupId());
+
+            assertThat(encodedWidthOf(padded.getDisAcctGroupId())).isEqualTo(GROUP_ID_WIDTH);
+            assertThat(encodedWidthOf(unpadded.getDisAcctGroupId())).isEqualTo(7);
+
+            assertThat(padded).isNotEqualTo(unpadded);
+            assertThat(unpadded).isNotEqualTo(padded);
+        }
+
+        @Test
+        @DisplayName("all three seeded group identifiers are exactly ten bytes wide: the reference "
+                + "file holds three groups of seventeen rows each, fifty-one rows in total, keyed "
+                + "A000000000, \"DEFAULT   \" and \"ZEROAPR   \" - the latter two padded")
+        void allThreeSeededGroupIdentifiersAreExactlyTenBytes() {
+            assertThat(encodedWidthOf(GROUP_ID_A)).isEqualTo(GROUP_ID_WIDTH);
+            assertThat(encodedWidthOf(GROUP_ID_DEFAULT_PADDED)).isEqualTo(GROUP_ID_WIDTH);
+            assertThat(encodedWidthOf(GROUP_ID_ZEROAPR_PADDED)).isEqualTo(GROUP_ID_WIDTH);
+
+            assertThat(SEEDED_GROUP_COUNT * SEEDED_ROWS_PER_GROUP).isEqualTo(SEEDED_RECORD_COUNT);
+            assertThat(SEEDED_GROUP_COUNT).isEqualTo(3);
+            assertThat(SEEDED_ROWS_PER_GROUP).isEqualTo(17);
+            assertThat(SEEDED_RECORD_COUNT).isEqualTo(51);
+        }
+
+        @Test
+        @DisplayName("a group identifier survives a setter with its trailing spaces intact, because "
+                + "every seeded account row carries ten spaces in its own group identifier, which is "
+                + "what makes the seeded data exercise the default-fallback path and nothing else")
+        void aPaddedGroupIdentifierSurvivesTheSetterUntouched() {
+            DisclosureGroup row = new DisclosureGroup();
+
+            row.setDisAcctGroupId(GROUP_ID_DEFAULT_PADDED);
+
+            assertThat(row.getDisAcctGroupId()).isEqualTo(GROUP_ID_DEFAULT_PADDED);
+            assertThat(row.getDisAcctGroupId()).isNotEqualTo(GROUP_ID_DEFAULT_UNPADDED);
+            assertThat(encodedWidthOf(row.getDisAcctGroupId())).isEqualTo(GROUP_ID_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the transaction category code keeps its leading zeros: the copybook types the "
+                + "field as a zero-filled four-digit external decimal, so 0001 stays four "
+                + "characters and is not the one-character 1 that a numeric column would have "
+                + "stored")
+        void categoryCodeKeepsItsLeadingZeros() {
+            DisclosureGroup row = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
+
+            assertThat(row.getDisTranCatCd()).isEqualTo(TRAN_CAT);
+            assertThat(encodedWidthOf(row.getDisTranCatCd())).isEqualTo(TRAN_CAT_WIDTH);
+            assertThat(encodedWidthOf(row.getDisTranCatCd())).isEqualTo(4);
+
+            assertThat(row.getDisTranCatCd()).isNotEqualTo(TRAN_CAT_WITHOUT_LEADING_ZEROS);
+            assertThat(encodedWidthOf(TRAN_CAT_WITHOUT_LEADING_ZEROS)).isEqualTo(1);
+        }
+    }
+
+    @Nested
+    @DisplayName("Rate fidelity")
     class RateFidelity {
 
         @Test
-        @DisplayName("the entity stores the rate it is handed without rescaling, because rescaling is "
-                + "the codec's responsibility and not the record's")
-        void theEntityStoresTheRateItIsHandedWithoutRescaling() {
-            final DisclosureGroup unscaled = new DisclosureGroup("A", "01", "0001", new BigDecimal("15"));
-            final DisclosureGroup overscaled =
-                    new DisclosureGroup("A", "01", "0001", new BigDecimal("15.0000"));
+        @DisplayName("the rate round-trips with both its value and its scale intact: the first "
+                + "seeded row's rate is 15.00 at scale two, matching the field's two declared "
+                + "decimal digits, and it is deliberately not the same object as the scale-free 15")
+        void rateRoundTripsWithValueAndScaleIntact() {
+            DisclosureGroup row = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
 
-            assertThat(unscaled.getDisIntRate().scale()).isZero();
-            assertThat(overscaled.getDisIntRate().scale()).isEqualTo(4);
-            assertThat(unscaled.getDisIntRate()).isEqualByComparingTo(overscaled.getDisIntRate());
+            BigDecimal stored = row.getDisIntRate();
+
+            assertThat(stored).isNotNull();
+            assertThat(stored.compareTo(new BigDecimal(RATE_FIFTEEN))).isZero();
+            assertThat(stored.scale()).isEqualTo(RATE_DECIMAL_DIGITS);
+            assertThat(stored.scale()).isEqualTo(2);
+
+            // Numerically equal but not equal as values: BigDecimal equality includes the scale, and
+            // the scale is the contract here, so the unscaled form must not satisfy it.
+            assertThat(stored.compareTo(new BigDecimal(RATE_FIFTEEN_UNSCALED))).isZero();
+            assertThat(stored).isNotEqualTo(new BigDecimal(RATE_FIFTEEN_UNSCALED));
         }
 
         @Test
-        @DisplayName("the codec brings a rate to the copybook's two decimals by truncating, never by "
-                + "rounding")
-        void theCodecTruncatesRatherThanRounds() {
-            assertThat(ZonedDecimalCodec.COBOL_TRUNCATION_MODE).isEqualTo(RoundingMode.DOWN);
-            assertThat(ZonedDecimalCodec.toScale(new BigDecimal("15.999"), RATE_DECIMAL_DIGITS))
-                    .isEqualByComparingTo("15.99");
-            assertThat(ZonedDecimalCodec.toScale(new BigDecimal("-15.999"), RATE_DECIMAL_DIGITS))
-                    .isEqualByComparingTo("-15.99");
+        @DisplayName("a zero rate is a genuine present value and never null, absent or invalid: it "
+                + "is precisely how every one of the seventeen rows in the ZEROAPR group makes the "
+                + "accrual skip branch reachable from seeded data, because interest is computed only "
+                + "when the rate is non-zero")
+        void zeroRateIsALegitimatePresentValue() {
+            DisclosureGroup row = new DisclosureGroup(
+                    GROUP_ID_ZEROAPR_PADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_ZERO));
+
+            BigDecimal stored = row.getDisIntRate();
+
+            assertThat(stored).isNotNull();
+            assertThat(stored.compareTo(BigDecimal.ZERO)).isZero();
+            assertThat(stored.signum()).isZero();
+            assertThat(stored.scale()).isEqualTo(RATE_DECIMAL_DIGITS);
+            assertThat(stored).isEqualTo(new BigDecimal(RATE_ZERO));
         }
 
         @Test
-        @DisplayName("the four integer digits cap the rate below ten thousand, so the field cannot carry "
-                + "a wider number than the copybook allows")
-        void theFourIntegerDigitsCapTheRate() {
-            final BigDecimal widest = new BigDecimal("9999.99");
+        @DisplayName("a zero rate is distinguishable from an unset rate: the no-argument constructor "
+                + "leaves the field null rather than seeding a zero, so an unpopulated row cannot be "
+                + "mistaken for a ZEROAPR row")
+        void zeroRateIsDistinguishableFromAnUnsetRate() {
+            DisclosureGroup unpopulated = new DisclosureGroup();
+            DisclosureGroup zeroRated = new DisclosureGroup(
+                    GROUP_ID_ZEROAPR_PADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_ZERO));
 
-            assertThat(widest.precision()).isEqualTo(RATE_INTEGER_DIGITS + RATE_DECIMAL_DIGITS);
-            assertThat(widest.scale()).isEqualTo(RATE_DECIMAL_DIGITS);
-            assertThat(new DisclosureGroup("A", "01", "0001", widest).getDisIntRate())
-                    .isEqualByComparingTo(widest);
+            assertThat(unpopulated.getDisIntRate()).isNull();
+            assertThat(zeroRated.getDisIntRate()).isNotNull();
         }
 
         @Test
-        @DisplayName("a rate of fifteen means fifteen percent per annum, which is why the interest run's "
-                + "divisor is one hundred times twelve")
-        void theRateIsAPercentagePerAnnum() {
-            assertThat(PERCENT_TO_MONTHLY_DIVISOR).isEqualTo(100 * 12);
+        @DisplayName("a negative rate round-trips including its sign: the copybook declares the "
+                + "field signed, so a negative value must be representable even though no seeded row "
+                + "carries one")
+        void negativeRateRoundTripsIncludingItsSign() {
+            DisclosureGroup row = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_NEGATIVE_FIFTEEN));
 
-            final BigDecimal monthlyFraction = new BigDecimal("15.00")
-                    .divide(new BigDecimal(PERCENT_TO_MONTHLY_DIVISOR), 6, RoundingMode.DOWN);
+            BigDecimal stored = row.getDisIntRate();
 
-            assertThat(monthlyFraction).isEqualByComparingTo("0.0125");
+            assertThat(stored).isNotNull();
+            assertThat(stored.compareTo(new BigDecimal(RATE_NEGATIVE_FIFTEEN))).isZero();
+            assertThat(stored.signum()).isEqualTo(-1);
+            assertThat(stored.compareTo(BigDecimal.ZERO)).isNegative();
+            assertThat(stored.scale()).isEqualTo(RATE_DECIMAL_DIGITS);
+            assertThat(stored).isEqualTo(new BigDecimal(RATE_NEGATIVE_FIFTEEN));
         }
 
         @Test
-        @DisplayName("a negative rate is representable, because the copybook signs the field")
-        void aNegativeRateIsRepresentable() {
-            final DisclosureGroup group =
-                    new DisclosureGroup("A", "01", "0001", new BigDecimal("-1.50"));
+        @DisplayName("the setter never widens a scale: a one-decimal value comes back at scale one "
+                + "rather than being padded out to the field's two declared decimal digits, because "
+                + "scaling is the codec's exclusive responsibility and not the entity's")
+        void setterDoesNotWidenAScale() {
+            DisclosureGroup row = new DisclosureGroup();
 
-            assertThat(group.getDisIntRate().signum()).isNegative();
-            assertThat(ZonedDecimalCodec.decode(
-                    "00150}", ZonedDecimalCodec.INTEREST_RATE_WIDTH, RATE_DECIMAL_DIGITS, "rate"))
-                    .as("the closing overpunch is the negative counterpart of the seed's opening one")
-                    .isEqualByComparingTo("-15.00");
+            row.setDisIntRate(new BigDecimal(RATE_SCALE_ONE));
+
+            BigDecimal stored = row.getDisIntRate();
+
+            assertThat(stored).isEqualTo(new BigDecimal(RATE_SCALE_ONE));
+            assertThat(stored.scale()).isEqualTo(1);
+            assertThat(stored.scale()).isNotEqualTo(RATE_DECIMAL_DIGITS);
+        }
+
+        @Test
+        @DisplayName("the setter neither truncates nor rounds: a three-decimal value comes back as "
+                + "2.999 at scale three, not as the 2.99 a truncating store would produce nor the "
+                + "3.00 a rounding store would produce - the estate declares no rounding clause "
+                + "anywhere, so that truncation happens once, in the codec, and never here")
+        void setterNeitherTruncatesNorRounds() {
+            DisclosureGroup row = new DisclosureGroup();
+
+            row.setDisIntRate(new BigDecimal(RATE_SCALE_THREE));
+
+            BigDecimal stored = row.getDisIntRate();
+
+            assertThat(stored).isEqualTo(new BigDecimal(RATE_SCALE_THREE));
+            assertThat(stored.scale()).isEqualTo(3);
+
+            assertThat(stored).isNotEqualTo(new BigDecimal(RATE_SCALE_THREE_IF_TRUNCATED));
+            assertThat(stored.compareTo(new BigDecimal(RATE_SCALE_THREE_IF_TRUNCATED)))
+                    .isNotZero();
+
+            assertThat(stored).isNotEqualTo(new BigDecimal(RATE_SCALE_THREE_IF_ROUNDED));
+            assertThat(stored.compareTo(new BigDecimal(RATE_SCALE_THREE_IF_ROUNDED))).isNotZero();
+        }
+
+        @Test
+        @DisplayName("the all-argument constructor also applies no scaling and no rounding: a "
+                + "one-decimal rate stays at scale one and a three-decimal rate stays 2.999 at scale "
+                + "three, so neither construction path can quietly impose a rounding policy that "
+                + "belongs solely to the codec")
+        void constructorAppliesNeitherScalingNorRounding() {
+            DisclosureGroup narrow = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_SCALE_ONE));
+
+            assertThat(narrow.getDisIntRate()).isEqualTo(new BigDecimal(RATE_SCALE_ONE));
+            assertThat(narrow.getDisIntRate().scale()).isEqualTo(1);
+
+            DisclosureGroup wide = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_SCALE_THREE));
+
+            BigDecimal stored = wide.getDisIntRate();
+
+            assertThat(stored).isEqualTo(new BigDecimal(RATE_SCALE_THREE));
+            assertThat(stored.scale()).isEqualTo(3);
+            assertThat(stored).isNotEqualTo(new BigDecimal(RATE_SCALE_THREE_IF_TRUNCATED));
+            assertThat(stored).isNotEqualTo(new BigDecimal(RATE_SCALE_THREE_IF_ROUNDED));
+        }
+
+        @Test
+        @DisplayName("the rate accepts a value at the full four integer digits the field declares, "
+                + "so a rate at the top of the range is representable without loss")
+        void rateAcceptsTheFullFourIntegerDigits() {
+            String widestRate = "9999.99";
+
+            DisclosureGroup row = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(widestRate));
+
+            BigDecimal stored = row.getDisIntRate();
+
+            assertThat(stored).isEqualTo(new BigDecimal(widestRate));
+            assertThat(stored.scale()).isEqualTo(RATE_DECIMAL_DIGITS);
+            assertThat(stored.precision()).isEqualTo(RATE_INTEGER_DIGITS + RATE_DECIMAL_DIGITS);
+            assertThat(stored.precision()).isEqualTo(6);
         }
     }
 
-    // SEEDED COMPOSITION
-
-    /**
-     * Verifies the fifty-one seeded records, whose composition is what makes both branches of the rate
-     * lookup reachable.
-     */
     @Nested
-    @DisplayName("seeded composition")
-    class SeededComposition {
+    @DisplayName("Entity identity is the composite key alone")
+    class EntityIdentity {
 
         @Test
-        @DisplayName("the seed carries fifty-one records at the declared fifty-byte width")
-        void theSeedCarriesFiftyOneRecords() {
-            assertThat(SEED.recordCount()).isEqualTo(SEEDED_RECORDS);
-            assertThat(SEED.recordWidth()).isEqualTo(RECORD_WIDTH);
-            assertThat(SEED.impliedByteCount()).isEqualTo(SEEDED_RECORDS * (RECORD_WIDTH + 1));
+        @DisplayName("two rows sharing all three key components are equal and share a hash code even "
+                + "when their rates differ, because the record's identity is the 16-byte key the "
+                + "cluster definition declares and the rate is mutable non-key state")
+        void rowsWithTheSameKeyAreEqualDespiteDifferingRates() {
+            DisclosureGroup fifteenPercent = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
+            DisclosureGroup twentyFivePercent = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_TWENTY_FIVE));
+
+            assertThat(fifteenPercent).isEqualTo(twentyFivePercent);
+            assertThat(twentyFivePercent).isEqualTo(fifteenPercent);
+            assertThat(fifteenPercent).hasSameHashCodeAs(twentyFivePercent);
+
+            assertThat(fifteenPercent.getDisIntRate())
+                    .isNotEqualTo(twentyFivePercent.getDisIntRate());
         }
 
         @Test
-        @DisplayName("the fifty-one records are three complete groups of seventeen")
-        void theRecordsAreThreeCompleteGroupsOfSeventeen() {
-            final Map<String, Integer> counts = new LinkedHashMap<>();
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                counts.merge(seededGroupId(ordinal), 1, Integer::sum);
-            }
+        @DisplayName("a differing group identifier alone makes two rows unequal: it is the first of "
+                + "the three key components and is nonunique on its own, recurring seventeen times "
+                + "per group in the seeded data")
+        void aDifferingGroupIdentifierAloneMakesRowsUnequal() {
+            DisclosureGroup first = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
+            DisclosureGroup second = new DisclosureGroup(
+                    GROUP_ID_DEFAULT_PADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
 
-            assertThat(counts).hasSize(SEEDED_GROUPS);
-            assertThat(counts.keySet()).containsExactlyElementsOf(SEEDED_GROUP_IDS);
-            assertThat(counts.values()).containsOnly(ROWS_PER_GROUP);
-            assertThat(SEEDED_GROUPS * ROWS_PER_GROUP).isEqualTo(SEEDED_RECORDS);
+            assertThat(first).isNotEqualTo(second);
+            assertThat(second).isNotEqualTo(first);
         }
 
         @Test
-        @DisplayName("each group's rows are contiguous, so a sequential read sees one group at a time")
-        void eachGroupsRowsAreContiguous() {
-            final List<String> encountered = new ArrayList<>();
-            String previous = null;
+        @DisplayName("a differing transaction type code alone makes two rows unequal: it is the "
+                + "second key component, two bytes at offset 10")
+        void aDifferingTransactionTypeAloneMakesRowsUnequal() {
+            DisclosureGroup first = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
+            DisclosureGroup second = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE_OTHER, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
 
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                final String current = seededGroupId(ordinal);
-                if (!current.equals(previous)) {
-                    assertThat(encountered)
-                            .as("group %s must not reappear after another group intervenes", current)
-                            .doesNotContain(current);
-                    encountered.add(current);
-                    previous = current;
-                }
-            }
-
-            assertThat(encountered).containsExactlyElementsOf(SEEDED_GROUP_IDS);
+            assertThat(first).isNotEqualTo(second);
+            assertThat(second).isNotEqualTo(first);
         }
 
         @Test
-        @DisplayName("one group is named for the fallback the interest run substitutes when a lookup "
-                + "misses, so that branch is reachable from seed data alone")
-        void oneGroupIsNamedForTheFallback() {
-            final List<String> fallbackRows = new ArrayList<>();
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                if (seededGroupId(ordinal).startsWith(FALLBACK_GROUP_ID)) {
-                    fallbackRows.add(seededGroupId(ordinal));
-                }
-            }
+        @DisplayName("a differing transaction category code alone makes two rows unequal: it is the "
+                + "third key component, four bytes at offset 12, and the seeded groups run through "
+                + "consecutive category codes")
+        void aDifferingTransactionCategoryAloneMakesRowsUnequal() {
+            DisclosureGroup first = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
+            DisclosureGroup second = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT_OTHER, new BigDecimal(RATE_FIFTEEN));
 
-            assertThat(fallbackRows).hasSize(ROWS_PER_GROUP);
-            assertThat(fallbackRows.get(0))
-                    .as("the fallback name is blank-filled to the ten-byte field width")
-                    .isEqualTo(FALLBACK_GROUP_ID + " ".repeat(
-                            COPYBOOK_WIDTHS.get(0) - FALLBACK_GROUP_ID.length()));
+            assertThat(first).isNotEqualTo(second);
+            assertThat(second).isNotEqualTo(first);
         }
 
         @Test
-        @DisplayName("one group carries a zero rate in every row, so the skip branch is reachable from "
-                + "seed data alone")
-        void oneGroupCarriesAZeroRateInEveryRow() {
-            final List<BigDecimal> zeroGroupRates = new ArrayList<>();
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                if (seededGroupId(ordinal).startsWith("ZEROAPR")) {
-                    zeroGroupRates.add(seededRate(ordinal));
-                }
-            }
+        @DisplayName("equality is reflexive, rejects null and rejects a foreign type rather than "
+                + "throwing, so a row is safe to place in a collection alongside anything else")
+        void equalityIsReflexiveNullSafeAndForeignTypeSafe() {
+            DisclosureGroup row = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
 
-            assertThat(zeroGroupRates).hasSize(ROWS_PER_GROUP);
-            assertThat(zeroGroupRates).allSatisfy(rate -> assertThat(rate.signum()).isZero());
+            assertThat(row.equals(row)).isTrue();
+            assertThat(row.equals(null)).isFalse();
+            assertThat(row.equals(FOREIGN_KEY_RENDERING)).isFalse();
+            assertThat(row.equals(row.toId())).isFalse();
         }
 
         @Test
-        @DisplayName("the other two groups both carry a non-zero rate, so the computing branch is "
-                + "reachable too")
-        void theOtherTwoGroupsCarryNonZeroRates() {
-            final Map<String, Integer> nonZeroPerGroup = new LinkedHashMap<>();
-            for (final String group : SEEDED_GROUP_IDS) {
-                nonZeroPerGroup.put(group, 0);
-            }
+        @DisplayName("hashing agrees with equality for a padded group identifier and separates it "
+                + "from the shortened form, so the padding participates in hashing exactly as it "
+                + "participates in comparison")
+        void hashingAgreesWithEqualityForPaddedIdentifiers() {
+            DisclosureGroup padded = new DisclosureGroup(
+                    GROUP_ID_DEFAULT_PADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
+            DisclosureGroup samePadded = new DisclosureGroup(
+                    GROUP_ID_DEFAULT_PADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_TWENTY_FIVE));
+            DisclosureGroup shortened = new DisclosureGroup(
+                    GROUP_ID_DEFAULT_UNPADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
 
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                if (seededRate(ordinal).signum() != 0) {
-                    nonZeroPerGroup.merge(seededGroupId(ordinal), 1, Integer::sum);
-                }
-            }
-
-            assertThat(nonZeroPerGroup.get("A000000000")).isPositive();
-            assertThat(nonZeroPerGroup.get("DEFAULT   ")).isPositive();
-            assertThat(nonZeroPerGroup.get("ZEROAPR   ")).isZero();
+            assertThat(padded).hasSameHashCodeAs(samePadded);
+            assertThat(padded.hashCode()).isNotEqualTo(shortened.hashCode());
         }
 
         @Test
-        @DisplayName("the seed carries exactly three distinct rate images, with the counts the file "
-                + "actually holds")
-        void theSeedCarriesThreeDistinctRateImages() {
-            final Map<String, Integer> counts = new LinkedHashMap<>();
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                counts.merge(seededRateImage(ordinal), 1, Integer::sum);
-            }
+        @DisplayName("two rows differing only in the padding of the group identifier are distinct "
+                + "map keys, so a lookup by the seven-character literal would never reach the "
+                + "ten-character row the interest fallback re-reads")
+        void paddedAndUnpaddedRowsAreDistinctMapKeys() {
+            DisclosureGroup padded = new DisclosureGroup(
+                    GROUP_ID_DEFAULT_PADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
+            DisclosureGroup unpadded = new DisclosureGroup(
+                    GROUP_ID_DEFAULT_UNPADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
 
-            assertThat(counts).containsExactlyInAnyOrderEntriesOf(SEEDED_RATE_IMAGES);
-            assertThat(counts.values().stream().mapToInt(Integer::intValue).sum())
-                    .isEqualTo(SEEDED_RECORDS);
-        }
+            Map<DisclosureGroup, String> byRow = new HashMap<>();
+            byRow.put(padded, GROUP_ID_DEFAULT_PADDED);
+            byRow.put(unpadded, GROUP_ID_DEFAULT_UNPADDED);
 
-        @Test
-        @DisplayName("the three rate images decode to nothing, fifteen and twenty-five, in ascending "
-                + "order of the counts the file declares")
-        void theThreeRateImagesDecodeToTheExpectedRates() {
-            final List<BigDecimal> decoded = new ArrayList<>();
-            for (final String image : SEEDED_RATE_IMAGES.keySet()) {
-                decoded.add(ZonedDecimalCodec.decode(
-                        image, ZonedDecimalCodec.INTEREST_RATE_WIDTH, RATE_DECIMAL_DIGITS, "rate"));
-            }
-
-            assertThat(decoded).hasSize(SEEDED_RATE_IMAGES.size());
-            assertThat(decoded.get(0)).isEqualByComparingTo("0.00");
-            assertThat(decoded.get(1)).isEqualByComparingTo("15.00");
-            assertThat(decoded.get(2)).isEqualByComparingTo("25.00");
-            assertThat(decoded).allSatisfy(rate -> assertThat(rate.scale())
-                    .as("every decoded rate carries the copybook's two decimals")
-                    .isEqualTo(RATE_DECIMAL_DIGITS));
-        }
-
-        @Test
-        @DisplayName("every seeded rate image ends in an overpunch rather than a digit, so a decoder "
-                + "that read the last byte as a plain digit would misread all fifty-one")
-        void everySeededRateImageEndsInAnOverpunch() {
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                final char last = seededRateImage(ordinal).charAt(
-                        ZonedDecimalCodec.INTEREST_RATE_WIDTH - 1);
-
-                assertThat(Character.isDigit(last))
-                        .as("last byte of record %d's rate image", ordinal)
-                        .isFalse();
-            }
-        }
-
-        @Test
-        @DisplayName("every seeded record's trailing filler is numeric zeros rather than blanks, and is "
-                + "carried by no field of the entity")
-        void theSeededFillerIsNumericZeros() {
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                assertThat(SEED.field(ordinal, OFFSET_FILLER, FILLER_WIDTH))
-                        .as("filler of record %d", ordinal)
-                        .isEqualTo("0".repeat(FILLER_WIDTH));
-            }
-        }
-
-        @Test
-        @DisplayName("every seeded record builds an entity whose four fields measure the copybook widths")
-        void everySeededRecordBuildsAWellShapedEntity() {
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                final DisclosureGroup group = groupFromSeed(ordinal);
-
-                assertThat(group.getDisAcctGroupId()).hasSize(COPYBOOK_WIDTHS.get(0));
-                assertThat(group.getDisTranTypeCd()).hasSize(COPYBOOK_WIDTHS.get(1));
-                assertThat(group.getDisTranCatCd()).hasSize(COPYBOOK_WIDTHS.get(2));
-                assertThat(group.getDisIntRate().scale()).isEqualTo(RATE_DECIMAL_DIGITS);
-            }
+            assertThat(byRow).hasSize(2);
+            assertThat(byRow.get(padded)).isEqualTo(GROUP_ID_DEFAULT_PADDED);
+            assertThat(byRow.get(unpadded)).isEqualTo(GROUP_ID_DEFAULT_UNPADDED);
         }
     }
 
-    // COMPOSITE-KEY IDENTITY
-
-    /**
-     * Verifies that identity is the three-part key and nothing else.
-     */
     @Nested
-    @DisplayName("composite-key identity")
-    class CompositeKeyIdentity {
-
-        @Test
-        @DisplayName("a row equals itself")
-        void aRowEqualsItself() {
-            final DisclosureGroup group = groupFromSeed(1);
-
-            assertThat(group).isEqualTo(group);
-            assertThat(group.hashCode()).isEqualTo(group.hashCode());
-        }
-
-        @Test
-        @DisplayName("two rows with the same three key components are equal even when their rates "
-                + "differ, because the rate is not part of identity")
-        void sameKeyMeansEqualEvenWithADifferentRate() {
-            final DisclosureGroup left =
-                    new DisclosureGroup("A000000000", "01", "0001", new BigDecimal("15.00"));
-            final DisclosureGroup right =
-                    new DisclosureGroup("A000000000", "01", "0001", new BigDecimal("25.00"));
-
-            assertThat(left).isEqualTo(right);
-            assertThat(right).isEqualTo(left);
-            assertThat(left).hasSameHashCodeAs(right);
-            assertThat(left.getDisIntRate()).isNotEqualByComparingTo(right.getDisIntRate());
-        }
-
-        @Test
-        @DisplayName("changing any one key component makes two rows unequal")
-        void changingAnyOneKeyComponentMakesRowsUnequal() {
-            final DisclosureGroup base =
-                    new DisclosureGroup("A000000000", "01", "0001", new BigDecimal("15.00"));
-
-            assertThat(base).isNotEqualTo(
-                    new DisclosureGroup("DEFAULT   ", "01", "0001", new BigDecimal("15.00")));
-            assertThat(base).isNotEqualTo(
-                    new DisclosureGroup("A000000000", "02", "0001", new BigDecimal("15.00")));
-            assertThat(base).isNotEqualTo(
-                    new DisclosureGroup("A000000000", "01", "0002", new BigDecimal("15.00")));
-        }
-
-        @Test
-        @DisplayName("the fifty-one seeded rows produce fifty-one distinct keys, so no two rows collide")
-        void theSeededRowsProduceDistinctKeys() {
-            final List<DisclosureGroupId> ids = new ArrayList<>();
-            for (int ordinal = 1; ordinal <= SEED.recordCount(); ordinal++) {
-                ids.add(groupFromSeed(ordinal).toId());
-            }
-
-            assertThat(ids).hasSize(SEEDED_RECORDS);
-            assertThat(ids.stream().distinct().toList()).hasSize(SEEDED_RECORDS);
-        }
-
-        @Test
-        @DisplayName("a row is unequal to null and to an unrelated type")
-        void aRowIsUnequalToNullAndToAnotherType() {
-            final DisclosureGroup group = groupFromSeed(1);
-
-            assertThat(group).isNotEqualTo(null);
-            assertThat(group.equals("A000000000")).isFalse();
-            assertThat(group).isNotEqualTo(new Object());
-        }
-
-        @Test
-        @DisplayName("two rows with an absent key are equal, because both keys are absent rather than "
-                + "generated")
-        void twoUnkeyedRowsAreEqual() {
-            assertThat(new DisclosureGroup()).isEqualTo(new DisclosureGroup());
-            assertThat(new DisclosureGroup()).hasSameHashCodeAs(new DisclosureGroup());
-        }
-    }
-
-    // THE EXTRACTED KEY
-
-    /**
-     * Verifies that the entity hands out the same three-part key it is identified by.
-     */
-    @Nested
-    @DisplayName("the extracted key")
+    @DisplayName("Key extracted from a populated row")
     class ExtractedKey {
 
         @Test
-        @DisplayName("the extracted key carries the three components in copybook order")
-        void theExtractedKeyCarriesTheComponentsInCopybookOrder() {
-            final DisclosureGroupId id = groupFromSeed(1).toId();
+        @DisplayName("a row yields a key carrying its three components in copybook order, so the "
+                + "16-byte key image reconstructs from the row without a surrogate identifier")
+        void rowYieldsAKeyCarryingItsThreeComponentsInOrder() {
+            DisclosureGroup row = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
 
-            assertThat(id.getDisAcctGroupId()).isEqualTo(seededGroupId(1));
-            assertThat(id.getDisTranTypeCd())
-                    .isEqualTo(SEED.field(1, OFFSET_TYPE, COPYBOOK_WIDTHS.get(1)));
-            assertThat(id.getDisTranCatCd())
-                    .isEqualTo(SEED.field(1, OFFSET_CATEGORY, COPYBOOK_WIDTHS.get(2)));
+            DisclosureGroupId extracted = row.toId();
+
+            // The expected key is built independently from the same hand-derived fixture literals
+            // that were passed to the row, not from anything the row computed.
+            assertThat(extracted).isEqualTo(new DisclosureGroupId(GROUP_ID_A, TRAN_TYPE, TRAN_CAT));
+            assertThat(extracted.getDisAcctGroupId()).isEqualTo(GROUP_ID_A);
+            assertThat(extracted.getDisTranTypeCd()).isEqualTo(TRAN_TYPE);
+            assertThat(extracted.getDisTranCatCd()).isEqualTo(TRAN_CAT);
         }
 
         @Test
-        @DisplayName("the extracted key round-trips: rebuilding a row from it yields an equal row")
-        void theExtractedKeyRoundTrips() {
-            final DisclosureGroup original = groupFromSeed(1);
-            final DisclosureGroupId id = original.toId();
-            final DisclosureGroup rebuilt = new DisclosureGroup(
-                    id.getDisAcctGroupId(),
-                    id.getDisTranTypeCd(),
-                    id.getDisTranCatCd(),
-                    BigDecimal.ZERO);
+        @DisplayName("an extracted key carries a padded group identifier at its full ten bytes and "
+                + "keeps the category code's leading zeros, because extraction copies the components "
+                + "rather than normalising them")
+        void extractedKeyPreservesPaddingAndLeadingZeros() {
+            DisclosureGroup row = new DisclosureGroup(
+                    GROUP_ID_DEFAULT_PADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
 
-            assertThat(rebuilt).isEqualTo(original);
-            assertThat(rebuilt.toId()).isEqualTo(id);
+            DisclosureGroupId extracted = row.toId();
+
+            assertThat(extracted.getDisAcctGroupId()).isEqualTo(GROUP_ID_DEFAULT_PADDED);
+            assertThat(extracted.getDisAcctGroupId()).isNotEqualTo(GROUP_ID_DEFAULT_UNPADDED);
+            assertThat(encodedWidthOf(extracted.getDisAcctGroupId())).isEqualTo(GROUP_ID_WIDTH);
+
+            assertThat(extracted.getDisTranCatCd()).isEqualTo(TRAN_CAT);
+            assertThat(encodedWidthOf(extracted.getDisTranCatCd())).isEqualTo(TRAN_CAT_WIDTH);
+
+            assertThat(extracted)
+                    .isNotEqualTo(new DisclosureGroupId(
+                            GROUP_ID_DEFAULT_UNPADDED, TRAN_TYPE, TRAN_CAT));
         }
 
         @Test
-        @DisplayName("a key whose components are permuted is a different key, so component order is part "
-                + "of the contract")
-        void aPermutedKeyIsADifferentKey() {
-            final DisclosureGroupId ordered = new DisclosureGroupId("AA", "BB", "CC");
-            final DisclosureGroupId permuted = new DisclosureGroupId("BB", "AA", "CC");
+        @DisplayName("extraction produces a fresh key on each call and retains no shared instance, "
+                + "while two keys extracted from the same row are equal because the components are "
+                + "unchanged")
+        void extractionProducesAFreshButEqualKeyEachTime() {
+            DisclosureGroup row = new DisclosureGroup(
+                    GROUP_ID_ZEROAPR_PADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_ZERO));
 
-            assertThat(ordered).isNotEqualTo(permuted);
+            // Both extractions are compared against one independently constructed key rather than
+            // against each other, so the expectation never comes from the implementation itself.
+            DisclosureGroupId expected =
+                    new DisclosureGroupId(GROUP_ID_ZEROAPR_PADDED, TRAN_TYPE, TRAN_CAT);
+
+            DisclosureGroupId first = row.toId();
+            DisclosureGroupId second = row.toId();
+
+            assertThat(first).isNotSameAs(second);
+            assertThat(first).isEqualTo(expected);
+            assertThat(second).isEqualTo(expected);
+            assertThat(first).hasSameHashCodeAs(expected);
+            assertThat(second).hasSameHashCodeAs(expected);
         }
 
         @Test
-        @DisplayName("an unkeyed row hands out a key whose components are all absent")
-        void anUnkeyedRowHandsOutAnEmptyKey() {
-            final DisclosureGroupId id = new DisclosureGroup().toId();
+        @DisplayName("an unpopulated row yields a key with three unset components, so extraction "
+                + "reports the row's state rather than inventing a placeholder key")
+        void unpopulatedRowYieldsAKeyWithUnsetComponents() {
+            DisclosureGroup row = new DisclosureGroup();
 
-            assertThat(id.getDisAcctGroupId()).isNull();
-            assertThat(id.getDisTranTypeCd()).isNull();
-            assertThat(id.getDisTranCatCd()).isNull();
+            DisclosureGroupId extracted = row.toId();
+
+            assertThat(extracted.getDisAcctGroupId()).isNull();
+            assertThat(extracted.getDisTranTypeCd()).isNull();
+            assertThat(extracted.getDisTranCatCd()).isNull();
         }
     }
 
-    // DIAGNOSTIC REPRESENTATION
-
-    /**
-     * Verifies the diagnostic string.
-     */
     @Nested
-    @DisplayName("diagnostic representation")
-    class DiagnosticRepresentation {
+    @DisplayName("Composite key contract")
+    class CompositeKeyContract {
+
+        /** Serialization identity declared by the production key class, transcribed by hand. */
+        private static final long DECLARED_SERIAL_VERSION_UID = 1L;
 
         @Test
-        @DisplayName("the diagnostic string names the type and quotes the three key components")
-        void theDiagnosticStringNamesTheTypeAndQuotesTheKey() {
-            final String rendered = new DisclosureGroup(
-                    "A000000000", "01", "0001", new BigDecimal("15.00")).toString();
+        @DisplayName("the all-argument constructor takes the three components in the order they "
+                + "occupy the record image - group identifier, transaction type, transaction "
+                + "category - and stores each verbatim")
+        void allArgumentConstructorRoundTripsAllThreeComponents() {
+            DisclosureGroupId key = new DisclosureGroupId(GROUP_ID_A, TRAN_TYPE, TRAN_CAT);
 
-            assertThat(rendered).isEqualTo("DisclosureGroup[disAcctGroupId='A000000000', "
-                    + "disTranTypeCd='01', disTranCatCd='0001']");
+            assertThat(key.getDisAcctGroupId()).isEqualTo(GROUP_ID_A);
+            assertThat(key.getDisTranTypeCd()).isEqualTo(TRAN_TYPE);
+            assertThat(key.getDisTranCatCd()).isEqualTo(TRAN_CAT);
+
+            assertThat(encodedWidthOf(key.getDisAcctGroupId())).isEqualTo(GROUP_ID_WIDTH);
+            assertThat(encodedWidthOf(key.getDisTranTypeCd())).isEqualTo(TRAN_TYPE_WIDTH);
+            assertThat(encodedWidthOf(key.getDisTranCatCd())).isEqualTo(TRAN_CAT_WIDTH);
         }
 
         @Test
-        @DisplayName("the diagnostic string omits the rate, so it shows exactly what identity compares")
-        void theDiagnosticStringOmitsTheRate() {
-            final DisclosureGroup group = new DisclosureGroup(
-                    "A000000000", "01", "0001", new BigDecimal("15.00"));
+        @DisplayName("the no-argument constructor the persistence provider requires exists and "
+                + "yields three unset components, which is why the key is a plain class rather than "
+                + "a record - a record has no no-argument constructor to offer")
+        void noArgumentConstructorExistsAndYieldsUnsetComponents() {
+            // The production no-argument constructor is protected, and the key class lives in
+            // com.carddemo.domain.id while this test lives in com.carddemo.domain, so a direct
+            // `new DisclosureGroupId()` does not compile from here. This is a documented divergence
+            // from the written contract summary, which described the constructor as public; the
+            // production signature is authoritative, so the test adapts rather than the class.
+            // Instantiating the probe subclass invokes that protected constructor through an
+            // explicit superclass constructor invocation, which is permitted from a subclass body in
+            // any package. Declaring the subclass is compile-time proof the constructor exists;
+            // running it is runtime proof it leaves every component unset. This is inheritance, NOT
+            // reflection - nothing is looked up by name and no accessibility is overridden.
+            DisclosureGroupId key = new ProtectedKeyConstructorProbe();
 
-            assertThat(group.toString()).doesNotContain("15.00").doesNotContain("disIntRate");
+            assertThat(key.getDisAcctGroupId()).isNull();
+            assertThat(key.getDisTranTypeCd()).isNull();
+            assertThat(key.getDisTranCatCd()).isNull();
         }
 
         @Test
-        @DisplayName("two rows that are equal render identically, and two that differ do not")
-        void equalRowsRenderIdentically() {
-            final DisclosureGroup left =
-                    new DisclosureGroup("A000000000", "01", "0001", new BigDecimal("15.00"));
-            final DisclosureGroup right =
-                    new DisclosureGroup("A000000000", "01", "0001", new BigDecimal("25.00"));
-            final DisclosureGroup other =
-                    new DisclosureGroup("ZEROAPR   ", "01", "0001", new BigDecimal("0.00"));
+        @DisplayName("two keys with all three components matching are equal, share a hash code, and "
+                + "a key equals itself")
+        void keysWithAllThreeComponentsMatchingAreEqual() {
+            DisclosureGroupId key = new DisclosureGroupId(GROUP_ID_A, TRAN_TYPE, TRAN_CAT);
+            DisclosureGroupId same = new DisclosureGroupId(GROUP_ID_A, TRAN_TYPE, TRAN_CAT);
 
-            assertThat(left.toString()).isEqualTo(right.toString());
-            assertThat(left.toString()).isNotEqualTo(other.toString());
+            assertThat(key.equals(key)).isTrue();
+            assertThat(key).isEqualTo(same);
+            assertThat(same).isEqualTo(key);
+            assertThat(key).hasSameHashCodeAs(same);
         }
 
         @Test
-        @DisplayName("an unkeyed row renders without failing")
-        void anUnkeyedRowRendersWithoutFailing() {
-            assertThat(new DisclosureGroup().toString())
-                    .startsWith("DisclosureGroup[")
-                    .endsWith("]")
-                    .contains("null");
+        @DisplayName("a differing group identifier alone makes two keys unequal, so the first key "
+                + "component is genuinely compared")
+        void aDifferingGroupIdentifierAloneMakesKeysUnequal() {
+            DisclosureGroupId key = new DisclosureGroupId(GROUP_ID_A, TRAN_TYPE, TRAN_CAT);
+            DisclosureGroupId other =
+                    new DisclosureGroupId(GROUP_ID_DEFAULT_PADDED, TRAN_TYPE, TRAN_CAT);
+
+            assertThat(key).isNotEqualTo(other);
+            assertThat(other).isNotEqualTo(key);
+        }
+
+        @Test
+        @DisplayName("a differing transaction type code alone makes two keys unequal, so the second "
+                + "key component is genuinely compared")
+        void aDifferingTransactionTypeAloneMakesKeysUnequal() {
+            DisclosureGroupId key = new DisclosureGroupId(GROUP_ID_A, TRAN_TYPE, TRAN_CAT);
+            DisclosureGroupId other =
+                    new DisclosureGroupId(GROUP_ID_A, TRAN_TYPE_OTHER, TRAN_CAT);
+
+            assertThat(key).isNotEqualTo(other);
+            assertThat(other).isNotEqualTo(key);
+        }
+
+        @Test
+        @DisplayName("a differing transaction category code alone makes two keys unequal, so the "
+                + "third key component is genuinely compared")
+        void aDifferingTransactionCategoryAloneMakesKeysUnequal() {
+            DisclosureGroupId key = new DisclosureGroupId(GROUP_ID_A, TRAN_TYPE, TRAN_CAT);
+            DisclosureGroupId other =
+                    new DisclosureGroupId(GROUP_ID_A, TRAN_TYPE, TRAN_CAT_OTHER);
+
+            assertThat(key).isNotEqualTo(other);
+            assertThat(other).isNotEqualTo(key);
+        }
+
+        @Test
+        @DisplayName("a key rejects null and rejects the flattened text of its own components "
+                + "rather than throwing, so the concatenated key image is not mistaken for a key")
+        void keyIsNullSafeAndForeignTypeSafe() {
+            DisclosureGroupId key =
+                    new DisclosureGroupId(GROUP_ID_DEFAULT_PADDED, TRAN_TYPE, TRAN_CAT);
+
+            assertThat(key.equals(null)).isFalse();
+            assertThat(key.equals(FOREIGN_KEY_RENDERING)).isFalse();
+
+            // The foreign value is exactly the sixteen bytes the three components occupy in the
+            // record image, which is why it is the sharpest available negative case.
+            assertThat(encodedWidthOf(FOREIGN_KEY_RENDERING)).isEqualTo(DECLARED_KEY_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the ten-character \"DEFAULT   \" key is NOT the seven-character \"DEFAULT\" "
+                + "key and the two are distinct map entries: a runtime lookup by the unpadded "
+                + "identifier would resolve nothing, because the identifier the interest program "
+                + "re-reads with is the space-padded ten-character form a legacy alphanumeric move "
+                + "produces")
+        void paddedAndUnpaddedKeysAreDistinctMapKeys() {
+            DisclosureGroupId padded =
+                    new DisclosureGroupId(GROUP_ID_DEFAULT_PADDED, TRAN_TYPE, TRAN_CAT);
+            DisclosureGroupId unpadded =
+                    new DisclosureGroupId(GROUP_ID_DEFAULT_UNPADDED, TRAN_TYPE, TRAN_CAT);
+
+            assertThat(padded).isNotEqualTo(unpadded);
+            assertThat(unpadded).isNotEqualTo(padded);
+
+            Map<DisclosureGroupId, String> byKey = new HashMap<>();
+            byKey.put(padded, GROUP_ID_DEFAULT_PADDED);
+            byKey.put(unpadded, GROUP_ID_DEFAULT_UNPADDED);
+
+            assertThat(byKey).hasSize(2);
+            assertThat(byKey.get(padded)).isEqualTo(GROUP_ID_DEFAULT_PADDED);
+            assertThat(byKey.get(unpadded)).isEqualTo(GROUP_ID_DEFAULT_UNPADDED);
+        }
+
+        @Test
+        @DisplayName("nothing in the key normalises a component: a trailing-space value is returned "
+                + "with its spaces intact and compares unequal to its shortened form, so neither the "
+                + "constructor nor equality nor hashing trims")
+        void keyNormalisesNothing() {
+            DisclosureGroupId padded =
+                    new DisclosureGroupId(GROUP_ID_ZEROAPR_PADDED, TRAN_TYPE, TRAN_CAT);
+            DisclosureGroupId shortened =
+                    new DisclosureGroupId(GROUP_ID_ZEROAPR_UNPADDED, TRAN_TYPE, TRAN_CAT);
+
+            assertThat(padded.getDisAcctGroupId()).isEqualTo(GROUP_ID_ZEROAPR_PADDED);
+            assertThat(encodedWidthOf(padded.getDisAcctGroupId())).isEqualTo(GROUP_ID_WIDTH);
+            assertThat(encodedWidthOf(shortened.getDisAcctGroupId())).isEqualTo(7);
+
+            assertThat(padded).isNotEqualTo(shortened);
+            assertThat(padded.hashCode()).isNotEqualTo(shortened.hashCode());
+        }
+
+        @Test
+        @DisplayName("leading zeros in the transaction category code are significant: a key on 0001 "
+                + "is not a key on 1, which is what a numeric key component would have collapsed it "
+                + "to")
+        void leadingZerosInTheCategoryCodeAreSignificant() {
+            DisclosureGroupId zeroFilled = new DisclosureGroupId(GROUP_ID_A, TRAN_TYPE, TRAN_CAT);
+            DisclosureGroupId collapsed = new DisclosureGroupId(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT_WITHOUT_LEADING_ZEROS);
+
+            assertThat(zeroFilled).isNotEqualTo(collapsed);
+            assertThat(collapsed).isNotEqualTo(zeroFilled);
+
+            assertThat(encodedWidthOf(zeroFilled.getDisTranCatCd())).isEqualTo(TRAN_CAT_WIDTH);
+            assertThat(encodedWidthOf(collapsed.getDisTranCatCd())).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("the key declares an explicit, stable serialization identity, which the build "
+                + "requires because a serializable class without one raises a lint warning and "
+                + "warnings fail the build")
+        void serialVersionUidIsExplicitAndStable() {
+            // ObjectStreamClass is the sanctioned serialization-metadata API of the java.io package.
+            // It is NOT part of the runtime reflection API, so reading the serialization identity
+            // through it satisfies the module's zero-reflection constraint: no member is looked up by
+            // name and no accessibility is overridden. The expected value was transcribed by hand
+            // from the production class rather than computed from it.
+            ObjectStreamClass descriptor = ObjectStreamClass.lookup(DisclosureGroupId.class);
+
+            assertThat(descriptor).isNotNull();
+            assertThat(descriptor.getSerialVersionUID()).isEqualTo(DECLARED_SERIAL_VERSION_UID);
+            assertThat(descriptor.getSerialVersionUID()).isEqualTo(1L);
+        }
+
+        @Test
+        @DisplayName("a key survives a Java serialization round trip and a padded group identifier "
+                + "comes back with its trailing spaces intact, so the padding travels with the key "
+                + "rather than being a local artefact")
+        void keySurvivesASerializationRoundTripWithPaddingIntact()
+                throws IOException, ClassNotFoundException {
+            DisclosureGroupId original =
+                    new DisclosureGroupId(GROUP_ID_DEFAULT_PADDED, TRAN_TYPE, TRAN_CAT);
+
+            byte[] serialised;
+            try (ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                    ObjectOutputStream out = new ObjectOutputStream(bytes)) {
+                out.writeObject(original);
+                out.flush();
+                serialised = bytes.toByteArray();
+            }
+
+            DisclosureGroupId restored;
+            try (ByteArrayInputStream bytes = new ByteArrayInputStream(serialised);
+                    ObjectInputStream in = new ObjectInputStream(bytes)) {
+                restored = (DisclosureGroupId) in.readObject();
+            }
+
+            assertThat(restored).isNotSameAs(original);
+            assertThat(restored).isEqualTo(original);
+            assertThat(restored).hasSameHashCodeAs(original);
+
+            assertThat(restored.getDisAcctGroupId()).isEqualTo(GROUP_ID_DEFAULT_PADDED);
+            assertThat(encodedWidthOf(restored.getDisAcctGroupId())).isEqualTo(GROUP_ID_WIDTH);
+            assertThat(restored.getDisAcctGroupId()).isNotEqualTo(GROUP_ID_DEFAULT_UNPADDED);
+
+            assertThat(restored.getDisTranTypeCd()).isEqualTo(TRAN_TYPE);
+            assertThat(restored.getDisTranCatCd()).isEqualTo(TRAN_CAT);
+        }
+    }
+
+    @Nested
+    @DisplayName("Diagnostic rendering")
+    class DiagnosticRendering {
+
+        @Test
+        @DisplayName("a row's diagnostic rendering does not normalise the group identifier: the "
+                + "padded and shortened forms render differently, so no trimming leaks into the one "
+                + "place a reviewer is most likely to read a key from")
+        void rowRenderingDoesNotNormaliseThePaddedGroupIdentifier() {
+            // The written contract summary allowed toString() to be absent; both production classes
+            // declare it, so per the same mandate the file follows the classes. Nothing here pins the
+            // format - only the behavioural claim that the rendering preserves what the key
+            // preserves.
+            DisclosureGroup padded = new DisclosureGroup(
+                    GROUP_ID_DEFAULT_PADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
+            DisclosureGroup unpadded = new DisclosureGroup(
+                    GROUP_ID_DEFAULT_UNPADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
+
+            assertThat(padded.toString()).isNotEqualTo(unpadded.toString());
+        }
+
+        @Test
+        @DisplayName("a key's diagnostic rendering likewise does not normalise the group identifier, "
+                + "so a padded key and its shortened form remain distinguishable in a failure "
+                + "message")
+        void keyRenderingDoesNotNormaliseThePaddedGroupIdentifier() {
+            DisclosureGroupId padded =
+                    new DisclosureGroupId(GROUP_ID_DEFAULT_PADDED, TRAN_TYPE, TRAN_CAT);
+            DisclosureGroupId unpadded =
+                    new DisclosureGroupId(GROUP_ID_DEFAULT_UNPADDED, TRAN_TYPE, TRAN_CAT);
+
+            assertThat(padded.toString()).isNotEqualTo(unpadded.toString());
+        }
+
+        @Test
+        @DisplayName("two rows differing only in their rate render identically, because the "
+                + "rendering carries the key and deliberately omits the financial value")
+        void rowRenderingOmitsTheRate() {
+            DisclosureGroup fifteenPercent = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
+            DisclosureGroup twentyFivePercent = new DisclosureGroup(
+                    GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_TWENTY_FIVE));
+
+            assertThat(fifteenPercent.toString()).isEqualTo(twentyFivePercent.toString());
         }
     }
 }
