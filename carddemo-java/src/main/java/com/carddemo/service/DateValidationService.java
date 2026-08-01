@@ -122,6 +122,19 @@ import com.carddemo.util.CobolStringUtils;
  * has passed the gate it carries exactly one byte per character, which is what makes the character-index
  * slicing of the year, month and day positions further down byte-faithful rather than merely plausible.
  *
+ * <h2>What the diagnostics record</h2>
+ * Every log statement in this service records only values this module owns: the outcome, the identifier
+ * of the format mask, the severity and the module's own message number. None records the candidate that
+ * was submitted, the subject being validated, or a third-party parser's message - the last of which
+ * quotes the offending text back verbatim and would reintroduce the candidate by a route that reads as a
+ * library detail rather than as external input. The candidate is external, fixed-width, single-byte text
+ * that may carry any byte that character set admits, including a line separator, so a record built by
+ * appending it could be split into what looks like a second record. That property belongs to these
+ * statements rather than to the configured level, which is why it holds even where the local profile
+ * raises this package to its most detailed level. An unresolved mask is recorded by length alone, because
+ * a resolved mask is this module's own enumeration literal while an unresolved one is whatever the caller
+ * sent. See {@code docs/decision-log.md} DL-100.
+ *
  * <h2>Thread safety</h2>
  * Stateless singleton. Every flag, every parsed field and every accumulated message lives in a
  * per-invocation state object, so concurrent requests cannot observe each other's validation state.
@@ -1084,7 +1097,7 @@ public final class DateValidationService {
         final DateEditResult result = state.toResult();
         LOG.debug("CCYYMMDD cascade finished: year={} month={} day={} inputError={} message=[{}]",
                 result.yearFlag(), result.monthFlag(), result.dayFlag(), result.inputError(),
-                result.returnMessage());
+                authoredHere(currentReturnMessage, result.returnMessage()));
         return result;
     }
 
@@ -1152,7 +1165,7 @@ public final class DateValidationService {
 
         final DateEditResult result = state.toResult();
         LOG.debug("Date-of-birth edit finished: inputError={} message=[{}]",
-                result.inputError(), result.returnMessage());
+                result.inputError(), authoredHere(currentReturnMessage, result.returnMessage()));
         return result;
     }
 
@@ -1194,9 +1207,15 @@ public final class DateValidationService {
         a000MainExit();
 
         final SubprogramResult result = buildResult(feedback, testedDate, maskUsed);
-        LOG.debug("Subprogram date validation: date=[{}] mask=[{}] severity=[{}] messageNumber=[{}]"
-                        + " result=[{}]",
-                testedDate, maskUsed, result.severityCode(), result.messageNumber(), result.resultText());
+        // The candidate is deliberately absent from this record. It is external, fixed-width text that
+        // may carry any byte the single-byte character set admits, including a line separator, so writing
+        // it here would let a caller append a line of its own choosing to the log and have it read as a
+        // record this service emitted. Everything reported below originates in this module: the mask is
+        // the resolved format's own value, and the severity, message number and outcome text are the
+        // literals the result block is assembled from. That is enough to say what happened and to which
+        // format, without restating what was submitted.
+        LOG.debug("Subprogram date validation: mask=[{}] severity=[{}] messageNumber=[{}] result=[{}]",
+                maskUsed, result.severityCode(), result.messageNumber(), result.resultText());
         return result;
     }
 
@@ -1233,7 +1252,14 @@ public final class DateValidationService {
         final Optional<DateFormat> resolved = DateFormat.fromValue(maskUsed);
         if (resolved.isEmpty()) {
             final String testedDate = moveToLinkageTextField(candidateDate, LS_DATE_FIELD);
-            LOG.warn("Unrecognised date-format mask [{}]; reporting a bad picture string", maskUsed);
+            // The mask is reported by width rather than by value, and for the same reason the candidate is
+            // never reported: on this branch the mask did not resolve, so it is arbitrary external text
+            // rather than one of the formats this module names. A resolved mask is safe to write because
+            // it is the enum's own literal; an unresolved one is exactly the value an attacker chooses.
+            // The width is what a caller needs to see, because a mask of the wrong length is the ordinary
+            // cause of this outcome.
+            LOG.warn("Unrecognised date-format mask of {} characters; reporting a bad picture string",
+                    maskUsed.strip().length());
             return buildResult(DateFeedback.BAD_PICTURE_STRING, testedDate, maskUsed);
         }
         return validateDate(candidateDate, resolved.get());
@@ -1270,8 +1296,11 @@ public final class DateValidationService {
         if (!TOLERATED_MESSAGE_NUMBER.equals(result.messageNumber())) {
             return false;
         }
-        LOG.debug("Accepting date [{}] on the tolerated message number [{}] despite severity [{}]",
-                result.testedDate(), result.messageNumber(), result.severityCode());
+        // The tested date is not written here either. This branch accepts a value the subprogram flagged,
+        // which makes it the record most worth reading and the one an attacker would most want to control;
+        // the message number and severity identify the case exactly, and both are this module's own codes.
+        LOG.debug("Accepting a date on the tolerated message number [{}] despite severity [{}]",
+                result.messageNumber(), result.severityCode());
         return true;
     }
 
@@ -1353,8 +1382,14 @@ public final class DateValidationService {
         } catch (final DateTimeParseException tooBadToResolve) {
             // A well-formed but non-existent calendar date, such as a 31st of February or a 29th of
             // February in a common year, is a bad date value.
-            LOG.debug("Strict parse rejected date [{}] against pattern [{}]: {}",
-                    subject, pattern, tooBadToResolve.getMessage());
+            //
+            // Neither the value nor the parser's own message is written. The message is the more dangerous
+            // of the two: it quotes the offending text back verbatim, so logging it would reintroduce the
+            // candidate by a route that reads as a library detail rather than as external input. The
+            // pattern is this module's constant for the format, and the outcome is already named by the
+            // returned feedback, so the record identifies the case without reproducing the submission.
+            LOG.debug("Strict parse rejected a candidate against pattern [{}]; reporting a bad date value",
+                    pattern);
             return DateFeedback.BAD_DATE_VALUE;
         }
 
@@ -2072,6 +2107,32 @@ public final class DateValidationService {
         if (isReturnMessageOff(state.returnMessage)) {
             state.returnMessage = suffix;
         }
+    }
+
+    /**
+     * Returns an accumulated message in a form that is safe to write to a log record.
+     *
+     * <p>The message field is first-wins: {@link #setReturnMessage} is its only writer and stores nothing
+     * unless the field was still blank, so the text an edit produced is this module's own literal
+     * <em>exactly when</em> the caller's field was blank on entry. When it was not, the value returned to
+     * the caller is the caller's own text unchanged, and that text is outside this service's control - it
+     * may be a message the caller assembled from something a person typed, and it may therefore carry a
+     * line separator that would split one log record into two.
+     *
+     * <p>So the entry condition decides. A message this module authored is written in full, because that
+     * is the diagnostic worth having: it names which edit claimed the field. A message the caller brought
+     * with it is described rather than repeated, which loses nothing the caller does not already know and
+     * keeps text this service never authored out of its records. See {@code docs/decision-log.md} DL-100.
+     *
+     * @param currentReturnMessage the caller's accumulated message as it stood on entry
+     * @param accumulatedMessage   the accumulated message as it stands on return
+     * @return the message itself when this module authored it, or a description of it when it did not
+     */
+    private static String authoredHere(final String currentReturnMessage,
+                                       final String accumulatedMessage) {
+        return isReturnMessageOff(currentReturnMessage)
+                ? accumulatedMessage
+                : "unchanged caller message of " + accumulatedMessage.length() + " characters";
     }
 
     /**

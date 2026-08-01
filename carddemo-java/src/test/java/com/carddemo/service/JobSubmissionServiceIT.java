@@ -89,7 +89,7 @@ import software.amazon.awssdk.services.sqs.model.SqsException;
 class JobSubmissionServiceIT extends AbstractLocalStackIT {
 
     /** The canonical queue name, exactly as {@code application.yml} declares it. */
-    private static final String QUEUE_NAME = "carddemo-jobs.fifo";
+    private static final String QUEUE_NAME = "JOBS.fifo";
 
     /** The canonical message group, exactly as {@code application.yml} declares it. */
     private static final String MESSAGE_GROUP_ID = "carddemo-job-submission";
@@ -98,11 +98,18 @@ class JobSubmissionServiceIT extends AbstractLocalStackIT {
      * A queue name the queue service itself refuses, because an embedded space is not a legal
      * character in a queue name.
      *
-     * <p>A name that is merely <em>absent</em> would not do here. The template this module publishes
-     * through resolves an unknown queue name by creating the queue, so an absent name is a
-     * successful submission into a newly created queue rather than a failed write. Only a name the
-     * service rejects outright exercises the ignore-on-error path, and it exercises it as a genuine
-     * service refusal with no fault injected.</p>
+     * <p>A name that is merely <em>absent</em> would not do <em>here</em>, because the template this
+     * test builds for itself carries the messaging library's own default for an unresolvable queue,
+     * which is to create it. An absent name would therefore be a successful submission into a newly
+     * created queue rather than a failed write. A name the service rejects outright exercises the
+     * ignore-on-error path regardless of that default, and exercises it as a genuine service refusal
+     * with no fault injected.</p>
+     *
+     * <p>The template the <em>application</em> publishes through does not carry that default: the
+     * shipped configuration fixes the strategy to refusal, so a well-formed name for an absent queue
+     * fails the submission and creates nothing. That is a different property from the one this
+     * constant serves and it is verified separately, against a template configured the way the
+     * application's is, in {@code JobSubmissionQueueBridgeIT}.</p>
      */
     private static final String UNREACHABLE_QUEUE_NAME = "carddemo jobs unreachable.fifo";
 

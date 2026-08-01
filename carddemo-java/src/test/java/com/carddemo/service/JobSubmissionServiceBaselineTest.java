@@ -98,7 +98,7 @@ import static org.mockito.Mockito.when;
 class JobSubmissionServiceBaselineTest {
 
     /** The canonical first-in-first-out queue name the configuration fixes. */
-    private static final String QUEUE_NAME = "carddemo-jobs.fifo";
+    private static final String QUEUE_NAME = "JOBS.fifo";
 
     /** The canonical message-group identifier that preserves append order. */
     private static final String MESSAGE_GROUP_ID = "carddemo-job-submission";
@@ -278,7 +278,7 @@ class JobSubmissionServiceBaselineTest {
         void refusesANonFifoQueue() {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() ->
-                            new JobSubmissionService(sqsOperations, "carddemo-jobs",
+                            new JobSubmissionService(sqsOperations, "JOBS",
                                     MESSAGE_GROUP_ID))
                     .withMessageContaining("first-in-first-out")
                     .withMessageContaining(".fifo");

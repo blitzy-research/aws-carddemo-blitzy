@@ -91,9 +91,11 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
       # The canonical resource names. These four strings are byte-identical here, in every profile
       # overlay and in localstack/init/01-create-aws-resources.sh; a disagreement produces a stack
-      # that starts cleanly and then fails on the first publish.
+      # that starts cleanly and then fails on the first publish. The queue keeps the legacy
+      # transient-data resource name, suffixed only because a FIFO queue must be - see
+      # docs/decision-log.md DL-092.
       CARDDEMO_S3_BUCKET: ${CARDDEMO_S3_BUCKET:-carddemo-batch-staging}
-      CARDDEMO_SQS_QUEUE: ${CARDDEMO_SQS_QUEUE:-carddemo-jobs.fifo}
+      CARDDEMO_SQS_QUEUE: ${CARDDEMO_SQS_QUEUE:-JOBS.fifo}
       CARDDEMO_SQS_MESSAGE_GROUP_ID: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:-carddemo-job-submission}
       CARDDEMO_SNS_TOPIC: ${CARDDEMO_SNS_TOPIC:-carddemo-job-notifications}
     ports:

@@ -22,9 +22,11 @@ set -euo pipefail
 # src/main/resources/application.yml, src/main/resources/application-local.yml,
 # src/test/resources/application-test.yml and docker-compose.yml. A disagreement produces a stack
 # that starts cleanly and then fails on the first publish, with no start-up error to point at it.
+# The queue keeps the legacy transient-data resource name, suffixed only because a FIFO queue must
+# be - see docs/decision-log.md DL-092.
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 BUCKET="${CARDDEMO_S3_BUCKET:-carddemo-batch-staging}"
-QUEUE="${CARDDEMO_SQS_QUEUE:-carddemo-jobs.fifo}"
+QUEUE="${CARDDEMO_SQS_QUEUE:-JOBS.fifo}"
 TOPIC="${CARDDEMO_SNS_TOPIC:-carddemo-job-notifications}"
 
 log() { printf '[carddemo-init] %s\n' "$*"; }

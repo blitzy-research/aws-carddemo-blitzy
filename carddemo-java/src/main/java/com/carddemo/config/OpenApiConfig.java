@@ -43,12 +43,22 @@ import org.springframework.context.annotation.Configuration;
  * {@code app/csd/CARDDEMO.CSD}, which defines eighteen transactions bound to eighteen programs and
  * seventeen screen field maps; the one transaction with no map drives the shared date-validation
  * subprogram rather than a screen, so seventeen transactions become the REST endpoint groups this
- * document describes.
+ * document will describe.
+ *
+ * <p><strong>The endpoint inventory is later bound, and today it is empty.</strong> A path enters the
+ * document when a request-mapped controller exists for the library to scan, and the delivered main tree
+ * contains none: the document this class contributes to therefore carries identity metadata, the reusable
+ * component shapes and the bearer security scheme, and an empty paths object. That is the delivered state
+ * rather than a misconfiguration, so it is said here, said in the served description below, and asserted
+ * by {@code OpenApiConfigBoundaryTest} rather than left for a reader of the document to discover by
+ * fetching it. The inventory grows as the controllers arrive and needs no change to this class to do so;
+ * what must change with it is the assertion, which is written to fail the moment the emptiness stops
+ * being true. See {@code docs/decision-log.md} DL-101.
  *
  * <p><strong>This class contributes document metadata only</strong> &mdash; title, description,
  * version, licence and the bearer security scheme. Everything else is produced by the
- * interface-documentation library's auto-configuration from the controllers and the request and
- * response types it scans. Five things are deliberately left alone:
+ * interface-documentation library's auto-configuration from whatever controllers and request and
+ * response types it finds to scan. Five things are deliberately left alone:
  * <ul>
  *   <li><strong>No path literal.</strong> The address the document is served from is declared once, in
  *       {@code application.yml} under the {@code springdoc} key. Restating it here would give a value
@@ -80,13 +90,27 @@ import org.springframework.context.annotation.Configuration;
  * neither configures a filter chain nor widens one, and nothing in this class makes the document address
  * reachable without authentication.
  *
- * <p>Which routes are actually reachable, and by whom, is decided entirely by the module's HTTP security
- * configuration and by nothing here. <strong>Where that configuration is absent, no route is protected
- * by anything</strong>, and this document's security requirement must never be read as evidence that one
- * is. Any address that configuration permits anonymously is an explicit, reviewed permit rule verified by
- * that component's own tests, never an implicit side effect of publishing metadata. The low-level-code audit does not cover authorisation rules; its scope is raw SQL assembly,
- * process execution, reflection, unchecked casts and suppressed warnings, so it cannot catch an
- * accidental permit and is not relied on to.
+ * <p>Which routes are actually reachable, and by whom, is decided entirely by {@link SecurityConfig} and
+ * by nothing here. <strong>The document-wide requirement is truthful because that chain exists and closes
+ * by default</strong>: its final rule authenticates any request no earlier rule named, so every operation
+ * this document describes does require a token unless the chain deliberately exempts its address. Before
+ * that chain existed the requirement described a protection nothing implemented, which is the defect this
+ * arrangement removes.
+ *
+ * <p><strong>The exemptions are named from the chain's own constants rather than restated.</strong> The
+ * scheme description below is built from {@link SecurityConfig#SIGN_ON_PATH} and
+ * {@link SecurityConfig#ADMIN_PATH_PREFIX}, so a published exemption and an enforced one cannot drift
+ * apart: editing the rule edits the document. The sign-on address is the one anonymous business route,
+ * because it is the route that issues the tokens every other route requires, and an operation mapped
+ * there must clear the document-wide requirement so a generated client does not demand a token before
+ * requesting one. The remaining anonymous addresses - the health probe, the metrics scrape endpoint and
+ * this document itself where a profile publishes it - are operational rather than business surfaces and
+ * carry no operation in this document at all. See {@code docs/decision-log.md} DL-099.
+ *
+ * <p>The low-level-code audit does not cover authorisation rules; its scope is raw SQL assembly, process
+ * execution, reflection, unchecked casts and suppressed warnings, so it cannot catch an accidental permit
+ * and is not relied on to. What catches one is {@link SecurityConfig}'s own tests, which assert real
+ * response statuses rather than inspecting the configuration that produced them.
  *
  * <p><strong>Nothing secret is ever published.</strong> No credential, token, signing value,
  * authorisation header value or example password appears in this class or in the document it produces:
@@ -162,16 +186,22 @@ public final class OpenApiConfig {
      */
     private static final String API_DESCRIPTION = """
             Machine-readable interface description for the CardDemo application, migrated from the AWS \
-            CardDemo z/OS estate to Java and Spring Boot. This document is the interface contract itself, \
-            not an account of one held elsewhere: the endpoint groups it describes are the REST form of \
-            the 17 legacy transactions that each drove a 24x80 terminal screen, and no separate \
-            hand-maintained contract file exists that could drift away from the code.
+            CardDemo z/OS estate to Java and Spring Boot. This document is the interface contract itself \
+            rather than an account of one held elsewhere, and no separate hand-maintained contract file \
+            exists that could drift away from the code.
 
-            Message text, per-field error states, page sizes and fixed-width record widths are reproduced \
-            from the legacy estate rather than redesigned, so a client written against this document sees \
-            the behaviour the terminal screens exposed. Every monetary and rate value is a fixed-scale \
-            decimal carried across from a zoned-decimal field and travels as a plain decimal, never in \
-            scientific notation.
+            The endpoint inventory is derived from the code rather than written here, and at this \
+            milestone it is empty: no request-mapped operation has been delivered yet, so this document \
+            currently describes the reusable message shapes and the authentication rule and lists no \
+            path. Paths appear as the endpoint groups arrive - the REST form of the 17 legacy \
+            transactions that each drove a 24x80 terminal screen - and this description needs no change \
+            when they do.
+
+            Where this document describes an operation, message text, per-field error states, page sizes \
+            and fixed-width record widths are reproduced from the legacy estate rather than redesigned, \
+            so a client written against it sees the behaviour the terminal screens exposed. Every \
+            monetary and rate value is a fixed-scale decimal carried across from a zoned-decimal field \
+            and travels as a plain decimal, never in scientific notation.
 
             A protected operation expects an HTTP bearer token, described by the security scheme below.
 
@@ -184,15 +214,27 @@ public final class OpenApiConfig {
      *
      * <p>It states what the scheme does and, just as deliberately, what it does not do, so that a reader
      * of the document cannot mistake a documented scheme for a granted permission.</p>
+     *
+     * <p>The two addresses it names are interpolated from {@link SecurityConfig}'s constants rather than
+     * written out here. That is what keeps the published contract and the enforced rule identical: there
+     * is one home for each address, and a change to the rule is a change to this text. It is assembled at
+     * class initialisation rather than being a compile-time constant, which is unremarkable because it is
+     * only ever read when the document is built.</p>
      */
     private static final String BEARER_SCHEME_DESCRIPTION = """
             HTTP bearer authentication. Present the token issued by the sign-on operation as the bearer \
             credential of a protected request.
 
-            This declaration describes the scheme only. Which operations require a token, and which are \
-            reachable without one, is decided entirely by this module's security filter chain; nothing in \
-            this document grants access. No credential, token or example password appears anywhere in \
-            this contract, and no authorisation value is pre-filled.""";
+            Every operation in this document requires a token except the sign-on operation at \
+            """ + SecurityConfig.SIGN_ON_PATH + """
+            , which issues them and therefore cannot itself require one. Operations beneath \
+            """ + SecurityConfig.ADMIN_PATH_PREFIX + """
+             require a token whose user type is the administrative one; a token for a standard user is \
+            refused there rather than ignored.
+
+            This declaration describes the scheme; the rules above are enforced by this module's security \
+            filter chain and nothing in this document grants access. No credential, token or example \
+            password appears anywhere in this contract, and no authorisation value is pre-filled.""";
 
     /**
      * Version published in the document, resolved once at construction.
@@ -210,7 +252,8 @@ public final class OpenApiConfig {
      * fail start-up. When it is present and carries a version, that version is published, so the document
      * tracks the artefact actually running. Otherwise {@link #MODULE_VERSION} is published. For a build of
      * this module both paths yield the same coordinate version, so the served value is stable either
-     * way.</p>
+     * way. The build binds the goal that generates that resource, so the present path is the normal
+     * one rather than the exception; see {@code docs/decision-log.md} DL-091.</p>
      *
      * @param buildPropertiesProvider provider for the optional build-information bean; the provider itself
      *                                is supplied by the container and is never {@code null}, though it may

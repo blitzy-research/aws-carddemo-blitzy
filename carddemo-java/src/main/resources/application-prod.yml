@@ -140,5 +140,5 @@ carddemo:
       key: ${CARDDEMO_FIELD_ENCRYPTION_KEY}
     # Restated, not narrowed: application.yml already requires transport security, and only the local
     # and test overlays relax it. Kept here so the production posture is stated independently of what
-    # the shared baseline happens to say.
+    # the shared baseline happens to say. See docs/decision-log.md DL-098.
     require-https: true

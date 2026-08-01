@@ -95,6 +95,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * estate at checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Behaviour is cited, never transcribed.
  */
+@DisplayName("Application JSON contract: the mapper the deployed application actually uses")
 class ApplicationJsonContractTest {
 
     /**

@@ -109,6 +109,8 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * CardDemo_v1.0-15-g27d6c6f-68 dated 2022-07-19. The stamp is recorded here as a plain header
  * string only; it is never asserted against any member of the class under test.
  */
+@DisplayName("JclCardImageBuilder - the batch-trigger image is fixed, and a caller's dates cannot "
+        + "reshape it")
 class JclCardImageBuilderSecurityTest {
 
     // ORACLE DIMENSIONS

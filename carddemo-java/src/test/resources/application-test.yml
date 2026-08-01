@@ -68,10 +68,12 @@ carddemo:
     s3:
       bucket: carddemo-batch-staging
     sqs:
-      job-submission-queue: carddemo-jobs.fifo
+      # The legacy resource name, carried unchanged and suffixed only because a FIFO queue must be;
+      # the operator-visible message text still names the transient-data queue as plain JOBS. The
+      # 80-byte record width and the ignore-on-error tolerance are deliberately not keys here -
+      # both are enforced in the publisher instead. See docs/decision-log.md DL-092 and DL-094.
+      job-submission-queue: JOBS.fifo
       message-group-id: carddemo-job-submission
-      record-length: 80
-      fail-on-error: false
     sns:
       job-notification-topic: carddemo-job-notifications
   security:

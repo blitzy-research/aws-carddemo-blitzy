@@ -21,12 +21,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -37,8 +41,12 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.core.env.EnumerablePropertySource;
+import org.springframework.core.env.MutablePropertySources;
 import org.springframework.core.env.PropertySource;
+import org.springframework.core.env.PropertySourcesPropertyResolver;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 
 /**
  * Pins the fail-closed posture of the shipped configuration: that the shared baseline is the
@@ -167,6 +175,52 @@ final class ConfigurationProfileBaselineTest {
     /** The field-encryption key, which the shared baseline must not supply. */
     private static final String KEY_FIELD_ENCRYPTION_KEY =
             "carddemo.security.field-encryption.key";
+
+    /** The destination queue for the online-to-batch job-submission bridge. */
+    private static final String KEY_JOB_SUBMISSION_QUEUE =
+            "carddemo.aws.sqs.job-submission-queue";
+
+    /** The strategy applied when the destination queue cannot be resolved. */
+    private static final String KEY_QUEUE_NOT_FOUND_STRATEGY =
+            "spring.cloud.aws.sqs.queue-not-found-strategy";
+
+    /** The queue endpoint, declared by the local overlay alongside the inherited strategy. */
+    private static final String KEY_SQS_ENDPOINT = "spring.cloud.aws.sqs.endpoint";
+
+    /** A withdrawn key: the record width, now a constant the publisher enforces. */
+    private static final String KEY_RECORD_LENGTH = "carddemo.aws.sqs.record-length";
+
+    /** A withdrawn key: the failure tolerance, now the publisher's own structure. */
+    private static final String KEY_FAIL_ON_ERROR = "carddemo.aws.sqs.fail-on-error";
+
+    /** The migration location every profile reads, production included. */
+    private static final String KEY_FLYWAY_LOCATIONS = "spring.flyway.locations";
+
+    /** The location carrying the schema and index migrations. */
+    private static final String MIGRATION_LOCATION = "classpath:db/migration";
+
+    /** The location reserved for reference rows and sign-on identities, which production never lists. */
+    private static final String SEED_LOCATION = "classpath:db/seed";
+
+    /** Class-path folder behind {@link #MIGRATION_LOCATION}, as a resource pattern reads it. */
+    private static final String MIGRATION_FOLDER = "db/migration";
+
+    /** Class-path folder behind {@link #SEED_LOCATION}. */
+    private static final String SEED_FOLDER = "db/seed";
+
+    /**
+     * How a shipped document states the highest version a migration currently reaches.
+     *
+     * <p>The version number is appended by the assertion from the delivered scripts rather than
+     * written here, so the expectation is the delivered state and not a second copy of the claim.
+     */
+    private static final String DELIVERED_VERSION_CLAIM = "currently ends at V";
+
+    /** The legacy transient-data queue's name, carrying the suffix the queue service requires. */
+    private static final String EXPECTED_JOB_SUBMISSION_QUEUE = "JOBS.fifo";
+
+    /** The only strategy that keeps queue provisioning outside the application. */
+    private static final String EXPECTED_QUEUE_NOT_FOUND_STRATEGY = "FAIL";
 
     /**
      * The three values the application cannot operate without, none of which may be declared or
@@ -514,6 +568,306 @@ final class ConfigurationProfileBaselineTest {
         }
     }
 
+    /**
+     * Holds every declared request-authorization setting to a consumer that reads it.
+     *
+     * <p>A review finding recorded that this block published a token issuer, a token lifetime and a
+     * mandatory-transport rule while no binder, provider, filter or channel rule consumed any of them - so
+     * the settings described a posture the running system did not take, and the framework's own generated
+     * user was the actual authentication mechanism. The repair was to build those consumers. What these
+     * assertions prevent is the reverse drift: a key added here later with nothing reading it, or a key a
+     * consumer requires going undeclared where it is required.</p>
+     *
+     * <p>The bound set is read from the property class itself rather than restated, so the two cannot be
+     * edited apart.</p>
+     */
+    @Nested
+    @DisplayName("every declared security setting has a consumer that reads it")
+    final class EverySecuritySettingHasAConsumer {
+
+        /** Keys the token settings class binds, relative to its own prefix. */
+        private static final List<String> BOUND_TOKEN_KEYS = List.of("secret", "issuer", "expiration");
+
+        /**
+         * Collects the token-setting keys a document declares, relative to the bound prefix.
+         *
+         * @param document configuration document to inspect
+         * @return the relative key names declared there
+         */
+        private List<String> declaredTokenKeys(final String document) {
+            final String prefix = JwtProperties.PREFIX + ".";
+            return properties(document).keySet().stream()
+                    .filter(key -> key.startsWith(prefix))
+                    .map(key -> key.substring(prefix.length()))
+                    .sorted()
+                    .toList();
+        }
+
+        @ParameterizedTest(name = "{0} declares only keys that are bound")
+        @ValueSource(strings = {SHARED, LOCAL, PRODUCTION, TEST})
+        @DisplayName("declares no token setting the binder does not read, so a key here cannot be a "
+                + "statement about behaviour with nothing behind it")
+        void declaresNoUnboundTokenSetting(final String document) {
+            assertThat(declaredTokenKeys(document))
+                    .as("%s declares a %s.* key that %s does not bind", document,
+                            JwtProperties.PREFIX, JwtProperties.class.getSimpleName())
+                    .isSubsetOf(BOUND_TOKEN_KEYS);
+        }
+
+        @Test
+        @DisplayName("declares the issuer and the lifetime in the shared baseline, where every profile "
+                + "inherits them, and the signing value in none of it")
+        void declaresIssuerAndLifetimeSharedAndSecretNowhereShared() {
+            assertThat(declaredTokenKeys(SHARED)).contains("issuer", "expiration");
+            assertThat(properties(SHARED)).doesNotContainKey(KEY_JWT_SECRET);
+        }
+
+        @ParameterizedTest(name = "{0} supplies a signing value")
+        @ValueSource(strings = {LOCAL, PRODUCTION, TEST})
+        @DisplayName("supplies the signing value in every profile that can start, because a chain with "
+                + "nothing to verify tokens with must not reach a running state")
+        void everyStartableProfileSuppliesASigningValue(final String document) {
+            assertThat(properties(document))
+                    .as("%s must supply %s or the context cannot start", document, KEY_JWT_SECRET)
+                    .containsKey(KEY_JWT_SECRET);
+        }
+
+        @Test
+        @DisplayName("resolves a usable lifetime for each startable profile, so the bound duration is a "
+                + "duration rather than a token that survived unresolved")
+        void resolvesAUsableLifetimeEverywhere() {
+            for (final String overlay : List.of(LOCAL, PRODUCTION, TEST)) {
+                final String lifetime =
+                        resolvedAcrossSharedThen(overlay, JwtProperties.PREFIX + ".expiration");
+
+                assertThat(Duration.parse(lifetime))
+                        .as("%s resolves an unusable token lifetime", overlay)
+                        .isPositive();
+            }
+        }
+
+        @ParameterizedTest(name = "{0} states a transport posture")
+        @ValueSource(strings = {SHARED, LOCAL, PRODUCTION, TEST})
+        @DisplayName("states the transport rule explicitly in every document, because the chain reads it "
+                + "with no default of its own and an absent value would stop the start")
+        void everyDocumentStatesTheTransportRule(final String document) {
+            assertThat(properties(document))
+                    .as("%s must state %s rather than leave it to be inferred", document,
+                            KEY_REQUIRE_HTTPS)
+                    .containsKey(KEY_REQUIRE_HTTPS);
+        }
+
+        @Test
+        @DisplayName("requires transport security wherever the deployment is not a loopback one, and "
+                + "relaxes it only in the two profiles that are")
+        void requiresTransportSecurityExceptOnLoopback() {
+            assertThat(resolvedIn(SHARED, KEY_REQUIRE_HTTPS)).isEqualTo("true");
+            assertThat(resolvedAcrossSharedThen(PRODUCTION, KEY_REQUIRE_HTTPS)).isEqualTo("true");
+            assertThat(resolvedAcrossSharedThen(LOCAL, KEY_REQUIRE_HTTPS)).isEqualTo("false");
+            assertThat(resolvedAcrossSharedThen(TEST, KEY_REQUIRE_HTTPS)).isEqualTo("false");
+        }
+
+        @Test
+        @DisplayName("keeps the interface-description switch and the address in agreement with the chain, "
+                + "which binds both to decide whether the document may be fetched anonymously")
+        void keepsTheDescriptionSwitchBindable() {
+            assertThat(properties(SHARED))
+                    .containsKey(KEY_API_DOCS_ENABLED)
+                    .containsKey("springdoc.api-docs.path");
+            assertThat(resolvedIn(SHARED, "springdoc.api-docs.path"))
+                    .isEqualTo(EXPECTED_API_DOCS_PATH);
+        }
+    }
+
+    @Nested
+    @DisplayName("the job-submission queue is named and resolved as the legacy resource")
+    final class TheJobSubmissionQueueIsTheLegacyResource {
+
+        @ParameterizedTest(name = "{0} resolves the queue to its legacy resource name")
+        @ValueSource(strings = {SHARED, LOCAL, TEST})
+        @DisplayName("every document that fixes the queue resolves it to the legacy name plus the "
+                + "required suffix")
+        void everyDocumentThatFixesTheQueueResolvesToTheLegacyName(final String document) {
+            assertThat(resolvedIn(document, KEY_JOB_SUBMISSION_QUEUE))
+                    .as("the queue replaces the transient-data queue named JOBS, and the emulator "
+                            + "bootstrap provisions %s; a namespaced name here would be valid, would "
+                            + "name nothing that exists, and would be created silently were the "
+                            + "not-found strategy left at its library default",
+                            EXPECTED_JOB_SUBMISSION_QUEUE)
+                    .isEqualTo(EXPECTED_JOB_SUBMISSION_QUEUE);
+        }
+
+        @Test
+        @DisplayName("production fixes no queue name, resolving it from the environment with no "
+                + "fallback")
+        void productionResolvesTheQueueFromTheEnvironment() {
+            assertThat(text(PRODUCTION, KEY_JOB_SUBMISSION_QUEUE))
+                    .as("a deployment names its own queue; a default here would be a placeholder "
+                            + "that started cleanly and published nowhere")
+                    .doesNotContain(EXPECTED_JOB_SUBMISSION_QUEUE)
+                    .contains("${");
+        }
+
+        @Test
+        @DisplayName("the shared baseline refuses to create a queue it cannot find")
+        void theSharedBaselineRefusesToCreateAMissingQueue() {
+            assertThat(text(SHARED, KEY_QUEUE_NOT_FOUND_STRATEGY))
+                    .as("the messaging library leaves this unset and its template then defaults to "
+                            + "creating the queue, so omitting the key is not neutral: a valid but "
+                            + "wrong name would be created on first publish and the submission would "
+                            + "sit in a queue nothing consumes. The legacy queue pre-existed first "
+                            + "use, so provisioning belongs outside the application")
+                    .isEqualTo(EXPECTED_QUEUE_NOT_FOUND_STRATEGY);
+        }
+
+        @Test
+        @DisplayName("the local overlay's own queue settings do not displace the inherited strategy")
+        void theLocalOverlayDoesNotDisplaceTheInheritedStrategy() {
+            assertThat(properties(LOCAL))
+                    .as("the overlay declares an endpoint under the same parent node as the "
+                            + "strategy, and the strategy must be inherited rather than restated")
+                    .containsKey(KEY_SQS_ENDPOINT)
+                    .doesNotContainKey(KEY_QUEUE_NOT_FOUND_STRATEGY);
+
+            assertThat(resolvedAcrossSharedThen(LOCAL, KEY_QUEUE_NOT_FOUND_STRATEGY))
+                    .as("documents are flattened to individual keys before they become property "
+                            + "sources, so a sibling key in the overlay cannot shadow this one; were "
+                            + "the parent node replaced wholesale instead, this would resolve to null "
+                            + "and the effective strategy would silently revert to creating queues")
+                    .isEqualTo(EXPECTED_QUEUE_NOT_FOUND_STRATEGY);
+
+            assertThat(resolvedAcrossSharedThen(LOCAL, KEY_SQS_ENDPOINT))
+                    .as("the overlay's own value must still win where it declares one")
+                    .isEqualTo(resolvedIn(LOCAL, KEY_SQS_ENDPOINT));
+        }
+
+        @ParameterizedTest(name = "{0} declares neither inert queue key")
+        @ValueSource(strings = {SHARED, LOCAL, PRODUCTION, TEST})
+        @DisplayName("no document re-declares the record width or the failure tolerance, because "
+                + "nothing binds them and both are enforced in code")
+        void noDocumentReDeclaresTheInertQueueKeys(final String document) {
+            assertThat(properties(document))
+                    .as("both values are fixed by the legacy queue definition rather than chosen by "
+                            + "a deployment. Declared here they read as adjustable while nothing "
+                            + "reads them, and binding them to a validator admitting only one value "
+                            + "would relocate that pretence rather than remove it. The width is the "
+                            + "constant the publisher checks each card against; the tolerance is the "
+                            + "publisher catching and reporting instead of rethrowing")
+                    .doesNotContainKey(KEY_RECORD_LENGTH)
+                    .doesNotContainKey(KEY_FAIL_ON_ERROR);
+        }
+    }
+
+    /**
+     * Holds the documented migration set to the migration set that ships.
+     *
+     * <p>Two separate things are asserted here and they fail for different reasons.</p>
+     *
+     * <p>The first is the separation itself: reference rows and sign-on identities live in a location
+     * production does not list, so a production migration cannot inherit them. That is structural rather
+     * than conditional - there is no flag to leave in the wrong position - and it is asserted against the
+     * merged environment as well as against each document, because inheritance is what a running
+     * application resolves and a per-document reading cannot answer an inheritance question.</p>
+     *
+     * <p>The second is truthfulness. The documents previously described the seed location as supplying
+     * sample rows and sign-on identities and referred to a migration reaching a version the delivered
+     * scripts do not reach: the location is declared and carries no script, so a migration ends earlier
+     * than the text implied. Correcting the text is not durable on its own, because the correction
+     * becomes wrong again the moment a script is added - which is the point at which nobody is reading
+     * these comments. So the claim is asserted against the delivered scripts rather than against a
+     * second copy of itself: {@link #everyDocumentCitesTheHighestDeliveredVersion()} reads the highest
+     * version present under either location and requires both documents to cite that number, so adding
+     * a migration fails the build until the text catches up.</p>
+     */
+    @Nested
+    @DisplayName("the documented migration set is the migration set that ships")
+    final class TheDocumentedMigrationSetIsTheDeliveredOne {
+
+        @Test
+        @DisplayName("the shared baseline lists the schema location alone, so no profile inherits the "
+                + "seeds by forgetting to exclude them")
+        void theSharedBaselineListsTheSchemaLocationAlone() {
+            assertThat(text(SHARED, KEY_FLYWAY_LOCATIONS))
+                    .as("the seeds are excluded by not being listed rather than by being switched off, "
+                            + "which is what makes their exclusion survive an overlay that copies this "
+                            + "block and edits one line of it")
+                    .isEqualTo(MIGRATION_LOCATION)
+                    .doesNotContain(SEED_LOCATION);
+        }
+
+        @Test
+        @DisplayName("the production overlay restates the schema location rather than relying on "
+                + "inheritance, and resolves without the seeds even when layered")
+        void theProductionOverlayNeverReachesTheSeeds() {
+            assertThat(text(PRODUCTION, KEY_FLYWAY_LOCATIONS))
+                    .isEqualTo(MIGRATION_LOCATION);
+
+            assertThat(resolvedAcrossSharedThen(PRODUCTION, KEY_FLYWAY_LOCATIONS))
+                    .as("the resolved value is what the running application migrates from; a baseline "
+                            + "that had listed the seeds would reach production through this merge no "
+                            + "matter what the overlay said about them")
+                    .isEqualTo(MIGRATION_LOCATION)
+                    .doesNotContain(SEED_LOCATION);
+        }
+
+        @ParameterizedTest(name = "{0} adds the seed location for itself")
+        @ValueSource(strings = {LOCAL, TEST})
+        @DisplayName("the two profiles that need reference rows add the seed location themselves, "
+                + "keeping the schema location alongside it")
+        void theProfilesThatNeedSeedsAddTheLocationThemselves(final String document) {
+            assertThat(text(document, KEY_FLYWAY_LOCATIONS))
+                    .as("a seed location without the schema location would seed a database with no "
+                            + "tables, so both must be listed rather than one replacing the other")
+                    .contains(MIGRATION_LOCATION)
+                    .contains(SEED_LOCATION);
+        }
+
+        @Test
+        @DisplayName("the schema location carries the delivered migrations and the seed location is "
+                + "declared while carrying none, which is the state the documents must describe")
+        void theDeliveredScriptsAreTheOnesTheDocumentsName() {
+            assertThat(versionedScriptsIn(MIGRATION_FOLDER))
+                    .as("the schema and its indexes are the delivered set; a script added here without "
+                            + "a corresponding edit to the documents would leave them naming a shorter "
+                            + "set than ships")
+                    .containsExactly("V1__create_schema.sql", "V2__create_indexes.sql");
+
+            assertThat(versionedScriptsIn(SEED_FOLDER))
+                    .as("the location is declared in advance so that the first seed script is written "
+                            + "into a place production already cannot see; until one is, a migration "
+                            + "reaches no further than the schema location takes it")
+                    .isEmpty();
+        }
+
+        @ParameterizedTest(name = "{0} cites the version its migrations actually reach")
+        @ValueSource(strings = {SHARED, LOCAL})
+        @DisplayName("every document that states how far a migration reaches cites the highest version "
+                + "actually delivered, so adding a migration cannot leave the claim stale")
+        void everyDocumentCitesTheHighestDeliveredVersion(final String document) {
+            int highest = highestDeliveredVersion();
+
+            assertThat(rawTextOf(document))
+                    .as("%s must state that a migration currently ends at V%d, because that is the "
+                            + "highest version delivered under %s or %s. If a migration was just "
+                            + "added, this claim is now stale and the comment that carries it must be "
+                            + "updated or removed", document, highest, MIGRATION_FOLDER, SEED_FOLDER)
+                    .contains(DELIVERED_VERSION_CLAIM + highest);
+        }
+
+        @Test
+        @DisplayName("no document describes the seed location as already supplying rows, which is the "
+                + "overstatement being removed")
+        void noDocumentDescribesTheSeedsAsAlreadySupplied() {
+            for (final String document : List.of(SHARED, LOCAL, PRODUCTION, TEST)) {
+                assertThat(rawTextOf(document))
+                        .as("%s must not describe rows the seed location does not yet carry", document)
+                        .doesNotContain("db/seed        sample rows")
+                        .doesNotContain("reach V4")
+                        .doesNotContain("reaches V4");
+            }
+        }
+    }
+
     // Providers.
 
     /**
@@ -585,6 +939,125 @@ final class ConfigurationProfileBaselineTest {
             }
         }
         return flattened;
+    }
+
+    /**
+     * Resolves a key the way the running application would, with an overlay layered over the shared
+     * baseline.
+     *
+     * <p>This exists because a per-document assertion cannot answer an inheritance question. Reading
+     * the overlay alone shows only what the overlay declares; reading the baseline alone shows only
+     * what the baseline declares. What matters for a key declared in one and neighboured by a sibling
+     * in the other is what the merged environment yields, and that is what this reproduces: the two
+     * documents are added as property sources in the same precedence order the framework uses, the
+     * overlay ahead of the baseline, and the key is resolved against the result.
+     *
+     * <p>The resolver is the framework's own, over the framework's own property sources, so the
+     * merge semantics under test are the real ones rather than an imitation of them.
+     *
+     * <p>Resolution also substitutes placeholders, which is why these assertions compare against a
+     * resolved value rather than against declared text. A value written as an environment override
+     * with a fallback yields its fallback here, because the only property sources present are the two
+     * documents: no environment source is added, so an ambient variable of the same name cannot reach
+     * the result and the outcome is the same on every machine. A value written as an override with no
+     * fallback cannot resolve at all, which is what makes the production profile's absence of
+     * defaults observable rather than merely asserted.
+     *
+     * @param overlay the profile document, taking precedence
+     * @param key     the fully qualified property key
+     * @return the resolved value, or {@code null} when neither document declares it
+     */
+    private static String resolvedAcrossSharedThen(final String overlay, final String key) {
+        MutablePropertySources merged = new MutablePropertySources();
+        loadDocuments(overlay, new ClassPathResource(overlay)).forEach(merged::addLast);
+        loadDocuments(SHARED, new ClassPathResource(SHARED)).forEach(merged::addLast);
+        return new PropertySourcesPropertyResolver(merged).getProperty(key);
+    }
+
+    /**
+     * Resolves a key against one document alone, substituting placeholder fallbacks.
+     *
+     * <p>Used where the question is what a single document fixes rather than what a layered pair
+     * yields. As above, no environment source is added, so a declared fallback is what resolves.
+     *
+     * @param document the class-path name of the document to read
+     * @param key      the fully qualified property key
+     * @return the resolved value, or {@code null} when the document does not declare it
+     */
+    private static String resolvedIn(final String document, final String key) {
+        MutablePropertySources sources = new MutablePropertySources();
+        loadDocuments(document, new ClassPathResource(document)).forEach(sources::addLast);
+        return new PropertySourcesPropertyResolver(sources).getProperty(key);
+    }
+
+    /**
+     * Returns the versioned migration scripts a class-path folder carries, in name order.
+     *
+     * <p>Read from the class path rather than from the source tree, so the answer is what a running
+     * application would find on its own migration location and not what a directory listing of the
+     * repository suggests. A folder that exists and carries no script, and a folder that does not exist
+     * at all, both yield an empty list; the distinction is not one a migration can act on.</p>
+     *
+     * @param folder the class-path folder, such as {@code db/migration}
+     * @return the versioned script file names, sorted; never {@code null}
+     */
+    private static List<String> versionedScriptsIn(final String folder) {
+        try {
+            Resource[] found = new PathMatchingResourcePatternResolver()
+                    .getResources("classpath*:" + folder + "/V*__*.sql");
+            return Stream.of(found)
+                    .map(Resource::getFilename)
+                    .filter(name -> name != null)
+                    .sorted()
+                    .toList();
+        } catch (IOException failure) {
+            throw new UncheckedIOException("migration location is unreadable: " + folder, failure);
+        }
+    }
+
+    /**
+     * Returns the highest migration version delivered under either location.
+     *
+     * <p>Both locations are read because a version number orders the whole migration history rather than
+     * one folder of it: a seed script numbered above the schema scripts is the next version a migration
+     * reaches, and a claim about how far a migration goes has to account for it.</p>
+     *
+     * @return the highest delivered version, or zero when no script is delivered
+     */
+    private static int highestDeliveredVersion() {
+        Pattern version = Pattern.compile("^V(\\d+)__");
+        return Stream.concat(versionedScriptsIn(MIGRATION_FOLDER).stream(),
+                        versionedScriptsIn(SEED_FOLDER).stream())
+                .map(version::matcher)
+                .filter(Matcher::find)
+                .map(matcher -> Integer.valueOf(matcher.group(1)))
+                .mapToInt(Integer::intValue)
+                .max()
+                .orElse(0);
+    }
+
+    /**
+     * Reads a shipped configuration document as text, comments included.
+     *
+     * <p>Every other helper here reads properties, which is the right level for a question about a
+     * value. A question about what a document <em>states</em> cannot be answered that way, because the
+     * statement lives in a comment that no property loader retains. Two of these assertions are about
+     * exactly that, so they read the shipped bytes.</p>
+     *
+     * @param document the class-path name of the document to read
+     * @return the document's full text
+     */
+    private static String rawTextOf(final String document) {
+        ClassPathResource resource = new ClassPathResource(document);
+        if (!resource.exists()) {
+            throw new IllegalStateException("shipped configuration document is missing: " + document);
+        }
+        try {
+            return resource.getContentAsString(StandardCharsets.UTF_8);
+        } catch (IOException failure) {
+            throw new UncheckedIOException("shipped configuration document is unreadable: "
+                    + document, failure);
+        }
     }
 
     /**

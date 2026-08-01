@@ -237,18 +237,52 @@
     <commons-compress.version>1.28.0</commons-compress.version>
 
     <!-- Second generation JSON library, which is the serialisation
-         layer of the whole request and response surface. The version
-         this framework line would otherwise select restores properties
-         excluded with an ignore-properties declaration when contextual
-         case insensitive binding is in force, which weakens the
-         mass assignment control the request objects rely on; the fixed
-         release is 2.21.5. Declared as the family bill of materials'
-         own property so that core, databind, annotations and every
-         data format and data type module move together and cannot
-         diverge. This is entirely separate from the third generation
-         coordinates governed by tools-jackson.version above, which
-         reach the classpath only through the logging encoder. -->
-    <jackson-bom.version>2.21.5</jackson-bom.version>
+         layer of the whole request and response surface. This value
+         restates the version the frozen dependency inventory records,
+         which is also the version this framework line selects, so the
+         declaration pins rather than overrides. It is stated
+         explicitly for two reasons. It makes the inventory's value
+         visible at the single place a reader looks for a version, and
+         because the property is the family bill of materials' own
+         property name, one value governs the streaming core, the
+         databind layer and every data format, data type and module
+         artifact together, so none of those can drift forward alone.
+         The annotations artifact is the deliberate exception, and it
+         is worth stating rather than glossing. Neither bill of
+         materials ties annotations to the patch version: the second
+         generation one versions it minor-only, and the third
+         generation one, having no annotations module of its own,
+         reuses the second generation artifact at the newest 2.x
+         release. The third generation declaration is the one that
+         wins here. So annotations resolves one minor ahead of the rest
+         of the family by upstream design, not by drift. That is safe
+         because the 2.x annotations contract is compatible across the
+         line - which is exactly why both bills of materials treat it
+         separately and why the third generation reuses it instead of
+         shipping a replacement - and because the frozen inventory
+         names the databind coordinate, which this value fixes.
+         An earlier revision raised this property to 2.21.5 to clear a
+         moderate finding about properties excluded by an
+         ignore-properties declaration being restored when contextual
+         case insensitive binding is in force. That is reverted. The
+         inventory is frozen and no exception authorises editing it,
+         the finding scores below the threshold at which the supply
+         chain scan fails a build, and the finding's precondition does
+         not hold here: this module enables case insensitive property
+         binding nowhere, and declares no ignore-properties exclusion
+         to be restored. The raise also did not achieve what it was
+         credited with, because the annotations divergence it was
+         thought to explain has the separate cause described above and
+         is unchanged by it. Recorded in docs/decision-log.md DL-090,
+         including why the residual advisory is reported rather than
+         gated and why suppressing it was rejected.
+         This is entirely separate from the third generation
+         coordinates governed by tools-jackson.version below, which
+         reach the classpath only through the logging encoder. That
+         override stands; the two generations are distinct coordinate
+         families and neither value constrains the other, save for the
+         shared annotations artifact noted above. -->
+    <jackson-bom.version>2.21.4</jackson-bom.version>
 
     <!-- The structured logging encoder is built against the third
          major generation of the JSON library, which reaches the
@@ -1160,6 +1194,29 @@
             <id>repackage</id>
             <goals>
               <goal>repackage</goal>
+            </goals>
+          </execution>
+          <!-- Build identity, written to META-INF/build-info.properties during generate-resources
+               and read back at run time by the build information contributor behind the info
+               endpoint. Without this execution that contributor has nothing to publish, so the
+               endpoint answers with the Java and process detail alone while the configuration
+               describes it as a build identity surface - a claim the artefact did not support.
+               Binding the goal is what makes the claim true, and it is the only way to make it
+               true, because the file is generated at build time and cannot be authored by hand
+               without becoming stale.
+               The group, artifact, version and build timestamp are the whole payload. No
+               environment value is contributed: the info endpoint's environment contributor stays
+               disabled in configuration precisely so that a property whose name happens to begin
+               with the exposed prefix can never be published, and nothing here re-opens it.
+               The published version is the module's own coordinate, which is also what the API
+               documentation configuration reports once this file exists: that configuration reads
+               the build properties when they are present and falls back to a constant when they
+               are not, so the contract version stops being a hand-maintained constant and starts
+               tracking the artefact. Recorded in docs/decision-log.md DL-091. -->
+          <execution>
+            <id>build-info</id>
+            <goals>
+              <goal>build-info</goal>
             </goals>
           </execution>
         </executions>

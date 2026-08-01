@@ -49,8 +49,6 @@
 #     carddemo.aws.sqs.job-submission-queue     FIFO queue name; the .fifo suffix is REQUIRED
 #     carddemo.aws.sqs.message-group-id         one stable group id, which is what preserves
 #                                               append order across a multi-message submission
-#     carddemo.aws.sqs.record-length            fixed width of a single submitted card image
-#     carddemo.aws.sqs.fail-on-error            false => a publish failure is logged, not raised
 #     carddemo.aws.sns.job-notification-topic   topic for job-completion / operational fan-out
 #     carddemo.security.jwt.issuer              token issuer claim
 #     carddemo.security.jwt.secret              signing material - see the security block below
@@ -90,7 +88,8 @@
 #   byte-identically in this file, in docker-compose.yml and in the emulator bootstrap script, so
 #   changing one here changes nothing until all three change together:
 #     carddemo-batch-staging       object-store bucket
-#     carddemo-jobs.fifo           first-in-first-out submission queue
+#     JOBS.fifo                    first-in-first-out submission queue, carrying the legacy
+#                                  transient-data queue name plus the suffix the service demands
 #     carddemo-job-submission      message group id
 #     carddemo-job-notifications   notification topic
 #     us-east-1                    region
@@ -101,22 +100,41 @@
 #   only within a single message group, and append order is the part of the legacy queue contract
 #   that acceptance drains a real queue to verify.
 #
-#   NAMING RATIONALE - recorded rather than left implicit. Every target resource is namespaced to
-#   this module and every name is expressed in the naming form its own service requires. The queue
-#   stands in for a CICS transient-data queue whose legacy resource name is JOBS. That name is NOT
-#   discarded: it is carried where it is actually contractual - in the frozen operator message text
-#   emitted when a submission fails, which names the transient-data queue verbatim and is asserted
-#   character for character - and as provenance in this comment, in the queue-contract block further
-#   down and in the traceability matrix. An infrastructure name and an operator-visible message are
-#   two different contracts, and only the second one is byte-compared, so the first follows the
-#   mandated naming and the second follows the legacy text. Reusing the four-character legacy name
-#   as the cloud resource name would place an unqualified, unnamespaced queue in an account that may
-#   host unrelated workloads, and it would leave the bucket and topic namespaced while the queue and
-#   group id were not - an inconsistency in a set whose whole value is that it is one set. Naming is
-#   a target-platform concern and carries no business behaviour, so nothing about parity is at stake:
-#   the 80-byte record width, the append ordering and the ignore-on-error semantics - the parts of
-#   the legacy contract that are observable - are preserved exactly and are asserted independently of
-#   what the queue is called. The reasoning is recorded in docs/decision-log.md.
+#   NAMING RATIONALE - recorded rather than left implicit. Each name is expressed in the naming form
+#   its own service requires, and the queue is the one member of the set that carries a legacy name
+#   rather than a module-namespaced one. It stands in for the CICS transient-data queue named JOBS,
+#   the migration plan names that resource, and the emulator provisions JOBS.fifo - so the value is
+#   the legacy name plus the single suffix the queue service demands, and nothing else.
+#
+#   THE QUEUE IS DELIBERATELY THE EXCEPTION IN THIS SET, and the asymmetry is the point rather than
+#   an oversight. The bucket and the topic have no legacy resource name to carry: they replace
+#   sequential datasets and a screen message respectively, so they take module-namespaced names. The
+#   queue does have one, and it is the only external interface this module publishes to. An external
+#   interface's contract is reproduced, not renegotiated, and the resource name is part of it.
+#   See docs/decision-log.md DL-045 for that asymmetry, and DL-047 for why this overlay widens the
+#   shared baseline's fail-closed defaults one concession at a time rather than in bulk.
+#
+#   An earlier revision namespaced the queue too, arguing that an infrastructure name and an
+#   operator-visible message are two different contracts, that only the second is byte-compared, and
+#   that an unqualified four-character name could collide with an unrelated queue in a shared
+#   account. The distinction is real; the conclusion drawn from it is not. The resource name is
+#   itself part of the frozen inventory and no exception authorises changing it, so "only the
+#   message is byte-compared" does not license renaming the resource - it only explains why the
+#   message is unaffected by the suffix. The collision concern is a deployment concern, and the
+#   environment override on the value already answers it without changing what the module ships.
+#   Uniformity across the set was the weakest of the three arguments: consistency is worth having
+#   where nothing else decides the name, and here something else does.
+#
+#   The namespaced name also disagreed with the resource the environment actually provisions, which
+#   is precisely the valid-but-wrong-name failure the queue-not-found strategy inherited from
+#   application.yml now makes loud instead of silent. Reversing the name and setting that strategy
+#   are two halves of one correction.
+#
+#   The operator-visible message text is unchanged by any of this. It names the transient-data queue
+#   verbatim as JOBS with no suffix, is asserted character for character, and is frozen text rather
+#   than a reference to the resource - nothing composes one from the other. The 80-byte record width,
+#   the append ordering and the ignore-on-error semantics remain preserved exactly and asserted
+#   independently of what the queue is called. See docs/decision-log.md DL-092.
 #
 # WHAT IS DELIBERATELY ABSENT - each absence is a decision, not an oversight
 #   * No pool sizing, no pool time-out. See the datasource block.
@@ -169,13 +187,18 @@ spring:
   #   classpath:db/migration   V1__create_schema.sql   the eleven application tables
   #                            V2__create_indexes.sql  keys and alternate-index equivalents
   #                                                    -> every profile, production included
-  #   classpath:db/seed        sample rows and sign-on identities -> local and test ONLY
+  #   classpath:db/seed        reference rows and sign-on identities -> local and test ONLY
+  #                            NOT YET DELIVERED: this location is declared and carries no script, so
+  #                            a migration currently ends at V2 here as it does everywhere. The
+  #                            location is listed in advance deliberately - see below.
   #
   # The production overlay lists classpath:db/migration alone, so production migrates schema and
-  # indexes without inheriting sample rows or seeded identities. Keeping the seeds in a separate
-  # location rather than behind a flag makes that guarantee structural instead of conditional. Any
-  # seed script added under db/seed must therefore stay out of db/migration, and must store a
-  # sign-on credential only as a hash.
+  # indexes without inheriting reference rows or seeded identities. Keeping the seeds in a separate
+  # location rather than behind a flag makes that guarantee structural instead of conditional, and
+  # declaring the location before any script occupies it is what makes the guarantee hold in advance:
+  # the first seed script is written into a location production already cannot see, so it is never
+  # one review away from being inherited. Any seed script added under db/seed must therefore stay out
+  # of db/migration, and must store a sign-on credential only as a hash.
   #
   # clean-disabled is relaxed here and only here, so a developer iterating on a migration can drop
   # and re-apply. The baseline and the production overlay both forbid it.
@@ -251,6 +274,15 @@ management:
     web:
       base-path: /actuator
       exposure:
+        # WIDENING THIS LIST WIDENS WHAT A CREDENTIAL REACHES, NEVER WHAT ANONYMITY REACHES.
+        # com.carddemo.config.SecurityConfig permits exactly two paths beneath this base path - the
+        # health probe and the metrics scrape endpoint - and authenticates everything else under it
+        # with a rule placed after those two permits and before the catch-all. Every endpoint added
+        # on this line beyond those two therefore requires a bearer token, including the ones that
+        # describe the running system most completely: env and configprops publish the resolved
+        # configuration, beans the wiring, flyway the schema history, mappings the route table and
+        # loggers a writable log level. None of them is anonymous, and none becomes anonymous by
+        # being listed here, because no rule anywhere permits this base path as a whole.
         include: health,info,metrics,prometheus,env,configprops,beans,flyway,mappings,loggers
   endpoint:
     health:
@@ -271,15 +303,31 @@ management:
       # port-offset scheme in docker-compose.yml can move the sink between side-by-side stacks.
       endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:${JAEGER_OTLP_HTTP_PORT:4318}/v1/traces}
 
-# The interface description and its viewer, reopened from the baseline's disabled state. This is the
-# profile it exists for: the document is how a developer discovers the endpoints derived from the
-# 17 legacy screens without reading the controllers. Its path comes from application.yml, so only
-# the switch appears here and the path cannot drift between profiles.
+# The interface description, reopened from the baseline's disabled state. This is the profile it
+# exists for: the document is how a developer reads the contract without reading the code. Its path
+# comes from application.yml, so only the switch appears here and the path cannot drift between
+# profiles.
 #
-# Reopening it is safe HERE and nowhere else. The document is a complete description of the request
-# and response shape of every endpoint. On a developer's machine that is the whole point; on
-# anything reachable by someone else it is a map handed to them. The production overlay does not
-# turn it off - it inherits it off.
+# WHAT IS ACTUALLY SERVED HERE TODAY: identity metadata, the reusable component shapes and the
+# bearer security scheme - and no endpoint inventory, because no request-mapped controller exists
+# yet to contribute one. Fetching this address on a running local stack returns a document with an
+# empty paths object, and that is the expected answer rather than a symptom of a broken overlay.
+# The inventory is later bound and grows as the controllers derived from the 17 legacy screens
+# arrive; this switch needs no change when they do. See docs/decision-log.md DL-101.
+#
+# Reopening it is safe HERE and nowhere else, and that is a judgement about what the document will
+# carry rather than about how little it carries now. Once it describes the request and response
+# shape of every endpoint, it is exactly what a developer wants and exactly what an unauthenticated
+# caller should not be handed. On a developer's machine that is the whole point; on anything
+# reachable by someone else it is a map handed to them. The production overlay does not turn it
+# off - it inherits it off, and it inherits it off already, before there is anything to disclose.
+#
+# THIS SWITCH ALSO DECIDES WHETHER THE DOCUMENT MAY BE FETCHED WITHOUT A CREDENTIAL.
+# com.carddemo.config.SecurityConfig binds this same key and adds the anonymous rule for the document
+# address ONLY when the key is set, and it binds the address rather than restating it. So the profile
+# that publishes the document is the profile that permits reading it, in one decision rather than two
+# that could disagree: a profile leaving it unpublished has no anonymous rule for it, and a request
+# for it there is refused rather than served. Nothing else in this overlay is reopened to anonymity.
 #
 # There is no interactive viewer to reopen, here or anywhere. The browser asset bundle is excluded
 # from the starter in pom.xml, so no profile can render one. This overlay therefore inherits the
@@ -294,8 +342,14 @@ springdoc:
 
 # Levels only; appender selection and the structured encoder live in logback-spring.xml. Raising the
 # application package to DEBUG is the point of a local overlay: the migrated services log their
-# decision points, and the migration tool logs each script it applies, so a start-up that fails to
-# reach V4 says so plainly. The framework packages stay at INFO so that signal is not buried.
+# decision points, and the migration tool logs each script it applies, so a start-up that stops short
+# of the highest delivered version says so plainly. The framework packages stay at INFO so that
+# signal is not buried.
+#
+# What DEBUG does not disclose: the services reached by this level log outcomes, status codes, format
+# identifiers and their own message numbers, never the value a caller submitted. That is a property of
+# the log statements rather than of this level, so raising the level here cannot turn a diagnostic
+# into a disclosure - see docs/decision-log.md DL-100.
 logging:
   level:
     com.carddemo: DEBUG
@@ -309,13 +363,16 @@ logging:
 # from exactly one site, and that write was its entire online-to-batch bridge. The queue attributes
 # are behavioural and are reproduced rather than approximated:
 #
-#   RECORDSIZE(80)         one 80-character fixed-width card per message; record-length carries that
-#                          width so the publisher asserts it instead of assuming it.
+#   RECORDSIZE(80)         one 80-character fixed-width card per message. The width is a constant in
+#                          the publisher, which asserts every card's encoded byte count against it
+#                          and rejects any other width; it is deliberately not a key here.
 #   RECORDFORMAT(FIXED)    one message per card - no batching, no concatenation.
 #   DISPOSITION(MOD)       appended, so ORDER IS PART OF THE CONTRACT. Hence a FIFO queue and a single
 #                          stable message-group id: a standard queue would silently reorder.
-#   ERROROPTION(IGNORE)    a write failure was tolerated; fail-on-error: false keeps that, logging the
-#                          publish failure and continuing.
+#   ERROROPTION(IGNORE)    a write failure was tolerated, and the publisher's structure keeps that:
+#                          the write is caught and reported through the return value, never rethrown.
+#                          Also deliberately not a key - see application.yml for why declaring these
+#                          two as configuration was withdrawn, and docs/decision-log.md DL-094.
 #   TYPEFILE(OUTPUT)       publish only - nothing in this module consumes from this queue.
 #   OPENTIME(INITIAL)      the queue pre-existed first use, which is why the emulator bootstrap runs
 #                          to completion before the application starts rather than creating it lazily.
@@ -329,10 +386,8 @@ carddemo:
     s3:
       bucket: ${CARDDEMO_S3_BUCKET:carddemo-batch-staging}
     sqs:
-      job-submission-queue: ${CARDDEMO_SQS_QUEUE:carddemo-jobs.fifo}
+      job-submission-queue: ${CARDDEMO_SQS_QUEUE:JOBS.fifo}
       message-group-id: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:carddemo-job-submission}
-      record-length: 80
-      fail-on-error: false
     sns:
       job-notification-topic: ${CARDDEMO_SNS_TOPIC:carddemo-job-notifications}
   security:
@@ -341,6 +396,18 @@ carddemo:
     # environment. Production declares the same key as an environment reference with NO fallback, so
     # a missing secret aborts start-up. The issuer is restated rather than inherited so a locally
     # minted token is identifiable, and it is deliberately not the metric service label.
+    #
+    # BOUND AND USED, not declared and ignored. com.carddemo.config.JwtProperties binds and validates
+    # these three keys and com.carddemo.config.JwtTokenProvider signs and verifies with them, so a
+    # token minted locally is verified by the same material that minted it. The chain that consumes
+    # them states every permitted route explicitly - see docs/decision-log.md DL-096. The value below is long
+    # enough for the signature algorithm that class fixes; a shorter one stops start-up with a message
+    # naming this key rather than failing later inside the signing library.
+    #
+    # The framework's own generated-user login is gone rather than dormant: SecurityConfig declares an
+    # authentication manager, which withdraws the auto-configured in-memory user and the password that
+    # would otherwise be written to this profile's log at start-up. Presenting a token is the only way
+    # to authenticate here, exactly as in production.
     jwt:
       issuer: carddemo-java
       secret: ${CARDDEMO_JWT_SECRET:local-development-only-signing-secret-do-not-reuse-0123456789}
@@ -360,4 +427,11 @@ carddemo:
     # has decrypted it for a response. Neither risk exists for a process addressing containers over
     # the loopback interface on one machine, which is the only situation this profile describes.
     # Production does not re-require HTTPS - it inherits the requirement.
+    #
+    # The relaxation is now load-bearing rather than decorative. SecurityConfig binds this key, and
+    # when it is set it redirects every insecure request instead of serving it. Left at the baseline's
+    # value, a plain `curl localhost:8080/...` against this profile would be answered with a redirect
+    # to a port nothing is listening on. Clearing it here is what keeps local development over the
+    # loopback interface workable, and it is scoped to this profile alone.
+    # See docs/decision-log.md DL-098.
     require-https: false

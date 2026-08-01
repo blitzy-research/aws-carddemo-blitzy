@@ -17,6 +17,7 @@
 package com.carddemo.service;
 
 import java.time.LocalDate;
+import java.util.stream.Collectors;
 
 import com.carddemo.domain.enums.DateFormat;
 import com.carddemo.service.DateValidationService.DateEditFlag;
@@ -24,12 +25,20 @@ import com.carddemo.service.DateValidationService.DateEditResult;
 import com.carddemo.service.DateValidationService.DateFeedback;
 import com.carddemo.service.DateValidationService.SubprogramResult;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.slf4j.LoggerFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -969,6 +978,216 @@ class DateValidationServiceBaselineTest {
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> service.isDateAcceptable(null))
                     .withMessageContaining("result");
+        }
+    }
+
+    /**
+     * Asserts that nothing a caller submitted reaches a log record.
+     *
+     * <p>A review finding recorded that three statements here wrote the candidate date, and one of them
+     * additionally wrote the parser's own failure message - which quotes the offending text back verbatim.
+     * Two consequences follow, and the second is the serious one. The candidate is external, fixed-width
+     * text that the surrounding fields admit any single-byte character into, so a submission carrying a
+     * line separator would append a line of the caller's choosing to the log and have it read as a record
+     * this service emitted. The local profile raises this package to its most detailed level, so the
+     * statements were reachable in the profile a developer actually runs.</p>
+     *
+     * <p>These assertions read the recorded events rather than the source, so they hold against any later
+     * edit that reintroduces a value by a different route - including the parser message, which reads as a
+     * library detail rather than as external input and is the easiest of the three to put back by
+     * accident.</p>
+     */
+    @Nested
+    @DisplayName("Log records: nothing a caller submitted is ever written")
+    class LogRecordsWithholdSubmittedText {
+
+        /** A candidate carrying separators, which a naive record would let inject whole lines. */
+        private static final String FORGING_CANDIDATE = "2024\n\rX1";
+
+        /** A candidate that is well formed but names a day that does not exist. */
+        private static final String NON_EXISTENT_DAY = "20240230";
+
+        /** A format mask that resolves to none this module names. */
+        private static final String UNRESOLVABLE_MASK = "ZZ\nINJECT";
+
+        /**
+         * An accumulated message a caller might arrive with, carrying a separator.
+         *
+         * <p>Non-blank, so the first-wins field is already claimed and no edit of the cascade will
+         * replace it: whatever this holds is what the call returns, and therefore what a record would
+         * carry were the text written rather than described.
+         */
+        private static final String FORGED_CALLER_MESSAGE = "prior edit failed\nINJECTED RECORD";
+
+        private Logger logger;
+        private ListAppender<ILoggingEvent> recorder;
+        private Level originalLevel;
+
+        @BeforeEach
+        void attachRecorderAtTheMostDetailedLevel() {
+            logger = (Logger) LoggerFactory.getLogger(DateValidationService.class);
+            originalLevel = logger.getLevel();
+            recorder = new ListAppender<>();
+            recorder.setContext(logger.getLoggerContext());
+            recorder.start();
+            logger.addAppender(recorder);
+            // The local profile raises this package to its most detailed level, so the statements under
+            // test are recorded there. Asserting at a quieter level would pass while proving nothing.
+            logger.setLevel(Level.TRACE);
+        }
+
+        @AfterEach
+        void detachRecorderAndRestoreLevel() {
+            logger.detachAppender(recorder);
+            recorder.stop();
+            logger.setLevel(originalLevel);
+        }
+
+        /**
+         * Renders every recorded event as the text a log file would carry.
+         *
+         * @return the formatted messages, arguments substituted
+         */
+        private String recordedText() {
+            return recorder.list.stream()
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .collect(Collectors.joining("\u0001"));
+        }
+
+        @Test
+        @DisplayName("withhold a candidate carrying line separators, so a submission cannot append a "
+                + "record of its own")
+        void withholdACandidateCarryingSeparators() {
+            service.validateDate(FORGING_CANDIDATE, DateFormat.YYYYMMDD);
+
+            assertThat(recorder.list)
+                    .as("the statement under test must actually have fired, or this proves nothing")
+                    .isNotEmpty();
+            assertThat(recordedText())
+                    .doesNotContain("2024\n")
+                    .doesNotContain("\r")
+                    .doesNotContain("X1");
+        }
+
+        @ParameterizedTest(name = "candidate {0}")
+        @ValueSource(strings = {"20240230", "19000101", "ABCDEFGH", "        ", "00000000"})
+        @DisplayName("withhold the candidate whatever it is and whichever branch reports it")
+        void withholdTheCandidateOnEveryBranch(final String candidate) {
+            service.validateDate(candidate, DateFormat.YYYYMMDD);
+
+            assertThat(recordedText())
+                    .as("no recorded text may reproduce what was submitted")
+                    .doesNotContain(candidate.strip().isEmpty() ? "\u0000" : candidate.strip());
+        }
+
+        @Test
+        @DisplayName("withhold the parser's own message, which would otherwise quote the candidate back "
+                + "by a route that reads as a library detail")
+        void withholdTheParserMessage() {
+            service.validateDate(NON_EXISTENT_DAY, DateFormat.YYYYMMDD);
+
+            assertThat(recordedText())
+                    .doesNotContain(NON_EXISTENT_DAY)
+                    .doesNotContainIgnoringCase("could not be parsed")
+                    .doesNotContainIgnoringCase("Text '")
+                    .doesNotContainIgnoringCase("Invalid date");
+        }
+
+        @Test
+        @DisplayName("withhold an unresolvable format mask, reporting its width instead, because on that "
+                + "branch the mask is arbitrary caller text rather than one this module names")
+        void withholdAnUnresolvableMask() {
+            service.validateDate("20240101", UNRESOLVABLE_MASK);
+
+            assertThat(recordedText())
+                    .doesNotContain("INJECT")
+                    .doesNotContain("\n");
+            assertThat(recorder.list)
+                    .anySatisfy(event -> assertThat(event.getLevel()).isEqualTo(Level.WARN));
+        }
+
+        @Test
+        @DisplayName("report a resolved format mask by value, because a resolved mask is this module's "
+                + "own literal and is what makes the record useful")
+        void reportAResolvedMaskByValue() {
+            service.validateDate("20240101", DateFormat.YYYYMMDD);
+
+            assertThat(recordedText())
+                    .as("the diagnostic must still say which format was applied")
+                    .contains(DateFormat.YYYYMMDD.getValue().strip());
+        }
+
+        @Test
+        @DisplayName("carry no control byte at all, so no recorded line can be split or overwritten")
+        void carryNoControlByte() {
+            service.validateDate(FORGING_CANDIDATE, DateFormat.YYYYMMDD);
+            service.validateDate(NON_EXISTENT_DAY, DateFormat.YYYY_MM_DD);
+            service.validateDate("20240101", UNRESOLVABLE_MASK);
+
+            for (final ILoggingEvent event : recorder.list) {
+                assertThat(event.getFormattedMessage().chars()
+                        .filter(character -> character < 0x20 || character == 0x7F)
+                        .count())
+                        .as("record [%s] carries a control byte", event.getFormattedMessage())
+                        .isZero();
+            }
+        }
+
+        @Test
+        @DisplayName("withhold the tested date on the tolerated-message branch, which is the record most "
+                + "worth reading and therefore the one most worth controlling")
+        void withholdTheTestedDateOnTheToleratedBranch() {
+            final SubprogramResult result =
+                    service.validateDate(FORGING_CANDIDATE, DateFormat.YYYYMMDD);
+            recorder.list.clear();
+
+            service.isDateAcceptable(result);
+
+            assertThat(recordedText())
+                    .doesNotContain("X1")
+                    .doesNotContain("\n");
+        }
+
+        @Test
+        @DisplayName("withhold an accumulated message the caller brought in, describing it instead, "
+                + "because the module never authored that text and cannot vouch for its bytes")
+        void withholdAnAccumulatedMessageTheCallerBroughtIn() {
+            service.validateCcyymmddDate(NON_EXISTENT_DAY, FORGED_CALLER_MESSAGE);
+
+            assertThat(recorder.list)
+                    .as("the cascade's closing statement must have fired, or this proves nothing")
+                    .isNotEmpty();
+            assertThat(recordedText())
+                    .as("the field is first-wins, so a non-blank message returns unchanged and would "
+                            + "reach the record verbatim if it were written")
+                    .doesNotContain("INJECTED")
+                    .doesNotContain("\n")
+                    .contains("unchanged caller message of");
+        }
+
+        @Test
+        @DisplayName("withhold a caller's accumulated message on the date-of-birth entry point too, "
+                + "which takes the same field and reports it the same way")
+        void withholdACallersMessageOnTheDateOfBirthEntryPoint() {
+            service.validateDateOfBirth("19800101", LocalDate.of(2024, 1, 1), FORGED_CALLER_MESSAGE);
+
+            assertThat(recordedText())
+                    .doesNotContain("INJECTED")
+                    .doesNotContain("\n")
+                    .contains("unchanged caller message of");
+        }
+
+        @Test
+        @DisplayName("record in full the message the module itself authored, because suppressing that "
+                + "would remove the one diagnostic these statements exist for")
+        void recordInFullTheMessageTheModuleAuthored() {
+            service.validateCcyymmddDate(NON_EXISTENT_DAY);
+
+            assertThat(recordedText())
+                    .as("a blank field on entry means any text on return is this module's own literal, "
+                            + "and that literal is the diagnostic these statements exist to carry")
+                    .doesNotContain("unchanged caller message of")
+                    .contains(MESSAGE_CANNOT_HAVE_30_DAYS);
         }
     }
 }

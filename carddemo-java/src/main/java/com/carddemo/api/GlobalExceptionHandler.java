@@ -310,17 +310,30 @@ public final class GlobalExceptionHandler {
     private static final String REQUEST_REJECTED_MESSAGE = "Request could not be processed";
 
     /**
-     * The summary returned when a credential was required inside the dispatch and none was
-     * established. Deliberately free of detail: naming which credential was missing, or whether a
-     * principal existed at all, tells a prober more than it tells a caller.
+     * The summary returned when a credential was required and none was established. Deliberately
+     * free of detail: naming which credential was missing, or whether a principal existed at all,
+     * tells a prober more than it tells a caller.
+     *
+     * <p><strong>Shared with the security filter chain, and public for that reason alone.</strong> An
+     * authentication refusal can be reached two ways: raised inside the dispatch, where the handler
+     * below answers it, or raised in the filter chain <em>before</em> the dispatch, where no
+     * exception handler in this class is ever consulted. Those two paths must not answer the same
+     * condition with two different bodies, so {@code com.carddemo.config.SecurityConfig}'s
+     * entry point renders this same constant rather than a literal of its own. One literal with one
+     * home is the only form of that agreement a reader can check by inspection. The chain that
+     * refuses before the dispatch is reasoned in {@code docs/decision-log.md} DL-096.</p>
      */
-    private static final String AUTHENTICATION_REQUIRED_MESSAGE = "Authentication required";
+    public static final String AUTHENTICATION_REQUIRED_MESSAGE = "Authentication required";
 
     /**
      * The summary returned when an established principal was refused. It names neither the rule
      * that refused nor the role that would have satisfied it, for the same reason.
+     *
+     * <p>Shared with the security filter chain's access-denied handler, and public for the same
+     * reason as the constant above: an authorization refusal decided by a filter-chain rule and one
+     * decided inside the dispatch are the same condition and must read identically.</p>
      */
-    private static final String ACCESS_DENIED_MESSAGE = "Access denied";
+    public static final String ACCESS_DENIED_MESSAGE = "Access denied";
 
     /**
      * The bean-validation constraints that assert presence rather than shape. A field rejected by

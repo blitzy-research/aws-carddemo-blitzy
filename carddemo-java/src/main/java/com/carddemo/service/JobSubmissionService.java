@@ -113,7 +113,8 @@ import com.carddemo.util.JclCardImageBuilder;
  * also achieve; the submission identity makes two submissions of the same reporting period deduplicate
  * against each other, which content-based deduplication would achieve only by accident of the card bytes
  * and a random identifier would defeat entirely. Nothing here is random, so a repeated submission is
- * idempotent within the queue service's deduplication interval.
+ * idempotent within the queue service's deduplication interval. Recorded as a parity exception in
+ * {@code docs/decision-log.md} DL-043.
  *
  * <h2>Exactly seventeen messages, and the sentinel is transmitted</h2>
  *
@@ -188,7 +189,9 @@ import com.carddemo.util.JclCardImageBuilder;
  *       place</strong>: no retry count, no backoff duration and no call timeout may be hardcoded
  *       anywhere, because the migration has no documented legacy baseline from which any such figure
  *       could be derived and the performance gate establishes a baseline rather than testing a
- *       threshold. A literal here would be an invented service level.</li>
+ *       threshold. A literal here would be an invented service level. The strategy that makes one
+ *       card write exactly one attempt is supplied by {@code com.carddemo.config.AwsConfig} and is
+ *       reasoned in {@code docs/decision-log.md} DL-095.</li>
  *   <li>The failure this class does observe is therefore an <em>exhausted</em> transport failure, which
  *       is the closest available analogue of the legacy bad response code: the write did not happen and
  *       will not happen. That is the condition the ignore-on-error semantics were written for.</li>
@@ -232,7 +235,7 @@ import com.carddemo.util.JclCardImageBuilder;
  * <table>
  *   <caption>Canonical resource names</caption>
  *   <tr><th>Resource</th><th>Canonical name</th><th>Referenced here</th></tr>
- *   <tr><td>job-submission queue</td><td>{@code carddemo-jobs.fifo}</td><td>yes, as the
+ *   <tr><td>job-submission queue</td><td>{@code JOBS.fifo}</td><td>yes, as the
  *       destination</td></tr>
  *   <tr><td>message group</td><td>{@code carddemo-job-submission}</td><td>yes, one group per
  *       submission</td></tr>
@@ -246,11 +249,17 @@ import com.carddemo.util.JclCardImageBuilder;
  * disagreement produces a deployment that starts cleanly and then fails on its first publish, with
  * no start-up error pointing at the cause.
  *
- * <p>Renaming the queue away from the legacy transient-data queue's own name does not cost
- * traceability. That name survives verbatim where it is externally observable - in the operator-facing
- * failure text and in the default queue-name constant of {@code JobSubmissionException} - which is
- * where the legacy identity belongs, rather than in an infrastructure resource name governed by a
- * different service's naming rules.
+ * <p>The queue keeps the legacy transient-data queue's own name. The configured value is that name
+ * plus the one suffix the queue service demands, and the unsuffixed form survives verbatim where it
+ * is externally observable - in the operator-facing failure text and in the default queue-name
+ * constant of {@code JobSubmissionException}. The two are not composed from one another: the message
+ * text is frozen and is compared character for character, so the suffix on the resource name cannot
+ * reach it. An earlier revision namespaced the queue to this module, reasoning that a resource name
+ * is not a byte-compared contract; that reasoning does not survive the resource name itself being
+ * part of the frozen inventory, and the namespaced value also disagreed with the resource the
+ * emulator bootstrap actually creates - the precise misconfiguration the queue-not-found strategy
+ * now surfaces at first publish instead of masking by creating a queue nothing consumes. The name is
+ * reasoned in {@code docs/decision-log.md} DL-092 and the refusal strategy in DL-093.
  *
  * <p>The queue name <strong>must end in the FIFO suffix</strong>: a first-in-first-out queue is
  * rejected by the queue service unless its name carries that suffix, and ordering is contractual

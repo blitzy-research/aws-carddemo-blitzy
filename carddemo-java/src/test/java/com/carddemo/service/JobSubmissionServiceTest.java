@@ -95,7 +95,7 @@ class JobSubmissionServiceTest {
      * The canonical destination queue. The first-in-first-out suffix is mandatory: the queue service
      * rejects a first-in-first-out queue whose name lacks it, and ordering is contractual here.
      */
-    private static final String QUEUE_NAME = "carddemo-jobs.fifo";
+    private static final String QUEUE_NAME = "JOBS.fifo";
 
     /** The canonical message group that carries one submission's cards in order. */
     private static final String MESSAGE_GROUP_ID = "carddemo-job-submission";
@@ -176,7 +176,7 @@ class JobSubmissionServiceTest {
         void theDestinationMustNameAFifoQueue() {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new JobSubmissionService(JobSubmissionServiceTest.this
-                            .sqsOperations, "carddemo-jobs", MESSAGE_GROUP_ID))
+                            .sqsOperations, "JOBS", MESSAGE_GROUP_ID))
                     .withMessageContaining("carddemo.aws.sqs.job-submission-queue")
                     .withMessageContaining(".fifo");
         }

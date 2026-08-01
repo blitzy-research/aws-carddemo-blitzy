@@ -312,7 +312,6 @@ core.[0-9]*
 # unresolved environment references.
 !src/main/resources/application.yml
 !src/main/resources/application-local.yml
-!src/main/resources/application-test.yml
 !src/main/resources/application-prod.yml
 !src/main/resources/logback-spring.xml
 !src/main/resources/banner.txt
@@ -322,8 +321,12 @@ core.[0-9]*
 !src/main/resources/db/seed/**
 !src/main/resources/lookup/**
 
-# Test resources and byte-parity fixtures: the builder stage runs the unit tests, so these
-# are build inputs.
+# Test resources and byte-parity fixtures. The builder stage packages with tests skipped, so
+# these are not inputs to the packaging step itself; they are sent so that the same context can
+# run the suite inside the builder stage without a second, differently-shaped context, and so a
+# byte-parity fixture can be compared against output produced by the image rather than only by a
+# workstation. There is exactly one test profile and it lives here, under src/test/resources -
+# src/main/resources holds no test profile, so nothing above re-includes one.
 !src/test/resources/application-test.yml
 !src/test/resources/fixtures/input/**
 !src/test/resources/fixtures/expected/**

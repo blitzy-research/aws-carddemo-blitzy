@@ -134,7 +134,11 @@ spring:
   # The location list is deliberately db/migration alone. Reference-data and sign-on seeds must not
   # be reachable from this file: they belong under db/seed, which application-local.yml and
   # application-test.yml add for themselves and application-prod.yml never does. That is what keeps
-  # sample rows and seeded sign-on identities out of a production migration.
+  # reference rows and seeded sign-on identities out of a production migration.
+  #
+  # The two scripts named above are the whole delivered set; db/seed carries none yet, so a migration
+  # currently ends at V2 in every profile. The separation is nonetheless in force already, which is
+  # the point of establishing it before there is anything to separate.
   #
   # Version 11 of the migration tool resolves PostgreSQL support from a separate artefact declared
   # beside flyway-core in pom.xml; without it the build still succeeds and the application then
@@ -175,10 +179,36 @@ spring:
 
   # Region only. Endpoint overrides and credentials are profile scoped: local and test aim the
   # object-store, queue and notification clients at an emulator; production declares no override.
+  #
+  # The queue-not-found strategy is declared here, in the shared baseline, so that every profile
+  # inherits it and none can quietly opt out. It must be FAIL.
+  #
+  # The library's own default is CREATE, and it is reached by omission rather than by choice: the
+  # integration properties leave the strategy unset, the auto-configuration only forwards it to the
+  # queue template when it is set, and the template's own options initialise to CREATE. So leaving
+  # this key out does not mean "no strategy" - it means the template creates any queue it cannot
+  # resolve.
+  #
+  # That is the wrong behaviour for this module, and specifically for the one queue it publishes to.
+  # The legacy transient-data queue was defined with OPENTIME(INITIAL): the resource existed before
+  # first use, and the program that wrote to it never created it. Provisioning stays outside the
+  # application - the emulator bootstrap script locally, and infrastructure in a deployment - which
+  # is exactly what CREATE would undermine. Worse, it undermines it silently and in the most
+  # expensive direction: a queue name that is merely wrong rather than malformed would be created on
+  # demand, the publish would succeed against it, and the submission would sit in a queue nothing
+  # consumes. Nothing would fail, and nothing would say so. FAIL turns that into an error at the
+  # point of use, where the name can still be corrected.
+  #
+  # This is a fail-fast setting, not a hardening one: it removes a way for a misconfiguration to
+  # look like success. It is asserted by an integration test that offers a well-formed name for a
+  # queue that does not exist and requires that no queue comes into being.
+  # See docs/decision-log.md DL-093.
   cloud:
     aws:
       region:
         static: ${AWS_REGION:us-east-1}
+      sqs:
+        queue-not-found-strategy: FAIL
 
   # In-flight work finishes before the process exits. The JVM runs as process 1 under an exec-form
   # entry point, so a termination signal reaches it directly and a batch chunk in progress commits.
@@ -203,8 +233,21 @@ server:
 #                          every panel of config/grafana/dashboards/carddemo-overview.json reads.
 #
 # Both paths are resolved literally by those sibling files, which is why the default /actuator base
-# path is stated explicitly and must not move. Request authorization must leave the health probe and
-# the scrape endpoint reachable, or the container image and the metrics pipeline break together.
+# path is stated explicitly and must not move.
+#
+# BOTH ARE REACHABLE WITHOUT A CREDENTIAL, AND THAT IS AN EXPLICIT RULE RATHER THAN A HOPE.
+# com.carddemo.config.SecurityConfig permits exactly these two paths and authenticates everything else
+# beneath this base path, including every endpoint the local overlay adds below. It BINDS this base-path
+# value rather than restating it, so the authorization rules follow if the path is ever moved and cannot
+# silently disagree with what the endpoints are published under. Were the rule absent, the framework's
+# defaults would permit the health probe and authenticate the scrape endpoint, and the metrics pipeline
+# would fail while the container kept reporting itself healthy - a divergence with no single symptom.
+#
+# The choice made for the scraper is to permit the endpoint rather than to give the collector a
+# credential. That is the alternative the shipped config/prometheus/prometheus.yml can satisfy: it
+# declares a scrape target and no authorization, so a rule requiring one would break the pipeline this
+# block exists to serve. What is exposed is the aggregate meter output, and `metrics` - which enumerates
+# every meter name and permits querying one - is deliberately not published here.
 #
 # The percentile histograms below are instrumentation and not a threshold. No target percentile,
 # latency or volume figure appears anywhere in this module, because the legacy estate documents
@@ -293,18 +336,28 @@ management:
       # the trace sink published by the local Compose stack.
       endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
 
-# The generated OpenAPI document IS the published, machine-readable description of the endpoints
-# derived from the legacy screens. There is no separate hand-maintained contract document to keep
-# in step with the code.
+# The generated OpenAPI document is the module's single machine-readable contract description:
+# there is no separate hand-maintained contract document to keep in step with the code.
+#
+# WHAT IT CARRIES TODAY, stated plainly so a reader is not misled by the switch below: identity
+# metadata, the reusable component shapes, and the bearer security scheme - AND NO PATHS. A path
+# appears in the document when a request-mapped controller exists to produce it, and the delivered
+# main tree has none yet, so the document is presently a description of the shapes and the
+# authentication rule rather than of an endpoint inventory. That is not a defect in this
+# configuration; it is the delivered state, and a contract test asserts the emptiness rather than
+# leaving it to be discovered - com.carddemo.config.OpenApiConfigBoundaryTest. The endpoint
+# inventory is later bound: it grows as the controllers derived from the 17 legacy screens arrive,
+# and it needs no change here to do so. See docs/decision-log.md DL-101.
 #
 # BOTH SURFACES ARE OFF IN THE SHARED BASELINE, and each path is still declared so that a profile
 # turning a surface on inherits the agreed path rather than inventing one.
 #
-# The document describes every endpoint, every request and response field, and every declared
-# error of the migrated screen contract. That is precisely what a developer and a contract test
-# need, and precisely what an unauthenticated caller should not be handed: served openly it is a
-# ready-made map of the attack surface. That does not belong to a posture a deployment inherits by
-# forgetting to choose one, so it is closed here and the local overlay reopens it.
+# Why closed by default even while the inventory is empty: once the document names endpoints,
+# request and response fields and declared errors, it is precisely what a developer and a contract
+# test need and precisely what an unauthenticated caller should not be handed - served openly it
+# becomes a ready-made map of the attack surface. Choosing that posture now, before there is
+# anything to disclose, is what keeps it from being inherited later by a deployment that never
+# chose it. So it is closed here and the local overlay reopens it.
 #
 # Nothing in the module reads this flag to decide whether to BUILD the document:
 # com.carddemo.config.OpenApiConfig contributes the description bean unconditionally, so the
@@ -362,44 +415,99 @@ carddemo:
     #
     # The two names below are cross-file contracts rather than local choices: each appears
     # byte-identically in every place listed below, so changing one here changes nothing until all
-    # of them change together. The queue is carddemo-jobs.fifo and the message group is
+    # of them change together. The queue is JOBS.fifo and the message group is
     # carddemo-job-submission, and both occur in every profile overlay, in docker-compose.yml and
     # in the emulator bootstrap script. The .fifo suffix is not decoration: the queue service
-    # rejects a first-in-first-out
-    # queue whose name omits it, which is a start-up failure rather than a style preference. The
-    # group id must be one stable value, because append order is preserved only within a single
-    # message group, and append order is the part of the legacy queue contract that acceptance
-    # drains a real queue to verify.
+    # rejects a first-in-first-out queue whose name omits it, which is a start-up failure rather
+    # than a style preference. The group id must be one stable value, because append order is
+    # preserved only within a single message group, and append order is the part of the legacy queue
+    # contract that acceptance drains a real queue to verify.
     #
-    # The legacy resource name JOBS is not discarded by using these values. It is carried where it
-    # is actually contractual - in the frozen operator message text emitted when a submission
-    # fails, which names the transient-data queue verbatim and is asserted character for character
-    # - and as provenance in this comment and in the traceability matrix, rather than as the
-    # resource name itself. An infrastructure name and an operator-visible message are two
-    # different contracts, and only the second is byte-compared. Namespacing the resource to this
-    # module is what stops a target resource colliding with an unrelated queue in a shared account.
+    # THE QUEUE CARRIES THE LEGACY RESOURCE NAME, and that is the whole point of the value. The
+    # migration plan names this resource, and it names it JOBS; the resource being replaced is the
+    # transient-data queue JOBS; and the emulator resource the environment provisions is JOBS.fifo.
+    # The queue is the one external interface this module publishes to, and the requirement on every
+    # external interface is that its contract is reproduced rather than renegotiated. So the only
+    # transformation applied to the name is the suffix the queue service demands.
+    #
+    # An earlier revision used a module-namespaced name instead, on the reasoning that an
+    # infrastructure name and an operator-visible message are two different contracts and only the
+    # second is byte-compared, so the resource could be renamed freely to avoid colliding with an
+    # unrelated queue in a shared account. That reasoning is reversed here. The distinction it draws
+    # is real but it does not license the rename: the resource name is itself part of the frozen
+    # inventory, no exception authorises editing it, and a collision-avoidance concern is a
+    # deployment concern that the environment override below already answers without changing what
+    # the module ships. The namespaced name also disagreed with the provisioned resource, which is
+    # how a valid-but-wrong name becomes possible in the first place - see the fail-fast strategy
+    # above, which exists to make exactly that mistake loud.
+    #
+    # The operator-visible message text is unaffected either way. It names the transient-data queue
+    # verbatim as JOBS, without a suffix, and is asserted character for character; it is frozen text
+    # rather than a resource reference, and nothing here composes one from the other.
+    # See docs/decision-log.md DL-092.
     #
     # Both are environment-overridable so that a deployment can relocate them without editing a
     # file. The group id is bound here rather than only in the overlays because the production
     # profile intentionally restates just the queue: without this binding production would inherit
     # a hard-coded group id that no environment could correct.
+    #
+    # TWO FACTS ABOUT THIS QUEUE ARE DELIBERATELY NOT KEYS HERE: the 80-byte fixed record width and
+    # the ignore-on-error failure tolerance. Both come from the legacy queue definition, and neither
+    # is a deployment choice - a different width is a different record format, and a different
+    # tolerance is a different failure contract, so neither describes this queue. An earlier revision
+    # declared them as `record-length` and `fail-on-error`, which read as configuration while nothing
+    # in the application bound either one; the values were inert, and the file advertised an
+    # adjustability that did not exist. Binding them to a validator that permits only 80 and only
+    # false would not fix that - it would relocate it, leaving a switch with one position and, for
+    # the tolerance, a branch no deployment could ever reach.
+    #
+    # So they live where they are actually enforced, and are asserted there. The width is the
+    # constant the publisher checks every card's encoded byte count against before it publishes, and
+    # a card of any other width is rejected outright. The tolerance is the publisher's structure: the
+    # write is caught and reported through its return value, never rethrown. The provenance of both -
+    # the CICS attributes they derive from - is recorded against the queue-contract block in the
+    # local overlay and in the traceability matrix, which is where a reader should look for the
+    # legacy mapping. A test asserts that neither key has come back.
+    # See docs/decision-log.md DL-094.
     sqs:
-      job-submission-queue: ${CARDDEMO_SQS_QUEUE:carddemo-jobs.fifo}
+      job-submission-queue: ${CARDDEMO_SQS_QUEUE:JOBS.fifo}
       message-group-id: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:carddemo-job-submission}
-      record-length: 80
-      fail-on-error: false
     # Job-completion fan-out, part of the message-queue integration named in the target stack. It
     # carries operational notifications only; no business record travels through it.
     sns:
       job-notification-topic: ${CARDDEMO_SNS_TOPIC:carddemo-job-notifications}
   security:
+    # THE CONSUMERS OF THIS BLOCK, NAMED, so that no key here is a claim about behaviour that
+    # nothing implements:
+    #   com.carddemo.config.JwtProperties      binds the three jwt.* keys below and VALIDATES them,
+    #                                          so an absent secret, an absent issuer or a
+    #                                          non-positive lifetime stops the context from starting
+    #   com.carddemo.config.JwtTokenProvider   mints and verifies tokens with them, fixing the
+    #                                          signature algorithm in code rather than here
+    #   com.carddemo.config.SecurityConfig     installs the filter that establishes an identity from
+    #                                          a presented token, and binds require-https below
+    #   com.carddemo.util.SensitiveFieldCodec  seals regulated fields with field-encryption.key
+    #
+    # The shape of that chain - one explicit statement of every permitted route rather than a
+    # reliance on framework defaults - is reasoned in docs/decision-log.md DL-096.
+    #
     # NO SIGNING VALUE IS DECLARED HERE, and none is defaulted - not even an empty one. The
     # overlays bind the signing material: a throwaway development value locally and in tests, and
-    # a no-fallback environment reference in production, so a missing value aborts start-up.
+    # a no-fallback environment reference in production, so a missing value aborts start-up. That
+    # is enforced by a validation constraint, not merely intended: there is no code path that
+    # substitutes a value for an absent secret.
+    #
+    # The signature algorithm is deliberately NOT a key. It is fixed in JwtTokenProvider, because a
+    # token accepted under an algorithm chosen at deployment time is a token whose verification
+    # strength is a deployment accident. The minimum secret length is fixed there too, being a
+    # property of that algorithm rather than an independent setting that could contradict it.
     #
     # The issuer differs from spring.application.name on purpose: it is a token claim naming the
     # module and its artefact, not the metric service label, and neither should be edited to match
-    # the other.
+    # the other. A presented token is required to carry it, so the two must not be conflated.
+    #
+    # The lifetime is a credential lifetime. It is not a latency, time-out or capacity figure, and
+    # this module asserts none of those anywhere.
     #
     # DOCUMENTED PARITY EXCEPTION, stated here as a requirement on the credential-verification
     # layer. The legacy sign-on record held an eight-character cleartext password and the sign-on
@@ -427,7 +535,10 @@ carddemo:
     #
     # DOCUMENTED PARITY EXCEPTION, in the same class as the BCrypt substitution above. Encrypting at
     # rest is a divergence from the legacy design rather than a translation of it: it changes no record
-    # image, no field offset and no output byte, and it is written up in docs/decision-log.md.
+    # image, no field offset and no output byte, and it is written up in docs/decision-log.md DL-005.
+    # The no-fallback binding rule for the key itself is DL-008, the BCrypt substitution it parallels
+    # is DL-001, and the fail-closed posture of this whole baseline - each convenience widened by the
+    # profile that needs it rather than granted here - is DL-047.
     #
     # TRANSPORT IS REQUIRED IN THE SHARED BASELINE. A bearer token and a sealed identity value are
     # both worthless over plaintext: the token can be lifted from the wire and replayed until it
@@ -436,7 +547,14 @@ carddemo:
     # independent hardening step but the condition under which the two settings above mean
     # anything.
     #
+    # ENFORCED, NOT DESCRIBED. SecurityConfig binds this key and, when it is set, installs the rule
+    # that redirects an insecure request instead of serving it. The rule is left at its default
+    # scope, which is every request: narrowing it would exempt some route from transport security
+    # without recording which one. This key had no consumer at all before that class existed, which
+    # is exactly why it is named here as bound rather than merely intended.
+    #
     # It is relaxed ONLY by the two overlays that address containers on the same machine - local
     # and test - and each of them states the relaxation explicitly, so the concession is visible in
     # the profile that takes it rather than inherited silently by every profile.
+    # See docs/decision-log.md DL-098.
     require-https: true

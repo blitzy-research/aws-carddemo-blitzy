@@ -92,7 +92,7 @@ import static org.mockito.Mockito.when;
 class JobSubmissionServiceBoundaryTest {
 
     /** The canonical first-in-first-out queue name the module configures. */
-    private static final String QUEUE = "carddemo-jobs.fifo";
+    private static final String QUEUE = "JOBS.fifo";
 
     /** The canonical message group the cards are appended to, preserving their order. */
     private static final String MESSAGE_GROUP = "carddemo-job-submission";
@@ -286,7 +286,7 @@ class JobSubmissionServiceBoundaryTest {
         }
 
         @ParameterizedTest(name = "the non-ordered queue name [{0}] is refused")
-        @ValueSource(strings = {"carddemo-jobs", "JOBS", "carddemo-jobs.FIFO", "carddemo-jobs.fifo "})
+        @ValueSource(strings = {"JOBS", "JOBS.FIFO", "JOBS.fifo ", "JOBS.fifo-queue"})
         @DisplayName("a queue that is not first-in-first-out is refused, because order is contractual")
         void aNonOrderedQueueIsRefused(String candidate) {
             assertThatExceptionOfType(IllegalArgumentException.class)

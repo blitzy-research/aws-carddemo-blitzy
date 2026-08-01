@@ -494,23 +494,41 @@ jobs:
           retention-days: 30
 
       # ---- the verdict ----------------------------------------------------------------------
-      # This is the step that decides the run. Both gates were allowed to continue so that each
-      # could execute and publish its evidence regardless of the other; this step reads their
-      # real results back and fails the job when either one failed. It also prints them, so the
-      # run's summary states which gate failed without a reviewer opening a log.
+      # This is the step that decides the run. It reads every gate's real result back and fails
+      # the job when any one of them did not pass, and it prints all of them, so the run's summary
+      # states which gate failed without a reviewer opening a log.
+      #
+      # All three are read, not two. An earlier revision printed and required the build and supply
+      # chain gates only. The job still failed when the deployability gate failed, because that
+      # gate does not continue on error and its own step failure propagates - but the verdict this
+      # step printed was then incomplete, and could report that every gate passed while saying
+      # nothing at all about the gate it had not consulted. The evidence a gate produces is the
+      # point of the gate, so a verdict that omits one is not evidence even when the exit status
+      # happens to be right.
+      #
+      # The three gates fail differently on purpose, and reading all three is what makes that
+      # uniform here. The first two continue on error so that each publishes its evidence
+      # regardless of the other, which means their failures reach this step rather than stopping
+      # the job. The deployability gate does not continue on error, and it is skipped outright when
+      # the build gate failed, because there is then no artifact to start.
       #
       # It runs even on cancellation, and treats anything other than an outright pass as a
-      # failure, so a cancelled or skipped gate can never be mistaken for a satisfied one.
+      # failure, so a cancelled or skipped gate can never be mistaken for a satisfied one - which
+      # is precisely what makes the skipped deployability case fail the verdict rather than pass it
+      # by omission.
       - name: Gate verdict
         if: always()
         run: |
           build_gate='${{ steps.build_gate.outcome }}'
           supply_chain_gate='${{ steps.supply_chain_gate.outcome }}'
+          deployability_gate='${{ steps.deployability_gate.outcome }}'
           printf 'build, test and coverage gate : %s\n' "$build_gate"
           printf 'supply chain gate             : %s\n' "$supply_chain_gate"
+          printf 'deployability gate            : %s\n' "$deployability_gate"
           failed=0
           if [ "$build_gate" != 'success' ]; then failed=1; fi
           if [ "$supply_chain_gate" != 'success' ]; then failed=1; fi
+          if [ "$deployability_gate" != 'success' ]; then failed=1; fi
           if [ "$failed" -ne 0 ]; then
             echo 'At least one gate did not pass. Failing the run.' >&2
             exit 1
