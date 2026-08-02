@@ -64,8 +64,10 @@ import com.carddemo.domain.enums.KeyAction;
  *
  * <p><strong>Scope.</strong> A pure in-process unit test. It starts no application context, opens no
  * database connection, reads no file, touches no network, runs no container and performs no
- * introspection - in particular it does not reach the private constructor reflectively, so that the
- * module's zero-reflection budget is not undermined from the test tree.
+ * introspection - in particular it does not reach the private constructor reflectively, because the
+ * constructor's inaccessibility is established by the code that never calls it rather than by a
+ * reflective probe. The module's zero-reflection budget is scoped to production sources under
+ * {@code src/main/java}, so a test that did reflect would not undermine it.
  *
  * <p><strong>Expectations are derived, never echoed.</strong> Every identifier token, action value, width
  * and count below is a literal typed out in this source, taken from the copybook clause table and from the

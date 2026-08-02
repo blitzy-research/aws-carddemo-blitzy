@@ -60,9 +60,11 @@ import org.junit.jupiter.api.Test;
  * <p><strong>Reference data.</strong> The disclosure-group fixture holds 51 rows of 50 bytes, forming
  * three complete seventeen-row groups under the account group values reproduced below. One of the
  * three is the fallback group the interest program reaches when a direct lookup misses, and one
- * carries a zero rate throughout, which is what makes both the fallback branch and the zero-rate skip
- * branch reachable from seed data alone. Only key values are reproduced here, as data; no line of
- * legacy source is transcribed anywhere in this file.
+ * carries a zero rate throughout. The fallback branch is the one reachable from seed data alone, since
+ * every seeded account holds ten spaces in its group identifier and no seeded group key does; the
+ * zero-rate skip branch needs an account constructed with the zero-rate key, because the fallback finds
+ * a non-zero rate at the type and category the seeded balances use. Only key values are reproduced
+ * here, as data; no line of legacy source is transcribed anywhere in this file.
  *
  * <p><strong>Scope.</strong> A pure in-process unit test. It starts no application context, opens no
  * database connection, reads no file, touches no network and runs no container: the class under test

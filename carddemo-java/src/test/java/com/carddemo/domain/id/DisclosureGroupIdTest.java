@@ -67,10 +67,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code app/data/ASCII/discgrp.txt} measures 2,601 bytes, which is fifty-one rows of fifty bytes
  * plus one line terminator each. Those fifty-one rows form exactly three groups of seventeen under
  * three distinct group identifiers, one of which is the reserved default. Thirty of the fifty-one
- * rows carry a zero rate, fifteen carry fifteen per cent and six carry twenty-five per cent, which is
- * what makes both the default-fallback arm and the zero-rate skip arm of the interest run reachable
- * from seed data alone. The counts are used here as key-distinctness evidence: fifty-one rows must
- * yield fifty-one distinct keys, or the seed would be contradicting its own cluster definition.
+ * rows carry a zero rate, fifteen carry fifteen per cent and six carry twenty-five per cent - the zero
+ * rates spread across all three groups, seventeen of them in the zero-rate group and thirteen more in
+ * the other two. Only the default-fallback arm of the interest run is reachable from seed data alone:
+ * every seeded account holds ten spaces in its group identifier, so every direct probe misses, and the
+ * re-probe against the reserved default finds fifteen per cent at the one type and category every
+ * seeded balance uses. The zero-rate skip arm needs an account constructed with a seeded group key.
+ * The counts are used here as key-distinctness evidence: fifty-one rows must yield fifty-one distinct
+ * keys, or the seed would be contradicting its own cluster definition.
  *
  * <p><strong>Deliberately not asserted.</strong> Nothing here touches a database, a container or the
  * persistence provider; the identifier is a plain serialisable value object and is exercised as one.

@@ -85,7 +85,11 @@ import jakarta.validation.constraints.Size;
  * neither obscured, shortened nor partially hidden, because the legacy design applies no field-level
  * protection to a primary account number anywhere, and closing that gap here would be unrequested
  * work that also changed the response contract. The gap itself is recorded in
- * {@code docs/decision-log.md} rather than silently left unremarked.
+ * {@code docs/decision-log.md} rather than silently left unremarked. That statement is about the
+ * component and the payload built from it, which is a contract, and not about the stringified form,
+ * which is a contract to nobody: {@link #toString()} is overridden below to withhold the card number,
+ * the account identifier and the embossed cardholder name, so carrying a value whole to the client
+ * and refusing to print it into a log are complementary rather than contradictory.
  *
  * <p><strong>The expiry month and year are text, and no temporal type appears.</strong> The card
  * record stores the expiration date as a ten-character text field, and its name is misspelled
@@ -144,9 +148,10 @@ import jakarta.validation.constraints.Size;
  *     {@code TRNNAME} family ({@code app/cpy-bms/COCRDSL.CPY} lines 24 and 116,
  *     {@code app/bms/COCRDSL.bms} line 36), width {@link #TRANSACTION_NAME_LENGTH}. May be
  *     {@code null}.
- * @param screenTitleLine1 the first header title line, from the {@code TITLE01} family
+ * @param title01 the first header title line, from the {@code TITLE01} family
  *     ({@code app/cpy-bms/COCRDSL.CPY} lines 30 and 122, {@code app/bms/COCRDSL.bms} line 40), width
- *     {@link #SCREEN_TITLE_LENGTH}. May be {@code null}.
+ *     {@link #SCREEN_TITLE_LENGTH}. Named for the map item it carries, which is the spelling every
+ *     screen contract in this package uses. May be {@code null}.
  * @param currentDate the header date text, from the {@code CURDATE} family
  *     ({@code app/cpy-bms/COCRDSL.CPY} lines 36 and 128, {@code app/bms/COCRDSL.bms} line 49), width
  *     {@link #CURRENT_DATE_LENGTH}. Carried as the eight characters the screen displays, never as a
@@ -154,9 +159,10 @@ import jakarta.validation.constraints.Size;
  * @param programName the program name shown in the screen header, from the {@code PGMNAME} family
  *     ({@code app/cpy-bms/COCRDSL.CPY} lines 42 and 134, {@code app/bms/COCRDSL.bms} line 59), width
  *     {@link #PROGRAM_NAME_LENGTH}. May be {@code null}.
- * @param screenTitleLine2 the second header title line, from the {@code TITLE02} family
+ * @param title02 the second header title line, from the {@code TITLE02} family
  *     ({@code app/cpy-bms/COCRDSL.CPY} lines 48 and 140, {@code app/bms/COCRDSL.bms} line 63), width
- *     {@link #SCREEN_TITLE_LENGTH}. May be {@code null}.
+ *     {@link #SCREEN_TITLE_LENGTH}. Named for the map item it carries, which is the spelling every
+ *     screen contract in this package uses. May be {@code null}.
  * @param currentTime the header time text, from the {@code CURTIME} family
  *     ({@code app/cpy-bms/COCRDSL.CPY} lines 54 and 146, {@code app/bms/COCRDSL.bms} line 72), width
  *     {@link #CURRENT_TIME_LENGTH}. Carried as the eight characters the screen displays, never as a
@@ -213,22 +219,23 @@ import jakarta.validation.constraints.Size;
  *     nothing else: the legacy positioned the cursor by writing a sentinel into a generated length
  *     item at {@code app/cbl/COCRDSLC.cbl} lines 518, 521 and 523, and that sentinel, those generated
  *     items, and any row, column or attribute byte are all absent here.
- * @param route the route the client should call next, as an opaque token. Declarative only: the legacy
- *     transferred control between programs, whereas this response merely names where the client may go
- *     and the server forwards nothing. The token vocabulary belongs to the navigation service, so no
- *     route table, route enumeration or route resolution appears in this type or anywhere in this
- *     package. Deliberately unbounded, because no legacy field declares a width for a route. May be
- *     {@code null}.
+ * @param nextRoute the route the client should call next, as an opaque token. Declarative only: the
+ *     legacy transferred control between programs, whereas this response merely names where the client
+ *     may go and the server forwards nothing. The token vocabulary belongs to the navigation service,
+ *     so no route table, route enumeration or route resolution appears in this type or anywhere in this
+ *     package. Deliberately unbounded, because no legacy field declares a width for a route. Named for
+ *     what it is - the <em>next</em> call rather than the current one - which is the spelling every
+ *     screen contract in this package uses. May be {@code null}.
  * @param navigationContext the echoed navigation state to send back on the next call, never a
  *     server-side session. May be {@code null}, which is the state in which nothing has been carried
  *     yet.
  */
 public record CardDetailResponse(
         @Size(max = CardDetailResponse.TRANSACTION_NAME_LENGTH) String transactionName,
-        @Size(max = CardDetailResponse.SCREEN_TITLE_LENGTH) String screenTitleLine1,
+        @Size(max = CardDetailResponse.SCREEN_TITLE_LENGTH) String title01,
         @Size(max = CardDetailResponse.CURRENT_DATE_LENGTH) String currentDate,
         @Size(max = CardDetailResponse.PROGRAM_NAME_LENGTH) String programName,
-        @Size(max = CardDetailResponse.SCREEN_TITLE_LENGTH) String screenTitleLine2,
+        @Size(max = CardDetailResponse.SCREEN_TITLE_LENGTH) String title02,
         @Size(max = CardDetailResponse.CURRENT_TIME_LENGTH) String currentTime,
         @Size(max = CardDetailResponse.ACCOUNT_ID_LENGTH) String accountId,
         @Size(max = CardDetailResponse.CARD_NUMBER_LENGTH) String cardNumber,
@@ -240,8 +247,21 @@ public record CardDetailResponse(
         @Size(max = CardDetailResponse.ERROR_MESSAGE_LENGTH) String errorMessage,
         boolean generalError,
         @Size(max = CardDetailResponse.FOCUS_SCREEN_FIELD_ID_LENGTH) String focusScreenFieldId,
-        String route,
+        String nextRoute,
         NavigationContext navigationContext) {
+
+    /**
+     * Fixed stand-in emitted by {@link #toString()} in place of each regulated component.
+     *
+     * <p>A constant rather than any transformation of the value, so nothing about a withheld
+     * component - not its length, not a prefix or suffix, not a digest - can be recovered from a
+     * stringified instance. A partial stand-in was rejected deliberately: a shortened card number is
+     * still cardholder data. The same literal is used by every redacting contract in this package so
+     * that the absence of a regulated value is auditable by one search across the whole DTO surface.
+     *
+     * <p>Private because it is a rendering detail rather than part of the card-detail contract.
+     */
+    private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
 
     /**
      * Width in characters of the transaction name shown in the screen header: 4.
@@ -597,4 +617,68 @@ public record CardDetailResponse(
      */
     public static final String MSG_CARD_FILTER_NOT_NUMERIC =
             "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER";
+
+    /**
+     * Returns a diagnostic representation that mirrors the response layout and discloses no regulated
+     * value.
+     *
+     * <p><strong>Why the implicit record rendering could not stand.</strong> A record's generated
+     * {@code toString()} prints every component, and this screen is the one that presents a single
+     * card in full. Six components are regulated or identifying and they appear together: the card
+     * number is a primary account number carried at its full sixteen characters, the account id is the
+     * key that joins straight to a cardholder, the embossed name is the cardholder's own name as it
+     * appears on the card, and the expiry month and year reconstruct the card's expiry date, which is
+     * an authentication factor whenever it travels beside the number. That combination - number, name
+     * and expiry in one line - is the most sensitive grouping this package handles, and any structured
+     * logger, framework diagnostic, failed assertion, exception message or string interpolation
+     * touching an instance would have emitted it whole.</p>
+     *
+     * <p><strong>Why the remainder is retained.</strong> The six header items are screen furniture, the
+     * active-status indicator is a single character that identifies nobody, the two message slots carry
+     * operator text drawn from the fixed catalogue declared above, the error flag is a boolean, the
+     * focus hint is a map field name and the route is an opaque token: none of them identifies anybody,
+     * and all of them are what a diagnostic is read for. Withholding them would remove the only useful
+     * content without protecting anything. The navigation context is printed by delegation because it
+     * withholds its own identifying values.</p>
+     *
+     * <p><strong>The withheld set is the same one {@link CardUpdateResponse#toString()} withholds.</strong>
+     * The two card screens describe the same record, so a value that is unsafe to print from the update
+     * screen is not made safe by having been reached through the detail screen, and divergence between
+     * the two would be the kind of inconsistency that survives review by looking local.</p>
+     *
+     * <p><strong>Withholding is confined to this method.</strong> Every accessor returns its component
+     * exactly as supplied. Nothing here masks, truncates, trims, case-folds or otherwise transforms a
+     * value - the class documentation makes that a contract, because the legacy fields are fixed width
+     * and space filled and their padding is part of what the screen displayed - and this method is not
+     * on the serialization path, which is produced from the accessors.</p>
+     *
+     * <p>{@code equals} and {@code hashCode} are deliberately left as the record contract generates
+     * them. They compare every component by value, which is what a response contract requires, and
+     * neither emits anything: an in-memory comparison is not a disclosure surface.</p>
+     *
+     * @return the response layout with each regulated component replaced by a fixed placeholder
+     */
+    @Override
+    public String toString() {
+        return "CardDetailResponse["
+                + "transactionName=" + transactionName
+                + ", title01=" + title01
+                + ", currentDate=" + currentDate
+                + ", programName=" + programName
+                + ", title02=" + title02
+                + ", currentTime=" + currentTime
+                + ", accountId=" + REDACTION_PLACEHOLDER
+                + ", cardNumber=" + REDACTION_PLACEHOLDER
+                + ", embossedName=" + REDACTION_PLACEHOLDER
+                + ", cardActiveStatus=" + cardActiveStatus
+                + ", expiryMonth=" + REDACTION_PLACEHOLDER
+                + ", expiryYear=" + REDACTION_PLACEHOLDER
+                + ", infoMessage=" + infoMessage
+                + ", errorMessage=" + errorMessage
+                + ", generalError=" + generalError
+                + ", focusScreenFieldId=" + focusScreenFieldId
+                + ", nextRoute=" + nextRoute
+                + ", navigationContext=" + navigationContext
+                + "]";
+    }
 }

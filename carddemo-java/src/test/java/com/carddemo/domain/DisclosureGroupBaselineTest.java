@@ -49,8 +49,10 @@ import com.carddemo.domain.id.DisclosureGroupId;
  *       concatenated, which is why the composite key is those three components and nothing else;</li>
  *   <li>the seeded reference data, which carries 51 rows in three complete 17-row groups. One group is
  *       the fallback group the interest program falls back to when a direct key lookup returns
- *       record-not-found, and one group carries a zero rate on all seventeen of its rows, which makes
- *       the zero-rate skip branch of the interest program reachable from seed data alone; and</li>
+ *       record-not-found, and one group carries a zero rate on all seventeen of its rows. The fallback
+ *       is the arm a seed-only run takes, because every seeded account holds ten spaces in its group
+ *       identifier and no seeded group key does; the zero-rate skip needs an account constructed with
+ *       the zero-rate key, since the fallback finds 15.00 instead; and</li>
  *   <li>the interest expression itself, which multiplies balance by rate and only then divides by 1200,
  *       storing into a two-decimal field with no rounding clause. Absent a rounding clause the store
  *       truncates, so the faithful Java equivalent truncates towards zero rather than rounding to the
@@ -123,7 +125,7 @@ class DisclosureGroupBaselineTest {
     /** The fallback group the interest program uses when a direct key lookup is not found. */
     private static final String FALLBACK_GROUP = "DEFAULT   ";
 
-    /** The group whose every row carries a zero rate, making the skip branch reachable. */
+    /** The group whose every row carries a zero rate; a constructed account names it to reach the skip. */
     private static final String ZERO_RATE_GROUP = "ZEROAPR   ";
 
     /** The divisor of the documented interest expression: one hundred percent over twelve months. */
@@ -707,8 +709,8 @@ class DisclosureGroupBaselineTest {
         }
 
         @Test
-        @DisplayName("every row of the zero-rate group carries a zero rate, so the skip branch is "
-                + "reachable on all seventeen of its keys and not only on one")
+        @DisplayName("every row of the zero-rate group carries a zero rate, so a constructed account "
+                + "can reach the skip branch on any of its seventeen keys and not only on one")
         void everyRowOfTheZeroRateGroupCarriesAZeroRate() {
             for (final String[] pair : SEEDED_KEY_PAIRS) {
                 final DisclosureGroup seeded = new DisclosureGroup(

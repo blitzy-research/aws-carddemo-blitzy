@@ -119,6 +119,21 @@ public class SensitiveFieldEncryptionService {
     public static final String CUSTOMER_SSN_FIELD = "customer.cust_ssn";
 
     /**
+     * Canonical binding name of the customer government-issued identifier column, being the table and
+     * column name joined by a dot.
+     *
+     * <p>The column is the second of the two protected columns the migrated schema carries, and it is
+     * the one the schema declares {@code NOT NULL} - so unlike the national identifier it cannot be
+     * left unseeded, and every row that exists holds a value this service produced. Held as a constant
+     * for the same reason as its sibling: the binding sealed into an envelope and the binding checked
+     * when it is read back must be one value, and a caller must not be able to bind the column under a
+     * spelling of its own. The value is the column's own name, {@code govt_issued_id}, and not the
+     * record field's {@code CUST-} prefixed legacy spelling, so that the binding a reviewer reads here
+     * is the binding they will find in {@code V1__create_schema.sql}.
+     */
+    public static final String CUSTOMER_GOVT_ISSUED_ID_FIELD = "customer.govt_issued_id";
+
+    /**
      * Separator between the bound field name and the cleartext inside a field-bound envelope. The
      * ASCII unit separator is used because it cannot appear in a column name and cannot appear in any
      * regulated value this service seals, so the first occurrence in a recovered payload always marks
@@ -247,8 +262,8 @@ public class SensitiveFieldEncryptionService {
      *
      * <p>The column's name is sealed inside the authenticated payload alongside the value, so an
      * envelope written for one column cannot later be read as another column's value. Use this form
-     * whenever the destination is a protected column; {@link #CUSTOMER_SSN_FIELD} names the one such
-     * column the migrated schema has.
+     * whenever the destination is a protected column; {@link #CUSTOMER_SSN_FIELD} and
+     * {@link #CUSTOMER_GOVT_ISSUED_ID_FIELD} name the two such columns the migrated schema has.
      *
      * @param fieldName the binding name of the destination column, conventionally
      *                  {@code table.column}; must not be {@code null}, blank, or contain the binding

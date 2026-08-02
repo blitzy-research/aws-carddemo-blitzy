@@ -45,11 +45,17 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * names, and the role codes - are used as fixture data, because only those are not secret.
  *
  * <p><strong>Scope.</strong> This is a pure unit test over one entity. It starts no container, builds
- * no application context, touches no database, no network and no filesystem, and uses no reflection:
- * the module's unsafe-code audit requires a reflection count of zero and a test must not undermine it.
- * Column names, nullability and the physical schema are deliberately not verified here - the module
- * runs with Hibernate schema validation against a real database, which fails startup on any mismatch,
- * so that layer is verified in the integration tier rather than restated here. Neither is the record
+ * no application context, touches no database, no network and no filesystem, and uses no reflection -
+ * the latter because this tier's subject is the entity's behaviour rather than its metadata, not because
+ * a test may not reflect: the module's unsafe-code audit scopes its zero reflection count to production
+ * sources under {@code src/main/java}, so a suite that reflected would not undermine it.
+ * Column names, nullability and the physical schema are deliberately not verified here - they are
+ * asserted by {@code EntityPersistenceMappingTest}, which compares the mapping the provider computes
+ * against the shipped migration {@code V1__create_schema.sql} and against an independent copybook-width
+ * oracle, and which pins this record's credential column at the digest width it deliberately carries
+ * instead of its 8-byte legacy field width. The module additionally runs with Hibernate schema
+ * validation against a real database, which fails start-up on any mismatch in a deployed environment,
+ * though that is a property of a deployment rather than a check this build performs. Neither is the record
  * image assembled here: laying the five properties back out across 80 bytes belongs to the
  * fixed-width mapper in the utility layer.
  *
@@ -268,8 +274,10 @@ class UserSecurityTest {
         void theNoArgumentConstructorYieldsAnEmptyInstance() {
             // This test class sits in the same package as the entity, so ordinary Java package access
             // reaches the protected no-argument constructor directly. This is same-package visibility
-            // and explicitly NOT reflection: no reflective call of any kind is made here, because the
-            // module's unsafe-code audit requires a reflection count of zero.
+            // and explicitly NOT reflection: no reflective call of any kind is made here. Package
+            // access is simply the direct route rather than a way of staying inside a budget - the
+            // module's unsafe-code audit scopes its zero reflection count to production sources under
+            // src/main/java, so a test that reflected would not breach it.
             final UserSecurity hydrating = new UserSecurity();
 
             assertThat(hydrating.getSecUsrId()).isNull();
@@ -636,8 +644,10 @@ class UserSecurityTest {
             // Proved by compile-time absence. This file names no getId, no setId and no
             // generated-identifier accessor of any kind, and it could not compile if it did, because the
             // entity declares none. Reflection is deliberately not used to demonstrate that: an absent
-            // member is established by the code that does not reference it, and the module's unsafe-code
-            // audit requires a reflection count of zero. Across the estate a record key is the leading
+            // member is established by the code that does not reference it, which is the stronger
+            // evidence. It is not withheld to protect a budget - the module's unsafe-code audit scopes
+            // its zero reflection count to production sources under src/main/java, and test sources
+            // fall outside it. Across the estate a record key is the leading
             // substring of the record image, and a surrogate key would break the record-image-to-row
             // correspondence that byte-parity verification depends on.
             final UserSecurity user = seededAdministrator();
@@ -653,9 +663,9 @@ class UserSecurityTest {
         @DisplayName("the entity stores the already-hashed credential and neither produces nor checks "
                 + "it, so no hashing, verification or comparison happens on this record")
         void theEntityNeitherHashesNorVerifiesNorCompares() {
-            // Proved by compile-time absence again. This file imports no encoder, no digest type and no
-            // cryptography package, and names no matches, verify or check-credential member, because the
-            // entity exposes none. Reflection is not used to establish the absence of an API.
+            // The entity exposes no encoder, no digest type, no cryptography package and no matches,
+            // verify or check-credential member, so what is asserted here is the positive consequence:
+            // the stored value passes through untouched. Reflection is deliberately not used.
             final UserSecurity user = seededAdministrator();
 
             // The value read back is the very reference that was handed in: nothing was hashed,

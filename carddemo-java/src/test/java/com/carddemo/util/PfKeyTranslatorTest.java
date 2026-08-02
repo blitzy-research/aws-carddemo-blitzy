@@ -75,15 +75,12 @@ import org.junit.jupiter.params.provider.MethodSource;
  * <h2>The legacy oracle</h2>
  *
  * <p><strong>The source is a procedural copybook, not a record layout.</strong>
- * {@code [app/cpy/CSSTRPFY.cpy]} is 85 physical lines. Its licence block occupies
- * {@code L1}-{@code L16}; the entry paragraph {@code YYYY-STORE-PFKEY} is declared at
- * {@code [app/cpy/CSSTRPFY.cpy:L17]}; a single {@code EVALUATE TRUE} construct opens at
- * {@code [app/cpy/CSSTRPFY.cpy:L21]} and closes at {@code [app/cpy/CSSTRPFY.cpy:L78]} with its 28
- * ordered {@code WHEN} clauses filling {@code L22}-{@code L77} exactly; and the range exit
- * paragraph {@code YYYY-STORE-PFKEY-EXIT}, whose body is a bare exit, is declared at
- * {@code [app/cpy/CSSTRPFY.cpy:L80]}. Those two paragraphs are the member's only two, and they are
- * 2 of the 16 paragraph units contributed by the estate's two procedural copybooks and 2 of its 544
- * units overall. The invocation range spans exactly one intermediate label - the exit paragraph
+ * {@code [app/cpy/CSSTRPFY.cpy]} declares exactly two paragraphs: the entry paragraph
+ * {@code YYYY-STORE-PFKEY} and the range exit {@code YYYY-STORE-PFKEY-EXIT}, whose body is a bare
+ * exit. Between them sits one unconditional multi-clause selection carrying 28 ordered clauses.
+ * Those two paragraphs are the member's only two, and they are 2 of the 16 paragraph units
+ * contributed by the estate's two procedural copybooks and 2 of its 544 units overall. The
+ * invocation range spans exactly one intermediate label - the exit paragraph
  * itself - so it is the trivial paired idiom that collapses to one method with a plain return, and
  * is not one of the three genuinely multi-paragraph ranges in the estate.
  *
@@ -159,7 +156,7 @@ final class PfKeyTranslatorTest {
     // test, and nothing here is computed from anything else here.
 
     /**
-     * The width of the action field, from its {@code PIC X(5)} declaration at
+     * The width of the action field, from its declaration at
      * {@code [app/cpy/CVCRD01Y.cpy: CCARD-AID]}. Measured in encoded bytes rather than characters,
      * because a fixed-width field reserves a byte count.
      */
@@ -167,7 +164,7 @@ final class PfKeyTranslatorTest {
 
     /**
      * The number of clauses in the legacy construct, counted at
-     * {@code [app/cpy/CSSTRPFY.cpy:L22]} through {@code [app/cpy/CSSTRPFY.cpy:L77]}.
+     * {@code [app/cpy/CSSTRPFY.cpy]}.
      */
     private static final int ORACLE_CLAUSE_COUNT = 28;
 

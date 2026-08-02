@@ -51,6 +51,11 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  *   <li>The column really is sixty characters wide and not nullable, and it is the only column in the
  *       table whose width diverges from its legacy picture width - eight, twenty, twenty, and one for
  *       the other four.</li>
+ *   <li>The table arrives carrying the ten seeded sign-on identities, five administrative and five
+ *       standard, and every one of their credentials is a distinct sixty-character digest that
+ *       verification recognises as digest-shaped. This is the assertion that shows the credential
+ *       seed is genuinely reachable from the single migration location, rather than sitting in a
+ *       folder the migrator never looks at.</li>
  *   <li>A digest survives storage intact at the full sixty characters, and still verifies after the
  *       round trip. A column that had been left at the legacy width of eight would truncate it and
  *       every stored credential would become unverifiable.</li>
@@ -63,10 +68,22 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  *       has through its unconditional alternative branch.</li>
  * </ol>
  *
- * <h2>Test data discipline</h2>
+ * <h2>Test data discipline, and coexistence with the seeded identities</h2>
  * The credential used here is an obviously synthetic phrase. The eight-character literal carried
- * in-stream by {@code app/jcl/DUSRSECJ.jcl} appears nowhere in this file. The identifiers, names and
- * role codes are the non-secret seed values from that member.
+ * in-stream by {@code app/jcl/DUSRSECJ.jcl} appears nowhere in this file.
+ *
+ * <p>{@code src/main/resources/db/migration/V4__seed_user_security.sql} applies under this profile, so
+ * the table already holds the ten legacy sign-on identities when a test method begins. Every row this
+ * test writes is therefore keyed inside a reserved range the seed never occupies, and the cleanup and
+ * the emptiness assertions are both scoped to that range: nothing here deletes or counts a seeded row.
+ * An unscoped delete or an assertion that the table starts empty would have made this test depend on
+ * the seeds being absent, which they no longer are - the five migrations are flat in one location and
+ * only a version ceiling holds them back from production.
+ *
+ * <p>One assertion deliberately looks at the seeded rows rather than around them: it reads all ten
+ * credentials through plain JDBC and requires each to be a digest of the declared width, with no two
+ * alike. That is the check that the seeding profile genuinely received V4 and that the migration wrote
+ * digests rather than the cleartext the legacy record carried.
  */
 @DisplayName("sign-on credential column, verified against a real database")
 class UserSecurityCredentialIT extends AbstractPostgresIT {
@@ -74,8 +91,39 @@ class UserSecurityCredentialIT extends AbstractPostgresIT {
     /** A synthetic credential, unlike anything the legacy seed carries. */
     private static final String CREDENTIAL = "synthetic-credential-for-integration-tests";
 
-    /** A non-secret seed identifier from the in-stream card images. */
-    private static final String ADMIN_ID = "ADMIN001";
+    /**
+     * Prefix of the identifier range this test reserves for itself.
+     *
+     * <p>V4__seed_user_security.sql now applies under this profile, so the table is NOT empty when a
+     * test method starts: it holds the ten legacy sign-on identities. Every row this test writes is
+     * therefore keyed inside a range the seed never occupies, and both the cleanup and the emptiness
+     * assertions are scoped to that range. Nothing here deletes or counts a seeded row.
+     */
+    private static final String TEST_ID_PREFIX = "ITUSER";
+
+    /** The primary identifier this test writes under, inside the reserved range. */
+    private static final String TEST_ID = TEST_ID_PREFIX + "01";
+
+    /** A second reserved identifier, so both role codes can be observed on distinct rows. */
+    private static final String SECOND_TEST_ID = TEST_ID_PREFIX + "02";
+
+    /** Sign-on identities the seed delivers: five administrative and five standard. */
+    private static final int SEEDED_IDENTITY_COUNT = 10;
+
+    /** How many of the seeded identities carry the administrative role code. */
+    private static final int SEEDED_ADMINISTRATOR_COUNT = 5;
+
+    /**
+     * Every sign-on identity the seed delivers, written out in full as identifier and role code.
+     *
+     * <p>Held as literals rather than derived from the migration, so this list and the migration are
+     * two independent statements of the same fact. A count alone cannot catch an identifier being
+     * renamed or a role code being flipped while the total stays at ten, and those are precisely the
+     * changes that would silently move which side of the role split a given operator lands on.
+     */
+    private static final List<String> SEEDED_IDENTITIES = List.of(
+            "ADMIN001:A", "ADMIN002:A", "ADMIN003:A", "ADMIN004:A", "ADMIN005:A",
+            "USER0001:U", "USER0002:U", "USER0003:U", "USER0004:U", "USER0005:U");
 
     /**
      * Insert covering all five mapped columns of the migrated table, in schema order. Written out in
@@ -96,10 +144,18 @@ class UserSecurityCredentialIT extends AbstractPostgresIT {
         this.service = new CredentialDigestService();
     }
 
+    /**
+     * Removes only the rows this test wrote. The delete is scoped to the reserved identifier range so
+     * the ten seeded identities survive every method, which matters because the seed is part of the
+     * migrated state the rest of this suite asserts against.
+     */
     @AfterEach
-    void clearUsers() throws SQLException {
-        try (Connection connection = connect(); Statement statement = connection.createStatement()) {
-            statement.executeUpdate("DELETE FROM user_security");
+    void clearTestUsers() throws SQLException {
+        try (Connection connection = connect();
+             PreparedStatement statement = connection.prepareStatement(
+                     "DELETE FROM user_security WHERE sec_usr_id LIKE ?")) {
+            statement.setString(1, TEST_ID_PREFIX + "%");
+            statement.executeUpdate();
         }
     }
 
@@ -115,20 +171,65 @@ class UserSecurityCredentialIT extends AbstractPostgresIT {
     }
 
     @Test
-    @DisplayName("holds no rows before a profile-scoped seed adds any")
-    void tableStartsEmpty() throws SQLException {
-        assertThat(countUsers()).isZero();
+    @DisplayName("holds no row in the reserved identifier range before this test writes one")
+    void theReservedRangeStartsEmpty() throws SQLException {
+        assertThat(countTestUsers())
+                .as("the seeded identities are expected and are counted separately; what must be empty "
+                        + "is the range this test owns, or a leftover row would satisfy an assertion "
+                        + "this test believes it proved")
+                .isZero();
+    }
+
+    @Test
+    @DisplayName("carries the ten seeded identities, every credential stored as a digest the "
+            + "application's own guard recognises")
+    void theSeedDeliversTenIdentitiesAllStoredAsDigests() throws SQLException {
+        assertThat(countUsers())
+                .as("all five migrations are flat in one location and the seeds are held back from "
+                        + "production by the version ceiling alone, so a profile that raises that "
+                        + "ceiling must actually receive them: a count of zero means the ceiling was "
+                        + "never raised, and a count above %d means a second seed exists",
+                        SEEDED_IDENTITY_COUNT)
+                .isEqualTo(SEEDED_IDENTITY_COUNT);
+
+        assertThat(countAdministrators())
+                .as("five of the ten carry the administrative role code, which is what makes both "
+                        + "sides of the role split testable at all")
+                .isEqualTo(SEEDED_ADMINISTRATOR_COUNT);
+
+        assertThat(readSeededIdentities())
+                .as("the seed must deliver exactly these identities with exactly these role codes; "
+                        + "the counts above would still pass if an identifier were renamed or a role "
+                        + "code flipped while the totals held, and either change would move an "
+                        + "operator to the other side of the role split. Expected: %s",
+                        describeSeededIdentities())
+                .containsExactlyElementsOf(SEEDED_IDENTITIES);
+
+        final List<String> credentials = readAllCredentials();
+        for (final String credential : credentials) {
+            assertThat(credential)
+                    .as("a seeded credential must be a digest of the declared width; the legacy record "
+                            + "carried an eight-character cleartext password, and reproducing that "
+                            + "would have satisfied parity and violated the credential constraint")
+                    .hasSize(CredentialDigestService.DIGEST_LENGTH);
+            assertThat(service.isDigest(credential)).isTrue();
+        }
+
+        assertThat(credentials)
+                .as("independent salts, so no two seeded identities share a stored value even where "
+                        + "the source credential was identical")
+                .doesNotHaveDuplicates();
     }
 
     @Test
     @DisplayName("stores all sixty characters of a digest, so it still verifies after the round trip")
     void storesTheFullDigest() throws SQLException {
         final String digest = service.encode(CREDENTIAL);
-        insertUser(ADMIN_ID,
+        insertUser(TEST_ID,
                 service.requireDigest(CredentialDigestService.USER_SECURITY_PWD_FIELD, digest),
                 "A");
 
-        final String stored = readCredential(ADMIN_ID);
+        final String stored = readCredential(TEST_ID);
         assertThat(stored).hasSize(CredentialDigestService.DIGEST_LENGTH);
         assertThat(stored).isEqualTo(digest);
         assertThat(service.isDigest(stored)).isTrue();
@@ -138,9 +239,9 @@ class UserSecurityCredentialIT extends AbstractPostgresIT {
     @Test
     @DisplayName("leaks no fragment of the credential anywhere in the stored row")
     void leaksNoFragmentOfTheCredential() throws SQLException {
-        insertUser(ADMIN_ID, service.encode(CREDENTIAL), "A");
+        insertUser(TEST_ID, service.encode(CREDENTIAL), "A");
 
-        final String row = readWholeRow(ADMIN_ID);
+        final String row = readWholeRow(TEST_ID);
         for (int length = 4; length <= CREDENTIAL.length(); length++) {
             assertThat(row).doesNotContain(CREDENTIAL.substring(0, length));
         }
@@ -149,18 +250,18 @@ class UserSecurityCredentialIT extends AbstractPostgresIT {
     @Test
     @DisplayName("would accept a cleartext value on its own, which is why the guard exists")
     void theColumnAloneIsNotTheProtection() throws SQLException {
-        insertUser(ADMIN_ID, CREDENTIAL, "A");
+        insertUser(TEST_ID, CREDENTIAL, "A");
 
-        assertThat(readCredential(ADMIN_ID)).isEqualTo(CREDENTIAL);
-        assertThat(service.isDigest(readCredential(ADMIN_ID))).isFalse();
+        assertThat(readCredential(TEST_ID)).isEqualTo(CREDENTIAL);
+        assertThat(service.isDigest(readCredential(TEST_ID))).isFalse();
     }
 
     @Test
     @DisplayName("authenticates nobody against a cleartext value that reached the column")
     void aCleartextValueAuthenticatesNobody() throws SQLException {
-        insertUser(ADMIN_ID, CREDENTIAL, "A");
+        insertUser(TEST_ID, CREDENTIAL, "A");
 
-        assertThat(service.matches(CREDENTIAL, readCredential(ADMIN_ID))).isFalse();
+        assertThat(service.matches(CREDENTIAL, readCredential(TEST_ID))).isFalse();
     }
 
     @Test
@@ -168,46 +269,60 @@ class UserSecurityCredentialIT extends AbstractPostgresIT {
     void guardStopsCleartextBeforeItReachesTheDatabase() throws SQLException {
         assertThatExceptionOfType(IllegalArgumentException.class)
                 .isThrownBy(() -> insertUser(
-                        ADMIN_ID,
+                        TEST_ID,
                         service.requireDigest(
                                 CredentialDigestService.USER_SECURITY_PWD_FIELD, CREDENTIAL),
                         "A"))
                 .withMessageNotContaining(CREDENTIAL);
 
-        assertThat(countUsers()).isZero();
+        assertThat(countTestUsers())
+                .as("the guard must refuse before a statement is issued, so the reserved range stays "
+                        + "empty; the seeded rows are irrelevant here and are deliberately not counted")
+                .isZero();
     }
 
+    /**
+     * The identifier must be this test's own. Under a seeded identifier the insert would fail on the
+     * primary key before the column width was ever reached, and this test would report success while
+     * verifying nothing about the width it exists to assert.
+     */
     @Test
     @DisplayName("rejects a value wider than the digest column")
     void rejectsAValueWiderThanTheColumn() {
         final String tooWide = service.encode(CREDENTIAL) + "a";
         assertThatExceptionOfType(SQLException.class)
-                .isThrownBy(() -> insertUser(ADMIN_ID, tooWide, "A"));
+                .isThrownBy(() -> insertUser(TEST_ID, tooWide, "A"))
+                .withMessageContaining("value too long");
     }
 
+    /**
+     * As above, the identifier must be this test's own, so the refusal observed can only be the
+     * not-null constraint and not a duplicate key.
+     */
     @Test
     @DisplayName("rejects an absent credential, because the column is not nullable")
     void rejectsAnAbsentCredential() {
         assertThatExceptionOfType(SQLException.class)
-                .isThrownBy(() -> insertUser(ADMIN_ID, null, "A"));
+                .isThrownBy(() -> insertUser(TEST_ID, null, "A"))
+                .withMessageContaining("sec_usr_pwd");
     }
 
     @Test
     @DisplayName("round-trips both declared role codes as single characters")
     void roundTripsBothDeclaredRoleCodes() throws SQLException {
-        insertUser(ADMIN_ID, service.encode(CREDENTIAL), "A");
-        insertUser("USER0001", service.encode(CREDENTIAL), "U");
+        insertUser(TEST_ID, service.encode(CREDENTIAL), "A");
+        insertUser(SECOND_TEST_ID, service.encode(CREDENTIAL), "U");
 
-        assertThat(readRoleCode(ADMIN_ID)).isEqualTo("A");
-        assertThat(readRoleCode("USER0001")).isEqualTo("U");
+        assertThat(readRoleCode(TEST_ID)).isEqualTo("A");
+        assertThat(readRoleCode(SECOND_TEST_ID)).isEqualTo("U");
     }
 
     @Test
     @DisplayName("stores a role code outside the declared pair, preserving the legacy tolerance")
     void storesAnUnrecognisedRoleCode() throws SQLException {
-        insertUser(ADMIN_ID, service.encode(CREDENTIAL), "X");
+        insertUser(TEST_ID, service.encode(CREDENTIAL), "X");
 
-        assertThat(readRoleCode(ADMIN_ID)).isEqualTo("X");
+        assertThat(readRoleCode(TEST_ID)).isEqualTo("X");
     }
 
     /**
@@ -322,7 +437,7 @@ class UserSecurityCredentialIT extends AbstractPostgresIT {
     }
 
     /**
-     * Counts the rows currently present in the table.
+     * Counts every row currently present in the table, seeded and test-written alike.
      *
      * @return the row count
      * @throws SQLException if the count fails
@@ -334,5 +449,95 @@ class UserSecurityCredentialIT extends AbstractPostgresIT {
             assertThat(resultSet.next()).isTrue();
             return resultSet.getInt(1);
         }
+    }
+
+    /**
+     * Counts only the rows inside the identifier range this test reserves, ignoring the seeded ten.
+     *
+     * @return the number of rows this test currently owns
+     * @throws SQLException if the count fails
+     */
+    private static int countTestUsers() throws SQLException {
+        try (Connection connection = connect();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT count(*) FROM user_security WHERE sec_usr_id LIKE ?")) {
+            statement.setString(1, TEST_ID_PREFIX + "%");
+            try (ResultSet resultSet = statement.executeQuery()) {
+                assertThat(resultSet.next()).isTrue();
+                return resultSet.getInt(1);
+            }
+        }
+    }
+
+    /**
+     * Counts the seeded identities carrying the administrative role code.
+     *
+     * @return the administrative row count
+     * @throws SQLException if the count fails
+     */
+    private static int countAdministrators() throws SQLException {
+        try (Connection connection = connect();
+             Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery(
+                     "SELECT count(*) FROM user_security WHERE sec_usr_type = 'A'")) {
+            assertThat(resultSet.next()).isTrue();
+            return resultSet.getInt(1);
+        }
+    }
+
+    /**
+     * Reads every stored credential, in identifier order, straight out of the database.
+     *
+     * <p>Used to inspect the seeded rows without the entity or the mapper in the path, so what is
+     * asserted is the value the migration actually wrote rather than a value some Java code produced.
+     *
+     * @return the stored credential of every row in the table
+     * @throws SQLException if the read fails
+     */
+    private static List<String> readAllCredentials() throws SQLException {
+        final List<String> credentials = new ArrayList<>();
+        try (Connection connection = connect();
+             Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery(
+                     "SELECT sec_usr_pwd FROM user_security ORDER BY sec_usr_id")) {
+            while (resultSet.next()) {
+                credentials.add(resultSet.getString(1));
+            }
+        }
+        return credentials;
+    }
+
+    /**
+     * Reads every identity in the table as {@code identifier:roleCode}, in identifier order.
+     *
+     * <p>Read straight out of the database with no entity and no mapper in the path, so what is
+     * compared against {@link #SEEDED_IDENTITIES} is the pair the migration actually wrote.
+     *
+     * @return every stored identity, rendered as identifier and role code
+     * @throws SQLException if the read fails
+     */
+    private static List<String> readSeededIdentities() throws SQLException {
+        final List<String> identities = new ArrayList<>();
+        try (Connection connection = connect();
+             Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery(
+                     "SELECT sec_usr_id, sec_usr_type FROM user_security ORDER BY sec_usr_id")) {
+            while (resultSet.next()) {
+                identities.add(resultSet.getString(1) + ":" + resultSet.getString(2));
+            }
+        }
+        return identities;
+    }
+
+    /**
+     * Renders the expected roster for a failure message.
+     *
+     * <p>Named in the assertion description so a failure states which roster was expected without a
+     * reader having to open the migration to find out.
+     *
+     * @return the expected identities as a single readable line
+     */
+    private static String describeSeededIdentities() {
+        return String.join(", ", SEEDED_IDENTITIES);
     }
 }

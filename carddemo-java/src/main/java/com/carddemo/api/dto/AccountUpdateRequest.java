@@ -16,457 +16,276 @@
  */
 package com.carddemo.api.dto;
 
-
 import jakarta.validation.constraints.Size;
 
 /**
- * Immutable account-update request contract for legacy CICS transaction {@code CAUP}, derived
- * from symbolic map {@code app/cpy-bms/COACTUP.CPY}, mapset {@code app/bms/COACTUP.bms} and
- * program {@code app/cbl/COACTUPC.cbl} - at 4,236 lines the largest single translation in the
- * estate. Record layouts consulted for the persisted types are {@code app/cpy/CVACT01Y.cpy}
- * (account, 300 bytes) and {@code app/cpy/CVCUS01Y.cpy} (customer, 500 bytes).
+ * Immutable account-update request contract for legacy CICS transaction {@code CAUP}, derived from
+ * symbolic map {@code app/cpy-bms/COACTUP.CPY}, mapset {@code app/bms/COACTUP.bms} and program
+ * {@code app/cbl/COACTUPC.cbl}, the largest single translation in the estate. The persisted types come
+ * from the account and customer record layouts at {@code app/cpy/CVACT01Y.cpy} and
+ * {@code app/cpy/CVCUS01Y.cpy}.
  *
- * <p>The map declares 54 input families. Eleven are protected and therefore absent here: six
- * screen-metadata items (transaction name, both title lines, current date, program name,
- * current time), two message items, and three function-key legends. The metadata and message
- * items belong on the corresponding response contract; the legends are 3270 screen furniture
- * and belong nowhere. The remaining <strong>43</strong> components are carried here, confirmed
- * three independent ways: 54 input families minus 11 protected families, 43 unprotected mapset
- * definitions, and 43 map-to-working-storage moves in {@code COACTUPC} lines 1056-1423. The
- * error-decoration macro {@code app/cpy/CSSETATY.cpy} is expanded 39 times between lines 3208
- * and 3432, so 39 of the 43 map fields are decoration targets and exactly four of them are
- * editable-but-undecorated: the account id, the account group id, the customer id and the
- * government-issued id.</p>
+ * <p>Of the map's input families, eleven are protected and therefore absent here - screen metadata,
+ * the two message items and the function-key legends, which belong on the response contract or nowhere
+ * - leaving <strong>43</strong> carried map components. The error-decoration macro
+ * {@code app/cpy/CSSETATY.cpy} is expanded 39 times, so 39 of the 43 are decoration targets and
+ * exactly four are editable but never decorated: the account id, the account group id, the customer id
+ * and the government-issued id. Component order follows map declaration order because that is the
+ * reproducible authority; JSON binding is by name, so nothing downstream depends on it.
  *
- * <p>Component order follows the declaration order of the symbolic map, which places the three
- * date-of-birth parts at ordinals 22 to 24 - immediately after the third social-security part
- * and before the credit score. JSON binding is by name, so nothing downstream depends on the
- * ordering; map declaration order is used because it is the reproducible authority.</p>
+ * <p><strong>Split fields stay split.</strong> Four dates - account open, expiry, reissue and customer
+ * date of birth - contribute twelve year, month and day components; the social-security number
+ * contributes three; and two telephone numbers contribute six. The reissue date is easy to overlook
+ * because the screen is often described as carrying three dates, but the map declares it and the
+ * program stages it. Merging any of these would destroy the field-level error contract, because each
+ * sub-field owns its own validation flag and its own decoration site. Nothing here is parsed, converted
+ * or assembled: no date is interpreted and no telephone number is formatted. The persisted telephone
+ * form is a parenthesised area code followed by prefix and line number - thirteen characters of content
+ * in a fifteen-character field, completed by two trailing spaces - and that assembly, like date
+ * interpretation, belongs to the service layer.
  *
- * <p><strong>Split fields stay split.</strong> Four dates - account open, account expiry,
- * account reissue and customer date of birth - contribute twelve year, month and day
- * components; the social-security number contributes three components of widths 3, 2 and 4; and
- * two telephone numbers contribute six components of widths 3, 3 and 4. The reissue date is
- * easy to overlook because the screen is often described as carrying "three dates", but the map
- * declares it and the program stages it. Merging any of these would destroy the field-level
- * error contract, because each sub-field owns its own validation flag and its own decoration
- * site. Nothing here is parsed, converted or assembled: no date is interpreted and no telephone
- * number is formatted. The persisted telephone form is {@code (999)999-9999} inside a
- * 15-character field - 13 characters of content followed by two trailing spaces - and that
- * assembly belongs to the service layer, as does date interpretation.</p>
+ * <p><strong>The five monetary components</strong> - credit limit, cash credit limit, current balance,
+ * current cycle credit and current cycle debit - are carried as raw fifteen-character screen lexemes
+ * and not as decoded numbers, exactly as the legacy alphanumeric work fields stage them. The reason is
+ * the three-state outcome of the legacy numeric edit: it distinguishes a field that was <em>not
+ * supplied</em> - blank, all spaces, or carrying the marker character the previous turn wrote back -
+ * from one that was <em>supplied but unparseable</em>, and in the second case it keeps the operator's
+ * own keystrokes so the screen can redisplay and decorate them. Only a successful numeric test
+ * populates the signed two-decimal view. A decoded numeric component cannot represent the middle state
+ * at all: an unparseable lexeme would fail body binding before any component was populated, which
+ * would replace one ordered summary message plus N decorated fields with a single opaque body-read
+ * rejection and lose every other field's error with it. Carrying the lexeme keeps {@code MISSING} and
+ * {@code INVALID} independently reachable for these five fields.
  *
- * <p><strong>The five monetary components</strong> - credit limit, cash credit limit, current
- * balance, current cycle credit and current cycle debit - are 15-character screen fields staged
- * through 15-character <em>alphanumeric</em> work fields ({@code COACTUPC} lines 412-416) and
- * edited by paragraph {@code 1250-EDIT-SIGNED-9V2} (invoked at line 1486). They are therefore
- * carried here as 15-character raw screen lexemes, exactly as the map declares them and exactly
- * as the legacy work fields stage them, and not as decoded numbers.
- *
- * <p>The reason is the three-state outcome the edit paragraph produces. It distinguishes a field
- * that was <em>not supplied</em> (blank, all spaces, or the {@code '*'} marker the previous turn
- * wrote back, tested at lines 1073, 1087, 1101, 1115 and 1130) from a field that was
- * <em>supplied but unparseable</em>, and it keeps the operator's own keystrokes in the
- * alphanumeric field in the second case so the screen can redisplay and decorate them. Only when
- * the numeric-edit test succeeds does it populate the signed two-decimal view. A decoded numeric
- * component cannot represent the middle state at all: an unparseable lexeme would fail body
- * binding before any component was populated, which would replace the one ordered summary message
- * plus N decorated fields with a single opaque body-read rejection and would lose every other
- * field's error with it. Carrying the lexeme keeps {@code MISSING} and {@code INVALID}
- * independently reachable for these five fields, which is what the field-level error contract
- * requires.
- *
- * <p>Their record counterparts remain signed zoned decimals with ten integer digits and two
- * decimal places, and the database columns remain numeric with precision 12 and scale 2. Decoding
- * a lexeme to that form is the service's work, not this request's: it evaluates
- * {@code com.carddemo.util.CobolStringUtils.isUnsuppliedNumericLexeme} and {@code isNumericLexeme}
- * to reproduce the legacy three-state numeric edit, then converts through the one sanctioned
- * truncation point, {@code com.carddemo.util.ZonedDecimalCodec.fromNumericLexeme} (decision log
- * entries D-02, DL-078 and DL-079).
+ * <p>Their record counterparts remain signed zoned decimals with ten integer digits and two decimal
+ * places, and the columns remain numeric with precision 12 and scale 2. Decoding a lexeme to that form
+ * is the service's work: it reproduces the legacy three-state edit through
+ * {@code com.carddemo.util.CobolStringUtils} and converts through the one sanctioned truncation point,
+ * {@code com.carddemo.util.ZonedDecimalCodec} (decision log entries D-02, DL-078 and DL-079).
  * Truncation rather than rounding is required because the estate carries no rounding clause on any
- * arithmetic statement, so every legacy store into a two-decimal field truncates toward zero. This
- * file performs no arithmetic, rounding, scaling, negation, parsing or formatting.</p>
+ * arithmetic statement, so every legacy store into a two-decimal field truncates toward zero. This file
+ * performs no arithmetic, rounding, scaling, negation, parsing or formatting.
  *
- * <p><strong>The concurrency token, and why one component is not a map field.</strong> Forty-three
- * of the components below are the unprotected map fields. The forty-fourth is a concurrency token,
- * and it is present because the legacy transaction carries state across its turns that the map
- * never showed.
+ * <p><strong>The concurrency token, and why one component is not a map field.</strong> The
+ * forty-fourth component is a concurrency token, present because the legacy transaction carried state
+ * across its turns that the map never showed. The program appended the complete old image of the
+ * account and customer records - as they stood when the screen was presented - to the shared
+ * communication area, returned it with the screen, sliced it back off on the following turn, and on
+ * confirmation compared the freshly locked records field by field against that image, abandoning the
+ * write on any single difference. Re-reading the records at the start of the update turn would not do:
+ * the point of the comparison is to detect a change made <em>after</em> the screen was displayed, so
+ * the compared state has to have travelled with the conversation. In the legacy that state was safe
+ * because the communication area is held by the transaction manager and the terminal never sees it;
+ * echoed to a client it is no longer safe, so the token is opaque and integrity-protected rather than a
+ * readable version number - a client can return it and cannot forge, edit or fabricate one. Nothing
+ * about the records can be read out of it, and it is neither a map field, a screen field nor a
+ * decoration target. Decision log entry DL-074 records why it is a sealed digest pair.
  *
- * <p>{@code COACTUPC} declares a program commarea extension at line 652 whose first group is the
- * complete old image of the account and the customer as they stood when the screen was presented
- * (lines 669 onward). That extension is appended to the shared commarea and returned with the
- * screen (lines 1010-1018), then sliced back off on the following turn (lines 888-892). When the
- * operator confirms, the program reads both records for update, acquiring a lock on each (line
- * 3894 onward), and only then compares the freshly locked records field by field against the old
- * image in paragraph {@code 9700-CHECK-CHANGE-IN-REC}. Any single difference abandons the write.
- * Re-reading the records at the start of the update turn would not do: the whole point of the
- * comparison is to detect a change made <em>after</em> the screen was displayed, so the state being
- * compared has to have travelled with the conversation.
+ * <p><strong>Why this request tolerates bad input.</strong> The program runs a first-error-wins
+ * validation cascade: every edit stage is gated on the summary-message slot still being empty, so a
+ * submission with five bad fields yields <em>one</em> summary message - that of the first failing stage
+ * in source order - together with <em>N</em> independently set field flags that drive decoration. Bean
+ * Validation evaluates constraints in an unspecified order and would produce a different message set
+ * for the same input. The ordered cascade therefore belongs to the service layer, and this request
+ * deliberately <strong>accepts null, blank and out-of-range values without rejecting them</strong>. The
+ * only declarative constraint used is {@code @Size(max = n)} at each component's measured map width,
+ * which restates the physical width of the 3270 field rather than any business rule and neither trims a
+ * value nor disturbs leading or trailing spaces. No other constraint annotation appears in this file.
  *
- * <p>In the legacy that state was safe because the commarea is held by the transaction manager and
- * the terminal never sees it. Echoed to a client it is no longer safe, so the token is opaque and
- * integrity-protected rather than a readable version number: a client can return it and cannot
- * forge, edit or fabricate one.
- * {@code com.carddemo.service.AccountConcurrencyTokenService} mints it when the record is presented
- * and verifies it before the update, raising a conflict when it is absent, altered, or no longer
- * describes the stored records. Nothing about the records can be read out of it, and it is neither
- * a map field, a screen field, nor a decoration target. Decision log entry DL-074 records why the
- * token is a sealed digest pair rather than an echoed version number.</p>
+ * <p>Two components - the middle name and the second address line - are decorated for error display but
+ * never effectively validated, and therefore carry <strong>no annotation at all</strong>. The middle
+ * name is put through the <em>optional</em> alphabetic stage, which accepts blank values and embedded
+ * spaces, so no declarative constraint can express it while preserving cascade order; the second address
+ * line's validation flag is consumed by its decoration yet never assigned anywhere in the program, and
+ * the statement that would set its error label is commented out as optional, so the decoration can never
+ * fire and the field accepts any value. Attaching any constraint to either, even a width constraint,
+ * would reject input the legacy system accepts. Decision log entry D-34 records the decision.
  *
- * <p><strong>Why this request tolerates bad input.</strong> {@code COACTUPC} runs a
- * first-error-wins validation cascade: every edit paragraph is gated on the summary-message
- * slot still being empty, so a submission with five bad fields yields <em>one</em> summary
- * message - that of the first failing stage in source order - together with <em>N</em>
- * independently set field flags that drive decoration. Bean Validation evaluates constraints in
- * an unspecified order and would produce a different message set for the same input. The
- * ordered cascade therefore belongs to the service layer, and this request deliberately
- * <strong>accepts null, blank and out-of-range values without rejecting them</strong>. The only
- * declarative constraint used here is {@code @Size(max = n)} at each component's measured map
- * width, which restates the physical width of the 3270 field rather than any business rule; it
- * neither trims a value nor disturbs leading or trailing spaces. No other constraint annotation
- * appears anywhere in this file.</p>
+ * <p>The credit score is carried as a string so that a value such as {@code 001} survives intact. Its
+ * legacy range test is an inclusive 300-to-850 bound that fires only after the required-numeric stage
+ * has passed. Because that gating is part of the ordered cascade, the bound is <strong>documented here
+ * and enforced by the service</strong>; annotating it would hoist the check out of the cascade and
+ * change which message is produced. It is a request-side rule only: the persistence layer carries no
+ * such constraint, and seeded customers legitimately score below the lower bound.
  *
- * <p>Two components - the middle name and the second address line - are decorated for error
- * display but never validated, and therefore carry <strong>no annotation at all</strong>.
- * Attaching any constraint, even a width constraint, would reject input the legacy system
- * accepts. Decision log entry D-34 records the decision; the measured evidence is on each
- * component below.</p>
+ * <p><strong>Character-class semantics.</strong> The legacy alphabetic check blanks every letter in the
+ * field and then tests whether anything remains, so <strong>embedded spaces pass</strong> and a value
+ * such as {@code MARY ANN} is valid. No letters-only pattern may be attached to any name component; the
+ * faithful predicate - every character is a letter or a space - lives in
+ * {@code com.carddemo.util.CobolStringUtils} (decision log entry D-17). The state check is a flat
+ * membership test performing no trim, no numeric check and no blank pre-check, so no pattern or
+ * minimum-length constraint may be attached to the state component either. A failing state-and-postal
+ * code combination check sets both the state flag and the postal-code flag, which is why the field error
+ * contract is a per-field collection rather than a single error (decision log entry D-33).
  *
- * <p>The credit score is three characters wide and carried as a string so that a value such as
- * {@code 001} survives intact. Its legacy range test is a condition name over the inclusive
- * range 300 through 850 ({@code COACTUPC} lines 848-849) that fires only after the
- * required-numeric stage has passed (lines 1553-1554), in paragraph
- * {@code 1275-EDIT-FICO-SCORE} (lines 2514-2530). Because that gating is part of the ordered
- * cascade the bound is <strong>documented here and enforced by the service</strong>; annotating
- * it would hoist the check out of the cascade and change which message is produced. The bound
- * is a request-side rule only - the persistence layer carries no such constraint, and 21 of the
- * 50 seeded customers score below 300, the lowest being {@code 001}.</p>
+ * <p>Three adjacent source comments in the decoration block are unreliable and are recorded in the
+ * anomaly register: two are transposed against the expansions they describe and one is mislabelled. The
+ * macro's substitution token governs in every case, never the neighbouring comment.
  *
- * <p><strong>Character-class semantics.</strong> The legacy alphabetic check blanks every letter
- * in the field and then tests whether anything remains ({@code 1225-EDIT-ALPHA-REQD}, lines
- * 1898 and 1924-1933), so <strong>embedded spaces pass</strong> and values such as
- * {@code MARY ANN} are valid. No letters-only pattern may be attached to any name component;
- * the faithful predicate - every character is a letter or a space - lives in
- * {@code com.carddemo.util.CobolStringUtils} (decision log entry D-17). The four
- * character-class edit paragraphs are required-alphabetic (line 1898), required-alphanumeric
- * (line 1955), optional-alphabetic (line 2012) and optional-alphanumeric (line 2061); the
- * comment at line 2078 claims alphabetic-plus-space while lines 2079-2082 use the 62-character
- * alphanumeric table, and the code governs. The state check is a flat membership test
- * ({@code 1270-EDIT-US-STATE-CD}, lines 2493-2510) performing no trim, no numeric check and no
- * blank pre-check, so no pattern or minimum-length constraint may be attached to the state
- * component either. A failing state-and-postal-code combination check (lines 2536-2557) sets
- * both the state flag and the postal-code flag, which is why the field error contract is a
- * per-field collection rather than a single error (decision log entry D-33).</p>
+ * <p>This request is a {@code record}: immutable, constructed in one step, with no code generator or
+ * annotation processor involved. It depends only on the platform library and the validation API, and
+ * holds no logging, no input or output and no business logic. It carries an unmasked social-security
+ * number in three parts and an unmasked government-issued id because the legacy screen does; both are
+ * transported here and must not be written to a log or persisted from here. Decision log entry D-13
+ * records that both values are sealed at rest by the customer entity, so an inbound screen contract such
+ * as this one carries them unsealed on the wire only.
  *
- * <p>This request is a {@code record}: immutable, constructed in one step, with no code
- * generator or annotation processor involved. It depends only on the platform library and the
- * validation API, and holds no logging, no input or output and no business logic. It carries an
- * unmasked social-security number in three parts and an unmasked government-issued id because
- * the legacy screen does; both are transported here, never logged and never redacted. Decision
- * log entry D-13 records that both values are sealed at rest by the customer entity, and that an
- * inbound screen contract such as this one therefore carries them unsealed on the wire and never
- * persists either from here.</p>
- *
- * @param accountId account id - map field {@code ACCTSID}, width 11. Editable but never
- *        decorated. Moved to the search key at {@code COACTUPC} line 1056. The service reports
- *        {@code Account number must be a non zero 11 digit number} when it is unusable.
- * @param accountStatus account active status - map field {@code ACSTTUS}, width 1, decorated at
- *        {@code COACTUPC} line 3208 from token {@code ACCT-STATUS}. Restricted to yes or no by
- *        the service, which reports {@code Account Active Status must be Y or N}.
- * @param openYear account open date, year part - map field {@code OPNYEAR}, width 4, decorated
- *        at line 3214.
- * @param openMonth account open date, month part - map field {@code OPNMON}, width 2, decorated
- *        at line 3220.
- * @param openDay account open date, day part - map field {@code OPNDAY}, width 2, decorated at
- *        line 3226.
- * @param creditLimit credit limit - map field {@code ACRDLIM}, the raw 15-character screen
- *        lexeme; two decimal places once the service decodes it into the record. Decorated at
- *        line 3232. The service reports {@code Credit Limit must be supplied} for the
- *        not-supplied state and {@code Credit Limit is not valid} for the supplied-but-unparseable
- *        state, which is why the lexeme rather than a decoded number is carried.
- * @param expiryYear account expiry date, year part - map field {@code EXPYEAR}, width 4,
- *        decorated at line 3238.
- * @param expiryMonth account expiry date, month part - map field {@code EXPMON}, width 2,
- *        decorated at line 3244.
- * @param expiryDay account expiry date, day part - map field {@code EXPDAY}, width 2, decorated
- *        at line 3250.
- * @param cashCreditLimit cash credit limit - map field {@code ACSHLIM}, the raw 15-character
- *        screen lexeme; two decimal places once the service decodes it. Decorated at line 3256.
- * @param reissueYear account reissue date, year part - map field {@code RISYEAR}, width 4,
- *        decorated at line 3262. Part of the fourth split date.
- * @param reissueMonth account reissue date, month part - map field {@code RISMON}, width 2,
- *        decorated at line 3268.
- * @param reissueDay account reissue date, day part - map field {@code RISDAY}, width 2,
- *        decorated at line 3274.
- * @param currentBalance current balance - map field {@code ACURBAL}, the raw 15-character screen
- *        lexeme; two decimal places once the service decodes it. Decorated at line 3280.
- * @param currentCycleCredit current cycle credit - map field {@code ACRCYCR}, the raw
- *        15-character screen lexeme; two decimal places once the service decodes it. Decorated at
- *        line 3286.
- * @param accountGroupId account group id - map field {@code AADDGRP}, width 10. Editable but
- *        never decorated.
- * @param currentCycleDebit current cycle debit - map field {@code ACRCYDB}, the raw 15-character
- *        screen lexeme; two decimal places once the service decodes it. Decorated at line 3292.
- * @param customerId customer id - map field {@code ACSTNUM}, width 9. Editable but never
- *        decorated.
- * @param ssnPart1 social-security number, first part - map field {@code ACTSSN1}, width 3,
- *        decorated at line 3298. Transported unmasked.
- * @param ssnPart2 social-security number, second part - map field {@code ACTSSN2}, width 2,
- *        decorated at line 3304. Transported unmasked.
- * @param ssnPart3 social-security number, third part - map field {@code ACTSSN3}, width 4,
- *        decorated at line 3310. Transported unmasked.
- * @param dateOfBirthYear customer date of birth, year part - map field {@code DOBYEAR}, width
- *        4, decorated at line 3316.
- * @param dateOfBirthMonth customer date of birth, month part - map field {@code DOBMON}, width
- *        2, decorated at line 3322.
- * @param dateOfBirthDay customer date of birth, day part - map field {@code DOBDAY}, width 2,
- *        decorated at line 3328.
- * @param ficoScore customer credit score - map field {@code ACSTFCO}, width 3, decorated at
- *        line 3334. Carried as a string so that {@code 001} is not reduced to {@code 1}. The
- *        inclusive 300-to-850 bound is documented, not annotated; see the class notes.
- * @param firstName customer first name - map field {@code ACSFNAM}, width 25, decorated at line
- *        3340. Validated by the required-alphabetic stage, which permits embedded spaces.
- * @param middleName customer middle name - map field {@code ACSMNAM}, width 25, decorated at
- *        line 3346. <strong>Carries no annotation of any kind, deliberately.</strong> The
- *        source comment at line 3345 states that no edits are coded for it. Measured evidence
- *        refines that comment without changing the conclusion: lines 1568-1574 do run the
- *        <em>optional</em> alphabetic stage over this field and line 3110 consults the
- *        resulting flag for cursor placement, so the comment is stale - but an optional
- *        alphabetic stage accepts blank values and accepts embedded spaces, and no declarative
- *        constraint can express that while preserving cascade order. Any constraint added here,
- *        including a width constraint, would reject input the legacy system accepts.
- * @param lastName customer last name - map field {@code ACSLNAM}, width 25, decorated at line
- *        3352. Validated by the required-alphabetic stage, which permits embedded spaces.
- * @param addressLine1 customer first address line - map field {@code ACSADL1}, width 50,
- *        decorated at line 3358. Validated only for presence.
- * @param stateCode customer state code - map field {@code ACSSTTE}, width 2, decorated at line
- *        3364. Checked by flat membership against 56 codes and, jointly with the postal code,
- *        against 240 combinations; both checks live in the service.
- * @param addressLine2 customer second address line - map field {@code ACSADL2}, width 50,
- *        decorated at line 3370. <strong>Carries no annotation of any kind,
- *        deliberately.</strong> The source comment at line 3369 states that no edits are coded
- *        as yet, and measurement confirms it completely: the field's validation flag is
- *        declared at line 295 and consumed by the decoration at line 3370, yet it is never
- *        assigned anywhere in the 4,236 lines, and the statement that would set this field's
- *        error label is commented out at line 1614 under the note that the field is optional.
- *        The flag therefore can never leave its valid state and the decoration can never fire.
- *        This field accepts any value; adding a constraint, including a width constraint, would
- *        be a behavioural regression.
- * @param zipCode customer postal code - map field {@code ACSZIPC}, width 5, decorated at line
- *        3376 despite the mislabelled comment at line 3375. Persisted into a ten-character
- *        record field.
- * @param city customer city - map field {@code ACSCITY}, width 50, decorated at line 3382.
- *        Persisted into the customer record's third address line.
- * @param countryCode customer country code - map field {@code ACSCTRY}, width 3, decorated at
- *        line 3388.
- * @param phone1AreaCode first telephone number, area code - map field {@code ACSPH1A}, width 3,
- *        decorated at line 3394.
- * @param phone1Prefix first telephone number, prefix - map field {@code ACSPH1B}, width 3,
- *        decorated at line 3400.
- * @param phone1LineNumber first telephone number, line number - map field {@code ACSPH1C},
- *        width 4, decorated at line 3405.
- * @param governmentIssuedId customer government-issued id - map field {@code ACSGOVT}, width
- *        20. Editable but never decorated. Transported unmasked.
- * @param phone2AreaCode second telephone number, area code - map field {@code ACSPH2A}, width
- *        3, decorated at line 3411.
- * @param phone2Prefix second telephone number, prefix - map field {@code ACSPH2B}, width 3,
- *        decorated at line 3417.
- * @param phone2LineNumber second telephone number, line number - map field {@code ACSPH2C},
- *        width 4, decorated at line 3422.
- * @param eftAccountId customer electronic-funds-transfer account id - map field
- *        {@code ACSEFTC}, width 10, decorated at line 3432 from token
- *        {@code EFT-ACCOUNT-ID}; the adjacent comment at line 3431 is transposed and the token
- *        governs.
- * @param primaryCardHolderIndicator customer primary-card-holder indicator - map field
- *        {@code ACSPFLG}, width 1, decorated at line 3427 from token {@code PRI-CARDHOLDER};
- *        the adjacent comment at line 3426 is transposed and the token governs. Restricted to
- *        yes or no by the service.
+ * @param accountId the account id, used as the search key.
+ * @param creditLimit the credit limit as the raw fifteen-character screen lexeme, and the pattern for
+ *        the other four monetary components: two decimal places once the service decodes it, with one
+ *        service message for the not-supplied state and a different one for the
+ *        supplied-but-unparseable state, which is why the lexeme rather than a decoded number is
+ *        carried.
+ * @param ssnPart1 the first part of the social-security number; it and the other two parts are
+ *        transported unmasked.
+ * @param ficoScore the customer credit score, carried as a string so that {@code 001} is not reduced to
+ *        {@code 1}. The inclusive 300-to-850 bound is documented, not annotated; see above.
+ * @param middleName the customer middle name. <strong>Carries no annotation of any kind,
+ *        deliberately</strong> - see above.
+ * @param stateCode the customer state code, checked by flat membership and, jointly with the postal
+ *        code, against the state-and-postal combination table; both checks live in the service.
+ * @param addressLine2 the customer second address line. <strong>Carries no annotation of any kind,
+ *        deliberately</strong>: this field accepts any value - see above.
+ * @param zipCode the customer postal code, five characters on the screen and persisted into a
+ *        ten-character record field.
+ * @param city the customer city, persisted into the customer record's third address line.
+ * @param governmentIssuedId the customer government-issued id, transported unmasked.
+ * @param eftAccountId the customer electronic-funds-transfer account id. Its decoration site is one of
+ *        the two whose adjacent source comment is transposed; the substitution token governs.
+ * @param primaryCardHolderIndicator the customer primary-card-holder indicator, restricted to yes or no
+ *        by the service. Its decoration site is emitted before the transfer-account id, inverting map
+ *        declaration order, and its adjacent source comment is transposed.
  * @param concurrencyToken the opaque, integrity-protected description of the account and customer
- *        records as they stood when this screen was presented, minted by
- *        {@code com.carddemo.service.AccountConcurrencyTokenService} and returned here unchanged by
- *        the client. Not a map field. Absent or altered is a conflict the service reports, not a
- *        binding failure, so no constraint is attached.
+ *        records as they stood when this screen was presented, minted and verified by
+ *        {@code com.carddemo.service.AccountConcurrencyTokenService} and returned here unchanged by the
+ *        client. Not a map field. Absent or altered is a conflict the service reports, not a binding
+ *        failure, so no constraint is attached.
  */
 public record AccountUpdateRequest(
 
-        /* 1. ACCTSID, width 11 - editable, NOT decorated. */
         @Size(max = 11) String accountId,
 
-        /* 2. ACSTTUS, width 1 - decorated at COACTUPC:3208 (token ACCT-STATUS). */
         @Size(max = 1) String accountStatus,
 
-        /* 3. OPNYEAR, width 4 - decorated at COACTUPC:3214 (token OPEN-YEAR). */
         @Size(max = 4) String openYear,
 
-        /* 4. OPNMON, width 2 - decorated at COACTUPC:3220 (token OPEN-MONTH). */
         @Size(max = 2) String openMonth,
 
-        /* 5. OPNDAY, width 2 - decorated at COACTUPC:3226 (token OPEN-DAY). */
         @Size(max = 2) String openDay,
 
-        /* 6. ACRDLIM, width 15 - decorated at COACTUPC:3232 (token CRED-LIMIT). */
         @Size(max = 15) String creditLimit,
 
-        /* 7. EXPYEAR, width 4 - decorated at COACTUPC:3238 (token EXPIRY-YEAR). */
         @Size(max = 4) String expiryYear,
 
-        /* 8. EXPMON, width 2 - decorated at COACTUPC:3244 (token EXPIRY-MONTH). */
         @Size(max = 2) String expiryMonth,
 
-        /* 9. EXPDAY, width 2 - decorated at COACTUPC:3250 (token EXPIRY-DAY). */
         @Size(max = 2) String expiryDay,
 
-        /* 10. ACSHLIM, width 15 - decorated at COACTUPC:3256 (token CASH-CREDIT-LIMIT). */
         @Size(max = 15) String cashCreditLimit,
 
-        /* 11. RISYEAR, width 4 - decorated at COACTUPC:3262 (token REISSUE-YEAR). */
         @Size(max = 4) String reissueYear,
 
-        /* 12. RISMON, width 2 - decorated at COACTUPC:3268 (token REISSUE-MONTH). */
         @Size(max = 2) String reissueMonth,
 
-        /* 13. RISDAY, width 2 - decorated at COACTUPC:3274 (token REISSUE-DAY). */
         @Size(max = 2) String reissueDay,
 
-        /* 14. ACURBAL, width 15 - decorated at COACTUPC:3280 (token CURR-BAL). */
         @Size(max = 15) String currentBalance,
 
-        /* 15. ACRCYCR, width 15 - decorated at COACTUPC:3286 (token CURR-CYC-CREDIT). */
         @Size(max = 15) String currentCycleCredit,
 
-        /* 16. AADDGRP, width 10 - editable, NOT decorated. */
         @Size(max = 10) String accountGroupId,
 
-        /* 17. ACRCYDB, width 15 - decorated at COACTUPC:3292 (token CURR-CYC-DEBIT). */
         @Size(max = 15) String currentCycleDebit,
 
-        /* 18. ACSTNUM, width 9 - editable, NOT decorated. */
         @Size(max = 9) String customerId,
 
-        /* 19. ACTSSN1, width 3 - decorated at COACTUPC:3298 (token EDIT-US-SSN-PART1). */
         @Size(max = 3) String ssnPart1,
 
-        /* 20. ACTSSN2, width 2 - decorated at COACTUPC:3304 (token EDIT-US-SSN-PART2). */
         @Size(max = 2) String ssnPart2,
 
-        /* 21. ACTSSN3, width 4 - decorated at COACTUPC:3310 (token EDIT-US-SSN-PART3). */
         @Size(max = 4) String ssnPart3,
 
-        /* 22. DOBYEAR, width 4 - decorated at COACTUPC:3316 (token DT-OF-BIRTH-YEAR). */
         @Size(max = 4) String dateOfBirthYear,
 
-        /* 23. DOBMON, width 2 - decorated at COACTUPC:3322 (token DT-OF-BIRTH-MONTH). */
         @Size(max = 2) String dateOfBirthMonth,
 
-        /* 24. DOBDAY, width 2 - decorated at COACTUPC:3328 (token DT-OF-BIRTH-DAY). */
         @Size(max = 2) String dateOfBirthDay,
 
-        /* 25. ACSTFCO, width 3 - decorated at COACTUPC:3334 (token FICO-SCORE). */
         @Size(max = 3) String ficoScore,
 
-        /* 26. ACSFNAM, width 25 - decorated at COACTUPC:3340 (token FIRST-NAME). */
         @Size(max = 25) String firstName,
 
-        /* 27. ACSMNAM, width 25 - decorated at COACTUPC:3346 (token MIDDLE-NAME).
-         * INTENTIONALLY UNANNOTATED - DO NOT ADD ANY CONSTRAINT, NOT EVEN @Size. Decision log
-         * entry D-34 and the @param tag above carry the measured evidence. */
+        /* INTENTIONALLY UNANNOTATED - DO NOT ADD ANY CONSTRAINT, NOT EVEN @Size. See the type
+         * documentation and decision log entry D-34. */
         String middleName,
 
-        /* 28. ACSLNAM, width 25 - decorated at COACTUPC:3352 (token LAST-NAME). */
         @Size(max = 25) String lastName,
 
-        /* 29. ACSADL1, width 50 - decorated at COACTUPC:3358 (token ADDRESS-LINE-1). */
         @Size(max = 50) String addressLine1,
 
-        /* 30. ACSSTTE, width 2 - decorated at COACTUPC:3364 (token STATE), which the cascade
-         * emits between the two address lines, following map declaration order rather than
-         * conventional postal order; recorded as-is. */
         @Size(max = 2) String stateCode,
 
-        /* 31. ACSADL2, width 50 - decorated at COACTUPC:3370 (token ADDRESS-LINE-2).
-         * INTENTIONALLY UNANNOTATED - DO NOT ADD ANY CONSTRAINT, NOT EVEN @Size. This field
-         * accepts ANY value; decision log entry D-34 and the @param tag above carry the
-         * measured evidence. */
+        /* INTENTIONALLY UNANNOTATED - DO NOT ADD ANY CONSTRAINT, NOT EVEN @Size. This field accepts
+         * ANY value; see the type documentation and decision log entry D-34. */
         String addressLine2,
 
-        /* 32. ACSZIPC, width 5 - decorated at COACTUPC:3376 (token ZIPCODE), before the city
-         * and the country, following map declaration order. The adjacent source comment at
-         * COACTUPC:3375 reads "State" and is mislabelled; the substitution token governs. */
         @Size(max = 5) String zipCode,
 
-        /* 33. ACSCITY, width 50 - decorated at COACTUPC:3382 (token CITY). */
         @Size(max = 50) String city,
 
-        /* 34. ACSCTRY, width 3 - decorated at COACTUPC:3388 (token COUNTRY). */
         @Size(max = 3) String countryCode,
 
-        /* 35. ACSPH1A, width 3 - decorated at COACTUPC:3394 (token PHONE-NUM-1A). */
         @Size(max = 3) String phone1AreaCode,
 
-        /* 36. ACSPH1B, width 3 - decorated at COACTUPC:3400 (token PHONE-NUM-1B). */
         @Size(max = 3) String phone1Prefix,
 
-        /* 37. ACSPH1C, width 4 - decorated at COACTUPC:3405 (token PHONE-NUM-1C). */
         @Size(max = 4) String phone1LineNumber,
 
-        /* 38. ACSGOVT, width 20 - editable, NOT decorated. Transported unmasked. */
         @Size(max = 20) String governmentIssuedId,
 
-        /* 39. ACSPH2A, width 3 - decorated at COACTUPC:3411 (token PHONE-NUM-2A). */
         @Size(max = 3) String phone2AreaCode,
 
-        /* 40. ACSPH2B, width 3 - decorated at COACTUPC:3417 (token PHONE-NUM-2B). */
         @Size(max = 3) String phone2Prefix,
 
-        /* 41. ACSPH2C, width 4 - decorated at COACTUPC:3422 (token PHONE-NUM-2C). */
         @Size(max = 4) String phone2LineNumber,
 
-        /* 42. ACSEFTC, width 10 - decorated at COACTUPC:3432 (token EFT-ACCOUNT-ID). */
         @Size(max = 10) String eftAccountId,
 
-        /* 43. ACSPFLG, width 1 - decorated at COACTUPC:3427 (token PRI-CARDHOLDER), which the
-         * cascade emits BEFORE the transfer-account id, inverting map declaration order. */
         @Size(max = 1) String primaryCardHolderIndicator,
 
-        /* Not a map field. The echoed counterpart of the program commarea extension COACTUPC
-         * carries across the pseudo-conversational turn, described on the type above. Opaque and
-         * unbounded by design, and deliberately unannotated: its absence is a conflict for the
-         * service to report, not a binding failure for the framework to reject. */
+        /* Not a map field: the echoed counterpart of the state the program carried across the
+         * pseudo-conversational turn, described on the type above. Opaque and unbounded by design, and
+         * deliberately unannotated - its absence is a conflict for the service to report, not a binding
+         * failure for the framework to reject. */
         String concurrencyToken) {
 
     /**
-     * Fixed stand-in emitted by {@link #toString()} in place of the whole component set.
-     *
-     * <p>A constant rather than any transformation of the values, so nothing about them - not a
-     * length, not a prefix, not a digest, not a partial mask - can be recovered from a stringified
-     * instance.
+     * Fixed stand-in emitted by {@link #toString()} in place of the whole component set. A constant
+     * rather than any transformation of the values, so nothing about them - not a length, not a prefix,
+     * not a digest, not a partial mask - can be recovered from a stringified instance.
      */
     private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
 
     /**
      * Returns a diagnostic representation that names the type and discloses none of its values.
      *
-     * <p><strong>Why the implicit record rendering could not stand.</strong> A record's generated
-     * {@code toString()} prints every component, and every one of the forty-three map components of this
-     * request is either regulated personal data, a regulated financial value, or a key that joins
-     * directly to both. The three social-security parts, the three date-of-birth parts, the
-     * government-issued identifier, the transfer-account identifier, the three name parts, the
-     * address block, the two telephone numbers, the credit score and the five monetary values are all
-     * present on one object. Any structured logger, framework diagnostic, failed assertion, exception
-     * message or string interpolation touching an instance would have emitted the lot.
+     * <p>A record's generated {@code toString()} prints every component, and every one of the
+     * forty-three map components here is regulated personal data, a regulated financial value, or a key
+     * that joins directly to both - the social-security and date-of-birth parts, the government-issued
+     * and transfer-account identifiers, the name parts, the address block, the two telephone numbers,
+     * the credit score and the five monetary values all sit on one object.</p>
      *
-     * <p><strong>Why nothing at all is retained, not even the identifiers.</strong> The account and
-     * customer identifiers look like harmless correlation handles, and in isolation they nearly are.
-     * On this type they are not in isolation: they are the join keys to the very record whose
-     * regulated fields travel beside them, so emitting them alongside a partially redacted payload
-     * would still let a reader reassemble the subject from two log lines. The correlation need is
-     * genuine, and it is met properly elsewhere - by the request-scoped trace identifier the
-     * observability configuration attaches to every log event - rather than by leaking a business key
-     * from a request body.
+     * <p><strong>Nothing at all is retained, not even the identifiers.</strong> The account and customer
+     * identifiers look like harmless correlation handles, and in isolation they nearly are; on this type
+     * they are the join keys to the very record whose regulated fields travel beside them, so emitting
+     * them alongside a partially redacted payload would still let a reader reassemble the subject from
+     * two lines. The correlation need is met properly by the request-scoped trace identifier the
+     * observability configuration attaches to every log event, rather than by carrying a business key
+     * out of a request body.</p>
      *
      * <p>{@code equals} and {@code hashCode} are deliberately left as the record contract generates
-     * them. They compare every component by value, which is what a request contract requires, and
-     * neither emits anything: an in-memory comparison is not a disclosure surface. Redaction belongs
-     * on the rendering path alone.
+     * them: they compare every component by value, which is what a request contract requires, and
+     * neither emits anything. Redaction belongs on the rendering path alone.</p>
      *
      * @return the type name followed by a fixed placeholder, carrying no component value
      */

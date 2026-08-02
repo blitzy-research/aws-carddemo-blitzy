@@ -20,39 +20,53 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.stream.Stream;
 
+import com.carddemo.config.WebMvcConfig;
 import com.carddemo.domain.enums.KeyAction;
-import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.exc.MismatchedInputException;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.core.StreamWriteFeature;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration;
 import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Contract tests for the JSON mapper the deployed application actually uses.
  *
  * <h2>Why this test exists</h2>
  *
- * <p>Five request and response types in this package are covered by fast, pure unit suites that
- * build a local mapper by hand, configured to mirror the four {@code spring.jackson} settings the
- * module declares in {@code src/main/resources/application.yml}. Those suites are valuable and are
- * deliberately retained: they run in milliseconds, they start nothing, and they pin the wire shape
- * of each type in isolation. What they cannot do is prove that the declared configuration is the
- * configuration a deployed instance ends up with. A hand-built mapper asserts the settings the test
- * author believed were in force; if {@code application.yml} were edited, or if a framework upgrade
- * moved a default, every one of those suites would keep passing while the real endpoint changed
- * shape underneath them.
+ * <p>Every request and response type in this package is covered by a fast, pure unit suite that
+ * obtains a mapper configured to mirror the four {@code spring.jackson} settings the module declares
+ * in {@code src/main/resources/application.yml}. Those suites are valuable and are deliberately
+ * retained: they run in milliseconds, they start nothing, and they pin the wire shape of each type
+ * in isolation. What they cannot do is prove that the declared configuration is the configuration a
+ * deployed instance ends up with. A hand-built mapper asserts the settings the test author believed
+ * were in force; if {@code application.yml} were edited, or if a framework upgrade moved a default,
+ * every one of those suites would keep passing while the real endpoint changed shape underneath
+ * them.
+ *
+ * <p>Two structural choices keep that gap closed rather than merely narrowed. First, the settings
+ * are written out by hand in exactly one place - {@link JsonContractSupport#declaredSettingsMapper()}
+ * - and every pure-DTO suite draws its mapper from there, so the single drift comparison in
+ * {@link DeployedMapperProvenance} covers all of them at once instead of each suite carrying its own
+ * unverifiable belief. Second, every covered type is additionally bound through the deployed bean in
+ * {@link EveryCoveredTypeThroughTheDeployedMapper}, so no type's contract rests on a locally built
+ * mapper alone.
  *
  * <p>This slice closes that gap. It obtains the {@link ObjectMapper} from a real Spring context in
  * which the module's own {@code application.yml} has been read through the framework's
@@ -107,13 +121,21 @@ class ApplicationJsonContractTest {
      * the same mechanism a running instance uses. The auto-configuration then builds the mapper
      * from the bound properties exactly as it does at start-up.
      *
-     * <p>No application configuration class is registered, and none is searched for: this module's
-     * entry point is not required for the wire contract to be observable, so the slice stays
-     * independent of it.
+     * <p>This module's entry point is not registered and is not searched for: it is not required for
+     * the wire contract to be observable, so the slice stays independent of it. One configuration
+     * class <em>is</em> registered, and it has to be: {@link WebMvcConfig} contributes the
+     * builder customiser that refuses a JSON number or boolean where the contract declares text.
+     * That rule has no representation in {@code application.yml} - the framework publishes properties
+     * for Jackson's feature enumerations but none for its per-type coercion configuration - so a slice
+     * that omitted the class would be testing a mapper strictly more permissive than the deployed one,
+     * and every assertion in this file would be describing a mapper no endpoint uses. Registering it
+     * also makes the two halves verifiable together: the customiser is additive, so the four settings
+     * the following tests assert must still hold with it present.
      */
     private static final ApplicationContextRunner DEPLOYED_CONTEXT = new ApplicationContextRunner()
             .withInitializer(new ConfigDataApplicationContextInitializer())
-            .withConfiguration(AutoConfigurations.of(JacksonAutoConfiguration.class));
+            .withConfiguration(AutoConfigurations.of(JacksonAutoConfiguration.class))
+            .withUserConfiguration(WebMvcConfig.class);
 
     /** Summary line used wherever a response needs one. */
     private static final String SUMMARY = "Account update rejected - correct the marked fields";
@@ -152,24 +174,119 @@ class ApplicationJsonContractTest {
     private static final String PLAIN_AMOUNT = "100";
 
     /**
-     * Builds the mapper the five fast pure-DTO suites build for themselves, from the same four
-     * settings, so that the two can be compared.
+     * An amount at the record scale, which is the only shape the four monetary response types will
+     * construct. The trailing zero is deliberate: it is what a normalising mapper would drop.
+     */
+    private static final String RECORD_SHAPED_AMOUNT = "100.00";
+
+    /**
+     * Returns the very mapper every fast pure-DTO suite in this package uses, so that it can be
+     * compared against the deployed one.
      *
-     * <p>This is the drift sentinel. It exists in exactly one place - here - and its only purpose
-     * is to fail when the hand-built configuration those suites rely on stops matching the deployed
-     * one. Nothing in this file asserts the wire contract through it.
+     * <p>This is the drift sentinel, and it deliberately does not build a mapper of its own. It
+     * delegates to {@link JsonContractSupport#declaredSettingsMapper()}, which is the single place
+     * in the test tree where the module's four declared settings are written out by hand. Every
+     * pure-DTO suite obtains its mapper from that same factory, so this one comparison covers all of
+     * them at once: if the hand-written configuration and the deployed configuration ever diverge,
+     * this test fails rather than every suite silently agreeing with an obsolete belief.
      *
-     * @return a mapper configured as the fast suites configure theirs
+     * <p>Nothing in this file asserts the wire contract through this mapper. Its only use is the
+     * comparison in {@link DeployedMapperProvenance#theFastSuiteMapperStillMatchesTheDeployedMapper()}.
+     *
+     * @return the mapper the fast suites use, obtained from the shared factory rather than rebuilt
      */
     private static ObjectMapper fastSuiteEquivalentMapper() {
-        return JsonMapper.builder()
-                .defaultPropertyInclusion(JsonInclude.Value.construct(
-                        JsonInclude.Include.NON_NULL, JsonInclude.Include.NON_NULL))
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-                .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
-                .build();
+        return JsonContractSupport.declaredSettingsMapper();
     }
+
+    /**
+     * Supplies every request and response type in this package that carries a dedicated pure-DTO
+     * suite, so that each is also bound through the mapper a deployed instance holds.
+     *
+     * <p>Instances are obtained by deserializing the narrowest payload each type accepts rather than
+     * by invoking each canonical constructor. Two reasons: several of these records declare dozens of
+     * components - the account-update response declares fifty-six - so hand-written construction would
+     * dominate the file without testing anything the dedicated suites do not already cover; and all but
+     * one of these types legitimately tolerates a fully absent payload, which the dedicated suites
+     * assert individually. What is under test here is not the shape of any one type, which its own suite
+     * pins, but that the <em>deployed</em> mapper binds it at all and applies the module's declared
+     * settings to it.
+     *
+     * <p>The one exception is carried in the table rather than worked around. The menu response has a
+     * validating constructor: it must be handed exactly one of its two option collections, because the
+     * legacy estate has a user menu and an administrator menu and a response that carried neither would
+     * describe no screen while one that carried both would describe two. A fully absent payload is
+     * therefore not a legitimate state for it, and asserting that it were would contradict the type's
+     * own contract. Each row consequently carries its own minimal admissible payload, so the assertions
+     * below stay uniform and every type is exercised at the narrowest state it genuinely admits.
+     *
+     * @return each covered type paired with a short description and the narrowest payload it accepts
+     */
+    static Stream<Arguments> everyCoveredType() {
+        return Stream.of(
+                Arguments.of(AccountUpdateResponse.class, "account update response", ABSENT_PAYLOAD),
+                Arguments.of(AccountViewResponse.class, "account view response", ABSENT_PAYLOAD),
+                Arguments.of(BillPaymentRequest.class, "bill payment request", ABSENT_PAYLOAD),
+                Arguments.of(BillPaymentResponse.class, "bill payment response", ABSENT_PAYLOAD),
+                Arguments.of(CardDetailResponse.class, "card detail response", ABSENT_PAYLOAD),
+                Arguments.of(CardListRequest.class, "card list request", ABSENT_PAYLOAD),
+                Arguments.of(CardListResponse.class, "card list response", ABSENT_PAYLOAD),
+                Arguments.of(CardUpdateRequest.class, "card update request", ABSENT_PAYLOAD),
+                Arguments.of(CardUpdateResponse.class, "card update response", ABSENT_PAYLOAD),
+                Arguments.of(MenuResponse.class, "menu response", ADMIN_MENU_PAYLOAD),
+                Arguments.of(ReportRequest.class, "report request", ABSENT_PAYLOAD),
+                Arguments.of(ReportResponse.class, "report response", ABSENT_PAYLOAD),
+                Arguments.of(SignOnResponse.class, "sign-on response", ABSENT_PAYLOAD),
+                Arguments.of(TransactionAddRequest.class, "transaction add request", ABSENT_PAYLOAD),
+                Arguments.of(TransactionAddResponse.class, "transaction add response", ABSENT_PAYLOAD),
+                Arguments.of(TransactionListRequest.class, "transaction list request", ABSENT_PAYLOAD),
+                Arguments.of(TransactionListResponse.class, "transaction list response",
+                        ABSENT_PAYLOAD),
+                Arguments.of(TransactionViewResponse.class, "transaction view response",
+                        ABSENT_PAYLOAD),
+                Arguments.of(UserRequest.class, "user request", ABSENT_PAYLOAD),
+                Arguments.of(UserResponse.class, "user response", ABSENT_PAYLOAD));
+    }
+
+    /** The fully absent payload, which is the narrowest state nineteen of the twenty types admit. */
+    private static final String ABSENT_PAYLOAD = "{}";
+
+    /** A property no contract in the module declares, used to observe the tolerance setting. */
+    private static final String UNDECLARED_PROPERTY =
+            "\"aPropertyThisContractDoesNotDeclare\":\"PF03=Back\"";
+
+    /**
+     * Splices the undeclared property into a payload without disturbing what the payload already says.
+     *
+     * <p>Sending the undeclared property on its own would be enough for nineteen of the twenty types,
+     * but the menu response has a validating constructor and would refuse such a payload for a reason
+     * that has nothing to do with tolerance - so the test would report a tolerance failure where none
+     * exists. Splicing keeps each type at the narrowest state it admits and adds exactly one thing the
+     * contract does not declare, which is what makes the observation an observation about tolerance.</p>
+     *
+     * @param payload the payload to extend, which is either empty or a populated object
+     * @return the payload carrying one additional property the contract does not declare
+     */
+    private static String withUndeclaredProperty(String payload) {
+        if (ABSENT_PAYLOAD.equals(payload)) {
+            return "{" + UNDECLARED_PROPERTY + "}";
+        }
+        return payload.substring(0, payload.length() - 1) + "," + UNDECLARED_PROPERTY + "}";
+    }
+
+    /**
+     * The narrowest payload the menu response admits: exactly one option collection, at its own depth.
+     *
+     * <p>The administrator collection is used rather than the user one only because it is the shorter of
+     * the two - four options against ten - so the literal stays readable. Which of the two is supplied
+     * is immaterial to what this class asserts; that exactly one must be is the point, and the menu
+     * response's own suite is where each collection's depth is pinned.
+     */
+    private static final String ADMIN_MENU_PAYLOAD = "{\"adminMenuOptions\":["
+            + "{\"number\":1,\"label\":\"User List (Security) ...\"},"
+            + "{\"number\":2,\"label\":\"User Add (Security)  ...\"},"
+            + "{\"number\":3,\"label\":\"User Update (Security) \"},"
+            + "{\"number\":4,\"label\":\"User Delete (Security) \"}]}";
 
     /**
      * A response carrying a summary, two entries in the two published states and a focus hint.
@@ -262,9 +379,9 @@ class ApplicationJsonContractTest {
         }
 
         @Test
-        @DisplayName("the mapper the five fast pure-DTO suites build still behaves identically to the "
-                + "deployed one, so a change to the module's file fails here rather than silently "
-                + "invalidating those suites")
+        @DisplayName("the one hand-written mapper every fast pure-DTO suite shares still behaves "
+                + "identically to the deployed one, so a change to the module's file fails here "
+                + "rather than silently invalidating every one of those suites")
         void theFastSuiteMapperStillMatchesTheDeployedMapper() {
             DEPLOYED_CONTEXT.run(context -> {
                 ObjectMapper deployed = context.getBean(ObjectMapper.class);
@@ -779,6 +896,487 @@ class ApplicationJsonContractTest {
                 assertThat(back.accountIdNumeric()).isPresent();
                 assertThat(back.customerIdNumeric()).isPresent();
             });
+        }
+    }
+
+    @Nested
+    @DisplayName("A scalar of the wrong shape is refused rather than coerced into the declared one")
+    class StrictScalarCoercion {
+
+        @Test
+        @DisplayName("the coercion rule is additive: on one and the same mapper, all four settings the "
+                + "configuration file declares still hold and the refusal holds alongside them")
+        void theCoercionRuleIsAdditiveRatherThanSubstituting() {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper mapper = context.getBean(ObjectMapper.class);
+
+                String omission = mapper.writeValueAsString(new StatementSummary(null, null, null, null,
+                        null, null, new BigDecimal(SCIENTIFIC_AMOUNT), null, null, null, null, null,
+                        null));
+                assertThat(omission)
+                        .as("setting one, absent members omitted, and setting two, decimals written "
+                                + "plainly, both survive the customiser")
+                        .doesNotContain("null")
+                        .contains(PLAIN_AMOUNT)
+                        .doesNotContain(SCIENTIFIC_AMOUNT);
+
+                assertThat(mapper.readValue("{\"message\":\"" + SUMMARY + "\",\"clientEcho\":\"ignored\"}",
+                        ErrorResponse.class).message())
+                        .as("setting three, unknown request properties tolerated, survives - a client may "
+                                + "still echo a member the contract does not declare")
+                        .isEqualTo(SUMMARY);
+
+                assertThat(mapper.writeValueAsString(LocalDate.of(2024, 1, 31)))
+                        .as("setting four, temporal members as ISO-8601 text rather than as an epoch "
+                                + "number, survives")
+                        .isEqualTo("\"2024-01-31\"");
+                assertThat(mapper.writeValueAsString(Instant.parse("2024-01-31T10:15:30Z")))
+                        .startsWith("\"2024-01-31T10:15:30");
+
+                assertThatThrownBy(() -> mapper.readValue("{\"userId\":1}", SignOnRequest.class))
+                        .as("and the refusal the customiser adds is in force on that same mapper, which "
+                                + "is what makes the customiser additive rather than substituting")
+                        .isInstanceOf(MismatchedInputException.class);
+            });
+        }
+
+        @Test
+        @DisplayName("a whole JSON number is refused where the contract declares text, so a body carrying "
+                + "1 cannot bind where an eleven-character identifier was required")
+        void aWholeNumberIsRefusedWhereTheContractDeclaresText() {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper mapper = context.getBean(ObjectMapper.class);
+
+                assertThatThrownBy(() -> mapper.readValue("{\"userId\":1}", SignOnRequest.class))
+                        .as("a fixed-width screen field is external text; a number coerced into it is a "
+                                + "corrupted value whose leading zeros are already gone")
+                        .isInstanceOf(MismatchedInputException.class);
+            });
+        }
+
+        @Test
+        @DisplayName("a fractional JSON number is refused where the contract declares text")
+        void aFractionalNumberIsRefusedWhereTheContractDeclaresText() {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper mapper = context.getBean(ObjectMapper.class);
+
+                assertThatThrownBy(() -> mapper.readValue("{\"userId\":1.5}", SignOnRequest.class))
+                        .isInstanceOf(MismatchedInputException.class);
+            });
+        }
+
+        @Test
+        @DisplayName("a JSON boolean is refused where the contract declares text, because no screen field "
+                + "is two-state - not even the confirmation character")
+        void aBooleanIsRefusedWhereTheContractDeclaresText() {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper mapper = context.getBean(ObjectMapper.class);
+
+                assertThatThrownBy(() -> mapper.readValue("{\"userId\":true}", SignOnRequest.class))
+                        .as("the confirmation field has a third outcome - a character that is neither "
+                                + "accepted answer - which a boolean cannot represent")
+                        .isInstanceOf(MismatchedInputException.class);
+            });
+        }
+
+        @Test
+        @DisplayName("a fractional JSON number is refused where the contract declares a whole screen row "
+                + "count, so 7.9 cannot silently become 7")
+        void aFractionalNumberIsRefusedWhereTheContractDeclaresAWholeCount() {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper mapper = context.getBean(ObjectMapper.class);
+                String body = "{\"pageSize\":7.9,\"direction\":\"FORWARD\"}";
+
+                assertThatThrownBy(() -> mapper.readValue(body, PageMetadata.class))
+                        .as("a truncated row count is indistinguishable from a count the caller sent")
+                        .isInstanceOf(MismatchedInputException.class);
+            });
+        }
+
+        @Test
+        @DisplayName("a JSON number is refused where the contract declares an attention key, so an ordinal "
+                + "index cannot select a key the operator never pressed")
+        void aNumberIsRefusedWhereTheContractDeclaresAnAttentionKey() {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper mapper = context.getBean(ObjectMapper.class);
+
+                assertThatThrownBy(() -> mapper.readValue("{\"keyAction\":4}", ScreenWorkArea.class))
+                        .as("every attention identifier is a named byte; none is an index, and the key "
+                                + "vocabulary has no catch-all branch")
+                        .isInstanceOf(MismatchedInputException.class);
+            });
+        }
+
+        @Test
+        @DisplayName("a JSON number is refused where the contract declares a paging direction")
+        void aNumberIsRefusedWhereTheContractDeclaresAPagingDirection() {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper mapper = context.getBean(ObjectMapper.class);
+                String body = "{\"pageSize\":7,\"direction\":0}";
+
+                assertThatThrownBy(() -> mapper.readValue(body, PageMetadata.class))
+                        .isInstanceOf(MismatchedInputException.class);
+            });
+        }
+
+        @Test
+        @DisplayName("every shape the contract does declare still binds: text, an explicit null, an empty "
+                + "screen field, a whole count and a named key")
+        void everyShapeTheContractDeclaresStillBinds() {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper mapper = context.getBean(ObjectMapper.class);
+
+                assertThat(mapper.readValue("{\"userId\":\"ADMIN001\"}", SignOnRequest.class).userId())
+                        .isEqualTo("ADMIN001");
+                assertThat(mapper.readValue("{\"userId\":null}", SignOnRequest.class).userId())
+                        .as("an absent screen field reaches the ordered emptiness cascade that owns the "
+                                + "resulting message; it is not a binding failure")
+                        .isNull();
+                assertThat(mapper.readValue("{\"userId\":\"\"}", SignOnRequest.class).userId())
+                        .as("a blank screen field an operator submitted must still arrive blank")
+                        .isEmpty();
+                assertThat(mapper.readValue("{\"userId\":\"  \"}", SignOnRequest.class).userId())
+                        .as("padding is part of a fixed-width value and is never trimmed")
+                        .isEqualTo("  ");
+
+                PageMetadata page = mapper.readValue(
+                        "{\"pageSize\":7,\"direction\":\"FORWARD\"}", PageMetadata.class);
+                assertThat(page.pageSize()).isEqualTo(PageMetadata.CARD_LIST_PAGE_SIZE);
+                assertThat(page.direction()).isEqualTo(PageMetadata.PagingDirection.FORWARD);
+
+                assertThat(mapper.readValue("{\"keyAction\":\"PFK05\"}", ScreenWorkArea.class).keyAction())
+                        .isEqualTo(KeyAction.PFK05);
+            });
+        }
+
+        @Test
+        @DisplayName("the inbound paging shape binds its two boundary keys and its direction and carries "
+                + "no server-owned paging state at all")
+        void theInboundPagingShapeCarriesOnlyWhatAClientMayChoose() {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper mapper = context.getBean(ObjectMapper.class);
+                String body = "{\"previousCursorKey\":\"0000000000000011\","
+                        + "\"nextCursorKey\":\"0000000000000018\",\"direction\":\"BACKWARD\","
+                        + "\"pageSize\":2147483647,\"hasMorePages\":true,\"hasPreviousPages\":true,"
+                        + "\"displayedPageNumber\":\"99999999\"}";
+
+                PageMetadata.PageCursorRequest request =
+                        mapper.readValue(body, PageMetadata.PageCursorRequest.class);
+
+                assertThat(request.previousCursorKey()).isEqualTo("0000000000000011");
+                assertThat(request.nextCursorKey()).isEqualTo("0000000000000018");
+                assertThat(request.direction()).isEqualTo(PageMetadata.PagingDirection.BACKWARD);
+                assertThat(mapper.writeValueAsString(request))
+                        .as("the four server-owned values are tolerated as unknown input and discarded, so "
+                                + "no page size, availability flag or display value can be dictated")
+                        .doesNotContain("pageSize")
+                        .doesNotContain("hasMorePages")
+                        .doesNotContain("hasPreviousPages")
+                        .doesNotContain("displayedPageNumber");
+            });
+        }
+
+        @Test
+        @DisplayName("the inbound paging shape withholds both boundary keys when it is stringified, because "
+                + "the card-list browse key is the card number itself")
+        void theInboundPagingShapeWithholdsItsBoundaryKeys() {
+            PageMetadata.PageCursorRequest request = new PageMetadata.PageCursorRequest(
+                    "0000000000000011", "0000000000000018", PageMetadata.PagingDirection.FORWARD);
+
+            assertThat(request.toString())
+                    .doesNotContain("0000000000000011")
+                    .doesNotContain("0000000000000018")
+                    .contains("FORWARD");
+            assertThat(request.previousCursorKey())
+                    .as("only the rendering changes; the accessor still carries the key byte for byte")
+                    .isEqualTo("0000000000000011");
+        }
+
+        @Test
+        @DisplayName("the inbound paging shape accepts an absent direction, because the first entry to a "
+                + "list screen arrives on the enter key rather than on a paging key")
+        void theInboundPagingShapeAcceptsAnAbsentDirection() {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper mapper = context.getBean(ObjectMapper.class);
+
+                PageMetadata.PageCursorRequest request =
+                        mapper.readValue("{}", PageMetadata.PageCursorRequest.class);
+
+                assertThat(request.direction())
+                        .as("no default is applied and none may be inferred; the service resolves it from "
+                                + "the accompanying attention key")
+                        .isNull();
+                assertThat(request.previousCursorKey()).isNull();
+                assertThat(request.nextCursorKey()).isNull();
+            });
+        }
+    }
+
+    /**
+     * Every request and response type that carries a dedicated pure-DTO suite, bound here through the
+     * mapper a deployed instance holds.
+     *
+     * <p>The dedicated suites pin each type's shape in detail and run in milliseconds; what they
+     * cannot establish on their own is that the deployed object binds the type at all, or that the
+     * module's declared settings reach it. That is what this class establishes, once per type, so no
+     * type's contract rests on a locally built mapper alone.
+     *
+     * <p>The assertions here are deliberately narrow and structural. Nothing about a type's own
+     * widths, texts, page semantics or redaction is re-asserted, because duplicating a dedicated
+     * suite's work here would add maintenance cost without adding evidence.
+     */
+    @Nested
+    @DisplayName("Every covered type binds through the deployed mapper")
+    class EveryCoveredTypeThroughTheDeployedMapper {
+
+        /**
+         * The deployed mapper binds every covered type from a fully absent payload, which is the
+         * state each type's own suite proves legitimate.
+         *
+         * @param type the covered type
+         * @param description the type's short description, used only in the test name
+         * @param narrowestPayload the narrowest payload the type admits
+         */
+        @ParameterizedTest(name = "the deployed mapper binds the {1}")
+        @MethodSource("com.carddemo.api.dto.ApplicationJsonContractTest#everyCoveredType")
+        @DisplayName("binds every covered type from the narrowest payload it admits")
+        void theDeployedMapperBindsEveryCoveredType(Class<?> type, String description,
+                String narrowestPayload) {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper mapper = context.getBean(ObjectMapper.class);
+
+                Object bound = mapper.readValue(narrowestPayload, type);
+
+                assertThat(bound).as("the deployed mapper must bind the %s", description).isNotNull();
+                assertThat(bound).isInstanceOf(type);
+            });
+        }
+
+        /**
+         * The declared omission policy reaches every covered type, so no absent member is ever written
+         * as an explicit null through the deployed mapper.
+         *
+         * @param type the covered type
+         * @param description the type's short description, used only in the test name
+         * @param narrowestPayload the narrowest payload the type admits
+         */
+        @ParameterizedTest(name = "the {1} omits its absent members")
+        @MethodSource("com.carddemo.api.dto.ApplicationJsonContractTest#everyCoveredType")
+        @DisplayName("omits every absent member of every covered type")
+        void everyCoveredTypeOmitsItsAbsentMembers(Class<?> type, String description,
+                String narrowestPayload) {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper mapper = context.getBean(ObjectMapper.class);
+
+                String payload =
+                        mapper.writeValueAsString(mapper.readValue(narrowestPayload, type));
+
+                assertThat(payload)
+                        .as("the %s must omit an absent member rather than send it as null",
+                                description)
+                        .doesNotContain(":null")
+                        .startsWith("{")
+                        .endsWith("}");
+            });
+        }
+
+        /**
+         * The declared tolerance policy reaches every covered type, so a client may echo a property
+         * the contract does not declare without the request being rejected.
+         *
+         * @param type the covered type
+         * @param description the type's short description, used only in the test name
+         * @param narrowestPayload the narrowest payload the type admits
+         */
+        @ParameterizedTest(name = "the {1} tolerates an unknown property")
+        @MethodSource("com.carddemo.api.dto.ApplicationJsonContractTest#everyCoveredType")
+        @DisplayName("tolerates an unknown property on every covered type")
+        void everyCoveredTypeToleratesAnUnknownProperty(Class<?> type, String description,
+                String narrowestPayload) {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper mapper = context.getBean(ObjectMapper.class);
+
+                // The undeclared property is spliced into the type's own narrowest payload rather than
+                // sent alone, so a type with a validating constructor is still handed a payload it
+                // admits and the tolerance under test is tolerance rather than refusal.
+                Object bound = mapper.readValue(withUndeclaredProperty(narrowestPayload), type);
+
+                assertThat(bound)
+                        .as("the %s must ignore an undeclared property rather than reject it",
+                                description)
+                        .isNotNull();
+                assertThat(mapper.writeValueAsString(bound))
+                        .doesNotContain("aPropertyThisContractDoesNotDeclare");
+            });
+        }
+
+        /**
+         * A payload emitted by the deployed mapper is re-readable by it, so every covered type round
+         * trips through the deployed object rather than only through a hand-built one.
+         *
+         * @param type the covered type
+         * @param description the type's short description, used only in the test name
+         * @param narrowestPayload the narrowest payload the type admits
+         */
+        @ParameterizedTest(name = "the {1} round trips through the deployed mapper")
+        @MethodSource("com.carddemo.api.dto.ApplicationJsonContractTest#everyCoveredType")
+        @DisplayName("round trips every covered type through the deployed mapper")
+        void everyCoveredTypeRoundTripsThroughTheDeployedMapper(Class<?> type, String description,
+                String narrowestPayload) {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper mapper = context.getBean(ObjectMapper.class);
+                Object first = mapper.readValue(narrowestPayload, type);
+
+                String once = mapper.writeValueAsString(first);
+                Object second = mapper.readValue(once, type);
+                String twice = mapper.writeValueAsString(second);
+
+                assertThat(second)
+                        .as("the %s must survive a round trip through the deployed mapper",
+                                description)
+                        .isEqualTo(first);
+                assertThat(twice).as("serialization must be stable for the %s", description)
+                        .isEqualTo(once);
+            });
+        }
+
+        /**
+         * The deployed mapper agrees with the shared hand-written mapper on every covered type, which
+         * is what licenses each dedicated suite to assert that type's shape without starting a
+         * context.
+         *
+         * @param type the covered type
+         * @param description the type's short description, used only in the test name
+         * @param narrowestPayload the narrowest payload the type admits
+         */
+        @ParameterizedTest(name = "the {1} renders identically under both mappers")
+        @MethodSource("com.carddemo.api.dto.ApplicationJsonContractTest#everyCoveredType")
+        @DisplayName("renders every covered type identically under the deployed and shared mappers")
+        void everyCoveredTypeRendersIdenticallyUnderBothMappers(Class<?> type, String description,
+                String narrowestPayload) {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper deployed = context.getBean(ObjectMapper.class);
+                ObjectMapper shared = fastSuiteEquivalentMapper();
+
+                Object bound = deployed.readValue(narrowestPayload, type);
+
+                assertThat(shared.writeValueAsString(bound))
+                        .as("the shared mapper must agree with the deployed one on the %s",
+                                description)
+                        .isEqualTo(deployed.writeValueAsString(bound));
+            });
+        }
+
+        /**
+         * A decimal-bearing type carries its amount plainly and at the given scale through the
+         * deployed mapper, so the setting that governs money is proven on the types that hold it
+         * rather than only on a bare value.
+         *
+         * <p>The amount used here is at the record scale, which is the only shape these four types
+         * will construct at all: each verifies in its canonical constructor that the value describes
+         * the fixed-width record field it stands for. The trailing zero is the point of the fixture -
+         * a mapper that normalised the value would drop it, and the emitted form would then no longer
+         * be the form the record stores.</p>
+         *
+         * @param property the decimal property to populate
+         * @param type the covered type declaring it
+         */
+        @ParameterizedTest(name = "{1} emits {0} plainly at its given scale")
+        @CsvSource({
+            "creditLimit,com.carddemo.api.dto.AccountUpdateResponse",
+            "creditLimit,com.carddemo.api.dto.AccountViewResponse",
+            "currentBalance,com.carddemo.api.dto.BillPaymentResponse",
+            "amount,com.carddemo.api.dto.TransactionAddResponse"
+        })
+        @DisplayName("emits every carried amount plainly, at the scale it was given")
+        void everyCarriedAmountIsEmittedPlainlyAtItsGivenScale(String property, Class<?> type) {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper mapper = context.getBean(ObjectMapper.class);
+
+                Object bound = mapper.readValue(
+                        "{\"" + property + "\":\"" + RECORD_SHAPED_AMOUNT + "\"}", type);
+
+                assertThat(mapper.writeValueAsString(bound))
+                        .as("the emitted form must be the form the record stores, trailing zero "
+                                + "included")
+                        .contains("\"" + property + "\":" + RECORD_SHAPED_AMOUNT)
+                        .doesNotContain("E+")
+                        .doesNotContain("e+");
+            });
+        }
+
+        /**
+         * An exponent literal is refused rather than coerced by each of the four types that carry a
+         * monetary amount. Jackson parses {@code 1E+2} into a decimal of scale -2, and a scale of -2
+         * does not describe a field that stores two decimal places, so the canonical constructor
+         * refuses it. That refusal is stronger than the plain-writing setting: the setting governs how
+         * a value is written, while this governs whether a value that could not have come out of the
+         * record is admitted at all.
+         *
+         * @param property the decimal property to populate
+         * @param type the covered type declaring it
+         */
+        @ParameterizedTest(name = "{1} refuses an exponent literal in {0}")
+        @CsvSource({
+            "creditLimit,com.carddemo.api.dto.AccountUpdateResponse",
+            "creditLimit,com.carddemo.api.dto.AccountViewResponse",
+            "currentBalance,com.carddemo.api.dto.BillPaymentResponse",
+            "amount,com.carddemo.api.dto.TransactionAddResponse"
+        })
+        @DisplayName("refuses an exponent literal in every carried amount")
+        void everyCarriedAmountRefusesAnExponentLiteral(String property, Class<?> type) {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper mapper = context.getBean(ObjectMapper.class);
+
+                assertThatThrownBy(() -> mapper.readValue(
+                                "{\"" + property + "\":\"" + SCIENTIFIC_AMOUNT + "\"}", type))
+                        .as("a scale of minus two cannot describe a field of two decimal places")
+                        .rootCause()
+                        .isInstanceOf(IllegalArgumentException.class)
+                        .hasMessageContaining("must carry scale 2");
+            });
+        }
+
+        /**
+         * The transaction amount on the submission side is not a decimal at all, so no decimal setting
+         * can apply to it. It travels as the twelve characters the operator typed, which is what keeps
+         * a leading sign, a leading zero and a padded blank available to the service-side cascade that
+         * has its own message for each of them. The exponent text therefore survives verbatim and
+         * quoted, which is the observable difference between a character lexeme and a parsed number.
+         */
+        @Test
+        @DisplayName("carries the submitted amount as characters rather than as a decimal, so no "
+                + "decimal setting applies to it")
+        void theSubmittedAmountIsCharactersRatherThanADecimal() {
+            DEPLOYED_CONTEXT.run(context -> {
+                ObjectMapper mapper = context.getBean(ObjectMapper.class);
+
+                TransactionAddRequest bound = mapper.readValue(
+                        "{\"amount\":\"" + SCIENTIFIC_AMOUNT + "\"}", TransactionAddRequest.class);
+
+                assertThat(bound.amount())
+                        .as("a boundary parse would have replaced the legacy message for a badly "
+                                + "shaped amount with a generic binding failure")
+                        .isEqualTo(SCIENTIFIC_AMOUNT);
+                assertThat(mapper.writeValueAsString(bound))
+                        .contains("\"amount\":\"" + SCIENTIFIC_AMOUNT + "\"")
+                        .doesNotContain("\"amount\":" + PLAIN_AMOUNT);
+            });
+        }
+
+        /** The provider enumerates every covered type exactly once, and there are twenty. */
+        @Test
+        @DisplayName("enumerates all twenty covered types exactly once")
+        void theProviderEnumeratesEveryCoveredTypeExactlyOnce() {
+            List<Class<?>> types = everyCoveredType()
+                    .<Class<?>>map(arguments -> (Class<?>) arguments.get()[0])
+                    .toList();
+
+            assertThat(types).hasSize(20).doesNotHaveDuplicates();
+            assertThat(types)
+                    .as("every enumerated type must belong to this contract package")
+                    .allSatisfy(type -> assertThat(type.getPackageName())
+                            .isEqualTo("com.carddemo.api.dto"));
         }
     }
 }

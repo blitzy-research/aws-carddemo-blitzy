@@ -24,12 +24,18 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.awspring.cloud.sqs.operations.SendResult;
 import io.awspring.cloud.sqs.operations.SqsOperations;
 import io.awspring.cloud.sqs.operations.SqsSendOptions;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -37,6 +43,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.slf4j.LoggerFactory;
 import org.springframework.messaging.support.GenericMessage;
 
 import com.carddemo.exception.JobSubmissionException;
@@ -167,10 +174,22 @@ class JobSubmissionServiceSecurityTest {
     /** The one-based attempt number that must fail, or {@link #NEVER_FAIL}. */
     private int failAtAttempt;
 
+    /**
+     * Produces the failure a refused attempt raises.
+     *
+     * <p>Held as a supplier rather than as an instance so that each refusal raises its own object;
+     * rethrowing one instance would let a single stack trace accumulate frames across attempts, which
+     * is an artefact of the double rather than a property of the service. The default is the
+     * innocuous rejection every pre-existing test in this class expects, so a test that cares about
+     * the failure's shape replaces it and no other test is disturbed.
+     */
+    private Supplier<RuntimeException> refusal;
+
     @BeforeEach
     void createServiceOverARecordingQueue() {
         this.attempts.clear();
         this.failAtAttempt = NEVER_FAIL;
+        this.refusal = () -> new IllegalStateException("simulated queue rejection");
         this.sqsOperations = mock(SqsOperations.class);
 
         when(this.sqsOperations.<String>send(any())).thenAnswer(invocation -> {
@@ -185,7 +204,7 @@ class JobSubmissionServiceSecurityTest {
             if (this.attempts.size() == this.failAtAttempt) {
                 // Any runtime failure of the write itself; the service must catch every one of
                 // them, because the legacy queue is defined ignore-on-error.
-                throw new IllegalStateException("simulated queue rejection");
+                throw this.refusal.get();
             }
             return new SendResult<>(UUID.randomUUID(), QUEUE_NAME,
                     new GenericMessage<>(options.recorded().payload()), Map.of());
@@ -916,6 +935,296 @@ class JobSubmissionServiceSecurityTest {
 
             assertThat(attempts).as("no message may be published").isEmpty();
         }
+
+        @Test
+        @DisplayName("refuses a submission identity carrying a control character that is not whitespace, which a whitespace-only scan admitted")
+        void refusesASubmissionIdentityCarryingANonWhitespaceControlCharacter() {
+            // The defect this pins: NUL, escape and delete are none of them whitespace, so a guard
+            // that scanned only for whitespace let all three through - into the submission= field of
+            // four log records and into the deduplication identifier published to the queue. Each is
+            // exercised separately rather than as one string, because a scan that stops at the first
+            // defect would otherwise report only the first and leave the others unproven.
+            final String card = JclCardImageBuilder.build(START_DATE, END_DATE).get(0);
+
+            for (final char control : new char[] {NUL, ESCAPE, DELETE}) {
+                final String hostile = HOSTILE_MARKER + control + "FORGED AUDIT ENTRY";
+
+                assertThatExceptionOfType(IllegalArgumentException.class)
+                        .as("code point %d must be refused in a submission identity", (int) control)
+                        .isThrownBy(() ->
+                                service.writeJobSubmissionQueue(hostile, card, FIRST_ORDINAL))
+                        .withMessageContaining("non-printable")
+                        .withMessageContaining("zero-based position " + HOSTILE_MARKER.length())
+                        .withMessageContaining("code point " + (int) control)
+                        .withMessageNotContaining(HOSTILE_MARKER)
+                        .withMessageNotContaining("FORGED AUDIT ENTRY")
+                        .satisfies(
+                                JobSubmissionServiceSecurityTest::assertCarriesNoRawControlCharacter);
+            }
+
+            assertThat(attempts).as("no message may be published").isEmpty();
+        }
+
+        @Test
+        @DisplayName("refuses a submission identity carrying a character that is not representable as a single US-ASCII byte, which is a different question from printability")
+        void refusesASubmissionIdentityCarryingANonRepresentableCharacter() {
+            // Representability and printability are asked separately because they have different
+            // answers: this character is not a control character and would survive any
+            // control-character filter, yet it cannot be encoded as one US-ASCII byte, so the bytes
+            // published would silently differ from the bytes supplied.
+            final String card = JclCardImageBuilder.build(START_DATE, END_DATE).get(0);
+            final String hostile = HOSTILE_MARKER + BEYOND_US_ASCII;
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() ->
+                            service.writeJobSubmissionQueue(hostile, card, FIRST_ORDINAL))
+                    .withMessageContaining("not representable as a single US-ASCII byte")
+                    .withMessageContaining("zero-based position " + HOSTILE_MARKER.length())
+                    .withMessageContaining("code point " + (int) BEYOND_US_ASCII)
+                    .withMessageNotContaining(HOSTILE_MARKER)
+                    .satisfies(JobSubmissionServiceSecurityTest::assertCarriesNoRawControlCharacter);
+
+            assertThat(attempts).as("no message may be published").isEmpty();
+        }
+
+        @Test
+        @DisplayName("every entry point refuses a NUL-bearing identity, because the guard is only as good as its least-guarded caller")
+        void everyEntryPointRefusesANulBearingIdentity() {
+            // The terminator test above proves this for whitespace at all four entry points. The same
+            // breadth is required for the non-whitespace controls, or a caller could reach the queue
+            // through whichever entry point was left unchecked.
+            final List<String> cards = JclCardImageBuilder.build(START_DATE, END_DATE);
+            final String card = cards.get(0);
+            final String hostile = HOSTILE_MARKER + NUL + "FORGED AUDIT ENTRY";
+
+            final List<ThrowingCallable> entryPoints = List.of(
+                    () -> service.submitCanonicalJobImage(hostile, cards),
+                    () -> service.submitJobStream(hostile, List.of(card)),
+                    () -> service.writeJobSubmissionQueue(hostile, card, FIRST_ORDINAL));
+
+            for (final ThrowingCallable entryPoint : entryPoints) {
+                assertThatExceptionOfType(IllegalArgumentException.class)
+                        .as("a NUL-bearing identity must be refused at every entry point")
+                        .isThrownBy(entryPoint)
+                        .withMessageContaining("non-printable")
+                        .withMessageNotContaining(HOSTILE_MARKER)
+                        .withMessageNotContaining("FORGED AUDIT ENTRY")
+                        .satisfies(
+                                JobSubmissionServiceSecurityTest::assertCarriesNoRawControlCharacter);
+            }
+
+            assertThat(attempts).as("no message may be published").isEmpty();
+        }
+
+        @Test
+        @DisplayName("refuses a reporting date carrying a control character, because condensing whitespace is not sanitising")
+        void refusesAReportingDateCarryingAControlCharacter() {
+            // The minted identity is composed from the two date slots with their whitespace removed.
+            // Removing whitespace is not the same as removing controls, so a NUL in a date reaches the
+            // identity intact - and the identity is what every diagnostic prints. Pinning this closes
+            // the one path to the submission= field that does not take a caller-supplied identity.
+            for (final char control : new char[] {NUL, ESCAPE, DELETE}) {
+                assertThatExceptionOfType(IllegalArgumentException.class)
+                        .as("code point %d must be refused in a reporting date", (int) control)
+                        .isThrownBy(() -> service.submitTransactionReportJob(
+                                START_DATE + control, END_DATE))
+                        .satisfies(
+                                JobSubmissionServiceSecurityTest::assertCarriesNoRawControlCharacter);
+            }
+
+            assertThat(attempts).as("no message may be published").isEmpty();
+        }
+
+        @Test
+        @DisplayName("the whitespace rejection still wins for a space, so the more specific diagnostic is not lost to the new one")
+        void theWhitespaceRejectionStillWinsForASpace() {
+            // A space is the one character both the whitespace test and the printable range accept, so
+            // the ordering of the two checks decides which message a caller reads. Whitespace is
+            // tested first deliberately: "a deduplication identifier may not hold whitespace" tells a
+            // caller strictly more than "non-printable" would, and this pins that ordering so a later
+            // refactor cannot silently degrade the diagnostic.
+            final String card = JclCardImageBuilder.build(START_DATE, END_DATE).get(0);
+            final String withSpace = HOSTILE_MARKER + " TAIL";
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() ->
+                            service.writeJobSubmissionQueue(withSpace, card, FIRST_ORDINAL))
+                    .withMessageContaining("must not hold whitespace")
+                    .withMessageNotContaining("non-printable")
+                    .withMessageNotContaining(HOSTILE_MARKER);
+
+            assertThat(attempts).as("no message may be published").isEmpty();
+        }
+
+        @Test
+        @DisplayName("every published deduplication identifier is printable US-ASCII, which is the property the identity guard exists to give it")
+        void everyPublishedDeduplicationIdentifierIsPrintableUsAscii() {
+            // The complement of the rejection tests: having established what cannot get in, assert
+            // the property that holds for what does. A control character in a deduplication
+            // identifier is not merely a log-forging vector - it can also make two distinct
+            // identifiers compare equal at a consumer that truncates, which would silently drop a
+            // card from the reconstructed job stream.
+            service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            assertThat(deduplicationIds()).as("the submission must have published its cards")
+                    .isNotEmpty();
+            for (final String deduplicationId : deduplicationIds()) {
+                assertThat(deduplicationId).as("every card must carry an identifier").isNotNull();
+                for (int index = 0; index < deduplicationId.length(); index++) {
+                    final char character = deduplicationId.charAt(index);
+                    assertThat((int) character)
+                            .as("identifier [%s] position %d must be printable US-ASCII",
+                                    deduplicationId, index)
+                            .isBetween((int) ' ' + 1, (int) '~');
+                }
+            }
+        }
+    }
+
+
+    /*
+     * ========================================================================================
+     * Diagnostic hygiene on the one value that arrives from outside the module - decision DL-041.
+     * ========================================================================================
+     */
+
+    @Nested
+    @DisplayName("diagnostic hygiene on an external failure - the queue client's own text is echoed no more than a caller's is")
+    class ExternalFailureDiagnosticHygiene {
+
+        /**
+         * Text a leaked log record would carry.
+         *
+         * <p>Distinct from {@link JobSubmissionServiceSecurityTest#HOSTILE_MARKER} so that a leak
+         * through this path cannot be confused with a leak through a caller-supplied value.
+         */
+        private static final String EXTERNAL_MARKER = "QAMARKCLIENTLEAK";
+
+        /**
+         * A publish-failure description of the kind a verbose or misconfigured queue client really
+         * produces: it names a credential, echoes it, and carries both line terminators and a tab.
+         *
+         * <p>A client that reports a signing failure by quoting the request it signed, or an endpoint
+         * failure by quoting the endpoint it was handed, puts deployment-supplied text into an
+         * exception message. This class only has to assume such a message can reach the catch block,
+         * which it plainly can, since the catch block admits every runtime failure by design.
+         */
+        private static final String DISCLOSING_DESCRIPTION = "refused: secret=" + EXTERNAL_MARKER
+                + " endpoint=https://internal.example" + "\r\n" + "FORGED AUDIT ENTRY" + "\t"
+                + "at some.frame.Deeper";
+
+        /** The recorder attached for the duration of one test. */
+        private ListAppender<ILoggingEvent> recorder;
+
+        /** The logger the recorder is attached to. */
+        private Logger logger;
+
+        @BeforeEach
+        void attachRecorder() {
+            this.logger = (Logger) LoggerFactory.getLogger(JobSubmissionService.class);
+            this.recorder = new ListAppender<>();
+            this.recorder.setContext(this.logger.getLoggerContext());
+            this.recorder.start();
+            this.logger.addAppender(this.recorder);
+        }
+
+        @AfterEach
+        void detachRecorder() {
+            this.logger.detachAppender(this.recorder);
+            this.recorder.stop();
+        }
+
+        /** The single diagnostic the refused write records, asserted to be the only error record. */
+        private ILoggingEvent onlyFailureRecord() {
+            final List<ILoggingEvent> errors = this.recorder.list.stream()
+                    .filter(event -> event.getLevel() == Level.ERROR)
+                    .toList();
+            assertThat(errors).as("one refused card records exactly one operator diagnostic")
+                    .hasSize(1);
+            return errors.getFirst();
+        }
+
+        @Test
+        @DisplayName("a disclosing publish-failure description reaches no field of the diagnostic, and no rendered trace exists to carry it either")
+        void aDisclosingDescriptionReachesNoFieldOfTheDiagnostic() {
+            // This class already refuses to echo any caller-supplied value into a diagnostic, and
+            // states the reason in its own words: the sink is any channel a human or a tool later
+            // reads. The queue client's exception text is the one value written into these records
+            // that this module did not author, so it is subject to exactly the same rule - and it is
+            // the one place the rule was previously not enforced.
+            failAtAttempt = FIRST_ORDINAL;
+            refusal = () -> new IllegalStateException(DISCLOSING_DESCRIPTION,
+                    new IllegalArgumentException(DISCLOSING_DESCRIPTION));
+
+            final boolean accepted = service.writeJobSubmissionQueue("submission",
+                    JclCardImageBuilder.build(START_DATE, END_DATE).get(0), FIRST_ORDINAL);
+
+            assertThat(accepted).as("the write is reported as refused, never raised").isFalse();
+
+            final ILoggingEvent record = onlyFailureRecord();
+            assertThat(record.getThrowableProxy())
+                    .as("no throwable may be rendered into this record: a stack trace carries"
+                            + " getMessage() for every exception in the chain, which would"
+                            + " reintroduce the whole description this rule excludes")
+                    .isNull();
+
+            final String recorded = record.getFormattedMessage();
+            assertThat(recorded).as("the recorded diagnostic")
+                    .doesNotContain(EXTERNAL_MARKER)
+                    .doesNotContain("secret=")
+                    .doesNotContain("internal.example")
+                    .doesNotContain("FORGED AUDIT ENTRY")
+                    .doesNotContain("some.frame.Deeper");
+            assertCarriesNoRawTerminator(recorded);
+        }
+
+        @Test
+        @DisplayName("the diagnostic stays actionable: it names the failure by type, names the type beneath it, and renders the whole chain of types")
+        void theDiagnosticStaysActionable() {
+            // Suppressing the value is only half of the obligation - this class says so itself, in
+            // the identity-rejection test above. The chain of types is what the suppressed stack
+            // trace was diagnostically useful for, and it is composed entirely of names this module
+            // sanitises rather than text the client supplied.
+            failAtAttempt = FIRST_ORDINAL;
+            refusal = () -> new IllegalStateException(DISCLOSING_DESCRIPTION,
+                    new UnsupportedOperationException(DISCLOSING_DESCRIPTION,
+                            new NumberFormatException(DISCLOSING_DESCRIPTION)));
+
+            service.writeJobSubmissionQueue("submission",
+                    JclCardImageBuilder.build(START_DATE, END_DATE).get(0), FIRST_ORDINAL);
+
+            assertThat(onlyFailureRecord().getFormattedMessage()).as("the recorded diagnostic")
+                    .startsWith(JobSubmissionException.DEFAULT_MESSAGE)
+                    .contains("response=" + IllegalStateException.class.getSimpleName())
+                    .contains("reason=" + NumberFormatException.class.getSimpleName())
+                    .endsWith("failureChain=" + IllegalStateException.class.getSimpleName()
+                            + "<-" + UnsupportedOperationException.class.getSimpleName()
+                            + "<-" + NumberFormatException.class.getSimpleName());
+        }
+
+        @Test
+        @DisplayName("a failure whose type name is itself hostile still yields one unbroken bounded token, because the name is sanitised rather than trusted")
+        void aHostileTypeNameIsSanitisedRatherThanTrusted() {
+            // A type's simple name is ordinarily a Java identifier, but it is read from a classfile
+            // rather than written here, and an anonymous class reports the empty string. Neither may
+            // put whitespace, a terminator or an unbounded value into a log record, so the name is
+            // sanitised on the way through. An anonymous subclass is the reachable case: it names
+            // itself as nothing at all.
+            failAtAttempt = FIRST_ORDINAL;
+            refusal = () -> new IllegalStateException(DISCLOSING_DESCRIPTION) {
+                private static final long serialVersionUID = 1L;
+            };
+
+            service.writeJobSubmissionQueue("submission",
+                    JclCardImageBuilder.build(START_DATE, END_DATE).get(0), FIRST_ORDINAL);
+
+            final String recorded = onlyFailureRecord().getFormattedMessage();
+            assertThat(recorded).as("an unnamed type must still yield a usable response code")
+                    .contains("response=UnnamedType")
+                    .doesNotContain("response= ")
+                    .doesNotContain(EXTERNAL_MARKER);
+            assertCarriesNoRawTerminator(recorded);
+        }
     }
 
 
@@ -1320,6 +1629,37 @@ class JobSubmissionServiceSecurityTest {
     private static final char TAB = 9;
 
     /**
+     * A NUL: not whitespace, so a whitespace-only guard admits it.
+     *
+     * <p>It is the cheapest demonstration that rejecting whitespace is not the same thing as
+     * rejecting control characters. A consumer that treats the deduplication identifier as a C string
+     * truncates at this byte, so two identities that differ only after it become one.
+     */
+    private static final char NUL = 0;
+
+    /**
+     * An escape: not whitespace, and the most dangerous of the three for a log reader.
+     *
+     * <p>An escape sequence reaching a terminal-backed viewer can reposition the cursor and overwrite
+     * records that were already written, forging history without ever emitting a line feed. A guard
+     * that looks only for line terminators therefore misses the stronger attack.
+     */
+    private static final char ESCAPE = 0x1B;
+
+    /** A delete: not whitespace, and the one control code that sits above the printable range. */
+    private static final char DELETE = 0x7F;
+
+    /**
+     * A character outside US-ASCII entirely, used to reach the representability branch.
+     *
+     * <p>It is printable in Unicode terms, which is exactly why the representability question is asked
+     * separately from the printability question: this character is not a control character and would
+     * pass a control-character filter, yet it cannot be encoded as a single US-ASCII byte, so the
+     * bytes published would not be the bytes the caller supplied.
+     */
+    private static final char BEYOND_US_ASCII = '\u00E9';
+
+    /**
      * Text a forged log record would carry.
      *
      * <p>Asserting on a marker rather than on the terminator alone is what makes a leak visible
@@ -1349,12 +1689,49 @@ class JobSubmissionServiceSecurityTest {
     private static void assertCarriesNoRawTerminator(final Throwable thrown) {
         final String message = thrown.getMessage();
         assertThat(message).as("a rejection must carry a message").isNotNull();
-        assertThat(message.indexOf(CARRIAGE_RETURN))
-                .as("a diagnostic must carry no raw carriage return: %s", message).isEqualTo(-1);
-        assertThat(message.indexOf(LINE_FEED))
-                .as("a diagnostic must carry no raw line feed: %s", message).isEqualTo(-1);
-        assertThat(message.indexOf(TAB))
-                .as("a diagnostic must carry no raw tab: %s", message).isEqualTo(-1);
+        assertCarriesNoRawTerminator(message);
+    }
+
+    /**
+     * Asserts that one diagnostic string carries no raw control character.
+     *
+     * <p>The rule is about the sink, not about how the value arrived at it, so the same three checks
+     * apply to a rejection message and to a recorded log record. This overload exists because a log
+     * record is not a throwable and the property being asserted is identical.
+     *
+     * @param diagnostic the text being examined; must not be {@code null}
+     */
+    private static void assertCarriesNoRawTerminator(final String diagnostic) {
+        assertThat(diagnostic).as("a diagnostic must exist to be examined").isNotNull();
+        assertThat(diagnostic.indexOf(CARRIAGE_RETURN))
+                .as("a diagnostic must carry no raw carriage return: %s", diagnostic).isEqualTo(-1);
+        assertThat(diagnostic.indexOf(LINE_FEED))
+                .as("a diagnostic must carry no raw line feed: %s", diagnostic).isEqualTo(-1);
+        assertThat(diagnostic.indexOf(TAB))
+                .as("a diagnostic must carry no raw tab: %s", diagnostic).isEqualTo(-1);
+    }
+
+    /**
+     * Asserts that a rejection message carries no control character of any kind.
+     *
+     * <p>Strictly stronger than {@link #assertCarriesNoRawTerminator(Throwable)}, which names three
+     * specific characters. A line-terminator check is the right assertion for a line-forging attempt,
+     * but it passes a message that echoed a NUL, an escape or a delete - and those are precisely the
+     * characters a whitespace-only guard used to admit. Every control character is refused here so the
+     * assertion cannot drift behind the guard it is checking.
+     *
+     * @param thrown the rejection to inspect
+     */
+    private static void assertCarriesNoRawControlCharacter(final Throwable thrown) {
+        final String message = thrown.getMessage();
+        assertThat(message).as("a rejection must carry a message").isNotNull();
+        for (int index = 0; index < message.length(); index++) {
+            final char character = message.charAt(index);
+            assertThat(Character.isISOControl(character))
+                    .as("a diagnostic must carry no raw control character, but position %d holds"
+                            + " code point %d", index, (int) character)
+                    .isFalse();
+        }
     }
 
 

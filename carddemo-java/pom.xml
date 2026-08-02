@@ -196,7 +196,16 @@
          this build at runtime scope only, by way of the SDK transport
          client, so nothing compiles against netty and this value
          cannot affect compilation. It affects resolution and the
-         shipped image, which is exactly why the inventory owns it. -->
+         shipped image, which is exactly why the inventory owns it.
+
+         This line's direct-buffer fast path calls a terminally
+         deprecated platform method, so the runtime prints a notice
+         when the integration tier exercises the transport. That is a
+         runtime notice on the forked process's error stream, not a
+         compiler diagnostic and not a build warning, so the
+         -Xlint:all -Werror gate is unaffected. Tracked, with the two
+         events that would reopen the pin, in
+         docs/decision-log.md DL-115. -->
     <netty.version>4.1.136.Final</netty.version>
 
     <!-- Database driver. Clears an 8.2 finding that affects the range
@@ -324,6 +333,21 @@
     <!-- Coverage gate. Applied to the merged unit plus integration
          execution data, on the LINE counter only. -->
     <jacoco.line.coverage.minimum>0.80</jacoco.line.coverage.minimum>
+
+    <!-- Companion to the ratio gate above, and the reason both exist.
+         A bundle-wide ratio is an average, so a class with no test at
+         all contributes only its own lines to the shortfall and stays
+         invisible for as long as the rest of the module carries it.
+         That is precisely how a set of wholly untested foundation
+         classes reached review. This limit closes the averaging gap by
+         counting classes rather than lines: JaCoCo's CLASS counter
+         treats a class as missed when not one of its methods executed,
+         so a maximum of zero means every class must be reached by at
+         least one test, whatever the bundle average happens to be. It
+         deliberately does not impose a per-class percentage, which
+         would be an arbitrary new standard rather than the guarantee
+         the module actually needs. -->
+    <jacoco.wholly.untested.classes.maximum>0</jacoco.wholly.untested.classes.maximum>
 
     <!-- Supply chain gate. The scanner compares against the highest
          base score it holds for a finding, so this threshold also
@@ -956,7 +980,7 @@
            the same machine and with the same privileges as everything
            else here. Narrowing the scan to what ships would have left
            one container testing transport unexamined, and that
-           transport is precisely where the only two findings above the
+           transport is where two of the three findings above the
            threshold were. Because that transport embeds a relocated
            copy of an HTTP core library, managing the library's own
            coordinate could not replace the relocated classes; the
@@ -968,16 +992,45 @@
            referenced below rather than by excluding a whole scope, so
            every other test scoped artifact stays inside the gate.
 
-           Three findings remain below the threshold and are accepted
-           rather than suppressed, all of them scoring 5.3: one in a
-           text utility library reached through the documentation
-           starter, one in the second generation JSON library that the
-           framework bill of materials governs, and one in the tracing
-           semantic conventions artifact. None is critical or high, so
-           none breaches the gate, and suppressing them would hide
-           information for no benefit.
+           WHAT THIS GATE DOES AND DOES NOT CLAIM
+           The accurate claim is zero UNSUPPRESSED high or critical
+           findings. It is not zero high or critical findings, and the
+           distinction is load bearing rather than pedantic: three
+           entries scoring 7.5 HIGH are actively suppressed, so a
+           reader who took the stronger claim away from this file would
+           be misled about what the gate establishes. The three are
+           named here, read out of the report this build writes rather
+           than recalled. Two are CVE-2026-54399 and CVE-2026-54428
+           against the relocated HTTP core library embedded in the test
+           scoped container transport, which no managed coordinate can
+           reach because those classes are shaded, and which no shipped
+           artifact carries. The third is CVE-2026-56816 against the
+           network transport family, where the affected profile codec is
+           absent from the artifact actually on the graph, so the match
+           is a family level identifier collision rather than an
+           exposure. Two things keep the suppressions honest: each rule
+           carries an expiry of 1 February 2027, so none can outlive
+           review; and an unused suppression rule fails this build, so
+           a rule that stopped matching would be reported rather than
+           quietly retained. What can be stated without qualification
+           is the machine result: no finding at or above the threshold
+           is unsuppressed, and the highest active score is 5.3.
 
-           Because those three are reported, this plugin prints one
+           Two findings remain below the threshold and are accepted
+           rather than suppressed, both scoring 5.3: one in the second
+           generation JSON library that the framework bill of materials
+           governs, whose vulnerable precondition is absent from this
+           configuration, and one in the tracing semantic conventions
+           artifact, whose report text describes another language's
+           exporter. Neither is critical or high, so neither breaches
+           the gate, and suppressing them would hide information for no
+           benefit. An earlier revision of this note counted three,
+           including one in a text utility library reached through the
+           documentation starter; the current report no longer carries
+           that finding, and the count stated here is the report's
+           rather than the one this note used to carry.
+
+           Because those two are reported, this plugin prints one
            informational console line summarising them. That line is
            the scanner's own summary and is deliberately left enabled;
            it is evidence for the supply chain gate, not a build
@@ -1180,6 +1233,16 @@
                       <counter>LINE</counter>
                       <value>COVEREDRATIO</value>
                       <minimum>${jacoco.line.coverage.minimum}</minimum>
+                    </limit>
+                    <!-- No class may be wholly untested. See the property
+                         declaration for why a bundle ratio alone cannot
+                         enforce this: an average hides a single absent
+                         test suite behind the coverage of every other
+                         class. Counting missed classes does not. -->
+                    <limit>
+                      <counter>CLASS</counter>
+                      <value>MISSEDCOUNT</value>
+                      <maximum>${jacoco.wholly.untested.classes.maximum}</maximum>
                     </limit>
                   </limits>
                 </rule>

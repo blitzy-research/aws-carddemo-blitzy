@@ -16,14 +16,11 @@
 # language governing permissions and limitations under the License
 # ----------------------------------------------------------------------------
 #
-# The grant above is the CardDemo project header. Every member of the legacy
-# estate this module migrates carries it verbatim, and reproducing it here is
-# what keeps provenance intact across the migration. The grant immediately
-# below is the Apache Software Foundation's own, retained because the
-# executable body of this script is ASF-derived. Both grants are the Apache
-# License, Version 2.0, so carrying the two side by side is complete
-# attribution, not a conflict: the CardDemo copyright covers this file as a
-# project artefact, the ASF notice covers the upstream work it embeds.
+# Two Apache License, Version 2.0 grants stand side by side here, which is complete
+# attribution rather than a conflict: the CardDemo header above covers this file as a
+# project artefact and matches the header every member of the legacy estate carries,
+# while the Apache Software Foundation notice below covers the upstream work the
+# executable body embeds. Neither grant may be removed.
 #
 # ----------------------------------------------------------------------------
 # Licensed to the Apache Software Foundation (ASF) under one
@@ -45,7 +42,7 @@
 # ----------------------------------------------------------------------------
 
 # ----------------------------------------------------------------------------
-# Apache Maven Wrapper startup batch script, version 3.3.4
+# Apache Maven Wrapper startup script (POSIX shell), version 3.3.4
 #
 # Optional ENV vars
 # -----------------
@@ -69,62 +66,48 @@
 # ----------------------------------------------------------------------------
 # CardDemo :: carddemo-java :: POSIX Maven Wrapper launcher
 # ----------------------------------------------------------------------------
-# Purpose. This script is the mechanism by which a clean checkout of this
-# repository builds with no preinstalled Maven: a JDK is the only prerequisite.
-# It resolves, downloads, verifies, caches and then executes the exact Apache
-# Maven distribution this module is pinned to, and forwards every argument to
-# it. `cd carddemo-java && ./mvnw clean verify` therefore behaves identically
-# on a developer machine, inside the Docker builder stage and on a hosted CI
-# runner, which is what makes the zero-warning deployable-artifact requirement
-# reproducible rather than machine-dependent.
+# Purpose. A clean checkout builds with no preinstalled Maven: a JDK is the only
+# prerequisite. This script resolves, downloads, verifies, caches and then executes
+# the exact Apache Maven distribution the module is pinned to and forwards every
+# argument to it, so `./mvnw clean verify` behaves identically on a developer
+# machine, in the Docker builder stage and on a hosted CI runner.
 #
-# Provenance. The executable body below derives from the canonical Apache Maven
-# Wrapper POSIX launcher, version 3.3.4, as published on Maven Central in
+# Provenance. The executable body derives from the canonical Apache Maven Wrapper
+# POSIX launcher, version 3.3.4, published on Maven Central as
 #   org.apache.maven.wrapper:maven-wrapper-distribution:3.3.4:zip:only-script
 # whose mvnw member has SHA-256
 #   cae96cef89ebea3531221f4ae17c23cf8edf67d00eae8306d4186ae1bbed4d02
-# so this file can be diffed against upstream at any time. Using the canonical
-# script rather than a bespoke downloader is deliberate: a developer's existing
-# expectations of ./mvnw are part of the contract.
+# so this file can be diffed against upstream at any time. The canonical script is
+# used rather than a bespoke downloader because a developer's existing expectations
+# of ./mvnw are part of the contract.
 #
 # Deviations from upstream, stated exhaustively so the diff is never a surprise.
 # Presentation-only: the licence header, these comment blocks, the three extra
-# MVNW_* environment variables documented above and the wrapperVersion line in
-# the properties parser. Behavioural, and confined to making the JDK-only
-# prerequisite above literally true - each is annotated inline where it appears:
-#   1. The URL is never rewritten to the -bin.tar.gz variant when unzip is
-#      missing. Upstream fetches that second archive while still validating it
-#      against the .zip digest pinned in the properties file, which cannot
-#      succeed; keeping the pinned .zip is what lets the digest describe the
-#      bytes that actually arrive.
+# MVNW_* variables documented above and the wrapperVersion line in the properties
+# parser. Behavioural, confined to making the JDK-only prerequisite literally true
+# and each annotated inline where it appears:
+#   1. The URL is never rewritten to the -bin.tar.gz variant when unzip is missing;
+#      upstream fetches that archive while still validating it against the .zip
+#      digest pinned in the properties file, which cannot succeed.
 #   2. SHA-256 validation falls back to java.security when neither sha256sum nor
-#      shasum is on PATH, instead of exiting 1. Verification stays mandatory: a
+#      shasum is on PATH instead of exiting 1. Verification stays mandatory: a
 #      mismatch still fails closed, and only an absent JDK now stops the build.
 #   3. Extraction falls back to the JDK's zip filesystem provider when unzip is
-#      missing, replacing an untar branch that can no longer be reached because
-#      no .tar.gz is ever downloaded.
+#      missing, replacing an untar branch that is no longer reachable.
 # Resolution, caching, HTTP authentication, argument forwarding and the exec
-# handover are untouched, and the cache directory this launcher computes for a
-# given distributionUrl is unchanged, so an existing ~/.m2/wrapper/dists entry
-# is still found and reused.
+# handover are untouched, and the cache directory computed for a given
+# distributionUrl is unchanged, so an existing ~/.m2/wrapper/dists entry is reused.
 #
-# No committed jar. This module uses the wrapper's only-script distribution
-# type, declared in .mvn/wrapper/maven-wrapper.properties. In that mode the
-# launcher itself performs the download, so no maven-wrapper.jar exists in the
-# repository and no unscanned binary enters the supply chain. The three
-# wrapper artefacts are exactly this file, mvnw.cmd, and the properties file.
-#
-# Verified, not trusted. The properties file supplies distributionSha256Sum,
-# and the download below is rejected unless it matches, so a tampered or
-# truncated archive fails the build closed rather than silently producing a
-# build with an unknown toolchain.
-#
-# Single source of truth. The Maven version and the distribution URL appear in
-# .mvn/wrapper/maven-wrapper.properties and nowhere else - deliberately not in
-# this script, not in mvnw.cmd, not in the Dockerfile and not in the CI
-# workflow - so upgrading Maven is a one-line change that cannot leave a stale
-# second copy behind. Run with MVNW_VERBOSE=true to have the launcher echo the
-# wrapper version, the resolved URL and the cache directory it uses.
+# The only-script distribution type declared in .mvn/wrapper/maven-wrapper.properties
+# makes this launcher perform the download itself, so no maven-wrapper.jar is
+# committed and no unscanned binary enters the supply chain. The same file supplies
+# distributionSha256Sum, and the download is rejected unless it matches, so a
+# tampered or truncated archive fails closed rather than silently producing a build
+# with an unknown toolchain. That file is also the only place the Maven version and
+# the distribution URL appear - not this script, not mvnw.cmd, not the Dockerfile,
+# not the CI workflow - so upgrading Maven is a one-line change that cannot leave a
+# stale second copy behind. Run with MVNW_VERBOSE=true to echo the wrapper version,
+# the resolved URL and the cache directory in use.
 # ----------------------------------------------------------------------------
 
 set -euf
@@ -285,18 +268,11 @@ verbose "Downloading to: $TMP_DOWNLOAD_DIR/$distributionUrlName"
 
 # CardDemo modification. The archive is ALWAYS the .zip named in
 # .mvn/wrapper/maven-wrapper.properties, and the URL is never rewritten here.
-#
-# The upstream launcher switches the URL to the .tar.gz variant when unzip is
-# absent, but distributionSha256Sum digests the .zip. Downloading a different
-# archive than the one the digest describes makes verification fail every time,
-# so that path could never install Maven - it could only fail, and it could only
-# fail on precisely the machines that have no unzip, which is where the wrapper
-# has to work hardest. Keeping the pinned .zip means the digest always describes
-# the bytes actually fetched.
-#
-# Absent unzip is handled where it is actually a problem - at extraction, by the
-# JDK-only fallback further down - rather than by fetching a second archive whose
-# checksum this project does not pin.
+# Upstream switches to the .tar.gz variant when unzip is absent, but
+# distributionSha256Sum digests the .zip, so that path could only ever fail - and
+# only on the machines that have no unzip, which is where the wrapper has to work
+# hardest. Absent unzip is handled where it is actually a problem, at extraction,
+# by the JDK-only fallback further down.
 
 # verbose opt
 __MVNW_QUIET_WGET=--quiet __MVNW_QUIET_CURL=--silent __MVNW_QUIET_UNZIP=-q
@@ -355,14 +331,12 @@ if [ -n "${distributionSha256Sum-}" ]; then
       distributionSha256Result=true
     fi
   elif set_java_home; then
-    # CardDemo addition: digest the archive with the JDK when no digest utility is
-    # on PATH. Neither sha256sum nor shasum is specified by POSIX, so requiring one
-    # would contradict this project's stated prerequisite of a JDK alone - and the
-    # upstream launcher's response to their absence is to exit 1, which turns a
-    # missing convenience utility into a build that cannot run. java.security
-    # computes the same digest, is present by definition wherever this script can
-    # run Maven at all, and keeps verification mandatory rather than optional: the
-    # digest is still compared, and a mismatch still fails closed below.
+    # CardDemo addition: digest the archive with the JDK when no digest utility is on
+    # PATH. Neither sha256sum nor shasum is specified by POSIX, and upstream's response
+    # to their absence is to exit 1, which turns a missing convenience utility into a
+    # build that cannot run. java.security computes the same digest and keeps
+    # verification mandatory: the digest is still compared, and a mismatch still fails
+    # closed below.
     verbose " - No digest utility found; digesting with the JDK ..."
     javaDigestSource="$TMP_DOWNLOAD_DIR/WrapperSha256.java"
     cat >"$javaDigestSource" <<'END_WRAPPER_SHA256'
@@ -409,24 +383,20 @@ fi
 if command -v unzip >/dev/null; then
   unzip ${__MVNW_QUIET_UNZIP:+"$__MVNW_QUIET_UNZIP"} "$TMP_DOWNLOAD_DIR/$distributionUrlName" -d "$TMP_DOWNLOAD_DIR" || die "failed to unzip"
 elif set_java_home; then
-  # CardDemo addition: extract the pinned .zip with the JDK when unzip is absent.
-  # This replaces the upstream 'tar xzf' branch, which could only ever run against
-  # the .tar.gz variant the launcher no longer fetches. The JDK's own zip
-  # filesystem provider reads exactly the archive whose digest was verified above,
-  # so no second archive - and no second, unpinned checksum - is needed to install
-  # Maven without unzip.
+  # CardDemo addition: extract the pinned .zip with the JDK when unzip is absent. This
+  # replaces the upstream 'tar xzf' branch, which could only ever run against the
+  # .tar.gz variant the launcher no longer fetches; the JDK's zip filesystem provider
+  # reads exactly the archive whose digest was verified above, so no second, unpinned
+  # checksum is needed to install Maven without unzip.
   #
-  # The provider is opened with enablePosixFileAttributes so that each extracted
-  # file receives the permission bits recorded in the archive, which is what makes
-  # bin/mvn executable and leaves bin/mvn.cmd alone: this path produces the same
-  # file modes as native unzip rather than guessing from path names. Directories
-  # are created with the platform default instead, so a directory's own bits can
-  # never be applied before its contents are written. Where the platform has no
-  # POSIX view at all - Windows running under Cygwin or MinGW - the launchers
-  # under bin/ are marked executable directly, which is the only bit that matters
-  # there. Extraction outside the target directory is refused: the provider itself
-  # rejects an archive whose entry names contain '..', and the check below is kept
-  # as a second, independent barrier.
+  # The provider is opened with enablePosixFileAttributes so each extracted file
+  # receives the permission bits recorded in the archive - which is what makes bin/mvn
+  # executable and leaves bin/mvn.cmd alone - rather than guessing from path names.
+  # Directories take the platform default, so a directory's own bits can never be
+  # applied before its contents are written. Where there is no POSIX view at all, under
+  # Cygwin or MinGW, the launchers under bin/ are marked executable directly.
+  # Extraction outside the target directory is refused twice: the provider rejects an
+  # archive whose entry names contain '..', and the check below is a second barrier.
   verbose " - No unzip found; extracting with the JDK ..."
   javaUnzipSource="$TMP_DOWNLOAD_DIR/WrapperUnzipper.java"
   cat >"$javaUnzipSource" <<'END_WRAPPER_UNZIPPER'

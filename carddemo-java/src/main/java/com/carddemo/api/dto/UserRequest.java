@@ -17,6 +17,10 @@
 package com.carddemo.api.dto;
 
 import com.carddemo.domain.enums.KeyAction;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Null;
 import jakarta.validation.constraints.Size;
 import java.util.List;
 
@@ -184,6 +188,24 @@ import java.util.List;
  * non-throwing lookup. That is why this file does not reference the enumeration and does not import
  * it.
  *
+ * <p><strong>The two authoritative codes are {@code A} and {@code U}, and they are the whole
+ * vocabulary.</strong> {@code CDEMO-USRTYP-ADMIN} carries {@code A} at line 27 of
+ * {@code app/cpy/COCOM01Y.cpy} and {@code CDEMO-USRTYP-USER} carries {@code U} at line 28, matching
+ * {@code SEC-USR-TYPE} at line 22 of {@code app/cpy/CSUSR01Y.cpy}. Those two characters are the only
+ * values the estate declares, and they are what a well-formed request carries. Width tolerance is not
+ * a second vocabulary: it is the deliberate absence of enforcement described above, retained so that
+ * a character the mainframe already stores can still be read back.
+ *
+ * <p><strong>That vocabulary is shared, not local to this type.</strong> The same raw one-character
+ * code, carrying the same two values, is what the sign-on response returns, what the navigation
+ * context carries between turns and across a signed token claim, and what the user-administration
+ * response echoes both at its top level and on every list row. No type in this package emits the
+ * enumeration's Java constant names, and none accepts a spelled-out role word; a single wire
+ * vocabulary spans the whole contract, so a client learns the codes once. The tolerant resolution of
+ * a code to a typed role lives behind one adapter - the non-throwing lookup on
+ * {@code com.carddemo.domain.enums.UserType}, which yields an empty result rather than raising for an
+ * undeclared character - and never in a transport type.
+ *
  * <h2>The attention key, with no default and no folding</h2>
  *
  * <p>The keystroke that accompanies a submission is carried as {@link KeyAction}, the enumerated
@@ -237,16 +259,27 @@ import java.util.List;
  * <p>This record therefore declares <strong>no</strong> presence, format, character-class, range or
  * cross-field constraint of any kind - no {@code NotNull}, {@code NotBlank}, {@code NotEmpty},
  * {@code Pattern}, {@code Digits}, {@code Min}, {@code Max}, {@code Positive} or {@code AssertTrue},
- * no validation group, no group sequence, no cascade into the selection collection and no operation
- * discriminator. Every component tolerates {@code null}, the empty string and an all-blank string
- * without complaint, which is what allows the service to run each operation's own cascade and emit
- * the single correct message. The controller endpoint identifies the operation; the request does not
- * carry a mode.
+ * no validation group, no group sequence, no element-level cascade into the selection collection and
+ * no operation discriminator. Every component tolerates {@code null}, the empty string and an
+ * all-blank string without complaint, which is what allows the service to run each operation's own
+ * cascade and emit the single correct message. The controller endpoint identifies the operation; the
+ * request does not carry a mode.
  *
- * <p>The one constraint that <em>is</em> present is a maximum length per value, set to the declared
- * screen width. It measures only: it never trims, folds, pads, strips or canonicalises anything, so
- * leading and trailing blanks - which are real data in a fixed-width estate - survive validation
- * untouched.
+ * <p>The primary constraint that <em>is</em> present is a maximum length per value, set to the
+ * declared screen width. It measures only: it never trims, folds, pads, strips or canonicalises
+ * anything, so leading and trailing blanks - which are real data in a fixed-width estate - survive
+ * validation untouched.
+ *
+ * <p><strong>Two structural bounds sit beside it, and neither is a field edit.</strong> The selection
+ * sequence carries a cardinality bound at the screen's ten rows, and the navigation component carries
+ * a cascade so that the widths it declares are actually evaluated. Both differ in kind from the
+ * cascades above: a sequence longer than the screen and an over-wide value inside a nested record are
+ * states no legacy submission could produce, so the estate has no ordered check and no message for
+ * either, and there is nothing for a declarative bound to pre-empt. What there is instead is unbounded
+ * work - an arbitrarily long sequence the canonical constructor would faithfully copy, and nested
+ * values that are bounded on paper and unenforced in practice, because a nested constraint is only
+ * evaluated when something asks for it. Neither bound alters a value, neither reorders or truncates
+ * anything, and neither expresses an opinion about <em>which</em> characters a selection may carry.
  *
  * <h2>The password is carried inbound only, and never rendered</h2>
  *
@@ -257,13 +290,26 @@ import java.util.List;
  *
  * <p>The two screens that do declare it define the item as non-display in the mapset, at line 126 of
  * {@code app/bms/COUSR01.bms} and line 130 of {@code app/bms/COUSR02.bms}, so the legacy terminal
- * accepted the value and never showed it. This type honours that asymmetry in the only place a record
- * can leak it: {@link #toString()} is overridden and substitutes a fixed placeholder. A record's
- * implicitly generated string form prints every component, which here would put a plaintext
- * credential into any log line, exception message, debugger view, diagnostic dump or test-failure
- * report that stringifies the object. The placeholder is a constant - never the value, never a
- * prefix or suffix of it, never a digest of it and never a length-preserving mask, because a mask
- * that matches the value's length still discloses the length.
+ * accepted the value and never showed it. This type honours that asymmetry on <strong>both</strong>
+ * of the two routes by which a record can disclose a component, and the two are independent.
+ *
+ * <p>The first is the diagnostic route. {@link #toString()} is overridden and substitutes a fixed
+ * placeholder, because a record's implicitly generated string form prints every component, which here
+ * would put a plaintext credential into any log line, exception message, debugger view, diagnostic
+ * dump or test-failure report that stringifies the object. The placeholder is a constant - never the
+ * value, never a prefix or suffix of it, never a digest of it and never a length-preserving mask,
+ * because a mask that matches the value's length still discloses the length.
+ *
+ * <p>The second is the serialization route, and redacting the first does nothing about it. An
+ * accessor a serializer can reach is a value a serializer will write, and this type is reachable by
+ * one wherever a request object is used as a response body, cached, queued, attached to an audit
+ * event, snapshotted for a problem report or recorded as a trace attribute - none of which passes
+ * through {@code toString()} at all. The component is therefore annotated
+ * {@link JsonProperty.Access#WRITE_ONLY}, which closes the outbound direction while leaving the
+ * inbound direction open: a document carrying the credential still binds it, because an operation that
+ * refuses to read a credential cannot store one. The published interface description says the same
+ * thing declaratively, so a generated client is told the property is write-only rather than
+ * discovering it by omission.
  *
  * <p>Nothing else happens to the value here. This type does not compare it, encode it, digest it,
  * salt it, verify it, echo it or write it anywhere. No credential literal, no seeded identity and no
@@ -299,10 +345,22 @@ import java.util.List;
  * the response-side paging contract, which is a cursor-and-direction shape for outbound use; this
  * request carries the raw echoed paging values instead.
  *
- * <p>All four transactions are administrator-gated in {@code app/csd/CARDDEMO.CSD}. That gating is
- * enforced by the module's security configuration, so no authority, no privilege set and no
- * administrator indicator is carried on this request - a client-supplied privilege claim would be a
- * privilege-escalation surface, and authorisation decided by request content is not authorisation.
+ * <p>All four transactions are administrator-gated in {@code app/csd/CARDDEMO.CSD}. What follows from
+ * that here, and only here, is a negative: no authority, no privilege set and no administrator
+ * indicator is carried on this request, because a client-supplied privilege claim would be a
+ * privilege-escalation surface and authorisation decided by request content is not authorisation.
+ *
+ * <p><strong>The positive half of that gating is an obligation on code that does not exist yet, and
+ * this contract does not discharge it.</strong> No endpoint in this module receives this type, so
+ * nothing currently reads an administrator authority, maps one of these operations to a route or
+ * refuses an unprivileged caller - and a reader who takes the paragraph above as an assurance that
+ * something already does would be mistaken. The endpoint that eventually receives this type is
+ * therefore required to place all four operations behind an administrator-only mapping, using a path
+ * the module's security configuration already gates or an equivalent explicit method guard, and to
+ * reconcile the identity echoed in the navigation component against the authenticated principal
+ * rather than believing it. Until such an endpoint exists and its real route mapping is exercised by
+ * a test, the gate is unbuilt: a catch-all rule that admits any authenticated caller would admit an
+ * unprivileged one to every operation this record describes.
  *
  * <h2>Provenance</h2>
  *
@@ -331,27 +389,43 @@ import java.util.List;
  * @param password the eight-character credential, declared only by the add map at line 78 of
  *     {@code app/cpy-bms/COUSR01.CPY} and the update map at line 78 of
  *     {@code app/cpy-bms/COUSR02.CPY}; the delete map declares none, so a delete request leaves this
- *     absent. Matches line 21 of {@code app/cpy/CSUSR01Y.cpy}. This value is a secret: it is
- *     replaced by a fixed placeholder in {@link #toString()} and must never be written to any
- *     diagnostic sink.
+ *     absent. Matches line 21 of {@code app/cpy/CSUSR01Y.cpy}. This value is a secret: it is replaced
+ *     by a fixed placeholder in {@link #toString()}, excluded from every serialized document by
+ *     {@link JsonProperty.Access#WRITE_ONLY}, published as write-only in the interface description,
+ *     and must never be written to any diagnostic sink. Being write-only means a body deserialized
+ *     from a client and re-serialized cannot carry it back out. No response type in this package
+ *     exposes a credential either: the stored value is a one-way digest, and the legacy update
+ *     screen's habit of pre-filling the field from the record (line 169 of
+ *     {@code app/cbl/COUSR02C.cbl}) is deliberately not reproduced.
  * @param userType the raw one-character user-type code - line 84 of both
  *     {@code app/cpy-bms/COUSR01.CPY} and {@code app/cpy-bms/COUSR02.CPY}, line 78 of
  *     {@code app/cpy-bms/COUSR03.CPY}, and the per-row item of the list map. Matches line 22 of
- *     {@code app/cpy/CSUSR01Y.cpy}. Bounded by width only and <em>not</em> restricted to the two
- *     values the estate's condition names declare, because neither program tests the value; see the
- *     dedicated section above.
+ *     {@code app/cpy/CSUSR01Y.cpy}. The two authoritative codes are {@code A} for an administrator
+ *     and {@code U} for a standard user, the same single vocabulary every other type in this package
+ *     uses on the wire. Bounded by width only and <em>not</em> restricted to those two values, because
+ *     neither program tests the value; resolution to a typed role happens through one non-throwing
+ *     adapter in the service layer. See the dedicated section above.
  * @param rowSelections the per-row selection characters of the list screen, one element per screen
  *     row in row order - the ten one-character items running from line 72 to line 342 of
  *     {@code app/cpy-bms/COUSR00.CPY}. Never {@code null}: a {@code null} argument becomes the empty
  *     immutable list. Order is significant and is preserved; the collection is neither filtered,
  *     compacted, re-ordered nor padded, and nothing here interprets an element.
- * @param pageNumber the eight-character displayed page number of the list screen - line 60 of
- *     {@code app/cpy-bms/COUSR00.CPY}, whose communication-area companion at line 70 of
+ * @param displayedPageNumber the eight-character displayed page number of the list screen - line 60
+ *     of {@code app/cpy-bms/COUSR00.CPY}, whose communication-area companion at line 70 of
  *     {@code app/cbl/COUSR00C.cbl} is an eight-digit display value. Text rather than a number so
- *     that leading zeros and the declared width survive; echoed, never computed from.
+ *     that leading zeros and the declared width survive. <strong>Server-owned and non-bindable:</strong>
+ *     the map item appears at exactly two sites, lines 327 and 376 of {@code app/cbl/COUSR00C.cbl},
+ *     and is the target of a MOVE at both. The program computes the number from its own retained
+ *     counter, so a submitted value never influenced a page and is discarded on the way in. Its width
+ *     is specific to this screen: the card-list contract declares a three-character page indicator,
+ *     and the two are never reconciled.
  * @param firstUserIdOnPage the eight-character key of the first row of the page just displayed -
  *     the retained first-key field at line 68 of {@code app/cbl/COUSR00C.cbl}. Echoed by the client
  *     so the service can reposition a backward browse without holding server-side cursor state.
+ *     <strong>Deliberately bindable</strong>, unlike the page number beside it: the backward-paging
+ *     paragraph tests this value at line 239 and moves it into the browse key at line 242, so it is a
+ *     genuine input and making it non-bindable would leave the server unable to position a backward
+ *     page at all.
  * @param lastUserIdOnPage the eight-character key of the last row of the page just displayed - the
  *     retained last-key field at line 69 of {@code app/cbl/COUSR00C.cbl}. Echoed for the same reason
  *     as {@link #firstUserIdOnPage()}.
@@ -365,49 +439,124 @@ import java.util.List;
 public record UserRequest(
 
         /* Add map user-id item, width 8, COUSR01.CPY line 72; the target reading of the update and
-         * delete maps' item at COUSR02.CPY line 60 and COUSR03.CPY line 60. */
-        @Size(max = UserRequest.USER_ID_LENGTH) String userId,
+         * delete maps' item at COUSR02.CPY line 60 and COUSR03.CPY line 60. Absent on the list
+         * operation, whose only scalar identifier input is searchUserId: the list map's ten
+         * per-row identifier items are echoes it writes, never scalar inputs it reads. */
+        @Size(max = UserRequest.USER_ID_LENGTH)
+        @Null(groups = UserRequest.ListOperation.class)
+        String userId,
 
         /* List map browse start key, width 8, COUSR00.CPY line 66 - deliberately separate from
-         * userId because a blank start key is meaningful; COUSR00C.cbl lines 218 to 222. */
-        @Size(max = UserRequest.USER_ID_LENGTH) String searchUserId,
+         * userId because a blank start key is meaningful; COUSR00C.cbl lines 218 to 222. Declared by
+         * the list map alone, so it is inapplicable to the other three operations. */
+        @Size(max = UserRequest.USER_ID_LENGTH)
+        @Null(groups = {UserRequest.AddOperation.class, UserRequest.UpdateOperation.class,
+                UserRequest.DeleteOperation.class})
+        String searchUserId,
 
         /* First-name item, width 20, COUSR01.CPY line 60 / COUSR02.CPY line 66 / COUSR03.CPY line
-         * 66; credential record CSUSR01Y.cpy line 19. */
-        @Size(max = UserRequest.NAME_PART_LENGTH) String firstName,
+         * 66; credential record CSUSR01Y.cpy line 19. Consumed by add (COUSR01C) and update
+         * (COUSR02C.cbl lines 186 and 219 to 220) only. The delete map declares the item but
+         * COUSR03C never reads it - lines 157, 165 and 353 are the only sites and all three write
+         * to it - so on delete it is a display echo the server produces, not an input. */
+        @Size(max = UserRequest.NAME_PART_LENGTH)
+        @Null(groups = {UserRequest.ListOperation.class, UserRequest.DeleteOperation.class})
+        String firstName,
 
         /* Last-name item, width 20, COUSR01.CPY line 66 / COUSR02.CPY line 72 / COUSR03.CPY line
-         * 72; credential record CSUSR01Y.cpy line 20. */
-        @Size(max = UserRequest.NAME_PART_LENGTH) String lastName,
+         * 72; credential record CSUSR01Y.cpy line 20. Read by update at COUSR02C.cbl lines 192 and
+         * 223 to 224; only ever written by delete at COUSR03C.cbl lines 158, 166 and 354. */
+        @Size(max = UserRequest.NAME_PART_LENGTH)
+        @Null(groups = {UserRequest.ListOperation.class, UserRequest.DeleteOperation.class})
+        String lastName,
 
         /* Password item, width 8, COUSR01.CPY line 78 and COUSR02.CPY line 78 only - the delete map
-         * declares none. Non-display in the mapsets; redacted by toString. */
-        @Size(max = UserRequest.PASSWORD_LENGTH) String password,
+         * declares none, and neither does the list map. Non-display in the mapsets; redacted by
+         * toString; write-only on the wire. Read by update at COUSR02C.cbl lines 198 and 227 to
+         * 228. Because two of the four maps declare no credential item at all, accepting one on
+         * those two operations would transport a credential the legacy screen had no field for. */
+        @Size(max = UserRequest.PASSWORD_LENGTH)
+        @Null(groups = {UserRequest.ListOperation.class, UserRequest.DeleteOperation.class})
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        @Schema(
+                accessMode = Schema.AccessMode.WRITE_ONLY,
+                format = "password",
+                description =
+                        "Credential supplied by an administrator on the add and update operations"
+                                + " only, from PASSWDI at app/cpy-bms/COUSR01.CPY line 78 and"
+                                + " app/cpy-bms/COUSR02.CPY line 78. Accepted inbound and never"
+                                + " emitted outbound: the stored value is a one-way digest, so no"
+                                + " response in this package can echo it.")
+        String password,
 
         /* User-type item, width 1, COUSR01.CPY line 84 / COUSR02.CPY line 84 / COUSR03.CPY line 78.
-         * Raw character on purpose: no program tests the value. */
-        @Size(max = UserRequest.USER_TYPE_LENGTH) String userType,
+         * Raw character on purpose: no program tests the value. Read by update at COUSR02C.cbl lines
+         * 204 and 231 to 232; only ever written by delete at COUSR03C.cbl lines 159, 167 and 355.
+         * The published description states the A/U vocabulary that every type in this package shares;
+         * it is documentation, not a constraint, because a value restriction here would reject a
+         * character the legacy record already holds. */
+        @Size(max = UserRequest.USER_TYPE_LENGTH)
+        @Null(groups = {UserRequest.ListOperation.class, UserRequest.DeleteOperation.class})
+        @Schema(
+                description =
+                        "Raw one-character user-type code. The two authoritative codes are A for an"
+                                + " administrator, from CDEMO-USRTYP-ADMIN at app/cpy/COCOM01Y.cpy"
+                                + " line 27, and U for a standard user, from CDEMO-USRTYP-USER at"
+                                + " line 28; the same two codes travel on every other user-type"
+                                + " field in this API. Bounded by width rather than by value,"
+                                + " because the legacy programs test only that the item is"
+                                + " non-blank and store whatever arrived.")
+        String userType,
 
         /* The ten per-row selection items of the list map, width 1 each, COUSR00.CPY lines 72 to
-         * 342. Ordered and positional; the element bound is a container-element constraint. */
-        List<@Size(max = UserRequest.ROW_SELECTION_LENGTH) String> rowSelections,
+         * 342. Ordered and positional; the element bound is a container-element constraint and the
+         * bound on the sequence itself is its cardinality - the screen has exactly ten rows, so an
+         * eleventh selection corresponds to no row. Declared by the list map alone, so emptiness
+         * rather than absence is asserted for the other three operations: the canonical constructor
+         * normalises a null collection to an empty one, and an empty collection is therefore the only
+         * representation of "carries nothing". */
+        @Size(max = UserRequest.ROW_SELECTION_COUNT)
+        @Size(max = 0, groups = {UserRequest.AddOperation.class,
+                UserRequest.UpdateOperation.class, UserRequest.DeleteOperation.class})
+                List<@Size(max = UserRequest.ROW_SELECTION_LENGTH) String> rowSelections,
 
         /* Displayed page number, width 8, COUSR00.CPY line 60; text, not a number, so that the
-         * leading zeros of the eight-digit companion at COUSR00C.cbl line 70 survive. */
-        @Size(max = UserRequest.PAGE_NUMBER_LENGTH) String pageNumber,
+         * leading zeros of the eight-digit companion at COUSR00C.cbl line 70 survive. Server-owned
+         * display state: PAGENUMI appears at exactly two sites, COUSR00C.cbl lines 327 and 376, and
+         * at both it is the target of a MOVE. The number itself is computed entirely by the program
+         * from its own retained counter - initialised at line 227, incremented at 309 to 310 and
+         * decremented at 366 to 369 - so a submitted value could never have influenced a page. */
+        @Size(max = UserRequest.DISPLAYED_PAGE_NUMBER_LENGTH)
+        @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+        String displayedPageNumber,
 
-        /* Retained first key of the displayed page, width 8, COUSR00C.cbl line 68. */
-        @Size(max = UserRequest.USER_ID_LENGTH) String firstUserIdOnPage,
+        /* Retained first key of the displayed page, width 8, COUSR00C.cbl line 68. Genuinely an
+         * input and therefore deliberately bindable: the backward-paging paragraph tests it at line
+         * 239 and moves it into the browse key at line 242. Marking it non-bindable would leave the
+         * server unable to position a backward page at all. */
+        @Size(max = UserRequest.USER_ID_LENGTH)
+        @Null(groups = {UserRequest.AddOperation.class, UserRequest.UpdateOperation.class,
+                UserRequest.DeleteOperation.class})
+        String firstUserIdOnPage,
 
-        /* Retained last key of the displayed page, width 8, COUSR00C.cbl line 69. */
-        @Size(max = UserRequest.USER_ID_LENGTH) String lastUserIdOnPage,
+        /* Retained last key of the displayed page, width 8, COUSR00C.cbl line 69. Bindable for the
+         * same reason: the forward-paging paragraph tests it at line 262 and moves it into the
+         * browse key at line 265. */
+        @Size(max = UserRequest.USER_ID_LENGTH)
+        @Null(groups = {UserRequest.AddOperation.class, UserRequest.UpdateOperation.class,
+                UserRequest.DeleteOperation.class})
+        String lastUserIdOnPage,
 
         /* Resolved attention key. Nullable on purpose: the CSSTRPFY key mapping has no catch-all
          * branch, so an unresolved identifier is a real state. */
         KeyAction keyAction,
 
-        /* Echoed screen-flow state from COCOM01Y.cpy. Request state, not a server session. */
-        NavigationContext navigationContext) {
+        /* Echoed screen-flow state from COCOM01Y.cpy. Request state, not a server session. Marked
+         * @Valid so the bounds the nested type declares are actually evaluated: Bean Validation does
+         * not descend into a nested object unless told to, so without this every bound inside it is
+         * decorative and an over-long identifier reaches the service unreported. Cascading a bound
+         * is not the same as adding one - no new constraint is introduced here. */
+        @Valid NavigationContext navigationContext) {
 
     /**
      * Fixed stand-in emitted by {@link #toString()} in place of the credential.
@@ -504,6 +653,35 @@ public record UserRequest(
     public static final int ROW_SELECTION_LENGTH = 1;
 
     /**
+     * Number of selection items the list screen declares, and therefore the largest sequence
+     * {@link #rowSelections()} can legitimately carry: 10.
+     *
+     * <p>The list map declares exactly ten selection items, running from line 72 to line 342 of
+     * {@code app/cpy-bms/COUSR00.CPY}, and the program fills exactly ten screen rows from the
+     * ten-occurrence table at line 57 of {@code app/cbl/COUSR00C.cbl}. This is the shape of the
+     * screen, not a tunable value, and it agrees with the row figure the response-side paging
+     * contract names for this screen.
+     *
+     * <p><strong>Why a cardinality bound is present when no other structural constraint is.</strong>
+     * Every other bound in this file measures one value against the width of the item it mirrors, and
+     * the reason none of them constrains presence or vocabulary is that the legacy programs run
+     * ordered, message-bearing cascades a declarative constraint cannot reproduce. A sequence longer
+     * than the screen is a different kind of thing: element <em>n</em> is the selection typed against
+     * screen row <em>n</em>, so an eleventh element corresponds to no row at all and no legacy
+     * submission could produce one. There is no cascade to defer to and no message to preserve,
+     * because the estate has no branch for a state it cannot reach. Without the bound the sequence is
+     * unbounded, and the defensive copy in the canonical constructor would faithfully retain every
+     * element of an arbitrarily long one.
+     *
+     * <p>Declared separately from the response-side row figure rather than referenced from it,
+     * because this is the count of <em>inbound items a map declares</em> while that is the count of
+     * <em>rows a page presents</em>; the two coincide for this screen and are not the same quantity.
+     * Like every other bound here it only reports: an over-long sequence is reported and never
+     * truncated, so nothing silently discards a selection.
+     */
+    public static final int ROW_SELECTION_COUNT = 10;
+
+    /**
      * Width in characters of the displayed page number: 8.
      *
      * <p>The declared width of the page-number item at line 60 of {@code app/cpy-bms/COUSR00.CPY},
@@ -516,7 +694,7 @@ public record UserRequest(
      * deliberately absent from this request. The width is also specific to this screen - another list
      * screen in the estate declares a narrower page number, and the two are never reconciled.
      */
-    public static final int PAGE_NUMBER_LENGTH = 8;
+    public static final int DISPLAYED_PAGE_NUMBER_LENGTH = 8;
 
     /**
      * Normalizes the selection collection so that the component is never {@code null}, never aliased
@@ -538,47 +716,162 @@ public record UserRequest(
      * string and any leading or trailing blank - because the items they derive from are fixed-width
      * and blank-significant, and because each operation's own ordered emptiness cascade, which lives
      * in the service layer, must see precisely what the client sent.
+     *
+     * <p><strong>The one thing it refuses.</strong> A collection carrying more selections than the
+     * screen has rows is rejected rather than truncated. The list map declares exactly
+     * {@value #ROW_COUNT} selection items and the program's own table is declared
+     * {@code OCCURS 10 TIMES} at {@code app/cbl/COUSR00C.cbl} line 57, so an eleventh selection
+     * corresponds to no row on any screen the estate ever rendered and cannot be a position the
+     * operator typed against. Refusing is deliberate and is not a normalisation: a shorter
+     * collection is accepted untouched at whatever length it arrived, because the emptiness cascade
+     * must still see precisely what was sent, and nothing is padded out to the row count.
+     *
+     * @throws IllegalArgumentException if {@code rowSelections} carries more than {@value #ROW_COUNT}
+     *     entries
      */
     public UserRequest {
         rowSelections = (rowSelections == null) ? List.of() : List.copyOf(rowSelections);
+        if (rowSelections.size() > ROW_COUNT) {
+            throw new IllegalArgumentException("rowSelections must carry at most " + ROW_COUNT
+                    + " entries, because the list screen declares that many rows, but it carries "
+                    + rowSelections.size());
+        }
     }
 
     /**
-     * Returns a diagnostic representation that mirrors the record layout but redacts the credential.
+     * The number of selection positions the list screen offers, and therefore the largest number of
+     * selections a submission can carry.
      *
-     * <p><strong>What is shown.</strong> Every non-credential component, verbatim. The two user
-     * identifiers, the two name parts, the raw user-type character, the ordered selections, the
-     * echoed paging values, the attention key and the navigation context are exactly what anyone
-     * diagnosing an administrative user request needs, and withholding them would remove this type's
-     * diagnostic value without protecting anything. The navigation context redacts its own
-     * identifying fields, so nesting it here discloses nothing further.
+     * <p>Ten, from the ten selection items the list map declares at {@code app/cpy-bms/COUSR00.CPY}
+     * lines 72 to 342 and from the program's own table, declared {@code OCCURS 10 TIMES} at
+     * {@code app/cbl/COUSR00C.cbl} line 57.
      *
-     * <p><strong>What is withheld.</strong> The password, replaced by
-     * {@link #REDACTION_PLACEHOLDER} - a fixed constant rather than a length-preserving mask, for the
-     * reason given on that constant. No branch of this method can render the credential value.
+     * <p>Public because it is part of the request contract rather than an implementation choice: a
+     * client needs to know how many positions it may submit. Declared here and deliberately not
+     * shared with the card-list contract, which offers seven rows, nor reconciled with it: each
+     * screen is its own contract and a future change to one must not propagate to the other.
+     */
+    public static final int ROW_COUNT = 10;
+
+    /**
+     * Marker for the list operation of transaction {@code CU00}.
      *
-     * <p>{@code equals} is intentionally not overridden, so it keeps comparing every component as the
-     * record semantics require; equality is an in-memory operation that emits nothing. This override
-     * exists solely to prevent credential leakage through diagnostics, and it deliberately performs
-     * no validation, normalisation or comparison of its own.
+     * <p><strong>Why these markers exist.</strong> One record body serves all four user-administration
+     * operations, and the four maps declare different input items. Without a discriminator a client
+     * could submit a credential to the delete operation, whose map declares no credential item at
+     * all, or a page cursor to the add operation, which has no list. The interfaces below let each
+     * controller method name the operation it serves so that the components its map does not declare
+     * are rejected as inapplicable rather than silently carried.
      *
-     * @return the request state with the credential replaced by a fixed placeholder
+     * <p><strong>Why this does not disturb the ordered validation cascade.</strong> Each constraint
+     * these groups carry asserts <em>absence</em>, never presence. Not one of them makes a component
+     * mandatory, so none of them can pre-empt the first-error-wins emptiness cascade that the legacy
+     * programs perform in their own order - the add screen tests the user identifier third while the
+     * update screen tests it first, and that ordering stays entirely in the service layer where it
+     * belongs. The constraints are also inert under the default validation group, so a caller that
+     * validates without naming an operation sees exactly the behaviour this type had before.
+     *
+     * <p>Nested rather than free-standing, so the operation vocabulary stays attached to the body it
+     * discriminates and no separate type is introduced.
+     */
+    public interface ListOperation {
+    }
+
+    /**
+     * Marker for the add operation of transaction {@code CU01}.
+     *
+     * <p>Its map declares a first name, a last name, a user identifier, a credential and a user type
+     * at {@code app/cpy-bms/COUSR01.CPY} lines 60, 66, 72, 78 and 84. It declares no browse key, no
+     * selection item and no page cursor, so those components are inapplicable to it.
+     */
+    public interface AddOperation {
+    }
+
+    /**
+     * Marker for the update operation of transaction {@code CU02}.
+     *
+     * <p>Its map declares the same five items as the add operation, at {@code COUSR02.CPY} lines 60,
+     * 66, 72, 78 and 84, and {@code app/cbl/COUSR02C.cbl} genuinely reads all of them - the name at
+     * lines 186 and 219, the surname at 192 and 223, the credential at 198 and 227 and the type at
+     * 204 and 231. It declares no list state.
+     */
+    public interface UpdateOperation {
+    }
+
+    /**
+     * Marker for the delete operation of transaction {@code CU03}.
+     *
+     * <p><strong>The user identifier is its only input.</strong> Its map declares a first name, a last
+     * name and a user type at {@code COUSR03.CPY} lines 66, 72 and 78, but {@code app/cbl/COUSR03C.cbl}
+     * never reads any of them: lines 157 to 159 clear them, 165 to 167 populate them from the record
+     * it fetched and 353 to 355 clear them again, and there is no fourth kind of site. They are
+     * therefore values the server produces for display, not values a client supplies. The map declares
+     * no credential item at all, which is why a credential is inapplicable here as well.
+     */
+    public interface DeleteOperation {
+    }
+
+    /**
+     * Returns a diagnostic representation that identifies the request and discloses no personal data.
+     *
+     * <p><strong>Why redacting the credential alone was not enough.</strong> An earlier form of this
+     * method withheld the password and printed everything else verbatim, on the reasoning that only a
+     * credential is a secret. That reasoning does not survive contact with what the other components
+     * actually are: two account-holder names, three user identifiers and a user type, all belonging to
+     * one identifiable person, on a single line. A record whose remaining components are a person's
+     * given name, family name, sign-on identifier and privilege level is a personal-data record
+     * whether or not a password sits beside it, and one instance exists per administrative request, so
+     * a verbatim rendering placed that record one interpolation away from every log line, assertion
+     * message and diagnostic dump on the user-administration path.
+     *
+     * <p><strong>What is withheld.</strong> Both user identifiers, the browse key, the two retained
+     * page anchors, the two name parts, the user type and the credential, each replaced by
+     * {@link #REDACTION_PLACEHOLDER} - a fixed constant and never a length-preserving mask, for the
+     * reason given on that constant. The navigation state is withheld too: it redacts its own
+     * identifying fields, and omitting it here means this rendering does not depend on that. No branch
+     * of this method can render any of these values.
+     *
+     * <p><strong>What is retained, and why it is sufficient.</strong> The number of selections rather
+     * than the selections themselves, the displayed page number, and the attention key. That set names
+     * <em>which</em> submission this was and <em>what</em> the operator did - how many rows were
+     * marked, which page was on screen and which key was pressed - which is what a diagnostic needs in
+     * order to locate the same submission again, and none of it identifies a person. The selection
+     * count is safe where the selections are not: a count cannot be joined back to a row, whereas the
+     * ordered characters reveal which specific users an administrator singled out. The page number is
+     * safe because the program computes it itself and it names no user. Fail-closed is the correct
+     * default here: the retained set was chosen because it is sufficient, not because the remainder
+     * happened to look harmless.
+     *
+     * <p><strong>This override protects one channel only.</strong> It governs what a diagnostic sink
+     * receives and says nothing about what a serializer emits, which is a separate route closed
+     * separately by {@link JsonProperty.Access#WRITE_ONLY} on the credential component itself. Neither
+     * control substitutes for the other: removing the annotation would leave this rendering intact
+     * while the credential travelled outbound in JSON, and removing this override would leave the
+     * annotation intact while the credential travelled into a log line.
+     *
+     * <p>{@code equals} and {@code hashCode} are intentionally not overridden, so they keep comparing
+     * every component as the record semantics require; equality is an in-memory operation that emits
+     * nothing. This override exists solely to prevent disclosure through diagnostics, and it
+     * deliberately performs no validation, normalisation or comparison of its own.
+     *
+     * @return the request identification, with every personal and credential component replaced by a
+     *     fixed placeholder
      */
     @Override
     public String toString() {
         return "UserRequest["
-                + "userId=" + userId
-                + ", searchUserId=" + searchUserId
-                + ", firstName=" + firstName
-                + ", lastName=" + lastName
+                + "userId=" + REDACTION_PLACEHOLDER
+                + ", searchUserId=" + REDACTION_PLACEHOLDER
+                + ", firstName=" + REDACTION_PLACEHOLDER
+                + ", lastName=" + REDACTION_PLACEHOLDER
                 + ", password=" + REDACTION_PLACEHOLDER
-                + ", userType=" + userType
-                + ", rowSelections=" + rowSelections
-                + ", pageNumber=" + pageNumber
-                + ", firstUserIdOnPage=" + firstUserIdOnPage
-                + ", lastUserIdOnPage=" + lastUserIdOnPage
+                + ", userType=" + REDACTION_PLACEHOLDER
+                + ", rowSelectionCount=" + rowSelections.size()
+                + ", displayedPageNumber=" + displayedPageNumber
+                + ", firstUserIdOnPage=" + REDACTION_PLACEHOLDER
+                + ", lastUserIdOnPage=" + REDACTION_PLACEHOLDER
                 + ", keyAction=" + keyAction
-                + ", navigationContext=" + navigationContext
+                + ", navigationContext=" + REDACTION_PLACEHOLDER
                 + "]";
     }
 }

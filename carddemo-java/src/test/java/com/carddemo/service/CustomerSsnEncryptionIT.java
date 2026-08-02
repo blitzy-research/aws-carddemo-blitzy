@@ -56,8 +56,16 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  *
  * <h2>What is asserted</h2>
  * <ul>
- *   <li>The migrated column is {@code character varying(255)} and nullable, and it is the <em>only</em>
- *       nullable column in the whole migrated schema - an invariant both files state in prose.</li>
+ *   <li>The migrated column is {@code character varying(255)} and nullable, and is the
+ *       <em>only</em> nullable column in the whole migrated schema - an invariant the migration
+ *       states in prose. It is nullable for one reason: the reference seed declines to carry a
+ *       national identifier at all, because a static migration cannot produce an envelope without
+ *       committing key material and the cleartext is not an acceptable substitute.</li>
+ *   <li>{@code customer.govt_issued_id} is regulated by the same service under the same key and is
+ *       nevertheless <em>not</em> null, because the seed does carry it - sealed, as fifty
+ *       pre-computed envelopes. The two regulated columns are therefore asserted by opposite tests,
+ *       and that asymmetry is the design rather than an oversight: it is checked here so that a
+ *       later relaxation of either column fails a test instead of passing unnoticed.</li>
  *   <li>A stored value carries the scheme tag, is short enough for the column, and contains neither
  *       the cleartext identifier nor the field name it is bound to.</li>
  *   <li>The cleartext appears nowhere in the stored row image, asserted against the whole row
@@ -76,7 +84,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * throwaway pair the test overlay declares.
  *
  * <h2>Coexistence with the seeded reference data</h2>
- * {@code src/main/resources/db/seed/V3__seed_reference_data.sql} loads the fifty fixture
+ * {@code src/main/resources/db/migration/V3__seed_reference_data.sql} loads the fifty fixture
  * customers under the zero-padded keys {@code 000000001} through {@code 000000050}, and loads fifty
  * {@code card_cross_reference} rows that point at them through {@code fk_card_xref_customer}. This
  * test therefore keys every row it writes under {@link #TEST_KEY_PREFIX}, a range the seed never
@@ -88,16 +96,27 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 class CustomerSsnEncryptionIT extends AbstractPostgresIT {
 
     /**
-     * The key value declared by {@code src/test/resources/application-test.yml}: Base64 of exactly
-     * thirty-two bytes, fixed so a sealed fixture is reproducible, and worth nothing outside this suite.
+     * The one non-production fixture key: Base64 of exactly thirty-two bytes, fixed so a sealed
+     * fixture is reproducible, and worth nothing outside this suite. The same literal is declared by
+     * {@code src/test/resources/application-test.yml}, by the packaged
+     * {@code src/main/resources/application-test.yml} and by {@code application-local.yml}, because
+     * {@code V3__seed_reference_data.sql} seeds sealed values that must open under every profile that
+     * applies it.
      */
-    private static final String TEST_KEY = "Y2FyZGRlbW8tdGVzdC1vbmx5LWZpeGVkLWtleSEhISE=";
+    private static final String TEST_KEY = "Y2FyZGRlbW8tbm9ucHJvZC1maXh0dXJlLWtleSEhISE=";
 
     /** An invented nine-digit identifier of the same shape as the legacy field. */
     private static final String IDENTIFIER = "400500600";
 
     /** An invented identifier whose leading zeros must survive storage. */
     private static final String IDENTIFIER_WITH_LEADING_ZEROS = "000000042";
+
+    /**
+     * Cleartext for the government-issued identifier, at the twenty characters the legacy record
+     * carries at offset 288. Deliberately unrelated to {@link #IDENTIFIER}, so that a leak of either
+     * regulated value into any column is attributable to the column it escaped from.
+     */
+    private static final String GOVT_IDENTIFIER = "70080090010020030040";
 
     /**
      * Primary-key prefix reserved for the rows this test writes. Every {@code cust_id} used below
@@ -175,8 +194,9 @@ class CustomerSsnEncryptionIT extends AbstractPostgresIT {
     }
 
     @Test
-    @DisplayName("is the only nullable column in the whole migrated schema")
-    void isTheOnlyNullableColumn() throws SQLException {
+    @DisplayName("is the one nullable column in the whole migrated schema, the government-issued"
+            + " identifier it is protected alongside being not null")
+    void theNationalIdentifierIsTheOnlyNullableColumn() throws SQLException {
         List<String> nullable = new ArrayList<>();
         try (Connection connection = connect();
              PreparedStatement statement = connection.prepareStatement("""
@@ -199,7 +219,49 @@ class CustomerSsnEncryptionIT extends AbstractPostgresIT {
             }
         }
 
-        assertThat(nullable).containsExactly("customer.cust_ssn");
+        assertThat(nullable)
+                .as("exactly one column permits a null - the national identifier, which the seed"
+                        + " declines to carry at all; any second would be an unreviewed relaxation")
+                .containsExactly("customer.cust_ssn");
+        assertThat(nullabilityOf("govt_issued_id"))
+                .as("the government-issued identifier is protected by the same service under the"
+                        + " same key and is nevertheless not null, because the seed does carry it,"
+                        + " sealed; asserting the asymmetry positively is what stops the column"
+                        + " being quietly relaxed to match its neighbour")
+                .isEqualTo("NO");
+        assertThat(nullabilityOf("cust_ssn"))
+                .as("and the national identifier is nullable, read from the same catalogue by the"
+                        + " same query, so the two readings cannot disagree about their source")
+                .isEqualTo("YES");
+    }
+
+    /**
+     * Returns the catalogue's own nullability verdict for one column of the customer table.
+     *
+     * <p>Read as a scalar rather than inferred from the census above, so that the asymmetry between
+     * the two regulated columns is stated by two independent readings of the same catalogue.
+     *
+     * @param columnName the column to read
+     * @return {@code "YES"} or {@code "NO"}, exactly as {@code information_schema} reports it
+     * @throws SQLException if the read fails
+     */
+    private static String nullabilityOf(final String columnName) throws SQLException {
+        try (Connection connection = connect();
+             PreparedStatement statement = connection.prepareStatement("""
+                     SELECT c.is_nullable
+                       FROM information_schema.columns c
+                      WHERE c.table_schema = 'public'
+                        AND c.table_name = 'customer'
+                        AND c.column_name = ?
+                     """)) {
+            statement.setString(1, columnName);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                assertThat(resultSet.next())
+                        .as("the column %s must exist in the migrated schema", columnName)
+                        .isTrue();
+                return resultSet.getString(1);
+            }
+        }
     }
 
     @Test
@@ -236,7 +298,13 @@ class CustomerSsnEncryptionIT extends AbstractPostgresIT {
             }
         }
 
-        assertThat(rowImage).contains(ENVELOPE_PREFIX).doesNotContain(IDENTIFIER);
+        assertThat(rowImage)
+                .contains(ENVELOPE_PREFIX)
+                .as("neither regulated cleartext may appear anywhere in the row, and the row now"
+                        + " carries two sealed columns rather than one, so a value written into the"
+                        + " wrong one of them is caught here too")
+                .doesNotContain(IDENTIFIER)
+                .doesNotContain(GOVT_IDENTIFIER);
     }
 
     @Test
@@ -303,7 +371,9 @@ class CustomerSsnEncryptionIT extends AbstractPostgresIT {
      * Inserts one customer row, supplying every mapped column at a width the schema accepts.
      *
      * @param custId  the primary key
-     * @param custSsn the value to place in the protected column, which may be {@code null}
+     * @param custSsn the value to place in the national-identifier column, which may be {@code null};
+     *                the government-issued identifier is always sealed, because its column is not
+     *                null
      * @throws SQLException if the insert fails
      */
     private static void insertCustomer(final String custId, final String custSsn)
@@ -323,7 +393,17 @@ class CustomerSsnEncryptionIT extends AbstractPostgresIT {
             statement.setString(11, "2125550100");
             statement.setString(12, "2125550101");
             statement.setString(13, custSsn);
-            statement.setString(14, "GOVTID00000000000001");
+            // The government-issued identifier is regulated in exactly the same way, but its column
+            // is not null: the reference seed carries a sealed envelope in every one of its fifty
+            // rows, so absence is not an outcome a row is permitted to state. A fixed literal here
+            // would be cleartext regulated data checked into version control, so the value is sealed
+            // at insert time under its own field binding instead - which the static seed could not
+            // do without committing key material and this test can, because the service is on the
+            // classpath. Sealing is randomised, so each row receives a distinct envelope, exactly as
+            // the seeded rows do.
+            statement.setString(14, new SensitiveFieldEncryptionService(TEST_KEY).protect(
+                    SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD,
+                    GOVT_IDENTIFIER));
             statement.setString(15, "1980-01-01");
             statement.setString(16, "EFT0000001");
             statement.setString(17, "Y");

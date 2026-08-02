@@ -29,14 +29,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.StreamWriteFeature;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.databind.json.JsonMapper;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
@@ -76,12 +71,21 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * the class under test, which is the whole point: a table that read its expectations out of the
  * class it is testing would assert nothing.</p>
  *
- * <p>Two absences are asserted as deliberately as the presences. The abend text belongs to
- * {@code AbendException} and must not be declared a second time here, and no version, entity-tag or
- * concurrency component may exist even though the program does detect concurrent change - it did so
- * by comparing before and after images, refreshing the before image and leaving the write path at
- * line 1518, and the migrated equivalent is a version column on the card entity. The only thing this
- * response carries about that condition is the text declared at line 208.</p>
+ * <p>Absences are asserted as deliberately as presences. The abend text belongs to
+ * {@code AbendException} and must not be declared a second time here, and no <em>readable</em>
+ * version number, entity tag, timestamp or fetched-image snapshot may exist, because each of those is
+ * a value a client could assert for itself.</p>
+ *
+ * <p>The concurrency proof, by contrast, is asserted <strong>present</strong>. The program detected a
+ * concurrent change by comparing the image it had fetched when the screen was built against the record
+ * it re-read under lock, refreshing that image and leaving the write path at line 1518; that image
+ * travelled with the conversation in the work area the program returns with the screen at line 550,
+ * which is why the migrated screen has to hand out an equivalent. This screen is both the presenting
+ * and the confirming screen, so the sealed proof is returned here and echoed back on
+ * {@code CardUpdateRequest}. Its value is opaque, so what is asserted about it is that it round-trips
+ * untouched, that it is serialised, and that it never appears in a diagnostic rendering - never that
+ * it has any particular shape. The only thing this response says to an operator about the condition
+ * remains the single text declared at line 208.</p>
  *
  * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
  * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.</p>
@@ -98,14 +102,16 @@ class CardUpdateResponseTest {
             List.of(4, 40, 8, 8, 40, 8, 11, 16, 50, 1, 2, 4, 2, 40, 80);
 
     /**
-     * The twenty record components in map order, followed by the five response-shaping components.
-     * A change to this list is a change to the REST contract and must be a deliberate one.
+     * The fifteen mapped components in map order, followed by the five response-shaping components and
+     * the concurrency proof. A change to this list is a change to the REST contract and must be a
+     * deliberate one.
      */
     private static final List<String> COMPONENTS_IN_MAP_ORDER = List.of(
-            "transactionName", "screenTitleLine1", "currentDate", "programName", "screenTitleLine2",
+            "transactionName", "title01", "currentDate", "programName", "title02",
             "currentTime", "accountId", "cardNumber", "embossedName", "activeStatus", "expiryMonth",
             "expiryYear", "expiryDay", "informationMessage", "errorMessage", "generalError",
-            "fieldErrors", "focusScreenFieldId", "route", "navigationContext");
+            "fieldErrors", "focusScreenFieldId", "nextRoute", "navigationContext",
+            "concurrencyToken");
 
     /**
      * Every operator text the program declares, keyed by the constant that must carry it and valued
@@ -124,6 +130,18 @@ class CardUpdateResponseTest {
 
     /** An embossed name carrying an embedded space, which the alphabetic rule admits. */
     private static final String EMBOSSED_NAME = "MARY ANN";
+
+    /**
+     * A stand-in for a minted concurrency proof.
+     *
+     * <p>Deliberately an arbitrary opaque string rather than anything a real minting service would
+     * produce. This type neither reads, parses, validates nor bounds the proof - it carries it - so a
+     * realistic value would test the minting service instead of this contract. What is asserted is
+     * that whatever is handed in comes back out byte for byte, reaches the wire, and never reaches a
+     * diagnostic rendering. Its characters are chosen to be visibly not a card value, so that a
+     * disclosure assertion below cannot pass by coincidence.
+     */
+    private static final String CONCURRENCY_TOKEN = "CCUP1-sealed-proof-stand-in";
 
     /** The properties RFC 7807 would introduce, none of which this response may expose. */
     private static final List<String> PROBLEM_DETAIL_PROPERTIES =
@@ -169,18 +187,19 @@ class CardUpdateResponseTest {
     }
 
     /**
-     * Mirrors the four serialisation settings the module declares in {@code application.yml}, so a
-     * payload asserted here is the payload a client actually receives.
+     * Supplies a mapper carrying the four serialisation settings the module declares in
+     * {@code application.yml}, obtained from {@link JsonContractSupport#declaredSettingsMapper()} so
+     * that those settings exist in exactly one place in the test tree.
+     *
+     * <p>A payload asserted through it is the payload this type takes <em>under those settings</em>,
+     * which is not the same claim as the payload a client receives from a deployed instance.
+     * {@link ApplicationJsonContractTest} establishes the correspondence by comparing a mapper taken
+     * from a real context against this very factory.</p>
+     *
+     * @return a mapper carrying the module's four declared serialisation settings
      */
     private static ObjectMapper moduleEquivalentMapper() {
-        return JsonMapper.builder()
-                .defaultPropertyInclusion(
-                        JsonInclude.Value.construct(JsonInclude.Include.NON_NULL,
-                                JsonInclude.Include.NON_NULL))
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-                .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
-                .build();
+        return JsonContractSupport.declaredSettingsMapper();
     }
 
     private static JsonNode payloadOf(CardUpdateResponse response) throws JsonProcessingException {
@@ -207,7 +226,7 @@ class CardUpdateResponseTest {
         return new CardUpdateResponse("CCUP", "Tracking Card Demo", "08/01/26", "COCRDUPC",
                 "Update Card Details", "16:00:00", ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME, "Y",
                 "01", "2026", "31", informationMessage, ROUTE,
-                NavigationContext.empty().withFirstEntry());
+                NavigationContext.empty().withFirstEntry(), CONCURRENCY_TOKEN);
     }
 
     /** The re-entry shape: a summary text, the explicit failure flag and one decorated field. */
@@ -216,7 +235,8 @@ class CardUpdateResponseTest {
                 "Update Card Details", "16:00:00", ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME, "Y",
                 "13", "2026", "31", null,
                 CardUpdateResponse.Messages.CARD_EXPIRY_MONTH_NOT_VALID, true, fieldErrors,
-                SCREEN_EXPIRY_MONTH, ROUTE, NavigationContext.empty().withReEntry());
+                SCREEN_EXPIRY_MONTH, ROUTE, NavigationContext.empty().withReEntry(),
+                CONCURRENCY_TOKEN);
     }
 
     private static ErrorResponse.FieldError expiryMonthInvalid() {
@@ -451,16 +471,21 @@ class CardUpdateResponseTest {
     }
 
     @Test
-    @DisplayName("The response declares twenty components in map order, and the two function-key "
-            + "legend items the map also carries are deliberately absent")
+    @DisplayName("The response declares twenty-one components - fifteen mapped, five response-shaping "
+            + "and the concurrency proof last - and the two function-key legend items the map also "
+            + "carries are deliberately absent")
     void componentsAreDeclaredInMapOrderWithoutTheFunctionKeyLegend() {
         List<String> declared = Arrays.stream(CardUpdateResponse.class.getRecordComponents())
                 .map(RecordComponent::getName)
                 .toList();
 
-        assertThat(declared).containsExactlyElementsOf(COMPONENTS_IN_MAP_ORDER).hasSize(20);
+        assertThat(declared).containsExactlyElementsOf(COMPONENTS_IN_MAP_ORDER).hasSize(21);
         assertThat(declared).noneMatch(name -> name.toLowerCase(Locale.ROOT).contains("fkey"));
         assertThat(declared).noneMatch(name -> name.toLowerCase(Locale.ROOT).contains("legend"));
+        assertThat(declared).endsWith("concurrencyToken");
+        assertThat(declared.subList(0, 15))
+                .as("the fifteen mapped components precede every response-shaping one")
+                .doesNotContain("concurrencyToken");
     }
 
     @Test
@@ -475,6 +500,10 @@ class CardUpdateResponseTest {
         assertThat(types.get("generalError")).isEqualTo(boolean.class);
         assertThat(types.get("fieldErrors")).isEqualTo(List.class);
         assertThat(types.get("navigationContext")).isEqualTo(NavigationContext.class);
+        assertThat(types.get("concurrencyToken"))
+                .as("the concurrency proof is opaque characters, never a number, a timestamp or a "
+                        + "structured type a client could take apart")
+                .isEqualTo(String.class);
         types.entrySet().stream()
                 .filter(entry -> !List.of("generalError", "fieldErrors", "navigationContext")
                         .contains(entry.getKey()))
@@ -486,6 +515,8 @@ class CardUpdateResponseTest {
                 Double.class, java.math.BigDecimal.class, java.time.LocalDate.class);
         assertThat(types.keySet()).noneMatch(name -> name.contains("version"))
                 .noneMatch(name -> name.contains("etag"))
+                .noneMatch(name -> name.contains("timestamp"))
+                .noneMatch(name -> name.contains("beforeImage"))
                 .noneMatch(name -> name.contains("cursor"));
     }
 
@@ -496,10 +527,10 @@ class CardUpdateResponseTest {
             throws ReflectiveOperationException {
         Map<String, Integer> expectedBounds = new LinkedHashMap<>();
         expectedBounds.put("transactionName", 4);
-        expectedBounds.put("screenTitleLine1", 40);
+        expectedBounds.put("title01", 40);
         expectedBounds.put("currentDate", 8);
         expectedBounds.put("programName", 8);
-        expectedBounds.put("screenTitleLine2", 40);
+        expectedBounds.put("title02", 40);
         expectedBounds.put("currentTime", 8);
         expectedBounds.put("accountId", 11);
         expectedBounds.put("cardNumber", 16);
@@ -534,7 +565,7 @@ class CardUpdateResponseTest {
     @DisplayName("The route is deliberately unbounded, because it is a REST label rather than a "
             + "fixed-width screen field")
     void routeCarriesNoWidthBound() throws NoSuchFieldException {
-        assertThat(CardUpdateResponse.class.getDeclaredField("route").getAnnotation(Size.class))
+        assertThat(CardUpdateResponse.class.getDeclaredField("nextRoute").getAnnotation(Size.class))
                 .isNull();
     }
 
@@ -545,7 +576,7 @@ class CardUpdateResponseTest {
         String tooLongForOneCharacter = "YN";
         CardUpdateResponse response = new CardUpdateResponse("CCUP", null, null, null, null, null,
                 ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME, tooLongForOneCharacter, "01", "2026", "31",
-                null, "/api/cards/1", NavigationContext.empty());
+                null, "/api/cards/1", NavigationContext.empty(), CONCURRENCY_TOKEN);
 
         try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
             Validator validator = factory.getValidator();
@@ -565,7 +596,7 @@ class CardUpdateResponseTest {
     void anOutOfVocabularyStatusCharacterRoundTripsWithoutViolation() {
         CardUpdateResponse response = new CardUpdateResponse("CCUP", null, null, null, null, null,
                 ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME, "X", "01", "2026", "31", null,
-                "/api/cards/1", NavigationContext.empty());
+                "/api/cards/1", NavigationContext.empty(), CONCURRENCY_TOKEN);
 
         try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
             assertThat(factory.getValidator().validate(response)).isEmpty();
@@ -585,13 +616,13 @@ class CardUpdateResponseTest {
                 EMBOSSED_NAME, "Y", "01", "2026", "31",
                 CardUpdateResponse.Messages.PROMPT_FOR_CHANGES,
                 CardUpdateResponse.Messages.EXIT_MESSAGE, true, errors, SCREEN_EXPIRY_MONTH,
-                "/api/cards/4111111111111111", context);
+                "/api/cards/4111111111111111", context, CONCURRENCY_TOKEN);
 
         assertThat(response.transactionName()).isEqualTo("CCUP");
-        assertThat(response.screenTitleLine1()).isEqualTo(" leading and trailing ");
+        assertThat(response.title01()).isEqualTo(" leading and trailing ");
         assertThat(response.currentDate()).isEqualTo("08/01/26");
         assertThat(response.programName()).isEqualTo("COCRDUPC");
-        assertThat(response.screenTitleLine2()).isEqualTo("Update Card Details");
+        assertThat(response.title02()).isEqualTo("Update Card Details");
         assertThat(response.currentTime()).isEqualTo("16:00:00");
         assertThat(response.accountId()).isEqualTo(ACCOUNT_ID);
         assertThat(response.cardNumber()).isEqualTo(CARD_NUMBER);
@@ -606,8 +637,9 @@ class CardUpdateResponseTest {
         assertThat(response.generalError()).isTrue();
         assertThat(response.fieldErrors()).isEqualTo(errors);
         assertThat(response.focusScreenFieldId()).isEqualTo(SCREEN_EXPIRY_MONTH);
-        assertThat(response.route()).isEqualTo("/api/cards/4111111111111111");
+        assertThat(response.nextRoute()).isEqualTo("/api/cards/4111111111111111");
         assertThat(response.navigationContext()).isSameAs(context);
+        assertThat(response.concurrencyToken()).isEqualTo(CONCURRENCY_TOKEN);
     }
 
     @Test
@@ -616,12 +648,13 @@ class CardUpdateResponseTest {
     void padSpacesSurviveConstructionAndTheWireRoundTrip() throws JsonProcessingException {
         CardUpdateResponse response = reEntryResponse(List.of(expiryMonthInvalid()));
         CardUpdateResponse padded = new CardUpdateResponse(response.transactionName(),
-                response.screenTitleLine1(), response.currentDate(), response.programName(),
-                response.screenTitleLine2(), response.currentTime(), response.accountId(),
+                response.title01(), response.currentDate(), response.programName(),
+                response.title02(), response.currentTime(), response.accountId(),
                 response.cardNumber(), response.embossedName(), response.activeStatus(),
                 response.expiryMonth(), response.expiryYear(), response.expiryDay(), null,
                 CardUpdateResponse.Messages.EXIT_MESSAGE, true, response.fieldErrors(),
-                response.focusScreenFieldId(), response.route(), response.navigationContext());
+                response.focusScreenFieldId(), response.nextRoute(), response.navigationContext(),
+                response.concurrencyToken());
 
         assertThat(padded.errorMessage()).hasSize(34).endsWith("              ");
 
@@ -685,7 +718,8 @@ class CardUpdateResponseTest {
     void theFailureFlagIsIndependentOfAnyMessage() {
         CardUpdateResponse flaggedWithoutText = new CardUpdateResponse("CCUP", null, null, null,
                 null, null, ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME, "Y", "01", "2026", "31", null,
-                null, true, List.of(), null, "/api/cards/1", NavigationContext.empty());
+                null, true, List.of(), null, "/api/cards/1", NavigationContext.empty(),
+                CONCURRENCY_TOKEN);
         CardUpdateResponse textWithoutFlag =
                 informationalResponse(CardUpdateResponse.Messages.CODING_TO_BE_DONE);
 
@@ -743,11 +777,11 @@ class CardUpdateResponseTest {
         CardUpdateResponse upper = informationalResponse(
                 CardUpdateResponse.Messages.NO_CHANGES_DETECTED);
         CardUpdateResponse lower = new CardUpdateResponse(upper.transactionName(),
-                upper.screenTitleLine1(), upper.currentDate(), upper.programName(),
-                upper.screenTitleLine2(), upper.currentTime(), upper.accountId(),
+                upper.title01(), upper.currentDate(), upper.programName(),
+                upper.title02(), upper.currentTime(), upper.accountId(),
                 upper.cardNumber(), "mary ann", upper.activeStatus(), upper.expiryMonth(),
-                upper.expiryYear(), upper.expiryDay(), upper.informationMessage(), upper.route(),
-                upper.navigationContext());
+                upper.expiryYear(), upper.expiryDay(), upper.informationMessage(), upper.nextRoute(),
+                upper.navigationContext(), upper.concurrencyToken());
 
         assertThat(lower.embossedName()).isEqualTo("mary ann");
         assertThat(upper.embossedName()).isEqualTo("MARY ANN");
@@ -768,8 +802,8 @@ class CardUpdateResponseTest {
     }
 
     @Test
-    @DisplayName("The diagnostic rendering withholds the regulated values while the wire payload "
-            + "still carries the card number in full, because withholding is a logging concern")
+    @DisplayName("The diagnostic rendering withholds the three regulated values and the concurrency "
+            + "proof, while the wire payload still carries every one of them in full")
     void diagnosticRenderingWithholdsWhileTheWirePayloadDoesNot()
             throws JsonProcessingException {
         CardUpdateResponse response =
@@ -777,19 +811,95 @@ class CardUpdateResponseTest {
 
         String rendered = response.toString();
         assertThat(rendered).doesNotContain(CARD_NUMBER, ACCOUNT_ID, EMBOSSED_NAME);
-        assertThat(rendered).contains("CardUpdateResponse", "***WITHHELD***");
+        assertThat(rendered).contains("CardUpdateResponse", "***REDACTED***");
 
-        // The guarantee covers the three regulated value components and nothing else: the route is a
-        // navigation label rendered exactly as supplied, so keeping regulated values out of the route
-        // vocabulary remains the navigation layer's obligation rather than this response's.
-        assertThat(rendered).contains("route=" + ROUTE);
-        assertThat(rendered).contains("activeStatus=Y", "expiryDay=31");
+        // The proof is withheld for a different reason from the regulated values: it is not cardholder
+        // data but a live integrity credential, and one recovered from a log line would let a stale
+        // confirmation be replayed against the record it describes.
+        assertThat(rendered).doesNotContain(CONCURRENCY_TOKEN);
+        assertThat(rendered).contains("concurrencyToken=***REDACTED***");
+
+        // The guarantee covers the regulated value components and the proof, and nothing else: the route
+        // is a navigation label rendered exactly as supplied, so keeping regulated values out of the
+        // route vocabulary remains the navigation layer's obligation rather than this response's.
+        assertThat(rendered).contains("nextRoute=" + ROUTE);
+        // The status code stays visible; the three expiry parts do not, because an expiry date beside a
+        // card number is an authentication factor, which is why CardDetailResponse withholds the same
+        // parts and the two card screens must not disagree.
+        assertThat(rendered).contains("activeStatus=Y", "expiryDay=***REDACTED***",
+                "expiryMonth=***REDACTED***", "expiryYear=***REDACTED***");
 
         JsonNode payload = payloadOf(response);
         assertThat(payload.get("cardNumber").asText()).isEqualTo(CARD_NUMBER);
         assertThat(payload.get("accountId").asText()).isEqualTo(ACCOUNT_ID);
         assertThat(payload.get("embossedName").asText()).isEqualTo(EMBOSSED_NAME);
-        assertThat(payload.toString()).doesNotContain("WITHHELD");
+        assertThat(payload.get("concurrencyToken").asText()).isEqualTo(CONCURRENCY_TOKEN);
+        assertThat(payload.toString()).doesNotContain("REDACTED");
+    }
+
+    @Test
+    @DisplayName("The concurrency proof is serialised, survives a wire round trip byte for byte, and "
+            + "is omitted entirely rather than emitted as null when a shape presents no card")
+    void theConcurrencyProofRoundTripsAndIsOmittedWhenAbsent() throws JsonProcessingException {
+        CardUpdateResponse presenting =
+                informationalResponse(CardUpdateResponse.Messages.FOUND_CARDS_FOR_ACCOUNT);
+
+        ObjectMapper mapper = moduleEquivalentMapper();
+        CardUpdateResponse revived = mapper.readValue(mapper.writeValueAsString(presenting),
+                CardUpdateResponse.class);
+
+        assertThat(revived.concurrencyToken()).isEqualTo(CONCURRENCY_TOKEN);
+        assertThat(revived).isEqualTo(presenting);
+
+        // A shape that presents no card to confirm states the absence deliberately, and the module's
+        // global null omission keeps the property off the wire rather than sending an explicit null.
+        CardUpdateResponse noCardPresented = new CardUpdateResponse("CCUP", null, null, null, null,
+                null, null, null, null, null, null, null, null,
+                CardUpdateResponse.Messages.PROMPT_FOR_SEARCH_KEYS, ROUTE,
+                NavigationContext.empty().withFirstEntry(), null);
+
+        assertThat(noCardPresented.concurrencyToken()).isNull();
+        assertThat(payloadOf(noCardPresented).has("concurrencyToken")).isFalse();
+    }
+
+    @Test
+    @DisplayName("The proof is opaque to this contract: it carries no width bound, no other "
+            + "constraint, and an arbitrary value passes validation untouched")
+    void theConcurrencyProofIsUnboundedAndUnconstrained() throws NoSuchFieldException {
+        Field field = CardUpdateResponse.class.getDeclaredField("concurrencyToken");
+
+        assertThat(field.getAnnotation(Size.class))
+                .as("a width rule would couple this contract to the sealing envelope's encoding")
+                .isNull();
+        assertThat(field.getAnnotations()).isEmpty();
+
+        String farLongerThanAnyScreenField = "x".repeat(4096);
+        CardUpdateResponse response = new CardUpdateResponse("CCUP", null, null, null, null, null,
+                ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME, "Y", "01", "2026", "31", null, ROUTE,
+                NavigationContext.empty(), farLongerThanAnyScreenField);
+
+        try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
+            assertThat(factory.getValidator().validate(response)).isEmpty();
+        }
+
+        assertThat(response.concurrencyToken()).isEqualTo(farLongerThanAnyScreenField).hasSize(4096);
+    }
+
+    @Test
+    @DisplayName("Two responses differing only in their concurrency proof are not equal, so a proof "
+            + "cannot be swapped between responses without changing the value")
+    void aDifferentProofYieldsADifferentResponse() {
+        CardUpdateResponse first =
+                informationalResponse(CardUpdateResponse.Messages.FOUND_CARDS_FOR_ACCOUNT);
+        CardUpdateResponse second = new CardUpdateResponse(first.transactionName(),
+                first.title01(), first.currentDate(), first.programName(),
+                first.title02(), first.currentTime(), first.accountId(),
+                first.cardNumber(), first.embossedName(), first.activeStatus(), first.expiryMonth(),
+                first.expiryYear(), first.expiryDay(), first.informationMessage(), first.nextRoute(),
+                first.navigationContext(), CONCURRENCY_TOKEN + "-other");
+
+        assertThat(second).isNotEqualTo(first);
+        assertThat(second.concurrencyToken()).isNotEqualTo(first.concurrencyToken());
     }
 
     @Test
@@ -858,8 +968,8 @@ class CardUpdateResponseTest {
     void theRouteIsCarriedAsAnOpaqueLabel() throws JsonProcessingException {
         CardUpdateResponse response = informationalResponse(null);
 
-        assertThat(response.route()).isEqualTo(ROUTE);
-        assertThat(payloadOf(response).get("route").asText()).isEqualTo(ROUTE);
+        assertThat(response.nextRoute()).isEqualTo(ROUTE);
+        assertThat(payloadOf(response).get("nextRoute").asText()).isEqualTo(ROUTE);
         assertThat(Arrays.stream(CardUpdateResponse.class.getDeclaredMethods())
                 .map(Method::getName))
                 .noneMatch(name -> name.toLowerCase(Locale.ROOT).contains("resolve"))

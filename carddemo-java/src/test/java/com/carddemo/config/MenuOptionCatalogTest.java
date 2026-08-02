@@ -34,201 +34,152 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 /**
- * Unit tests for {@link MenuOptionCatalog}, the migrated form of the two CardDemo menu-option copybooks.
+ * Unit tests for {@link MenuOptionCatalog}, the migrated form of the two CardDemo menu-option
+ * copybooks.
  *
- * <p>The legacy authorities, cited as metadata only, are {@code app/cpy/COMEN02Y.cpy} for the
- * <strong>user</strong> menu &mdash; group item {@code CARDDEMO-MAIN-MENU-OPTIONS} on line 19, declared
- * population on line 21, ten entries on lines 25 to 84, four components each &mdash;
- * {@code app/cpy/COADM02Y.cpy} for the <strong>administrator</strong> menu &mdash; group item on line 19,
- * declared population on line 20, four entries on lines 24 to 42, only three components each, no
- * user-type component anywhere in that member &mdash; and {@code app/cpy/COCOM01Y.cpy}, whose
- * {@code CDEMO-USER-TYPE} item on line 26 carries the two condition names that give the user-type codes
- * their meaning. Only member names, field names, declared widths, line numbers and the menu label text
- * cross over; the label text crosses over because it is the external screen contract.
+ * <p>The legacy authorities, cited as metadata only, are {@code app/cpy/COMEN02Y.cpy} for the user
+ * menu - ten entries of four components each - {@code app/cpy/COADM02Y.cpy} for the administrator
+ * menu - four entries of only three components each, with no user-type component anywhere in that
+ * member - and {@code app/cpy/COCOM01Y.cpy}, which carries the two condition names that give the
+ * user-type codes their meaning. The menu label text crosses over verbatim because it is the
+ * external screen contract.</p>
  *
- * <p><strong>This class also owns the admin-gate assertions</strong>, because the gate is a property of
- * these two catalogs and of nothing else: every user entry carries the standard-user code and no
- * administrator entry carries a user-type code at all. A second test class for the gate would duplicate
- * ownership of the same production class. What the gate is <em>not</em> is a routing decision: because the
- * administrator rows publish no code, who may reach them cannot be derived from a row and must come from
- * the authenticated principal &mdash; which is the concern of the module's HTTP security
- * configuration and of nothing in this class, so <strong>nothing asserted here constitutes route
- * protection</strong>.
+ * <p>This class also owns the admin-gate assertions, because the gate is a property of these two
+ * catalogs and of nothing else: every user entry carries the standard-user code and no administrator
+ * entry carries a user-type code at all. A second test class for the gate would duplicate ownership
+ * of the same production class. What the gate is <em>not</em> is a routing decision: because the
+ * administrator rows publish no code, who may reach them cannot be derived from a row and must come
+ * from the authenticated principal, which is the concern of the module's HTTP security configuration
+ * and of nothing in this class, so nothing asserted here constitutes route protection.</p>
  *
- * <p><strong>The surplus table slots must stay unrepresented.</strong> Both copybooks declare a redefining
- * table larger than the group it redefines: ten user entries of {@value #EXPECTED_USER_ENTRY_LENGTH} bytes
+ * <p>The surplus table slots must stay unrepresented. Both copybooks declare a redefining table
+ * larger than the group it redefines: ten user entries of {@value #EXPECTED_USER_ENTRY_LENGTH} bytes
  * occupy {@value #EXPECTED_USER_DATA_GROUP_LENGTH} bytes against a table span of
  * {@value #EXPECTED_USER_TABLE_SPAN}, a surplus of {@value #EXPECTED_USER_TABLE_SURPLUS_BYTES}; four
  * administrator entries of {@value #EXPECTED_ADMIN_ENTRY_LENGTH} bytes occupy
- * {@value #EXPECTED_ADMIN_DATA_GROUP_LENGTH} against a span of {@value #EXPECTED_ADMIN_TABLE_SPAN}, a
- * surplus of {@value #EXPECTED_ADMIN_TABLE_SURPLUS_BYTES}. The surplus positions are not blank storage
- * inside the declared group; they overlay whatever happens to follow it, so reading them in the legacy
- * program is undefined. That is why the catalog publishes the declared populations and never the table
- * capacities, and why a lookup for a surplus position must report an absent option rather than a blank
- * placeholder. Both capacities appear here only as the bound of the surplus range and as the subject of
- * negative assertions; neither is ever an expected count.
+ * {@value #EXPECTED_ADMIN_DATA_GROUP_LENGTH} against a span of {@value #EXPECTED_ADMIN_TABLE_SPAN},
+ * a surplus of {@value #EXPECTED_ADMIN_TABLE_SURPLUS_BYTES}. The surplus positions are not blank
+ * storage inside the declared group; they overlay whatever happens to follow it, so reading them in
+ * the legacy program is undefined. That is why the catalog publishes the declared populations and
+ * never the table capacities, and why a lookup for a surplus position must report an absent option
+ * rather than a blank placeholder.</p>
  *
- * <p><strong>The inactive alternative label for user option 8 must stay inactive</strong> (anomaly 24 of
- * the source anomaly register). Activating it would be feature expansion and would change the
- * administrator gate for an option the user menu genuinely offers to standard users. The inactive text is
- * named here only inside negative assertions, which is a contract assertion rather than transcribed
- * source. Two further anomalies change nothing: the mislabelled title comment on line 2 of the user
- * copybook (anomaly 25) is never the source of any name, display name or claim here, and the divergent
- * release stamp on the administrator copybook (anomaly 26) is referenced by no assertion at all.
+ * <p>The inactive alternative label for user option 8 must stay inactive (anomaly 24 of the source
+ * anomaly register). Activating it would be feature expansion and would change the administrator
+ * gate for an option the user menu genuinely offers to standard users, so the inactive text is named
+ * here only inside negative assertions. Two further anomalies in those members - a mislabelled title
+ * comment (anomaly 25) and a divergent release stamp (anomaly 26) - are deliberately not relied on
+ * anywhere.</p>
  *
- * <p><strong>How these tests are written.</strong> Every expected value is a literal declared in this
- * class, so the oracle is independent of the code it judges: no expected label, program name, code or
- * count is obtained by calling {@link MenuOptionCatalog} or any other production type. The two record
- * shapes are proved to differ by record deconstruction rather than by reflection &mdash; a record pattern
- * must name every component, so {@link #describeShape(Object)} stops compiling the moment either shape
- * gains or loses one &mdash; and no reflective lookup, accessibility override or dynamic class loading
- * appears anywhere here, so the class adds nothing to the module's low-level-code audit. It is a plain
- * unit test: no container, no connection, no bound port, no application context and no file, because the
- * class under test has no collaborators.
+ * <p>Every expected value is a literal declared in this class, so the oracle is independent of the
+ * code it judges: no expected label, program name, code or count is obtained by calling
+ * {@link MenuOptionCatalog} or any other production type, and every legacy width, length and code
+ * declared below is measured from one named member rather than read back from the catalog. The two
+ * table capacities are never expected counts; they appear only as the bound of the surplus range and
+ * as the subject of negative assertions. The two record shapes are shown to differ by record
+ * deconstruction rather than by reflection - a record pattern must name every component, so
+ * {@link #describeShape(Object)} stops compiling the moment either shape gains or loses one - and no
+ * reflective lookup, accessibility override or dynamic class loading appears anywhere here, so the
+ * class adds nothing to the module's low-level-code audit. It is a plain unit test: no container, no
+ * connection, no bound port, no application context and no file, because the class under test has no
+ * collaborators.</p>
  */
 @DisplayName("Menu option catalog: ten user options, four administrator options, and no surplus slots")
 class MenuOptionCatalogTest {
 
-    /**
-     * Populated size of the user catalog, from {@code CDEMO-MENU-OPT-COUNT} in
-     * {@code app/cpy/COMEN02Y.cpy} line 21 and confirmed by counting the entries written out on lines 25
-     * to 84. Declared here as a literal so it is an oracle rather than an echo.
-     */
     private static final int EXPECTED_USER_OPTION_COUNT = 10;
 
-    /**
-     * Populated size of the administrator catalog, from {@code CDEMO-ADMIN-OPT-COUNT} in
-     * {@code app/cpy/COADM02Y.cpy} line 20 and confirmed by counting the entries written out on lines 24
-     * to 42.
-     */
     private static final int EXPECTED_ADMIN_OPTION_COUNT = 4;
 
-    /**
-     * Capacity of the redefining user table, from the {@code OCCURS} clause on line 88 of
-     * {@code app/cpy/COMEN02Y.cpy}.
-     *
-     * <p>This is a table capacity and never an expected count. It is used here only to bound the surplus
-     * range that {@link SurplusSlots} probes and as the subject of negative assertions proving the catalog
-     * does not publish it.</p>
-     */
     private static final int USER_TABLE_DECLARED_CAPACITY = 12;
 
-    /**
-     * Capacity of the redefining administrator table, from the {@code OCCURS} clause on line 45 of
-     * {@code app/cpy/COADM02Y.cpy}.
-     *
-     * <p>As with the user table this is a capacity and never an expected count, and it is used only to
-     * bound the surplus range and to state a negative.</p>
-     */
     private static final int ADMIN_TABLE_DECLARED_CAPACITY = 9;
 
-    /**
-     * Declared width of the option-number component in both tables, from its {@code PIC 9(02)} clause.
-     */
     private static final int EXPECTED_OPTION_NUMBER_WIDTH = 2;
 
     /**
-     * Highest value a two-digit option-number field can hold, and therefore the upper bound the catalog
-     * validates an option number against.
+     * Highest value a two-digit option-number field can hold, and therefore the upper bound the
+     * catalog validates an option number against.
      */
     private static final int EXPECTED_OPTION_NUMBER_MAXIMUM = 99;
 
     /**
-     * Declared width of the option-name component in both tables, from its {@code PIC X(35)} clause. Every
-     * label literal in both copybooks is written out at exactly this width, space-filled on the right.
+     * Declared width of the option-name component in both tables. Every label literal in both
+     * copybooks is written out at exactly this width, space-filled on the right.
      */
     private static final int EXPECTED_LABEL_WIDTH = 35;
 
     /**
-     * Declared width of the target-program-name component in both tables, from its {@code PIC X(08)}
-     * clause. All fourteen program names occupy this width exactly.
+     * Declared width of the target-program-name component in both tables. All fourteen program names
+     * occupy this width exactly.
      */
     private static final int EXPECTED_PROGRAM_NAME_WIDTH = 8;
 
     /**
-     * Declared width of the user-type component, from its {@code PIC X(01)} clause. This component exists
-     * in the user table only.
+     * Declared width of the user-type component, which exists in the user table only.
      */
     private static final int EXPECTED_USER_TYPE_WIDTH = 1;
 
     /**
-     * Bytes occupied by one user-table entry: option number, option name, program name and user-type code
-     * laid end to end.
+     * Bytes occupied by one user-table entry: option number, option name, program name and user-type
+     * code laid end to end.
      */
     private static final int EXPECTED_USER_ENTRY_LENGTH = 46;
 
     /**
-     * Bytes occupied by one administrator-table entry: option number, option name and program name laid
-     * end to end, with no user-type code. Exactly one byte shorter than a user entry.
+     * Bytes occupied by one administrator-table entry, with no user-type code, so exactly one byte
+     * shorter than a user entry.
      */
     private static final int EXPECTED_ADMIN_ENTRY_LENGTH = 45;
 
     /**
-     * Bytes occupied by the ten written user entries, and therefore the length of the group the user table
-     * redefines.
+     * Bytes occupied by the ten written user entries, and therefore the length of the group the user
+     * table redefines.
      */
     private static final int EXPECTED_USER_DATA_GROUP_LENGTH = 460;
 
-    /**
-     * Bytes spanned by the redefining user table at its declared capacity.
-     */
     private static final int EXPECTED_USER_TABLE_SPAN = 552;
 
     /**
-     * Bytes by which the redefining user table overruns the group it redefines. Those bytes are the
-     * surplus positions, and they are undefined overlay storage rather than blank entries.
+     * Bytes by which the redefining user table overruns the group it redefines: the surplus
+     * positions, which are undefined overlay storage rather than blank entries.
      */
     private static final int EXPECTED_USER_TABLE_SURPLUS_BYTES = 92;
 
-    /**
-     * Bytes occupied by the four written administrator entries.
-     */
     private static final int EXPECTED_ADMIN_DATA_GROUP_LENGTH = 180;
 
-    /**
-     * Bytes spanned by the redefining administrator table at its declared capacity.
-     */
     private static final int EXPECTED_ADMIN_TABLE_SPAN = 405;
 
-    /**
-     * Bytes by which the redefining administrator table overruns the group it redefines.
-     */
     private static final int EXPECTED_ADMIN_TABLE_SURPLUS_BYTES = 225;
 
     /**
-     * The raw one-character standard-user code every user entry carries, from the {@code VALUE} clause of
-     * each entry's user-type component and given its meaning by the standard-user condition name on line
-     * 28 of {@code app/cpy/COCOM01Y.cpy}. Asserted as a {@code String} because the catalog publishes the
+     * The raw standard-user code every user entry carries, given its meaning by a condition name in
+     * {@code app/cpy/COCOM01Y.cpy}. Asserted as a {@code String} because the catalog publishes the
      * code raw and leaves interpretation to the service layer.
      */
     private static final String EXPECTED_STANDARD_USER_TYPE_CODE = "U";
 
     /**
-     * The raw one-character administrator code, from the administrator condition name on line 27 of
-     * {@code app/cpy/COCOM01Y.cpy}. It appears in this class only in negative assertions: no user-menu
-     * entry carries it, and the administrator catalog carries no user-type code at all.
+     * The raw administrator code [{@code app/cpy/COCOM01Y.cpy}]. It appears in this class only in
+     * negative assertions: no user-menu entry carries it, and the administrator catalog carries no
+     * user-type code at all.
      */
     private static final String ADMIN_USER_TYPE_CODE = "A";
 
-    /**
-     * Number of the user option whose alternative label is commented out in the legacy source.
-     */
     private static final int OPTION_EIGHT_NUMBER = 8;
 
-    /**
-     * The live label of user option 8, from the uncommented literal in {@code app/cpy/COMEN02Y.cpy}.
-     */
     private static final String EXPECTED_OPTION_EIGHT_LABEL = "Transaction Add";
 
     /**
-     * The full text of the inactive alternative label for user option 8. Named here solely so that a
-     * negative assertion can prove no catalog value ever equals or contains it.
+     * The inactive alternative label for user option 8 in full, named here solely so that negative
+     * assertions can require no catalog value ever to equal or contain it.
      */
     private static final String INACTIVE_OPTION_EIGHT_LABEL = "Transaction Add (Admin Only)";
 
     /**
-     * The distinguishing fragment of the inactive alternative label. No user-menu label may contain it,
-     * and no administrator label contains it either, so the assertion is unambiguous across both catalogs.
+     * The distinguishing fragment of the inactive alternative label. No user-menu label may contain
+     * it and no administrator label contains it either, so the assertion is unambiguous across both
+     * catalogs.
      */
     private static final String ADMIN_ONLY_MARKER = "(Admin Only)";
 
@@ -238,53 +189,40 @@ class MenuOptionCatalogTest {
      */
     private static final String SECURITY_MARKER = "(Security)";
 
-    /**
-     * Number of components a user-menu entry declares, from the four subordinate items of the redefining
-     * table view on lines 89 to 92 of {@code app/cpy/COMEN02Y.cpy}.
-     */
     private static final int EXPECTED_USER_COMPONENT_COUNT = 4;
 
     /**
-     * Number of components an administrator-menu entry declares, from the three subordinate items of the
-     * redefining table view on lines 46 to 48 of {@code app/cpy/COADM02Y.cpy}. One fewer than a user entry,
-     * and the missing one is the user-type code.
+     * Number of components an administrator-menu entry declares: one fewer than a user entry, and the
+     * missing one is the user-type code.
      */
     private static final int EXPECTED_ADMIN_COMPONENT_COUNT = 3;
 
     /**
-     * Separator used when {@link #describeShape(Object)} renders a deconstructed entry, chosen because it
-     * appears in no label, program name or user-type code.
+     * Separator used when {@link #describeShape(Object)} renders a deconstructed entry, chosen because
+     * it appears in no label, program name or user-type code.
      */
     private static final String COMPONENT_SEPARATOR = "|";
 
-    /**
-     * Tag {@link #describeShape(Object)} prefixes onto a four-component user entry.
-     */
     private static final String USER_SHAPE_TAG = "user";
 
-    /**
-     * Tag {@link #describeShape(Object)} prefixes onto a three-component administrator entry.
-     */
     private static final String ADMIN_SHAPE_TAG = "admin";
 
     /**
-     * Tag {@link #describeShape(Object)} returns for anything that is neither entry shape. Reaching it is
-     * how a test proves that a user entry does not satisfy the administrator shape and vice versa.
+     * Tag {@link #describeShape(Object)} returns for anything that is neither entry shape. Reaching it
+     * is how a test shows that a user entry does not satisfy the administrator shape and vice versa.
      */
     private static final String UNRECOGNISED_SHAPE_TAG = "unrecognised";
 
     /**
-     * The catalog under test. Rebuilt before each test so that no test can depend on another having run
-     * and so that the public no-argument constructor is exercised every time.
+     * The catalog under test, rebuilt before each test so that no test can depend on another having
+     * run and so that the public no-argument constructor is exercised every time.
      */
     private MenuOptionCatalog catalog;
 
     /**
-     * Builds a fresh catalog before each test.
-     *
-     * <p>Direct construction is deliberate. The catalog has no collaborators, so there is nothing to mock,
-     * no container to start and no application context to load; constructing it here is both sufficient
-     * and the strongest available statement that this test needs no framework to run.</p>
+     * Builds a fresh catalog before each test. Direct construction is deliberate: the catalog has no
+     * collaborators, so there is nothing to mock, no container to start and no application context to
+     * load.
      */
     @BeforeEach
     void createCatalog() {
@@ -292,22 +230,16 @@ class MenuOptionCatalogTest {
     }
 
     /**
-     * Renders an entry by deconstructing it, so that the component set of each record shape is checked by
-     * the compiler rather than by reflection.
+     * Renders an entry by deconstructing it, so that the component set of each record shape is checked
+     * by the compiler rather than by reflection.
      *
-     * <p>A record pattern must name every component of the record it deconstructs, in declaration order.
-     * The user arm therefore names four components and the administrator arm three, and this method stops
-     * compiling if either record gains, loses or reorders a component. That is the reflection-free proof
-     * that the administrator entry has no user-type component: were one added, the three-component pattern
-     * below would no longer match its record.</p>
-     *
-     * <p>The final arm is reachable and load-bearing rather than defensive: passing a user entry to a test
-     * that expects the administrator shape lands there, which is how the two shapes are shown to be
+     * <p>A record pattern must name every component of the record it deconstructs, in declaration
+     * order, so the user arm names four components and the administrator arm three and this method
+     * stops compiling if either record gains, loses or reorders a component. That is the
+     * reflection-free evidence that the administrator entry has no user-type component. The final arm
+     * is reachable and load-bearing rather than defensive: passing a user entry to a test that
+     * expects the administrator shape lands there, which is how the two shapes are shown to be
      * genuinely distinct instead of merely differently named.</p>
-     *
-     * @param option the entry to deconstruct, of either shape or of neither
-     * @return the shape tag followed by every component value, separated by {@link #COMPONENT_SEPARATOR},
-     *         or {@link #UNRECOGNISED_SHAPE_TAG} if the argument matches neither shape
      */
     private static String describeShape(final Object option) {
         return switch (option) {
@@ -323,30 +255,21 @@ class MenuOptionCatalogTest {
     }
 
     /**
-     * Builds the fixed-width field image a label occupies in the legacy record: the visible text, space
-     * filled on the right to the declared field width.
-     *
-     * <p>The fill count is derived from the expected label declared in this class, never from anything the
-     * catalog returns, so the oracle stays independent. The fill is written as a repeat count so that no
-     * trailing space in this source file has to survive an editor.</p>
-     *
-     * @param expectedLabel the visible label text, as this class declares it
-     * @return the label at {@link #EXPECTED_LABEL_WIDTH} characters
+     * Builds the fixed-width field image a label occupies in the legacy record: the visible text,
+     * space filled on the right to the declared field width. The fill count is derived from the
+     * expected label declared in this class, never from anything the catalog returns, and is written
+     * as a repeat count so that no trailing space in this source file has to survive an editor.
      */
     private static String fieldImageOf(final String expectedLabel) {
         return expectedLabel + " ".repeat(EXPECTED_LABEL_WIDTH - expectedLabel.length());
     }
 
     /**
-     * Supplies the ten user-menu entries as literals, in the order {@code app/cpy/COMEN02Y.cpy} writes them
-     * out on lines 25 to 84.
-     *
-     * <p>Every value is written out here rather than derived, which is what makes this table an independent
-     * oracle. Note in particular the fourth row: its label names a card <em>view</em> while its target
-     * program is the card-detail program. The label is reproduced exactly as the copybook writes it and is
-     * deliberately not harmonised with the program name.</p>
-     *
-     * @return one row per user-menu entry, as list position, option number, label and target program name
+     * Supplies the ten user-menu entries as literals, in the order {@code app/cpy/COMEN02Y.cpy} writes
+     * them out. Every value is written out here rather than derived, which is what makes this table an
+     * independent oracle. Note in particular the fourth row: its label names a card <em>view</em>
+     * while its target program is the card-detail program, and the label is reproduced exactly as the
+     * copybook writes it rather than harmonised with the program name.
      */
     private static Stream<Arguments> userMenuRows() {
         return Stream.of(
@@ -364,11 +287,8 @@ class MenuOptionCatalogTest {
 
     /**
      * Supplies the four administrator-menu entries as literals, in the order
-     * {@code app/cpy/COADM02Y.cpy} writes them out on lines 24 to 42. No user-type code is supplied,
-     * because the source record has no component to supply one from.
-     *
-     * @return one row per administrator-menu entry, as list position, option number, label and target
-     *         program name
+     * {@code app/cpy/COADM02Y.cpy} writes them out. No user-type code is supplied, because the source
+     * record has no component to supply one from.
      */
     private static Stream<Arguments> adminMenuRows() {
         return Stream.of(
@@ -455,15 +375,10 @@ class MenuOptionCatalogTest {
     }
 
     /**
-     * Counts the components in a rendering produced by {@link #describeShape(Object)}.
-     *
-     * <p>The rendering is a shape tag followed by one separator per component, and no label, program name
-     * or user-type code in either copybook contains the separator, so counting separators counts
-     * components. This is how a test states the size of a record's component set without reflection: the
-     * arity is fixed at compile time by the record patterns and merely confirmed here at run time.</p>
-     *
-     * @param rendered a rendering returned by {@link #describeShape(Object)}
-     * @return the number of components the rendering carries
+     * Counts the components in a rendering produced by {@link #describeShape(Object)}. The rendering
+     * is a shape tag followed by one separator per component, and no label, program name or user-type
+     * code in either copybook contains the separator, so counting separators counts components. The
+     * arity is fixed at compile time by the record patterns and merely confirmed here at run time.
      */
     private static int renderedComponentCount(final String rendered) {
         int count = 0;
@@ -475,9 +390,6 @@ class MenuOptionCatalogTest {
         return count;
     }
 
-    /**
-     * The ten populated user-menu entries and the properties they hold collectively.
-     */
     @Nested
     @DisplayName("The user menu: the ten options the main-menu copybook writes out")
     class UserCatalog {
@@ -592,9 +504,6 @@ class MenuOptionCatalogTest {
         }
     }
 
-    /**
-     * The four populated administrator-menu entries and the properties they hold collectively.
-     */
     @Nested
     @DisplayName("The administrator menu: the four options the administrator copybook writes out")
     class AdminCatalog {
@@ -690,11 +599,10 @@ class MenuOptionCatalogTest {
     }
 
     /**
-     * The positions the legacy redefining tables can address but never populate.
-     *
-     * <p>Those positions overlay storage beyond the group each table redefines, so the legacy program has
-     * nothing defined to read there. The catalog must therefore report them absent rather than blank, and
-     * must never publish a table capacity as though it were a population.</p>
+     * The positions the legacy redefining tables can address but never populate. Those positions
+     * overlay storage beyond the group each table redefines, so the legacy program has nothing defined
+     * to read there: the catalog must report them absent rather than blank, and must never publish a
+     * table capacity as though it were a population.
      */
     @Nested
     @DisplayName("The surplus table slots: addressable by the legacy tables, populated by neither copybook")
@@ -827,11 +735,10 @@ class MenuOptionCatalogTest {
     }
 
     /**
-     * The commented-out alternative label for user option 8.
-     *
-     * <p>The legacy source carries it as a COBOL comment on the line above the live label. It stays
-     * inactive: publishing it would restrict an option the user menu genuinely offers to standard users,
-     * which is a behaviour change the no-feature-expansion boundary forbids.</p>
+     * The commented-out alternative label for user option 8, which the legacy source carries on the
+     * line above the live label. It stays inactive: publishing it would restrict an option the user
+     * menu genuinely offers to standard users, which is a behaviour change the no-feature-expansion
+     * boundary forbids.
      */
     @Nested
     @DisplayName("User option 8: only its live label, never the commented-out alternative")
@@ -902,12 +809,10 @@ class MenuOptionCatalogTest {
     }
 
     /**
-     * The administrator gate, asserted here because it is a property of these two catalogs alone.
-     *
-     * <p>The legacy gate reads a per-row user-type code and admits the row when the code is the
-     * administrator one. Every user row carries the standard-user code, and no administrator row carries a
-     * code at all, so the gate cannot be derived from a row and must come from the authenticated
-     * principal.</p>
+     * The administrator gate, asserted here because it is a property of these two catalogs alone. The
+     * legacy gate reads a per-row user-type code and admits the row when the code is the administrator
+     * one; every user row carries the standard-user code and no administrator row carries a code at
+     * all, so the gate cannot be derived from a row and must come from the authenticated principal.
      */
     @Nested
     @DisplayName("The administrator gate: no row can grant administrator access to itself")
@@ -990,8 +895,8 @@ class MenuOptionCatalogTest {
     }
 
     /**
-     * The published lists, which are unmodifiable and which no caller can mutate into disagreement with
-     * the copybooks they transcribe.
+     * The published lists, which are unmodifiable and which no caller can mutate into disagreement
+     * with the copybooks they derive from.
      */
     @Nested
     @DisplayName("Immutability: a caller can read the catalogs but can never change them")
@@ -1188,14 +1093,12 @@ class MenuOptionCatalogTest {
     }
 
     /**
-     * The component validation both entry types apply, which is what keeps a value that could not occupy
-     * its legacy field out of a catalog in the first place.
-     *
-     * <p>Each failure names the legacy field it guards, so a rejection points at its own authority rather
-     * than at a Java property name. The boundary cases matter as much as the failures: a value that fills
-     * its field exactly is accepted, because COBOL space-fills a short alphanumeric value into its field
-     * rather than rejecting it, and an option number is bounded by the digits of its field rather than by
-     * the current population.</p>
+     * The component validation both entry types apply, which keeps a value that could not occupy its
+     * legacy field out of a catalog in the first place. Each failure names the legacy field it guards,
+     * so a rejection points at its own authority rather than at a Java property name. The boundary
+     * cases matter as much as the failures: a value that fills its field exactly is accepted, because
+     * the legacy space-fills a short alphanumeric value into its field rather than rejecting it, and
+     * an option number is bounded by the digits of its field rather than by the current population.
      */
     @Nested
     @DisplayName("Component validation: a value that could not occupy its legacy field is refused")

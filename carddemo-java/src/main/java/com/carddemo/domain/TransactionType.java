@@ -83,11 +83,17 @@ import java.util.Objects;
  *
  * <p><strong>Seed volume.</strong> The reference data holds exactly 7 rows, derived from
  * {@code app/data/ASCII/trantype.txt} - 427 bytes, that is 7 records at the 60-byte record length plus
- * one line terminator each. Each description occupies the full 50-byte field, blank-padded to width,
- * and that padding is contractual: it is part of the external text width the legacy record publishes.
- * Nothing in this class trims, strips, folds, pads or normalizes a value, so a description round-trips
- * exactly as supplied. Any seed script belongs under a profile-scoped location so that a production
- * migration inherits the schema without sample rows.
+ * one line terminator each. In that record image each description occupies the full 50-byte field,
+ * blank-padded to width, and the width is contractual: it is the external text width the legacy record
+ * publishes, and the placement primitive the record mapper writes through reproduces it by writing the
+ * trailing pad explicitly. The seeded column holds the same descriptions right-trimmed, at the six to
+ * thirteen characters they actually carry, and nothing is lost by that because placing a trimmed value
+ * back through the mapper reproduces the identical fifty bytes. Nothing in this class trims, strips,
+ * folds, pads or normalizes a value, so a description is stored exactly as supplied in either form and
+ * the padding decision stays with the record writer that owns it. The seed rows are excluded from a
+ * production migration by version rather than by location: every migration is delivered from one flat
+ * {@code classpath:db/migration}, and the shared and production configurations stop a migration after
+ * the index script, so a production database receives the schema without the sample rows.
  *
  * <p><strong>Consumers.</strong> {@code CVTRA03Y} is included by exactly one program in the whole
  * estate, the transaction-report program {@code CBTRN03C} - the lowest inclusion count among the
@@ -131,10 +137,11 @@ public class TransactionType {
      * Transaction type description - legacy field {@code TRAN-TYPE-DESC}, a 50-byte alphanumeric
      * field at offset 2 of the 60-byte record.
      *
-     * <p>Mapped to schema column {@code tran_type_desc}, declared {@code VARCHAR(50) NOT NULL}. In
-     * the record image the value is blank padded to the full 50 bytes, and that padding is part of
-     * the published external width, so it is stored and returned verbatim. This attribute is
-     * mutable descriptive text and therefore takes no part in equality or hashing.
+     * <p>Mapped to schema column {@code tran_type_desc}, declared {@code VARCHAR(50) NOT NULL}. In the
+     * record image the value is blank padded to the full 50 bytes; in the seeded column it is
+     * right-trimmed. Either form is stored and returned verbatim, because the published external width
+     * is the record writer's responsibility and not this attribute's. This attribute is mutable
+     * descriptive text and therefore takes no part in equality or hashing.
      *
      * <p>Not declared {@code final}, for the same reason as the preceding attribute.
      */
@@ -166,13 +173,13 @@ public class TransactionType {
      *
      * <p>Both values are stored exactly as supplied. No trimming, padding, case folding, width
      * enforcement or validation of any kind is applied, because the persisted widths and
-     * nullability are enforced by the schema and because silently altering a caller's value would
-     * destroy the blank padding that the 50-byte description field publishes as part of its
-     * external contract.
+     * nullability are enforced by the schema and because silently altering a caller's value would move
+     * the description's padding decision away from the record writer that owns the published external
+     * width.
      *
      * @param tranType     the 2-byte transaction type code at offset 0, which is the identifier
-     * @param tranTypeDesc the 50-byte transaction type description at offset 2, blank padded to
-     *                     width in the legacy record image
+     * @param tranTypeDesc the transaction type description at offset 2, blank padded to width when it
+     *                     comes from a record image and right-trimmed when it comes from the column
      */
     public TransactionType(final String tranType, final String tranTypeDesc) {
         this.tranType = tranType;
@@ -206,9 +213,9 @@ public class TransactionType {
     /**
      * Returns the transaction type description.
      *
-     * @return the 50-byte transaction type description at offset 2, returned exactly as supplied so
-     *         that the blank padding of the legacy record image survives intact, or {@code null} if
-     *         this instance has not been populated
+     * @return the transaction type description at offset 2, returned exactly as supplied so that any
+     *         blank padding it carries survives intact, or {@code null} if this instance has not been
+     *         populated
      */
     public String getTranTypeDesc() {
         return tranTypeDesc;
@@ -217,12 +224,12 @@ public class TransactionType {
     /**
      * Sets the transaction type description.
      *
-     * <p>The value is assigned verbatim. Trimming here would destroy the blank padding that fills
-     * the 50-byte field in the record image and would therefore break the byte parity of any
-     * fixed-width output formatted from this description.
+     * <p>The value is assigned verbatim: whatever padding it carries survives, and none is added.
+     * Trimming or padding here would convert between the record's blank-padded form and the column's
+     * trimmed form behind the caller's back, which is the record writer's decision to make and not
+     * this mutator's.
      *
-     * @param tranTypeDesc the 50-byte transaction type description at offset 2, stored exactly as
-     *                     supplied
+     * @param tranTypeDesc the transaction type description at offset 2, stored exactly as supplied
      */
     public void setTranTypeDesc(final String tranTypeDesc) {
         this.tranTypeDesc = tranTypeDesc;
@@ -269,7 +276,7 @@ public class TransactionType {
      * Returns a diagnostic representation containing both attributes and nothing else.
      *
      * <p>Neither attribute is a credential and neither is a monetary value, so no redaction is
-     * required. The description is rendered exactly as stored, blank padding included.
+     * required. The description is rendered exactly as stored, whatever padding it carries.
      *
      * @return a diagnostic representation of this transaction type
      */

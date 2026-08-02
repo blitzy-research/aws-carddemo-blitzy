@@ -17,72 +17,103 @@
 package com.carddemo.api.dto;
 
 import com.carddemo.domain.enums.KeyAction;
-import com.carddemo.domain.enums.ReportPeriod;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
 
 /**
- * Immutable report-request contract for legacy CICS transaction {@code CR00}, the transaction-report
- * request screen.
+ * Immutable report-request contract for legacy transaction {@code CR00} &mdash; the inbound half of
+ * the transaction-report request screen, and the inbound half only. The authority is
+ * {@code app/cbl/CORPT00C.cbl} with map {@code app/cpy-bms/CORPT00.CPY}.
  *
- * <p>Program {@code CORPT00C} ({@code app/cbl/CORPT00C.cbl}, 649 lines, ten paragraphs) drives
- * mapset {@code CORPT00} ({@code app/bms/CORPT00.bms}) through its generated symbolic map
- * ({@code app/cpy-bms/CORPT00.CPY}), whose inbound group {@code CORPT0AI} at line 17 and outbound
- * redefinition {@code CORPT0AO} at line 121 have identical widths item for item. This record is the
- * REST-era replacement for the inbound half of that screen, and for the inbound half only.
+ * <p>Ten of the map's inbound items are operator input - three report-type markers, six date parts and
+ * one confirmation position - and they become the eight components below, the three markers collapsing
+ * into one. The screen furniture the program writes (transaction name, both titles, date, time,
+ * program name) and the error line it fills from its own message field belong to the response
+ * contract and are deliberately absent, because a request carrying them would let a client dictate
+ * text the server alone produces. Per-field length, flag, colour, highlight, protection and validation
+ * control items and the terminal input/output filler are generated plumbing and are not modelled. The
+ * numeric-entry attribute the mapset puts on the date items is a keyboard shift, not a data type: the
+ * underlying items are character items and are carried here as text.
  *
- * <h2>Ten of the map's seventeen inbound items are operator input</h2>
+ * <p><strong>The three selection markers collapse into one period component.</strong> The operator
+ * marks exactly one of three single-character positions and the program tests them in a fixed order,
+ * stopping at the first marked one, so they are mutually exclusive by construction rather than by
+ * validation. Three independent characters would admit combinations the screen cannot express and
+ * would push the tie-break into every consumer; one {@link ReportPeriod} makes the wrong state
+ * unrepresentable. There is no constant for the unmarked case: the program falls to a catch-all clause
+ * and reports an input error, so absence is modelled by the component being absent and the message
+ * that names it belongs to the response (decision log DL-024, also carried as D-20).
  *
  * <p>The inbound group declares seventeen value items. Ten of them are typed by the operator: three
  * single-character report-type markers, six date parts and one confirmation position. Those ten
- * become the eight components below - the three markers collapse into one - and are the entire
- * content of this contract.
+ * become ten of the twelve components below - one component per typed position, with no collapsing -
+ * and together with the attention key and the echoed navigation state they are the entire content of
+ * this contract.
  *
- * <p>Of the remaining seven, six are screen furniture the program writes outbound and never reads as
- * input: the transaction name, the two title lines, the current date, the program name and the
- * current time. The seventh is the error line the program fills from its own message work field
- * (declared at {@code CORPT00C} line 39). All seven belong to the response contract and are
- * deliberately absent here, because a request that carried them would let a client dictate text the
- * server alone produces.
+ * <p><strong>The six date parts stay separate, and stay text.</strong> Each part is validated on its
+ * own and reports its own message naming that part, so a merged value could not say which part failed;
+ * leading zeros are contractual, and a numeric component type would drop them and change the text that
+ * is ultimately submitted; and the shape the operator types is not the shape the batch tier receives,
+ * which is one assembled ten-character value. That assembly is the report-request service's work, so
+ * this record performs no assembly, separator insertion, parsing, calendar arithmetic or range
+ * derivation and names no date-and-time type.
  *
- * <p>The map's per-field length, flag, colour, highlight, protection and validation control items,
- * and the leading twelve-byte terminal input/output area filler at line 18 of the symbolic map, are
- * generated 3270 plumbing rather than contract, so none of them is modelled either. The six date
- * items additionally carry a numeric-entry attribute in the mapset, which is a terminal keyboard
- * shift and not a data type: the underlying items are character items, and they are carried here as
- * text for the reasons set out below.
+ * <p><strong>The confirmation position is one character of text, not a two-state marker</strong>,
+ * because it has four outcomes rather than two: unmarked prompts and re-displays the screen, so it is
+ * neither acceptance nor refusal; the yes characters proceed; the no characters reset the screen and
+ * raise the error flag with <em>no message text at all</em>, which is observable precisely because it
+ * is silent; and any other value is quoted back to the operator inside its own message, so the exact
+ * character typed must survive as far as the response. It is carried exactly as submitted - not
+ * re-cased, not trimmed, not defaulted - and the branch that reads it belongs to the service.
  *
- * <h2>The three selection markers collapse into one period component</h2>
+ * <h2>The three selection markers stay three</h2>
  *
- * <p>On the 3270 the operator marks exactly one of three single-character positions:
+ * <p>On the 3270 the operator marks one of three single-character positions:
  * {@code MONTHLYI} (symbolic map line 60; mapset line 80, one character at row 7 column 10),
  * {@code YEARLYI} (symbolic map line 66; mapset line 94, row 9) and {@code CUSTOMI} (symbolic map
- * line 72; mapset line 108, row 11). The program tests them in that order and stops at the first
- * marked position, so the three are mutually exclusive by construction rather than by validation.
+ * line 72; mapset line 108, row 11). They are three separate one-character items on the wire, and
+ * this record carries them as three separate one-character components.
  *
- * <p>The REST contract therefore carries a single enum-valued component rather than three character
- * positions. Three independent characters would admit combinations the screen cannot express and
- * would push the tie-break into every consumer; one {@link ReportPeriod} makes the exclusivity
- * unrepresentable in the wrong state.
+ * <p><strong>Why they are not collapsed into a single selector.</strong> The exclusivity the screen
+ * exhibits is produced by the <em>program</em>, not asserted by the map. The evaluation at
+ * {@code CORPT00C} line 213 tests the three positions in the fixed order monthly, yearly, custom and
+ * stops at the first one it finds marked, falling to its catch-all clause at line 438 when none is.
+ * That is first-match-wins over three independent inputs, and it has observable consequences a single
+ * selector erases:
  *
- * <p>There is no constant for the unmarked case. When the operator marks nothing the program falls
- * to its catch-all clause at line 438 and reports that as an input error, so absence is modelled by
- * this component simply being absent, and the message that names it belongs to the response
- * contract. That is the module-wide rule recorded as decision {@code DL-024} (also carried as
- * {@code D-20}): an absent or unrecognised selector yields absence, never a synthetic constant.
+ * <ul>
+ *   <li>An operator can mark two positions. The 3270 does not prevent it, and the program does not
+ *       reject it - it silently honours the earlier one. A single-valued component cannot represent
+ *       the submission at all, so a client that made it would receive a transport rejection where the
+ *       legacy screen produced a report.</li>
+ *   <li>The tie-break order is itself contract. Preserving three components keeps the order where the
+ *       legacy put it, in the service that reproduces line 213's evaluation, rather than dissolving it
+ *       into a deserializer that would have to pick a winner with no citation for its choice.</li>
+ *   <li>The unmarked case needs no synthetic constant. All three components are simply absent or
+ *       blank, which is exactly the state line 438 reports, and the message that names it belongs to
+ *       the response contract. This is the module-wide rule recorded as decision {@code DL-024} (also
+ *       carried as {@code D-20}): an absent or unrecognised selector yields absence, never an
+ *       invented value.</li>
+ * </ul>
  *
- * <h2>The period's carried text is not its constant identifier</h2>
+ * <p>Each marker is therefore one character of text, bounded at its screen width and carried exactly
+ * as submitted. Nothing here decides which of the three won, because deciding that is the ordered
+ * service evaluation's work.
  *
- * <p>Each {@link ReportPeriod} constant carries the exact short text the program moves into its
+ * <h2>The report name is produced, not submitted</h2>
+ *
+ * <p>The short text that identifies the chosen report - the values the program moves into its
  * ten-character report-name work field, declared at {@code CORPT00C} line 58 and written at lines
- * 214, 240 and 433. Two properties of that text are load-bearing, and neither can be derived from
- * the constant identifier: the text has a capital initial letter followed by a lowercase remainder,
- * and it is bare rather than padded out to the width of the work field.
+ * 214, 240 and 433 - is an <em>output</em> of the selection, not an input to it. The operator marks a
+ * position; the program derives the name. It therefore appears on the response contract beside the
+ * echoed markers and is deliberately absent from this record, because a request that carried it would
+ * let a client name a report the selection did not choose.
  *
- * <p>The program reads that field twice only, at lines 449 and 468, and both reads consume it
- * delimited by space - so the padding never reaches an operator, while the casing always does.
- * Consumers of this record must therefore take the text from the enum's accessor and must never
- * derive it from the constant identifier, re-case it in either direction, or pad it. Each of those
- * would emit text the report contract never produced.
+ * <p>Two properties of that text are load-bearing where it does appear, and neither may be
+ * regularised: it has a capital initial letter followed by a lowercase remainder, and it is bare
+ * rather than padded out to the width of the work field. The program reads the field twice only, at
+ * lines 449 and 468, and both reads consume it delimited by space - so the padding never reaches an
+ * operator, while the casing always does.
  *
  * <h2>The six date parts stay separate, and stay text</h2>
  *
@@ -186,12 +217,21 @@ import jakarta.validation.constraints.Size;
  * validation instead, which is the module-wide reading of decision {@code DL-021}: clause evaluation
  * order is preserved verbatim.
  *
- * <p>The one constraint that is present bounds each text component to its screen width. It measures
+ * <p>The one constraint on a carried value bounds each text component to its screen width. It measures
  * and never alters, so a value that arrives with leading or trailing spaces keeps them - which
  * matters, because the legacy absence test treats an all-spaces value as absent and the service must
  * be able to see that for itself. The six date parts are legitimately blank whenever the period is
  * monthly or yearly, and the period itself is legitimately absent, so rejecting either at the
  * transport boundary would refuse input the legacy screen accepts.
+ *
+ * <p><strong>The navigation component carries a cascade, which is a different kind of thing.</strong>
+ * It constrains no component this record declares and adds no rule the nested type does not already
+ * state; it makes the widths that component declares for itself actually evaluated, because a nested
+ * constraint fires only when the enclosing component asks for it, and a width that nothing evaluates
+ * is a width that is documented rather than enforced. It cannot pre-empt the fourteen-stage cascade
+ * either, because an over-wide value inside an echoed context is a state no 3270 submission could
+ * produce, so the estate has no ordered check and no message for it. What it prevents is an unbounded
+ * echoed value crossing this boundary on its way to a query, not a bad date.
  *
  * <h2>What this record deliberately does not contain</h2>
  *
@@ -222,12 +262,19 @@ import jakarta.validation.constraints.Size;
  * only, and no COBOL text is reproduced. Divergences from idiomatic Java are recorded in
  * {@code docs/decision-log.md}.
  *
- * @param reportPeriod       the report type the operator marked, collapsing the three mutually
- *                           exclusive single-character markers {@code MONTHLYI}, {@code YEARLYI} and
- *                           {@code CUSTOMI} into one selector. May be absent, which is the state the
- *                           catch-all clause at line 438 reports; no constant exists for it. The
- *                           text each constant carries is short, mixed case and unpadded, and is not
- *                           the constant identifier.
+ * @param monthlySelection   the monthly marker, from {@code MONTHLYI} at symbolic map line 60,
+ *                           bounded to the one-character screen width and carried exactly as
+ *                           submitted. Tested first by the evaluation at line 213. May be absent or
+ *                           blank, which is the unmarked state; no value is inferred and none is
+ *                           defaulted.
+ * @param yearlySelection    the yearly marker, from {@code YEARLYI} at symbolic map line 66, bounded
+ *                           to one character and carried verbatim on the same terms. Tested second.
+ * @param customSelection    the custom-range marker, from {@code CUSTOMI} at symbolic map line 72,
+ *                           bounded to one character and carried verbatim on the same terms. Tested
+ *                           third, and the only one of the three that brings the six date parts into
+ *                           play. When all three are absent or blank the catch-all clause at line 438
+ *                           reports the input error, and that message belongs to the response
+ *                           contract.
  * @param startMonth         the start date's month part, from {@code SDTMMI}, bounded to the
  *                           two-character screen width and carried verbatim including any leading or
  *                           trailing space. Legitimately blank unless the custom period is selected.
@@ -259,41 +306,56 @@ import jakarta.validation.constraints.Size;
  */
 public record ReportRequest(
 
-        /* 1. MONTHLYI / YEARLYI / CUSTOMI, width 1 each - the three mutually exclusive markers
-              collapsed into one selector; absent when the operator marked none (line 438). */
-        ReportPeriod reportPeriod,
+        /* 1. MONTHLYI, width 1 - symbolic map line 60, mapset line 80. Tested FIRST by the ordered
+              evaluation at CORPT00C line 213. Kept as its own character rather than folded into a
+              single selector: the three positions are independent on the wire, an operator can mark
+              more than one, and the first-match-wins order is the service's to reproduce. */
+        @Size(max = 1) String monthlySelection,
 
-        /* 2. SDTMMI, width 2 - start month, first of the three screen parts (mapset line 127). */
+        /* 2. YEARLYI, width 1 - symbolic map line 66, mapset line 94. Tested SECOND. */
+        @Size(max = 1) String yearlySelection,
+
+        /* 3. CUSTOMI, width 1 - symbolic map line 72, mapset line 108. Tested THIRD, and the only
+              marker that brings the six date parts below into the validation cascade. All three
+              absent or blank is the state the catch-all clause at line 438 reports. */
+        @Size(max = 1) String customSelection,
+
+        /* 4. SDTMMI, width 2 - start month, first of the three screen parts (mapset line 127). */
         @Size(max = 2) String startMonth,
 
-        /* 3. SDTDDI, width 2 - start day, second screen part (mapset line 138). */
+        /* 5. SDTDDI, width 2 - start day, second screen part (mapset line 138). */
         @Size(max = 2) String startDay,
 
-        /* 4. SDTYYYYI, width 4 - start year, third screen part (mapset line 149). */
+        /* 6. SDTYYYYI, width 4 - start year, third screen part (mapset line 149). */
         @Size(max = 4) String startYear,
 
-        /* 5. EDTMMI, width 2 - end month, first of the three screen parts (mapset line 166). */
+        /* 7. EDTMMI, width 2 - end month, first of the three screen parts (mapset line 166). */
         @Size(max = 2) String endMonth,
 
-        /* 6. EDTDDI, width 2 - end day, second screen part (mapset line 177). */
+        /* 8. EDTDDI, width 2 - end day, second screen part (mapset line 177). */
         @Size(max = 2) String endDay,
 
-        /* 7. EDTYYYYI, width 4 - end year, third screen part (mapset line 188). */
+        /* 9. EDTYYYYI, width 4 - end year, third screen part (mapset line 188). */
         @Size(max = 4) String endYear,
 
-        /* 8. CONFIRMI, width 1 - carried verbatim: accept, silent reset and quoted-back are three
+        /* 10. CONFIRMI, width 1 - carried verbatim: accept, silent reset and quoted-back are three
               distinct outcomes (lines 478, 480 and 486), so the character itself must survive. */
         @Size(max = 1) String confirm,
 
-        /* 9. The attention key that arrived. No default, and no upper-key fold: the fold belongs to
+        /* 11. The attention key that arrived. No default, and no upper-key fold: the fold belongs to
               the module's key translator (decision DL-025). */
         KeyAction keyAction,
 
-        /* 10. Echoed navigation state standing in for the legacy communication area; client-echoed
-               request state, never a server session. */
-        NavigationContext navigationContext) {
+        /* 12. Echoed navigation state standing in for the legacy communication area; client-echoed
+               request state, never a server session. Marked @Valid so the bounds the nested type
+               declares are actually applied: Bean Validation does not descend into a nested object
+               unless it is told to, so without this every bound inside it is decorative and an
+               over-long identifier reaches the service unreported. Cascading a bound is not the
+               same as adding one - no new constraint is introduced here, and the ordered
+               service-tier cascade this file describes is untouched. */
+        @Valid NavigationContext navigationContext) {
 
-    // No member is declared beyond the ten components above, and the omission is deliberate rather
+    // No member is declared beyond the twelve components above, and the omission is deliberate rather
     // than unfinished work. Every remaining concern of transaction CR00 - the ordered fourteen-stage
     // validation, the monthly and yearly range derivation, the three-part to single-value date
     // conversion, the confirmation branch, the downstream hand-over and every response text - sits

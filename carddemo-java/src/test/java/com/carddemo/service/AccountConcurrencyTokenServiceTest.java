@@ -119,7 +119,9 @@ class AccountConcurrencyTokenServiceTest {
                 "1500 Woodward Avenue", "Apt. 4B", "Detroit", "MI", "USA",
                 "48226", "3135550100", "2485550199",
                 encryption.protect(SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD, "999887777"),
-                encryption.protect("customer.cust_govt_issued_id", "FICTIONAL-ID-0000001"),
+                encryption.protect(
+                        SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD,
+                        "FICTIONAL-ID-0000001"),
                 "1985-07-04", "EFT0000001", "Y", "742");
     }
 

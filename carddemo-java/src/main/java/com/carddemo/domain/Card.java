@@ -38,9 +38,8 @@ import jakarta.persistence.Version;
  *   <li>{@code app/cpy/CVACT02Y.cpy} declares six named fields followed by a 59-byte trailing filler;
  *       the declared widths sum to exactly 150.</li>
  *   <li>{@code app/jcl/CARDFILE.jcl} defines the {@code CARDDATA} VSAM KSDS base cluster with indexed
- *       organisation, {@code KEYS(16 0)} - a 16-byte key at offset 0 - and
- *       {@code RECORDSIZE(150 150)}, fixing the record at 150 bytes for both its minimum and its
- *       maximum.</li>
+ *       organisation, a 16-byte key at offset 0, and a record fixed at 150 bytes for both its
+ *       minimum and its maximum.</li>
  *   <li>{@code app/cbl/CBACT01C.cbl} demonstrates the estate-wide identity pattern in its file
  *       section, where a record is declared as a leading key field, {@code FD-ACCT-ID}, followed by a
  *       remainder field, {@code FD-ACCT-DATA}. Every keyed file in the estate is declared this way.</li>
@@ -68,27 +67,56 @@ import jakarta.persistence.Version;
  * depends on.
  *
  * <p><strong>The account identifier is a scalar column, not an association.</strong> The legacy
- * cluster carries an alternate index over that field - {@code KEYS(11 16)}, declared
- * {@code NONUNIQUEKEY} with {@code UPGRADE}, and registered to the online region as a file in its own
+ * cluster carries a non-unique alternate index over that field - eleven bytes at offset 16,
+ * maintained in step with the base cluster and registered to the online region as a file in its own
  * right - which the migration reproduces as a B-tree index and a derived finder over the scalar
  * column rather than as an object graph. Referential integrity is a database constraint, not a Java
  * relationship. See {@link #getCardAcctId()} for the full reasoning.
  *
  * <p><strong>This entity is a passive carrier; it computes nothing.</strong> Fixed-width offset
- * arithmetic belongs exclusively to the card record mapper in the utility layer,
- * {@code com.carddemo.util.CardRecordMapper}, which slices the byte image at the offsets listed
- * above. This class holds column widths, never offsets, and performs no parsing, no case folding, no
- * padding and no validation. The dependency direction is one-way: the utility layer produces
- * entities, so an entity never references the utility layer.
+ * arithmetic belongs exclusively to the card record mapper of the utility layer,
+ * {@code com.carddemo.util.CardRecordMapper}, whose responsibility is to slice the byte image at the
+ * offsets listed above. That mapper is a separate deliverable of the record-mapper boundary and is
+ * <em>not present at this checkpoint</em>; the name above is therefore a plain code reference rather
+ * than a resolved link, so neither compilation nor Javadoc generation here depends on it, and this
+ * entity cites it only to say where offset knowledge belongs once it lands. This class holds column
+ * widths, never offsets, and performs no parsing, no case folding, no padding and no validation. The
+ * dependency direction is one-way: the utility layer produces entities, so an entity never references
+ * the utility layer.
  *
- * <p><strong>Fixed-width values are stored verbatim.</strong> Every attribute carries a value
- * occupying its whole declared width, so padding is part of the stored value rather than incidental
- * whitespace - the embossed name in every one of the fifty sample records is space-filled to its
- * full fifty characters, and both digit-only identifiers are zero-filled to theirs. Constructors,
- * mutators and accessors are plain assignments and plain returns. In particular the legacy
- * upper-casing of the embossed name is a character-table fold performed by the card-update path in
- * the service layer, through {@code com.carddemo.util.CobolStringUtils}, and is never performed here
- * and never by way of a locale-sensitive library conversion.
+ * <p><strong>Values are stored verbatim, and "verbatim" means whatever the caller hands over.</strong>
+ * This class never trims, pads, folds or normalises: constructors, mutators and accessors are plain
+ * assignments and plain returns. Because it neither adds nor removes padding, padding is decided
+ * entirely by the two callers on either side of it, and the two decide differently on purpose:
+ *
+ * <ul>
+ *   <li><strong>The record image is fixed width, always.</strong> Every field occupies its whole
+ *       declared span - the embossed name is fifty bytes in every one of the fifty sample records, and
+ *       both digit-only identifiers fill their sixteen and eleven. That is a property of the 150-byte
+ *       image rather than of this class, and it follows from the shared placement primitive every record
+ *       mapper writes through, {@code com.carddemo.util.FixedWidthFieldReader}, which left-justifies a
+ *       character value and then writes the trailing pad to the field's full width explicitly.</li>
+ *   <li><strong>The relational column stores ordinary display text right-trimmed.</strong> The
+ *       reference seed inserts the embossed name at its own length - nine to nineteen characters
+ *       across the fifty rows - and not space-filled to fifty. Nothing is lost by that: re-reading the
+ *       row and placing it back through the mapper reproduces the identical fifty bytes, because the
+ *       primitive re-pads on output. A trimmed value and a padded value are the same record.</li>
+ * </ul>
+ *
+ * <p>The distinction matters for one column on this entity and for two elsewhere in the schema, so it
+ * is stated rather than assumed. Here, {@code card_num}, {@code card_acct_id}, {@code card_cvv_cd},
+ * {@code card_expiration_date} and {@code card_active_status} all carry fixed-shape values that fill
+ * their widths naturally, so trimming is a no-op on them and the question does not arise. The embossed
+ * name is the one column where a trimmed and a padded form differ as strings, and the entity's answer
+ * is to store whichever it is given and compare it unchanged - it is not part of the key, so no lookup
+ * depends on the choice. Where trailing blanks <em>are</em> behaviourally significant, they are
+ * preserved in the column too rather than trimmed: the account group identifier, the disclosure-group
+ * key and the daily-transaction processing timestamp all keep their blanks, because a lookup or a
+ * fallback turns on them.
+ *
+ * <p>In particular the legacy upper-casing of the embossed name is a character-table fold performed by
+ * the card-update path in the service layer, through {@code com.carddemo.util.CobolStringUtils}, and
+ * is never performed here and never by way of a locale-sensitive library conversion.
  *
  * <p><strong>Schema authority.</strong> This mapping is validated, not generated. Flyway owns the
  * {@code card} table and the runtime configuration fixes Hibernate at schema validation only, so any
@@ -105,6 +133,19 @@ import jakarta.persistence.Version;
 @Entity
 @Table(name = "card")
 public class Card {
+
+    /**
+     * Fixed stand-in emitted by {@link #toString()} in place of the card number.
+     *
+     * <p>A constant rather than any transformation of the value, so nothing about the withheld card
+     * number - not its length, not a leading or trailing fragment, not a digest - can be recovered from
+     * a rendered instance. It matches the placeholder the request and response contracts in this module
+     * already use, so a reader of a diagnostic sees one vocabulary rather than two.
+     *
+     * <p>Private, and a rendering detail only: it is neither mapped, persisted, transmitted nor
+     * returned by any accessor, and it never substitutes for a stored value.
+     */
+    private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
 
     /**
      * Card number - 16 bytes at offset 0 of the record image, and the primary key.
@@ -187,9 +228,13 @@ public class Card {
     /**
      * Embossed cardholder name - 50 bytes at offset 30 of the record image.
      *
-     * <p>Space-filled to its full fifty characters in every sample record, and stored with that
-     * padding intact. The padding is part of the value: trimming it here would make a padded name
-     * compare equal to its unpadded form in Java while the two remain distinct in the database.
+     * <p>Fifty bytes wide in every sample record, and carried exactly as handed over. This class
+     * neither pads nor trims, so a name arriving as record bytes carries its fifty characters and a
+     * name arriving from the seeded column carries the nine to nineteen the seed stores; both are
+     * stored unchanged and compared unchanged. Placing either back through the placement primitive
+     * reproduces the same fifty bytes, because that primitive re-pads to the field width, so the
+     * record contract does not depend on which form the column happens to hold. What would break the
+     * contract is this class silently converting between them, which is why it does neither.
      *
      * <p><strong>No case folding happens here.</strong> The legacy card-update program upper-cases
      * this field through a character-table substitution over the twenty-six unaccented Latin letters.
@@ -214,7 +259,8 @@ public class Card {
      * documented rather than silently corrected in a way that would shift the layout: this Java
      * property and the column are both spelled correctly, {@code cardExpirationDate} and
      * {@code card_expiration_date}, while <em>the record offset is unchanged at 80 for a width of
-     * 10</em>, so the record mapper reads exactly the same bytes and the image stays byte-compatible.
+     * 10</em>, so a mapper reading this field takes exactly the same bytes and the image stays
+     * byte-compatible.
      * The misspelled legacy name is cited here so that the mapping from this property back to the
      * copybook field stays findable by search.
      *
@@ -264,19 +310,31 @@ public class Card {
      * Optimistic-locking version counter, managed entirely by the persistence provider: read and
      * compared on every update, incremented on every successful one.
      *
-     * <p><strong>Why it exists, and why it is an improvement rather than a change in behavior.</strong>
-     * It replaces a comparison the online card-update program {@code COCRDUPC} performed by hand. That
-     * program is one of a five-program family whose write path carries the safeguard, and it holds a
-     * paired before image and after image of exactly the fields mapped here - identifiers, verification
-     * code, embossed name, expiry and status - together with a condition name reporting that the record
-     * was changed by someone else. The check is therefore not being introduced by this migration; it is
-     * being moved from hand-written code into the persistence provider, and the conflict it detects
-     * surfaces as the module's optimistic-lock conflict exception.
+     * <p><strong>Why it exists, and what it does <em>not</em> replace.</strong> The online card-update
+     * program {@code COCRDUPC} performed a comparison by hand: it is one of a five-program family whose
+     * write path carries the safeguard, and it holds a paired before image and after image of exactly
+     * the fields mapped here - identifiers, verification code, embossed name, expiry and status -
+     * together with a condition name reporting that the record was changed by someone else. This
+     * counter is <strong>not</strong> the migration of that comparison, and reading it as one would
+     * leave a real gap. The legacy before image was captured when the screen was <em>built</em> and
+     * carried across the pseudo-conversational turn in the program work area, so the comparison spanned
+     * the whole interval during which the operator was reading and typing. This counter is read when a
+     * row is loaded for update and compared when it is written, so a request that loads the row and then
+     * writes it agrees with itself no matter how long the screen sat in front of the operator. The two
+     * checks therefore cover different intervals and neither subsumes the other.
+     *
+     * <p>The presentation interval is covered instead by the sealed concurrency proof that
+     * {@code com.carddemo.service.CardConcurrencyTokenService} mints when a card is presented and
+     * verifies before a write; this counter covers the shorter load-to-write interval that no
+     * screen-carried image can see, because a competing writer may commit between the load and the
+     * write. Both raise the module's optimistic-lock conflict exception, and both surface to an operator
+     * as the single legacy concurrency notice. Nothing about this counter is a substitute for verifying
+     * that proof.
      *
      * <p>The legacy file definitions in the CICS resource definition {@code app/csd/CARDDEMO.CSD}
-     * specify {@code READINTEG(UNCOMMITTED)}, {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}, so
-     * concurrency correctness rested solely on that hand-written comparison plus
-     * {@code UPDATEMODEL(LOCKING)} record locking. PostgreSQL read-committed isolation combined with
+     * read without integrity guarantees and declare neither recovery nor journaling, so concurrency
+     * correctness rested solely on that hand-written comparison plus the region's record-level
+     * update locking. PostgreSQL read-committed isolation combined with
      * this version check is <em>strictly stronger</em> than that verified baseline. A reviewer should
      * read the stronger isolation as the documented improvement it is and not mistake it for a
      * behavioral regression; decision log entry D-15 records it, and the migrated business logic is
@@ -298,7 +356,7 @@ public class Card {
      * {@link #Card(String, String, String, String, String, String)} instead.
      */
     protected Card() {
-        // Intentionally empty: the persistence provider assigns state after construction.
+    // Intentionally empty: the persistence provider assigns state after construction.
     }
 
     /**
@@ -461,6 +519,13 @@ public class Card {
      * Returns the optimistic-locking version counter. There is no corresponding setter: the
      * persistence provider owns this value and assigns it directly.
      *
+     * <p>This value is deliberately <em>not</em> a concurrency token for a client to hold across a
+     * screen turn. It covers only the interval between loading a row for update and writing it, as the
+     * field documentation explains, so echoing it to a client and comparing it on return would prove
+     * nothing about the interval during which the operator was actually reading the screen. The sealed
+     * proof minted by {@code com.carddemo.service.CardConcurrencyTokenService} covers that interval and
+     * is what crosses the boundary; this counter never leaves the persistence layer.
+     *
      * @return the current version counter, zero for a row that has never been updated
      */
     public long getVersion() {
@@ -503,24 +568,36 @@ public class Card {
     }
 
     /**
-     * Returns a deliberately minimal diagnostic rendering: the card number and the raw status code,
-     * and nothing else.
+     * Returns a diagnostic rendering that names the entity and the raw status code and discloses no
+     * card number, no verification code and no cardholder name.
      *
-     * <p><strong>The verification code is deliberately absent</strong> and must stay absent, so that
-     * no accidental rendering of an instance can widen its exposure. The card number is present
-     * because it is the row's identity and a diagnostic without it identifies nothing; it carries no
-     * masking here for the same reason it carries no encryption in the schema - the legacy design
-     * applies none and inventing one would be feature expansion. That residual gap is decision D-14 in
-     * {@code docs/decision-log.md}, recorded as unclosed rather than quietly papered over. This
-     * rendering is for assertion failures and debugging, not for a log line: nothing in this package
-     * logs, and no caller should log it.
+     * <p><strong>The card number is withheld, and a partial rendering was rejected.</strong> An earlier
+     * form of this method printed it in full on the reasoning that it is the row's identity and a
+     * diagnostic without it identifies nothing. That reasoning does not survive contact with how a
+     * rendering actually escapes: an entity reaches a failed assertion message, a provider diagnostic,
+     * an interpolated exception message or any structured log event without its author choosing to
+     * disclose anything, so the only reliable place to withhold a primary account number is here.
+     * Withholding it costs nothing that matters, because every accessor still returns the untouched
+     * value and {@link #getCardNum()} is what code that genuinely needs the key calls. A leading or
+     * trailing fragment was rejected as a compromise: a fragment of a card number is still card data,
+     * and a rendered length still discriminates between candidate values.
      *
-     * <p>Both values are quoted and printed untrimmed so that significant padding remains visible.
+     * <p>This is a rendering decision only and changes no stored, mapped or transmitted value. The
+     * schema applies no field-level protection to the card number and this migration introduces none,
+     * because the legacy design applies none and inventing one would be feature expansion; that
+     * residual gap remains decision D-14 in {@code docs/decision-log.md}, recorded as unclosed. What
+     * changes here is only that an unintended rendering can no longer be the thing that widens it.
      *
-     * @return a diagnostic string containing the card number and the raw status code
+     * <p>The verification code and the embossed cardholder name are withheld for the same reason and on
+     * the same terms. The status code is retained because it is the one mapped value that neither
+     * identifies a cardholder nor keys a record, and a diagnostic that cannot say whether a card was
+     * active explains nothing. It is quoted and printed untrimmed so that significant padding stays
+     * visible.
+     *
+     * @return a diagnostic string carrying the raw status code and a fixed stand-in for the card number
      */
     @Override
     public String toString() {
-        return "Card[cardNum='" + cardNum + "', cardActiveStatus='" + cardActiveStatus + "']";
+        return "Card[cardNum=" + REDACTION_PLACEHOLDER + ", cardActiveStatus='" + cardActiveStatus + "']";
     }
 }

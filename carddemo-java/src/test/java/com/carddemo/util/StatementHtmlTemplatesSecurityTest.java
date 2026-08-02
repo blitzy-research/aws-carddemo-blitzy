@@ -77,10 +77,20 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * <p>The divergence is the narrowest available and this test asserts both halves of that claim.
  * Escaping is the <em>identity function</em> on the entire legitimate domain of every field the
  * class touches, so for real data the emitted bytes are unchanged and the hundred-byte parity
- * gate is untouched; it differs only for input that would otherwise inject markup. There is also
- * deliberately <strong>no builder that accepts already-composed markup</strong>: the markup is
- * owned inside the class, which is what makes an unescaped-data path into the output unreachable
- * rather than merely discouraged. Both properties are asserted rather than assumed.</p>
+ * gate is untouched; it differs only for input that would otherwise inject markup. Both halves are
+ * asserted rather than assumed.</p>
+ *
+ * <p>One builder <strong>does</strong> accept already-composed markup, and it must not be
+ * described away: {@link StatementHtmlTemplates#workLine(String)} moves its content through with no
+ * escaping at all, because it exists for content this class has already composed and cannot
+ * distinguish a legitimate paragraph literal from an injected one. It is a <em>guarded</em> fitter
+ * rather than an unchecked sink &mdash; it refuses anything outside printable US-ASCII and enforces
+ * the exact hundred-byte width &mdash; but it escapes nothing, so an unescaped-data path into the
+ * output is <em>documented and unused</em> rather than unreachable. Two things keep it unused, and
+ * neither is this file: the production source census in
+ * {@code StatementHtmlWorkLineExposureTest}, which fails if any production source calls it, and the
+ * contrast assertion in {@code StatementHtmlTemplatesTest}, which fails if the fitter starts
+ * escaping or a composer stops.</p>
  *
  * <h2>The five deliberate malformations that must survive</h2>
  *
@@ -1399,9 +1409,12 @@ class StatementHtmlTemplatesSecurityTest {
      * address line appends two literal spaces unconditionally, which the other two never do.
      * Both differences are asserted below in both directions.
      *
-     * There is deliberately no builder that accepts already-composed markup. The markup is
-     * owned here and the data is escaped here, which is what makes an unescaped-data path into
-     * the output unreachable rather than merely discouraged.
+     * These three builders own their markup and escape their data. The class also publishes
+     * workLine, which accepts already-composed markup and escapes nothing; it is guarded rather
+     * than unchecked, refusing anything outside printable US-ASCII and enforcing the exact width,
+     * but it is not an escaping path, so the unescaped route is documented and unused rather than
+     * unreachable. StatementHtmlWorkLineExposureTest is the census that keeps it unused, and
+     * StatementHtmlTemplatesTest asserts the contrast between the two routes.
      * ========================================================================================
      */
 

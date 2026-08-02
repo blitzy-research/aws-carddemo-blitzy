@@ -463,6 +463,23 @@ final class AbstractCobolStepTest {
     }
 
     /**
+     * Renders the formatted text of every warning the template emitted, in order.
+     *
+     * <p>Separate from {@link #errorDiagnostics()} because the template uses the two levels for
+     * different purposes: an error announces a failure that ends the run, whereas a warning reports
+     * a secondary problem that has been retained rather than allowed to displace the primary. A test
+     * that pooled the two could not tell those apart.</p>
+     *
+     * @return the captured warning texts, in emission order
+     */
+    private List<String> warningDiagnostics() {
+        return capturedEvents().stream()
+                .filter(event -> event.getLevel() == Level.WARN)
+                .map(ILoggingEvent::getFormattedMessage)
+                .toList();
+    }
+
+    /**
      * Slices the abend work area at a component boundary without trimming anything.
      *
      * @param context the rendered work area
@@ -534,8 +551,29 @@ final class AbstractCobolStepTest {
         /** When set, the scripted read throws this instead of reporting a result. */
         private Exception readFailure;
 
+        /**
+         * When set, the scripted processing hook throws this after recording the record it was handed.
+         *
+         * <p>This is the only way to fail mid-stream rather than at open, and the distinction is
+         * observable: the template increments its record counter before entering the processing hook,
+         * so a primary failure raised here is reported against a non-zero count while one raised at
+         * open is reported against zero. The record is recorded before the throw so a test can tell
+         * "processing was never entered" apart from "processing was entered and then failed".</p>
+         */
+        private RuntimeException processFailure;
+
         /** How many times the failure-path handle release was entered. */
         private int releaseAttempts;
+
+        /**
+         * When set, the failure-path handle release throws this after recording its attempt.
+         *
+         * <p>This is the only way to reach the template's secondary-failure arm, where a release
+         * that fails while a primary failure is already in flight must not displace the primary.
+         * The attempt is recorded before the throw so a test can tell "release was never entered"
+         * apart from "release was entered and then failed".</p>
+         */
+        private RuntimeException releaseFailure;
 
         ScriptedStep(final String programName, final MeterRegistry meterRegistry, final Clock clock) {
             super(programName, meterRegistry, clock);
@@ -573,6 +611,9 @@ final class AbstractCobolStepTest {
         protected void processRecord(final String record) {
             this.lifecycle.add("process");
             this.processed.add(record);
+            if (this.processFailure != null) {
+                throw this.processFailure;
+            }
         }
 
         @Override
@@ -585,6 +626,9 @@ final class AbstractCobolStepTest {
         protected void releaseResources() {
             this.lifecycle.add("release");
             this.releaseAttempts++;
+            if (this.releaseFailure != null) {
+                throw this.releaseFailure;
+            }
         }
     }
 
@@ -921,6 +965,134 @@ final class AbstractCobolStepTest {
             assertThat(step.lifecycle).containsExactly("open", "release");
             assertThat(step.lifecycle).doesNotContain("close");
             assertThat(step.releaseAttempts).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("a release that itself fails while a failure is already in flight is retained as "
+                + "suppressed, so the primary failure still reaches the caller unchanged")
+        void aFailingReleaseIsRetainedAsSuppressedAndNeverDisplacesThePrimaryFailure() {
+            // This is the one arm where two failures are live at once. The legacy program abends on
+            // the first failure and its diagnostic is what an operator reads, so the release problem
+            // must never become the failure that surfaces: losing the primary would rename the
+            // incident, and rethrowing the secondary would report a cleanup fault as though it were
+            // the cause. The template's contract is therefore to attach the secondary to the primary
+            // and carry on unwinding.
+            final ScriptedStep step = stepDelivering(List.of());
+            step.openStatus = STATUS_END_OF_FILE;
+            final RuntimeException secondary =
+                    new IllegalStateException("handle release refused by the scripted resource");
+            step.releaseFailure = secondary;
+
+            final AbendException thrown = catchThrowableOfType(AbendException.class, step::run);
+
+            // The primary is unchanged: same type, and not the secondary in disguise.
+            assertThat(thrown)
+                    .as("the primary failure must reach the caller, not the release failure")
+                    .isNotNull()
+                    .isNotSameAs(secondary);
+            assertThat(thrown).isNotInstanceOf(IllegalStateException.class);
+
+            // The secondary is attached exactly once. A count matters as much as the identity: a
+            // release invoked twice, or an exception attached twice, would both show up here.
+            assertThat(thrown.getSuppressed())
+                    .as("the release failure must be retained as the single suppressed cause")
+                    .containsExactly(secondary);
+
+            // Release was entered once and once only, even though it threw.
+            assertThat(step.releaseAttempts)
+                    .as("the failing release must be attempted exactly once, never retried")
+                    .isEqualTo(1);
+            assertThat(step.lifecycle)
+                    .as("the close family must still be skipped: the abend is terminal")
+                    .containsExactly("open", "release");
+
+            // The secondary is reported at warning level, naming the program, and is not promoted to
+            // an error: promoting it would put two failures at the same severity in the log and leave
+            // an operator unable to tell which one ended the run.
+            assertThat(warningDiagnostics())
+                    .as("the retained secondary must be reported once, at warning level")
+                    .containsExactly("SECONDARY FAILURE RELEASING HANDLES OF PROGRAM "
+                            + PROGRAM_NAME + "; RETAINED AS SUPPRESSED");
+
+            // The primary's own diagnostics are untouched by the secondary. Running the whole
+            // lifecycle emits the terminal pair plus one run-level line reporting the abnormal
+            // termination and the records read, so the expected count is the operation-level pair
+            // and that one addition.
+            assertThat(errorDiagnostics())
+                    .as("the primary failure's diagnostics must be unaffected by the release failure")
+                    .hasSize(ORACLE_TERMINAL_DIAGNOSTIC_COUNT + 1);
+            assertThat(errorDiagnostics())
+                    .anyMatch(text -> text.contains(ORACLE_ABEND_ANNOUNCEMENT));
+
+            // The point of the whole arm: the secondary is nowhere in the error stream. Were it
+            // promoted, two failures would sit at the same severity and an operator could not tell
+            // which one ended the run.
+            assertThat(errorDiagnostics())
+                    .as("the retained secondary must not also be reported as an error")
+                    .noneMatch(text -> text.contains("SECONDARY FAILURE"))
+                    .noneMatch(text -> text.contains(secondary.getMessage()));
+        }
+
+        @Test
+        @DisplayName("a processing failure part-way through the file, with a release that also fails, "
+                + "keeps the primary and still reports the records already read")
+        void aProcessingFailureWithAFailingReleaseKeepsThePrimaryAndReportsTheRecordsRead() {
+            // The companion arm above fails at open, where nothing has been read yet. This one fails
+            // mid-stream, which is the case the legacy program actually meets in production: a record
+            // is rejected after the file has started flowing. It is a genuinely different observation
+            // because the template increments its record counter before entering the processing hook,
+            // so the abnormal-termination diagnostic an operator reads must carry a non-zero count.
+            // The primary here is also raised outside any guarded operation, so no status diagnostic
+            // precedes it and the whole error stream is the single run-level line.
+            final ScriptedStep step = stepDelivering(List.of("FIRST RECORD", "SECOND RECORD"));
+            final RuntimeException primary =
+                    new IllegalStateException("record rejected by the scripted processing hook");
+            final RuntimeException secondary =
+                    new IllegalStateException("handle release refused by the scripted resource");
+            step.processFailure = primary;
+            step.releaseFailure = secondary;
+
+            final IllegalStateException thrown =
+                    catchThrowableOfType(IllegalStateException.class, step::run);
+
+            // The caller receives the very object the processing hook raised, not a wrapper and not
+            // the release failure.
+            assertThat(thrown)
+                    .as("the processing failure must reach the caller unchanged")
+                    .isSameAs(primary);
+            assertThat(thrown.getSuppressed())
+                    .as("the release failure must be retained as the single suppressed cause")
+                    .containsExactly(secondary);
+
+            // The loop aborted on the first record: the second read was never attempted, and the
+            // close family was skipped because the failure is terminal.
+            assertThat(step.lifecycle)
+                    .as("the run must abort on the failing record rather than continuing the file")
+                    .containsExactly("open", "read", "process", "release");
+            assertThat(step.processed)
+                    .as("processing must have been entered on the first record only")
+                    .containsExactly("FIRST RECORD");
+            assertThat(step.releaseAttempts)
+                    .as("the failing release must be attempted exactly once, never retried")
+                    .isEqualTo(1);
+
+            // The counter is live: one record had been read when the failure was raised. This is the
+            // observable difference from the open-failure arm, which reports zero.
+            assertThat(errorDiagnostics())
+                    .as("a mid-stream failure must report the records already read")
+                    .containsExactly("EXECUTION OF PROGRAM " + PROGRAM_NAME
+                            + " TERMINATED ABNORMALLY AFTER 1 RECORD(S) READ");
+
+            // No guarded operation failed, so no status diagnostic and no abend announcement belong
+            // in the stream, and the retained secondary must not appear there either.
+            assertThat(errorDiagnostics())
+                    .as("an unguarded processing failure must not fabricate a status diagnostic")
+                    .noneMatch(text -> text.contains(ORACLE_ABEND_ANNOUNCEMENT))
+                    .noneMatch(text -> text.contains(secondary.getMessage()));
+            assertThat(warningDiagnostics())
+                    .as("the retained secondary must be reported once, at warning level")
+                    .containsExactly("SECONDARY FAILURE RELEASING HANDLES OF PROGRAM "
+                            + PROGRAM_NAME + "; RETAINED AS SUPPRESSED");
         }
 
         @Test

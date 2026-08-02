@@ -17,8 +17,8 @@
 package com.carddemo.api.dto;
 
 import com.carddemo.domain.enums.KeyAction;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
-import java.math.BigDecimal;
 
 /**
  * Immutable transaction-add request contract for legacy CICS transaction {@code CT02}, derived from
@@ -113,15 +113,42 @@ import java.math.BigDecimal;
  * platform date parsing at all. No date type, formatter, resolver style or parsing of any kind
  * appears in this file, and neither date is reformatted on the way through.</p>
  *
- * <h2>The amount is the only numeric component</h2>
+ * <h2>The amount is a twelve-character lexeme, not a number</h2>
  *
- * <p>The transaction amount is a decimal value of scale two by contract - the persisted field of
- * {@code app/cpy/CVTRA05Y.cpy} is a signed nine-integer-digit, two-fraction-digit zoned decimal, and
- * the mapped column is a fixed-point numeric of precision eleven and scale two. It is therefore an
- * exact decimal type and never a binary floating-point one, which could not represent a cent
- * exactly. The map presents the value in a signed, fixed-position external form with two fractional
- * digits, verified positionally at line 345; this record carries the numeric value alone and never
- * that external form, never a pre-rendered string and never an edited screen field.</p>
+ * <p>The value the operator types is a fixed-position external form twelve characters wide, and this
+ * record carries exactly that. The map item is {@code TRNAMTI PIC X(12)} at
+ * {@code app/cpy-bms/COTRN02.CPY} line 96, its screen field is declared unprotected at
+ * {@code LENGTH=12} at {@code app/bms/COTRN02.bms} lines 174 to 177, and the program subjects it to
+ * two ordered lexical tests before any arithmetic exists. The first, at
+ * {@code app/cbl/COTRN02C.cbl} line 276, asks whether the item is spaces or low values and reports
+ * that the amount cannot be empty. The second, at lines 339 to 347, tests four fixed positions
+ * independently - a sign character at position one, eight digits at positions two through nine, a
+ * literal decimal point at position ten, and two digits at positions eleven and twelve - and reports
+ * that the amount should be in the format the message spells out, whose own literal is twelve
+ * characters long and confirms the shape.</p>
+ *
+ * <p><strong>Why this cannot be a decimal type at this boundary.</strong> Three of the states the
+ * program is contractually required to report are not expressible as a number at all. A blank
+ * submission is a distinct state owed its own message, and a numeric component can only render it as
+ * absent, which conflates "the operator left it empty" with "the client omitted the field". A missing
+ * decimal point, or a sign character that is neither plus nor minus, is a distinct state owed the
+ * format message, and a numeric component either accepts the value silently or fails during
+ * deserialization, which produces a framework error instead of the message the operator is owed.
+ * Worst of the three, a decimal type accepts arbitrary exponent notation: an amount of
+ * {@code 1e100000} binds successfully, passes every constraint this record could declare, and becomes
+ * a value no screen field could have produced. Carrying the lexeme closes all three, because the
+ * bound below measures the twelve characters the map declares and the service then runs the two
+ * ordered tests exactly as the program runs them.</p>
+ *
+ * <p><strong>This introduces no floating point anywhere.</strong> The persisted field of
+ * {@code app/cpy/CVTRA05Y.cpy} is a signed nine-integer-digit, two-fraction-digit zoned decimal and
+ * the mapped column is a fixed-point numeric of precision eleven and scale two; both stay exactly
+ * that. The service parses the accepted lexeme into an exact decimal after the cascade has passed,
+ * which is the same division of labour the two dates already use: their shape is checked
+ * positionally here-adjacent at lines 360 and 375 and their calendar validity is delegated, and no
+ * date type appears in this file either. What would introduce a representational defect is the
+ * opposite choice - binding an operator keystroke straight into a numeric type and losing the
+ * distinction between the states the program reports separately.</p>
  *
  * <p><strong>No scaling, rounding or arithmetic happens here.</strong> The estate declares no
  * rounding clause anywhere, which means a store into a two-decimal field discards its surplus
@@ -191,12 +218,21 @@ import java.math.BigDecimal;
  * order below follows the map, and cascade order belongs to the service; the two are independent and
  * neither may be derived from the other.</p>
  *
- * <p>The single permitted constraint is therefore a maximum length, which measures a value and never
- * alters one. It is present so that a value longer than the field is rejected before it can overflow a
- * fixed-width persisted field, and it is absent from the amount because a length bound has no meaning
- * for a decimal value. No presence, emptiness, pattern, digit, range, sign, chronology or membership
- * constraint appears anywhere in this file: each would either fire ahead of the cascade and report
- * the wrong message, or reject input that the legacy program accepts.</p>
+ * <p>The single permitted constraint on a value is therefore a maximum length, which measures a value
+ * and never alters one. It is present so that a value longer than the field is rejected before it can
+ * overflow a fixed-width persisted field, and it is absent from the amount because a length bound has
+ * no meaning for a decimal value. No presence, emptiness, pattern, digit, range, sign, chronology or
+ * membership constraint appears anywhere in this file: each would either fire ahead of the cascade and
+ * report the wrong message, or reject input that the legacy program accepts.</p>
+ *
+ * <p><strong>One structural bound sits beside it and it is not a field edit.</strong> The navigation
+ * component carries a cascade, so that the widths that component declares for itself are actually
+ * evaluated: a nested constraint fires only when the enclosing component asks for it, so without the
+ * cascade those widths are stated on paper and enforced nowhere, and an arbitrarily wide echoed
+ * identifier crosses this boundary unmeasured. The cascade introduces no rule the nested type does not
+ * already declare, constrains no component of this record, and cannot pre-empt the service cascade,
+ * because an over-wide nested value is a state no 3270 submission could produce and the estate
+ * therefore has no ordered check and no message for it.</p>
  *
  * <h2>Widths are honoured, not normalised</h2>
  *
@@ -218,17 +254,27 @@ import java.math.BigDecimal;
  * character. Nothing here is shortened, padded, case folded, stripped of white space, canonicalised
  * or re-encoded; legacy fixed-width fields are space padded and that padding is contract, which
  * matters most for the ten-character source and the three merchant text fields. The record is a value
- * carrier: no setter, no mutable component, no collection, no static state, no builder and no
- * generated code, so instances are safe to share across threads without qualification.</p>
+ * carrier: no setter, no mutable component, no collection, no mutable static state, no builder and no
+ * generated code, so instances are safe to share across threads without qualification. The one static
+ * member is the immutable rendering placeholder described below, which holds no request data.</p>
  *
  * <p>The card number is carried at its full sixteen characters. The legacy design applies no
  * field-level encryption or obfuscation to a primary account number or a card verification code
  * anywhere, and no requirement of this migration introduces one, so none is introduced here either;
  * that residual gap is recorded as a finding in {@code docs/decision-log.md} rather than closed by
- * unrequested work. Nothing in this record hides, shortens or re-encodes the value, and the record
- * contract's generated rendering, equality and hash behaviour stand unaltered - a deliberate,
- * documented divergence from the credential-bearing and personal-data-bearing request contracts in
- * this package, which do replace their rendering.</p>
+ * unrequested work. Nothing in this record hides, shortens or re-encodes any <em>stored or
+ * transmitted</em> value, and equality and hash behaviour stand exactly as the record contract
+ * generates them, comparing every component by value.</p>
+ *
+ * <p><strong>The rendering is a separate matter and is replaced.</strong> Carrying a value intact and
+ * printing it into a diagnostic are different acts, and the absence of encryption at rest is an
+ * argument about the first, not a licence for the second. {@link #toString()} is overridden to withhold
+ * the eight regulated components - the two lookup keys, the free-text description, the amount and the
+ * four merchant values - because a record's generated rendering would otherwise place all eight in one
+ * already-correlated line in front of every logger, failed assertion and interpolated exception message
+ * on the add path. This brings the file into line with the outbound contract for the same screen, which
+ * withholds exactly the same set, and with every other regulated request contract in this package. The
+ * per-component reasoning, and the earlier decision it replaces, are recorded on that method.</p>
  *
  * <p>Serialization is left entirely to the module-wide configuration, which already writes decimal
  * values in plain notation, omits absent values and tolerates unknown incoming properties. This file
@@ -255,11 +301,15 @@ import java.math.BigDecimal;
  * @param description the transaction description - map field {@code TDESC}, width 60 on this screen,
  *     which is narrower than the persisted field and wider than the list screen; the screen width
  *     governs here. Emptiness checked fourth at line 272. May be {@code null}.
- * @param amount the transaction amount, an exact decimal of scale two by contract and never a binary
- *     floating-point value - map field {@code TRNAMT}, width 12 as an external form whose shape is
- *     checked positionally at line 345. Carries the numeric value only, with no scaling, rounding,
- *     arithmetic or formatting applied here. Emptiness checked fifth at line 278. Unannotated because
- *     a length bound has no meaning for a decimal value. May be {@code null}.
+ * @param amount the transaction amount as the operator typed it - map field {@code TRNAMT}, width 12,
+ *     carried as the twelve-character external form the map declares and not as a number, so that a
+ *     blank value, a missing decimal point and a sign character that is neither plus nor minus all
+ *     stay representable and all stay reportable with the message each is owed. Emptiness checked
+ *     fifth at line 278; the four positions are checked at lines 339 to 347. Bounded at twelve
+ *     characters and nothing else: the bound measures the map width, and the positional cascade, the
+ *     sign rule and the conversion to an exact decimal are the service's, performed in that order
+ *     after this bound has been satisfied. Never parsed, scaled, rounded, formatted or rendered here.
+ *     May be {@code null}.
  * @param originationDate the origination date - map field {@code TORIGDT}, width 10, ten characters
  *     of text and never a date type. Shape checked positionally at line 360, then validated by the
  *     shared date utility called at line 393 and reported at line 401. Emptiness checked sixth at
@@ -314,9 +364,11 @@ public record TransactionAddRequest(
         /* 6. TDESC, width 60 - empty check COTRN02C:272; screen width, not record width. */
         @Size(max = 60) String description,
 
-        /* 7. TRNAMT, external width 12 - empty check COTRN02C:278, shape check COTRN02C:345.
-         * Exact decimal of scale 2; unannotated because a length bound cannot apply. */
-        BigDecimal amount,
+        /* 7. TRNAMT, width 12 - COTRN02.CPY:96 declares PIC X(12); empty check COTRN02C:276,
+         * four-position shape check COTRN02C:339-347. Carried as the typed lexeme so that a blank
+         * value, an absent decimal point and a bad sign character each stay reportable, and so that
+         * exponent notation cannot arrive at all. Parsed to an exact decimal by the service. */
+        @Size(max = 12) String amount,
 
         /* 8. TORIGDT, width 10 - empty check COTRN02C:284, shape check COTRN02C:360,
          * calendar check called at COTRN02C:393 and reported at COTRN02C:401. */
@@ -346,6 +398,85 @@ public record TransactionAddRequest(
         /* Attention key, resolved to a domain constant. No default; absence is absence. */
         KeyAction keyAction,
 
-        /* Client-echoed navigation state; replaces the legacy communication area. */
-        NavigationContext navigationContext) {
+        /* Client-echoed navigation state; replaces the legacy communication area. Marked @Valid so
+         * the widths that contract declares are actually evaluated: Bean Validation does not descend
+         * into a nested object unless it is told to, so without this every bound on the navigation
+         * contract would be inert whenever it arrived as part of this request. */
+        @Valid NavigationContext navigationContext) {
+
+    /**
+     * Fixed stand-in emitted by {@link #toString()} in place of each regulated component.
+     *
+     * <p>A constant rather than any transformation of the value, so nothing about a withheld component
+     * - not its length, not a prefix or suffix, not a digest, not a partial mask - can be recovered
+     * from a stringified instance. A partial rendering of the card number was rejected deliberately: a
+     * truncated primary account number is still cardholder data, and a rendered length still
+     * discriminates between the values that could have produced it.
+     *
+     * <p>Private because it is a rendering detail and not part of the request contract. It stands in
+     * only on the rendering path: every accessor returns its component exactly as supplied.
+     */
+    private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
+
+    /**
+     * Returns a diagnostic representation that mirrors the map order and discloses no regulated value.
+     *
+     * <p><strong>Why the implicit record rendering could not stand.</strong> A record's generated
+     * {@code toString()} prints every component, and eight of these are regulated. The card number is a
+     * primary account number in full. The account identifier joins straight to a cardholder. The amount
+     * is the exact value of one movement of money. The description is operator-entered free text of
+     * sixty characters, which is to say a field whose content cannot be predicted and must therefore be
+     * assumed to carry whatever the operator typed into it. The four merchant components together
+     * identify where that movement of money happened, to a named street city and postal code. Any
+     * structured logger, framework diagnostic, failed assertion, interpolated exception message or bare
+     * string concatenation touching an instance would otherwise have emitted all eight at once, in one
+     * line, already correlated - which is a materially worse disclosure than any one of them alone.
+     *
+     * <p><strong>Why the remainder is retained.</strong> The type and category codes are reference-table
+     * keys, the source is a channel name, the two dates are calendar values, the confirmation is a
+     * single keystroke and the attention key is the operator's navigation choice. None identifies a
+     * person, an account, an amount or a place, and together they are what a diagnostic on a failed
+     * add genuinely needs: which kind of transaction was being entered, through which channel, for
+     * which dates, and how far the operator got. Withholding them would remove this rendering's only
+     * useful content while protecting nothing. The navigation context is printed by delegation because
+     * it redacts its own identifying values.
+     *
+     * <p><strong>This aligns the request with the response it is answered by.</strong> The outbound
+     * contract for this same transaction withholds exactly these eight components and retains exactly
+     * this remainder, so the two halves of one screen's traffic no longer disagree about which of their
+     * shared values may be rendered. An earlier revision of this file recorded the opposite decision -
+     * that the generated rendering should stand because no field-level protection exists in the legacy
+     * design - and that reasoning does not survive scrutiny: the absence of encryption at rest is a
+     * separate, documented gap, and it is not a licence to widen the gap by rendering the same values
+     * into every diagnostic sink.
+     *
+     * <p><strong>Withholding is confined to this method.</strong> Every accessor returns its component
+     * byte for byte, nothing is masked, shortened or re-encoded anywhere in this type, and
+     * {@code equals} and {@code hashCode} remain exactly as the record contract generates them -
+     * comparing every component by value, because an in-memory comparison emits nothing and
+     * byte-for-byte fixture comparison depends on it.
+     *
+     * @return the request layout with every regulated component replaced by a fixed placeholder
+     */
+    @Override
+    public String toString() {
+        return "TransactionAddRequest["
+                + "accountId=" + REDACTION_PLACEHOLDER
+                + ", cardNumber=" + REDACTION_PLACEHOLDER
+                + ", typeCode=" + typeCode
+                + ", categoryCode=" + categoryCode
+                + ", transactionSource=" + transactionSource
+                + ", description=" + REDACTION_PLACEHOLDER
+                + ", amount=" + REDACTION_PLACEHOLDER
+                + ", originationDate=" + originationDate
+                + ", processingDate=" + processingDate
+                + ", merchantId=" + REDACTION_PLACEHOLDER
+                + ", merchantName=" + REDACTION_PLACEHOLDER
+                + ", merchantCity=" + REDACTION_PLACEHOLDER
+                + ", merchantZip=" + REDACTION_PLACEHOLDER
+                + ", confirm=" + confirm
+                + ", keyAction=" + keyAction
+                + ", navigationContext=" + navigationContext
+                + "]";
+    }
 }

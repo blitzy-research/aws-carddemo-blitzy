@@ -64,9 +64,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p><strong>Independent oracle.</strong> Every expected value below was hand-derived from the
  * disclosure-group copybook {@code app/cpy/CVTRA02Y.cpy} (record length 50), from the cluster
- * definition {@code app/jcl/DISCGRP.jcl} ({@code KEYS(16 0)}, {@code RECORDSIZE(50 50)}), from the
- * seeded reference file {@code app/data/ASCII/discgrp.txt} (2,601 bytes = 51 records at 50 bytes plus
- * one line terminator each), and from the file-section layout of the interest program
+ * definition {@code app/jcl/DISCGRP.jcl} (a 16-byte key at offset zero over a 50-byte record), from
+ * the seeded reference file {@code app/data/ASCII/discgrp.txt} (2,601 bytes = 51 records at 50 bytes
+ * plus one line terminator each), and from the file-section layout of the interest program
  * {@code app/cbl/CBACT04C.cbl}. No production method is ever called to produce its own expected
  * value, no output is snapshotted, and no assertion has the shape {@code f(x) == f(x)}.
  *
@@ -74,9 +74,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * record image, computes interest, or inspects a column name, length or nullability. Zoned-decimal
  * decoding and scale truncation belong to the codec in the utility layer; the accrual arithmetic and
  * the status-23 fallback belong to the interest-calculation service; and the object-relational
- * mapping is verified in the integration tier, where schema validation against a real PostgreSQL
- * instance fails start-up on any mismatch - including the identifier-class-to-entity match, which is
- * resolved by field name and field type. Importing any of those collaborators would make another
+ * mapping is asserted by {@code EntityPersistenceMappingTest}, which compares the mapping the provider
+ * computes - this entity's three-column composite key included - against the shipped migration
+ * {@code V1__create_schema.sql} and against an independent copybook-width oracle. Schema validation
+ * against a real instance additionally fails start-up on any mismatch in a deployed environment,
+ * including the identifier-class-to-entity match resolved by field name and field type, though that is
+ * a property of a deployment rather than a check this build performs. Importing any of those collaborators would make another
  * class this suite's oracle, so none is imported.
  *
  * <p><strong>Two divergences from the written contract summary, resolved in favour of the
@@ -101,11 +104,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("DisclosureGroup - 50-byte disclosure-group rate row with a 16-byte three-part key")
 class DisclosureGroupTest {
 
-    // Hand-derived layout constants. Sources: the disclosure-group copybook (record
-    // length 50), the cluster definition (KEYS(16 0), RECORDSIZE(50 50)) and the
-    // interest program's file section, which agree three ways on component order and
-    // width. These are immutable primitives and interned string literals only - this
-    // suite holds no cache and no mutable static state.
+    // Hand-derived layout constants. Sources: the disclosure-group copybook (record length 50),
+    // the cluster definition (a 16-byte key at offset zero over a 50-byte record) and the interest
+    // program's file section, which agree three ways on component order and width. These are
+    // immutable primitives and interned string literals only - this suite holds no cache and no
+    // mutable static state.
 
     /** Account group identifier: key part 1, 10 bytes at offset 0. */
     private static final int GROUP_ID_WIDTH = 10;
@@ -437,14 +440,12 @@ class DisclosureGroupTest {
                 + "makes the key the leading 16 bytes of the record image, no surrogate or "
                 + "generated identifier exists to accompany it")
         void noSurrogateIdentifierExists() {
-            // This test proves the absence of a surrogate identifier by COMPILE-TIME absence, which
-            // is the strongest available evidence and needs no reflection. Nowhere in this file is a
-            // generated-identifier accessor named or invoked; had one been added to the entity, this
-            // suite would still compile, but the entity's own contract would then contradict the
-            // 16-byte leading key that the cluster definition declares. What is asserted here is the
-            // positive consequence: every part of a row's identity is reachable through the three
-            // business-key components, so a row can be addressed without any provider-assigned
-            // value.
+            // Identity here is the business key alone, and that is asserted positively rather than
+            // by negation: every part of a row's identity is reachable through the three business-key
+            // components, so a row can be addressed without any provider-assigned value. Nowhere in
+            // this file is a generated-identifier accessor named or invoked, because the entity
+            // declares none - the 16-byte leading key the cluster definition establishes is the whole
+            // of it.
             DisclosureGroup row = new DisclosureGroup(
                     GROUP_ID_A, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_FIFTEEN));
 
@@ -581,9 +582,10 @@ class DisclosureGroupTest {
 
         @Test
         @DisplayName("a zero rate is a genuine present value and never null, absent or invalid: it "
-                + "is precisely how every one of the seventeen rows in the ZEROAPR group makes the "
-                + "accrual skip branch reachable from seeded data, because interest is computed only "
-                + "when the rate is non-zero")
+                + "is precisely what every one of the seventeen rows in the ZEROAPR group carries, and "
+                + "what an account constructed with that group key must read to reach the accrual skip "
+                + "branch, because interest is computed only when the rate is non-zero. A seed-only run "
+                + "never reads one: every seeded account falls back to DEFAULT, whose rate is 15.00")
         void zeroRateIsALegitimatePresentValue() {
             DisclosureGroup row = new DisclosureGroup(
                     GROUP_ID_ZEROAPR_PADDED, TRAN_TYPE, TRAN_CAT, new BigDecimal(RATE_ZERO));

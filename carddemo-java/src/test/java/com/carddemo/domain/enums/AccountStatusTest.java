@@ -63,7 +63,9 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * test is a value type with no collaborator. It deliberately asserts nothing about persistence
  * mapping - the type carries no persistence annotation and no attribute converter, the account
  * entity keeps the status as a raw one-character column, and the correspondence between entity and
- * schema is verified in the integration tier against a real database rather than here.
+ * schema is asserted by {@code EntityPersistenceMappingTest}, which compares the mapping the
+ * persistence provider computes against the shipped migration {@code V1__create_schema.sql}, rather
+ * than here.
  *
  * @see AccountStatus
  */

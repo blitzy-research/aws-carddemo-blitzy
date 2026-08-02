@@ -16,6 +16,7 @@
  */
 package com.carddemo.api.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 
@@ -180,12 +181,18 @@ import java.math.BigDecimal;
  * reporting. The amount carries no length bound at all: a length bound measures character sequences
  * and collections, and declaring one on a decimal would be an invalid declaration.
  *
- * <p><strong>The primary account number is carried in full.</strong> The sixteen-character card
- * number is returned exactly as stored, because the legacy design applies no field-level protection
- * to it anywhere and closing that gap here would be unrequested behaviour change on a contract this
- * migration is required to preserve. The gap is recorded in {@code docs/decision-log.md} as a
- * finding instead. This type consequently defines no alternative rendering of any component and
- * leaves the generated one in place.
+ * <p><strong>The primary account number is carried in full, and is withheld from diagnostics.</strong>
+ * The sixteen-character card number is returned exactly as stored, because the legacy design applies
+ * no field-level protection to it anywhere and closing that gap here would be unrequested behaviour
+ * change on a contract this migration is required to preserve. The gap is recorded in
+ * {@code docs/decision-log.md} as a finding instead. Those two things are separate channels and only
+ * one of them is a contract: what a client receives is fixed by the screen, whereas what a log line
+ * receives is fixed by nothing at all. {@link #toString()} is therefore overridden to withhold every
+ * regulated component, so the card number, both transaction identifiers, the description, the amount
+ * and the four merchant components cannot reach a log, a diagnostic message or a failure report
+ * through a stringified instance. The component accessors and the serialized payload are untouched
+ * and still carry every value in full, so preserving the wire contract and refusing to print it are
+ * not in tension.
  *
  * <p>There is deliberately no matching request type. The transaction identifier reaches the endpoint
  * as a path or query parameter, so the read has nothing to bind from a body.
@@ -193,7 +200,7 @@ import java.math.BigDecimal;
  * @param transactionName the transaction identifier of this screen, from {@code TRNNAME}
  *     (four characters, map lines 24 and 152). The program stamps its own transaction name here,
  *     at line 249. Screen identity, not transaction data. May be {@code null}.
- * @param titleLine1 the first screen title line, from {@code TITLE01} (forty characters, map lines
+ * @param title01 the first screen title line, from {@code TITLE01} (forty characters, map lines
  *     30 and 158), supplied from the shared screen-title catalogue at line 247. Carried at its full
  *     width including the padding that centres it. May be {@code null}.
  * @param currentDate the server clock date shown in the screen header, from {@code CURDATE} (eight
@@ -203,7 +210,7 @@ import java.math.BigDecimal;
  * @param programName the name of the legacy program behind this screen, from {@code PGMNAME} (eight
  *     characters, map lines 42 and 170), stamped by the program at line 250. Screen identity. May be
  *     {@code null}.
- * @param titleLine2 the second screen title line, from {@code TITLE02} (forty characters, map lines
+ * @param title02 the second screen title line, from {@code TITLE02} (forty characters, map lines
  *     48 and 176), supplied from the same catalogue at line 248. The catalogue holds a commented-out
  *     alternative for this line which stays inactive, so the live value is the one the program
  *     actually moves. May be {@code null}.
@@ -239,9 +246,11 @@ import java.math.BigDecimal;
  *     nothing. May be {@code null}.
  * @param amount the transaction amount, from {@code TRNAMT} (map lines 102 and 230), filled at line
  *     183 by way of an edited presentation field whose form is not carried here. Scale two by
- *     contract, from {@code TRAN-AMT PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy} line 10.
- *     Legitimately negative for a refund, so no sign check is applied. Never scaled, never rounded
- *     and never rendered as a string by this type. May be {@code null}.
+ *     contract, from {@code TRAN-AMT PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy} line 10, which
+ *     also fixes the nine integer digits; the published schema states both figures and the canonical
+ *     constructor refuses a value that contradicts them. Legitimately negative for a refund, so no
+ *     sign check is applied. Never scaled, never rounded and never rendered as a string by this type.
+ *     May be {@code null}.
  * @param originationDate the calendar date the transaction originated on, from {@code TORIGDT} (ten
  *     characters, map lines 108 and 236), filled at line 185 from the leading portion of the
  *     twenty-six character origination stamp held at zero-based offset 278 of the record. Ten
@@ -272,8 +281,10 @@ import java.math.BigDecimal;
  *     explicitly, mirroring the program's own dedicated error flag, and never inferred from
  *     {@code errorMessage} being present.
  * @param focusScreenFieldId the identifier of the screen field that input focus belongs on, carried
- *     as an opaque label bounded in practice by the seven characters a symbolic screen-field name
- *     may occupy. Identity only: the legacy mechanism was a length value assigned to a named field,
+ *     as an opaque label and bounded at the seven characters a symbolic screen-field name may occupy -
+ *     the generator appends a one-character suffix to form the eight-character symbolic names, so a
+ *     longer name could not exist. Identity only: the legacy mechanism was a length value assigned to
+ *     a named field,
  *     and neither that value nor any cursor row, column or attribute byte is reproduced. On this
  *     screen the only field it ever names is the search key, which the program re-selects at lines
  *     151, 154, 287 and 294. May be {@code null} when focus is unspecified.
@@ -287,10 +298,10 @@ import java.math.BigDecimal;
  */
 public record TransactionViewResponse(
         @Size(max = 4) String transactionName,
-        @Size(max = 40) String titleLine1,
+        @Size(max = 40) String title01,
         @Size(max = 8) String currentDate,
         @Size(max = 8) String programName,
-        @Size(max = 40) String titleLine2,
+        @Size(max = 40) String title02,
         @Size(max = 8) String currentTime,
         @Size(max = 16) String searchTransactionId,
         @Size(max = 16) String transactionId,
@@ -299,6 +310,11 @@ public record TransactionViewResponse(
         @Size(max = 4) String categoryCode,
         @Size(max = 10) String source,
         @Size(max = 60) String description,
+        @Schema(description = "Transaction amount. Record field TRAN-AMT of CVTRA05Y.cpy line 10: a "
+                + "signed zoned decimal with nine integer digits and two decimal places, so total "
+                + "precision 11 and scale exactly 2. Legitimately negative for a refund. The edited "
+                + "presentation field the screen displays is deliberately not reproduced; this is the "
+                + "numeric value alone.")
         BigDecimal amount,
         @Size(max = 10) String originationDate,
         @Size(max = 10) String processingDate,
@@ -308,17 +324,186 @@ public record TransactionViewResponse(
         @Size(max = 10) String merchantZip,
         @Size(max = 78) String errorMessage,
         boolean generalError,
-        String focusScreenFieldId,
+        @Size(max = TransactionViewResponse.SCREEN_FIELD_ID_LENGTH) String focusScreenFieldId,
         String nextRoute,
         NavigationContext navigationContext) {
 
-    // The canonical constructor generated for this record is intentionally left exactly as it is:
-    // no compact constructor, no defaulting, no normalising and no rejection. Every value crosses
-    // this boundary byte for byte, which is what lets a blank display area, a space-padded channel
-    // value, a fifty-character shared message and a leading-zero code reach the client unchanged.
     // A record is used rather than a class with accessors so that immutability, the accessors, the
     // equality contract and the parameter metadata all come from the language instead of from a
     // code generator; no annotation processor participates in this module's build.
+    //
+    // That decision governs construction only. It says nothing about rendering, which is settled
+    // separately by the toString override at the foot of this type.
+
+    /**
+     * Fixed stand-in emitted by {@link #toString()} in place of each regulated component.
+     *
+     * <p>A constant rather than any transformation of the value, so nothing about a withheld
+     * component - not its length, not a prefix or suffix, not a digest - can be recovered from a
+     * stringified instance. A partial stand-in was rejected deliberately: a shortened card number is
+     * still cardholder data, and a masked amount whose digit count survives still discloses the order
+     * of magnitude. The same literal is used by every redacting contract in this package so that the
+     * absence of a regulated value is auditable by one search across the whole DTO surface.
+     *
+     * <p>Private because it is a rendering detail rather than part of the transaction-view contract.
+     */
+    private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
+
+    /**
+     * Canonical constructor. Stores every component exactly as supplied and refuses an amount whose
+     * decimal shape contradicts the record field it represents.
+     *
+     * <p>Every value still crosses this boundary byte for byte, which is what lets a blank display
+     * area, a space-padded channel value, a fifty-character shared message and a leading-zero code
+     * reach the client unchanged. Nothing is defaulted, nothing is normalised, nothing is trimmed,
+     * padded, case-folded or reformatted, and no component is copied because every one is already
+     * immutable.
+     *
+     * <p><strong>One value is refused rather than altered.</strong> The amount is checked against the
+     * decimal shape of {@code TRAN-AMT PIC S9(09)V99}: a scale other than {@link #AMOUNT_SCALE}, or a
+     * value needing more than {@link #AMOUNT_INTEGER_DIGITS} integer digits, cannot be what that field
+     * holds. No rescaling, rounding, truncation or formatting occurs, so the amount a producer
+     * published is the amount the client receives, unchanged to the last cent. The only thing that
+     * changes is that a producer publishing the wrong shape learns of it at construction, instead of
+     * emitting a payload whose precision silently contradicts the schema this type publishes - which is
+     * the difference between a decimal contract that is documented and one that holds. A {@code null}
+     * amount is accepted untouched, because the record-absent path deliberately blanks every retrieved
+     * field.
+     *
+     * @throws IllegalArgumentException if {@code amount} carries a scale other than
+     *     {@link #AMOUNT_SCALE} or needs more than {@link #AMOUNT_INTEGER_DIGITS} integer digits
+     */
+    public TransactionViewResponse {
+        requireRecordShape(amount);
+    }
+
+    /**
+     * Width in characters of a nominated screen field's identity: 7.
+     *
+     * <p>Derived from the mapset definition {@code app/bms/COTRN01.bms}, in which no named field has a
+     * name longer than seven characters. Seven is the generator's own ceiling rather than a limit
+     * invented here: it appends a one-character suffix to each field name to form the eight-character
+     * symbolic names in {@code app/cpy-bms/COTRN01.CPY}, so a longer name could not be generated.</p>
+     *
+     * <p>Declared here rather than shared with a sibling contract, exactly as this type's widths are,
+     * so that no change to another map can silently alter this one. The bound reports an over-long
+     * value and never shortens one.</p>
+     */
+    public static final int SCREEN_FIELD_ID_LENGTH = 7;
+
+    /**
+     * Scale of the amount: 2 &mdash; the two decimal places of {@code TRAN-AMT PIC S9(09)V99} at
+     * {@code app/cpy/CVTRA05Y.cpy} line 10, matching the fixed-scale numeric column the value is
+     * persisted in.
+     *
+     * <p>Public because it is part of the numeric contract rather than an implementation choice: a
+     * service that builds a response and a test that checks one need one authority for the figure.
+     * Stating it is not an instruction to rescale anything - no scaling call, rounding mode, precision
+     * context or numeric formatter appears anywhere in this file.</p>
+     */
+    public static final int AMOUNT_SCALE = 2;
+
+    /**
+     * The number of integer digits the amount may carry: 9 &mdash; the nine integer digits of the same
+     * record field. With {@link #AMOUNT_SCALE} this gives the total precision of eleven that the
+     * relational column declares.
+     */
+    public static final int AMOUNT_INTEGER_DIGITS = 9;
+
+    /**
+     * Confirms that the amount has the decimal shape of the record field it represents.
+     *
+     * <p>Reads only the amount's own scale and precision. It performs no arithmetic on the value, does
+     * not re-scale it, does not round it and does not format it, so it cannot change what the client
+     * receives. The failure text names the offending scale or digit count and never the amount itself,
+     * so a rejected value cannot reach a log through the diagnostic that reports it.
+     *
+     * @param amount the amount to check, or {@code null} on the record-absent path where every
+     *     retrieved field is deliberately blank
+     * @throws IllegalArgumentException if the amount does not fit the record field
+     */
+    private static void requireRecordShape(final BigDecimal amount) {
+        if (amount == null) {
+            return;
+        }
+        if (amount.scale() != AMOUNT_SCALE) {
+            throw new IllegalArgumentException("amount must carry scale " + AMOUNT_SCALE
+                    + ", because its record field stores two decimal places, but its scale is "
+                    + amount.scale());
+        }
+        final int integerDigits = amount.precision() - amount.scale();
+        if (integerDigits > AMOUNT_INTEGER_DIGITS) {
+            throw new IllegalArgumentException("amount must fit " + AMOUNT_INTEGER_DIGITS
+                    + " integer digits, because that is the width of its record field, but it needs "
+                    + integerDigits);
+        }
+    }
+
+    /**
+     * Returns a diagnostic representation that mirrors the screen layout and discloses no regulated
+     * value.
+     *
+     * <p><strong>Why the implicit record rendering could not stand.</strong> A record's generated
+     * {@code toString()} prints every component, and this screen is the one place in the package where a
+     * single instance carries a primary account number in full, the amount of the movement made on it,
+     * the merchant that received the movement and the two dates it happened on. Any structured logger,
+     * framework diagnostic, failed assertion, exception message or string interpolation touching an
+     * instance would have emitted the whole set together.</p>
+     *
+     * <p><strong>Why the remainder is retained.</strong> The screen furniture, the type and category
+     * codes, the raw channel value, the summary message, the error indicator and the nominated field
+     * identify nobody, and they are the part of a view response worth seeing in a diagnostic. The
+     * navigation state is printed by delegation because
+     * {@link NavigationContext#toString()} withholds its own six identifying values.</p>
+     *
+     * <p><strong>Why both transaction identifiers go, and why the two dates go with them.</strong>
+     * Each identifier is a durable key to a stored record: {@link #transactionId()} retrieves the row
+     * directly and {@link #searchTransactionId()} is the same key echoed back, so withholding one
+     * while printing the other would withhold nothing. That is a deliberate divergence from
+     * {@link TransactionAddResponse} and {@link BillPaymentResponse}, which both print their new
+     * transaction identifier: theirs is an outcome the caller already holds, reported once at the
+     * moment of creation, whereas this screen's identifier is a lookup key presented to correlate
+     * against stored history. The two dates are withheld on this contract rather than retained as the
+     * sibling account contracts retain theirs, because here they date a single movement made by one
+     * cardholder rather than describing an account's lifecycle, and the payload still carries them in
+     * full for any caller that needs them.</p>
+     *
+     * <p><strong>Withholding is confined to this method.</strong> Every accessor returns its component
+     * exactly as supplied and the serialized payload is unaffected, because the screen presents each
+     * value in full and a client echoes it back unchanged.</p>
+     *
+     * @return the screen layout with each regulated component replaced by a fixed placeholder
+     */
+    @Override
+    public String toString() {
+        return "TransactionViewResponse["
+                + "transactionName=" + transactionName
+                + ", title01=" + title01
+                + ", currentDate=" + currentDate
+                + ", programName=" + programName
+                + ", title02=" + title02
+                + ", currentTime=" + currentTime
+                + ", searchTransactionId=" + REDACTION_PLACEHOLDER
+                + ", transactionId=" + REDACTION_PLACEHOLDER
+                + ", cardNumber=" + REDACTION_PLACEHOLDER
+                + ", typeCode=" + typeCode
+                + ", categoryCode=" + categoryCode
+                + ", source=" + source
+                + ", description=" + REDACTION_PLACEHOLDER
+                + ", amount=" + REDACTION_PLACEHOLDER
+                + ", originationDate=" + REDACTION_PLACEHOLDER
+                + ", processingDate=" + REDACTION_PLACEHOLDER
+                + ", merchantId=" + REDACTION_PLACEHOLDER
+                + ", merchantName=" + REDACTION_PLACEHOLDER
+                + ", merchantCity=" + REDACTION_PLACEHOLDER
+                + ", merchantZip=" + REDACTION_PLACEHOLDER
+                + ", errorMessage=" + errorMessage
+                + ", generalError=" + generalError
+                + ", focusScreenFieldId=" + focusScreenFieldId
+                + ", nextRoute=" + nextRoute
+                + ", navigationContext=" + navigationContext
+                + "]";
+    }
 
     /**
      * The message shown when the transaction identifier submitted for the search is empty:
@@ -355,4 +540,5 @@ public record TransactionViewResponse(
      * is told.</p>
      */
     public static final String TRANSACTION_LOOKUP_FAILED_MESSAGE = "Unable to lookup Transaction...";
+
 }

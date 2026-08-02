@@ -23,13 +23,8 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Stream;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.core.StreamWriteFeature;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.databind.json.JsonMapper;
 
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
@@ -50,82 +45,69 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Unit test for {@link StatementSummary}, the statement work area consumed by the statement
  * generator.
  *
- * <p>{@link StatementSummary} is the decoded value object for the reporting-altered transaction
- * record declared at lines 20 to 36 of {@code app/cpy/COSTM01.CPY}. It is a pure carrier: thirteen
- * live fields, no arithmetic, no scale, no case fold, no trim and no pad. Every assertion below
- * therefore checks a <em>carriage</em> property rather than a computation, because the whole value of
- * this type is that what a producer supplies is exactly what a consumer observes. The statement
- * generator {@code app/cbl/CBSTM03A.CBL} writes two fixed-width output records, one 80 bytes wide and
- * one 100 bytes wide, and both are compared byte for byte against golden fixtures in the end-to-end
- * pipeline test, never here. What lives here is the reason that comparison can succeed at all: a
- * field this type silently dropped, re-padded, re-scaled or case-folded would corrupt both records
- * long before the writers ever saw them.</p>
+ * <p>The type is the decoded value object for the reporting-altered transaction record declared by
+ * {@code app/cpy/COSTM01.CPY}, and it is a pure carrier: thirteen live fields, no arithmetic, no
+ * scale, no case fold, no trim and no pad. Every assertion below therefore checks a carriage
+ * property rather than a computation. The statement generator {@code app/cbl/CBSTM03A.CBL} writes
+ * two fixed-width records, one 80 bytes wide and one 100 bytes wide, compared byte for byte against
+ * golden fixtures in the end-to-end pipeline test and never here; what lives here is the reason that
+ * comparison can succeed at all, because a field this type silently dropped, re-padded, re-scaled or
+ * case-folded would corrupt both records long before the writers ever saw them.</p>
  *
- * <p><strong>Two acceptance assertions this class owns.</strong> First, the 20-byte record tail is
- * absent: the copybook closes with an unnamed 20-byte slack area at line 36 that carries no data name
- * and exists only to round the record image out to 350 bytes, and it must have no component, accessor
- * or serialised property here - proved positively by serialising a fully populated instance and
- * pinning the resulting property set to exactly the thirteen live names. Second, a 26-blank stamp
- * round-trips byte for byte: both stamp fields are 26 characters of opaque text, the seeded processing
- * stamps in the estate are precisely 26 blanks, and such a value must survive construction and a JSON
- * round trip unchanged - never collapsed to an empty value, never replaced by {@code null}, never
- * trimmed and never normalised.</p>
+ * <p>Two acceptance assertions belong to this class. The 20-byte record tail is absent: the copybook
+ * closes with an unnamed 20-byte slack area that carries no data name and exists only to round the
+ * record image out to 350 bytes, so it must have no component, accessor or serialised property here
+ * - established positively by serialising a fully populated instance and pinning the emitted
+ * property set to exactly the thirteen live names. And a 26-blank stamp round-trips byte for byte:
+ * both stamp fields are 26 characters of opaque text, the seeded processing stamps in the estate are
+ * precisely 26 blanks, and such a value must survive construction and a JSON round trip unchanged -
+ * never collapsed to an empty value, never replaced by {@code null}, never trimmed and never
+ * normalised.</p>
  *
- * <p><strong>Byte accounting.</strong> The thirteen live fields account for 330 of the record's 350
- * bytes: 16 for the card number, 16 for the transaction identifier, 2 for the type code, 4 for the
- * category code, 10 for the source channel, 100 for the description, 11 for the amount, 9 for the
- * merchant identifier, 50 for the merchant name, 50 for the merchant city, 10 for the merchant postal
- * code, 26 for the origination stamp and 26 for the processing stamp. The amount contributes 11 rather
- * than 12 because it is a signed zoned decimal of nine digits plus two whose sign is overpunched into
- * its final byte rather than occupying a byte of its own. Adding the 20-byte unnamed tail gives
- * 330 + 20 = 350, so the accounting balances exactly even though this type models only the 330 bytes
- * that carry data.</p>
+ * <p>The thirteen live fields account for 330 of the record's 350 bytes. The amount contributes 11
+ * rather than 12 because it is a signed zoned decimal of nine digits plus two whose sign is
+ * overpunched into its final byte rather than occupying a byte of its own; adding the 20-byte
+ * unnamed tail gives 350, so the accounting balances exactly.</p>
  *
- * <p><strong>These expectations are an independent oracle.</strong> Every expected value is
- * hand-written from the measured copybook widths and from literals the estate is known to write. No
- * expectation is produced by calling a codec, a record mapper, a statement template holder or any
- * statement service, and no assertion compares a value to itself. The JSON shape is checked against a
- * plain {@link ObjectMapper} configured locally in this file to match
- * {@code carddemo-java/src/main/resources/application.yml}; no framework context is started, no
- * container is launched and no database is touched.</p>
+ * <p>Every expected value is an independent oracle, hand-written from the measured copybook widths
+ * and from literals the estate is known to write: no expectation is produced by a codec, a record
+ * mapper, a template holder or any statement service, and no assertion compares a value to itself.
+ * The JSON shape is checked against a plain {@link ObjectMapper} configured locally in this file to
+ * match {@code carddemo-java/src/main/resources/application.yml}; no framework context is started,
+ * no container is launched and no database is touched.</p>
  *
- * <p><strong>The traps this class exists to pin down.</strong></p>
+ * <p>The traps this class exists to pin down:</p>
  * <ol>
- *   <li><strong>The field order is reversed relative to the base transaction layout.</strong> In
- *       {@code app/cpy/CVTRA05Y.cpy} the transaction identifier is the leading field and the card
- *       number is the fifteenth. This layout hoists the card number to the front and pushes the
- *       identifier second, which is exactly what the statement job's reprojection does. The property
- *       order is asserted, so the reversal cannot be quietly "corrected" back.</li>
- *   <li><strong>Three widths are wider than the online view map, deliberately.</strong> The
- *       description is 100 here against 60 in {@code app/cpy-bms/COTRN01.CPY}, the merchant name 50
- *       against 30, and the merchant city 50 against 25. Both are real external contracts that
- *       merely describe overlapping concepts, so the wider widths are asserted and the narrower ones
- *       asserted to be strictly smaller, and no future refactor can unify them and truncate
- *       statement output.</li>
- *   <li><strong>Numeric pictures are text.</strong> A category code of {@code "0002"} and a
- *       transaction identifier of {@code "0000000000000001"} lose their meaning the instant they are
- *       parsed as numbers, so the static types are pinned by assignment, which makes a numeric type
- *       a compile error rather than a silent data defect.</li>
- *   <li><strong>Money is exact and is never rescaled here.</strong> The type carries the decimal it
- *       is handed, at whatever scale it arrives, and the wire form is always plain rather than
- *       scientific. The single place that applies the contractual scale of two, truncating towards
- *       zero, is the zoned-decimal codec reached through the service tier, so no scaling call appears
- *       anywhere in this package or in this test.</li>
- *   <li><strong>Size bounds are the only validation.</strong> A mandatory, pattern or digit
- *       constraint here would fire out of order and report several errors at once, whereas the legacy
- *       validation cascades are ordered and stop at the first failure. An all-null instance and an
- *       all-blank instance are both asserted to produce no violation at all.</li>
+ *   <li>The field order is reversed relative to the base transaction layout
+ *       {@code app/cpy/CVTRA05Y.cpy}, where the transaction identifier leads and the card number is
+ *       fifteenth. This layout hoists the card number to the front, which is what the statement
+ *       job's reprojection does, so the property order is asserted and cannot be quietly
+ *       "corrected" back.</li>
+ *   <li>Three widths are deliberately wider than the online view map: the description is 100 here
+ *       against 60 in {@code app/cpy-bms/COTRN01.CPY}, the merchant name 50 against 30 and the
+ *       merchant city 50 against 25. Both are real external contracts over overlapping concepts, so
+ *       the wider widths are asserted and the narrower ones asserted strictly smaller, and no later
+ *       refactor can unify them and truncate statement output.</li>
+ *   <li>Numeric-looking codes are text: a category code of {@code "0002"} and an identifier of
+ *       {@code "0000000000000001"} lose their meaning the instant they are parsed as numbers, so the
+ *       static types are pinned by assignment and a numeric type becomes a compile error rather
+ *       than a silent data defect.</li>
+ *   <li>Money is exact and is never rescaled here - the type carries the decimal it is handed, at
+ *       whatever scale it arrives, and the wire form is always plain rather than scientific. The
+ *       single place that applies the contractual scale of two, truncating towards zero, is the
+ *       zoned-decimal codec reached through the service tier.</li>
+ *   <li>Size bounds are the only validation, because a mandatory, pattern or digit constraint here
+ *       would fire out of order and report several errors at once whereas the legacy validation
+ *       cascades stop at the first failure; an all-null instance and an all-blank instance are both
+ *       asserted to produce no violation at all.</li>
  * </ol>
- *
- * <p>Behaviour is verified by citation and never by transcription, so no legacy source text appears
- * in this file.</p>
  */
 @DisplayName("StatementSummary: the 350-byte reporting statement work area, carried verbatim")
 final class StatementSummaryTest {
 
     /**
-     * The thirteen serialised property names, in copybook declaration order. The card number leads
-     * and the transaction identifier follows it, which is the reprojected order this layout defines.
+     * The thirteen serialised property names in declaration order: the card number leads and the
+     * transaction identifier follows it, which is the reprojected order this layout defines.
      */
     private static final List<String> LIVE_PROPERTIES = List.of(
             "cardNumber",
@@ -145,16 +127,12 @@ final class StatementSummaryTest {
     /** A stamp that was never set: exactly 26 blanks, which the estate seeds into processing stamps. */
     private static final String BLANK_STAMP = " ".repeat(26);
 
-    /**
-     * The online stamp shape, 26 characters: hyphens inside the date, a blank as the eleventh
-     * character, colons inside the time and a full stop ahead of a six-digit fraction.
-     */
     private static final String ONLINE_STAMP = "2022-06-10 19:27:53.000000";
 
     /**
-     * The batch stamp shape, 26 characters: a hyphen between every date part and ahead of the hour,
-     * then full stops inside the time. It differs from the online shape only at the eleventh,
-     * fourteenth and seventeenth characters.
+     * The batch stamp shape, 26 characters. It differs from the online shape only at the eleventh,
+     * fourteenth and seventeenth characters, which is why both are round-tripped rather than one
+     * standing in for the other.
      */
     private static final String BATCH_STAMP = "2022-06-10-19.27.53.000000";
 
@@ -165,11 +143,9 @@ final class StatementSummaryTest {
 
     /**
      * The literal the row emits in place of the withheld card, description, amount and merchant
-     * components. The two stamps and the source channel are retained rather than withheld; the
-     * rendering test records why.
-     *
-     * <p>Restated here rather than read from the production type, so that a change to that constant
-     * has to be made deliberately in both places and cannot silently weaken these assertions.
+     * components; the two stamps and the source channel are retained rather than withheld. It is
+     * restated here rather than read from the production type, so that a change to that constant has
+     * to be made deliberately in both places and cannot silently weaken these assertions.
      */
     private static final String REDACTION_PLACEHOLDER_TEXT = "***REDACTED***";
 
@@ -183,11 +159,10 @@ final class StatementSummaryTest {
     }
 
     /**
-     * Releases the validator factory, tolerating the case where it was never opened.
-     *
-     * <p>The guard is not decoration. This method runs even when {@link #openValidator()} threw - a
-     * missing provider on the classpath is the realistic cause - and an unguarded call would then
-     * raise a second failure that hides the first. Reporting the real cause is worth one null test.
+     * Releases the validator factory, tolerating the case where it was never opened. The guard is
+     * not decoration: this method runs even when {@link #openValidator()} threw - a missing provider
+     * on the classpath is the realistic cause - and an unguarded call would raise a second failure
+     * that hides the first.
      */
     @AfterAll
     static void closeValidator() {
@@ -197,38 +172,33 @@ final class StatementSummaryTest {
     }
 
     /**
-     * Builds a plain object mapper configured exactly as the shared application configuration
+     * Supplies an object mapper carrying the four settings the shared application configuration
      * declares: absent rather than null properties, dates never as epoch numbers, unknown input
      * tolerated, and decimals always written plainly rather than in scientific notation.
      *
-     * <p>The mapper is built here rather than injected because this is a pure unit test: no
-     * framework context is started, so the four settings are applied directly and stay visible at
-     * the point of use.</p>
+     * <p>No framework context is started, because this is a pure unit test. The mapper is obtained
+     * from {@link JsonContractSupport#declaredSettingsMapper()} rather than assembled here, so the
+     * four settings exist in exactly one place in the test tree and this file cannot transcribe them
+     * differently from a sibling suite.</p>
      *
-     * <p>Because it is hand built, it evidences the settings this file believes are in force rather
-     * than the settings a deployed instance has. {@link ApplicationJsonContractTest} supplies the
-     * missing half: it takes the mapper from a real context that has read the module's own
-     * {@code application.yml} and compares its output byte for byte with a mapper built exactly as
-     * this one is, so a change to that file fails there rather than passing unnoticed here.</p>
+     * <p>What it evidences is the shape this type takes <em>under those settings</em>, and nothing
+     * more; it is not evidence about the mapper a deployed instance holds, and no assertion below is
+     * worded as though it were. {@link ApplicationJsonContractTest} carries that burden against a
+     * mapper obtained from a real context that has read the module's own {@code application.yml}: it
+     * compares that mapper's output with this very factory's output, so a change to the module's
+     * file fails there rather than passing unnoticed here, and it additionally binds each covered
+     * type through the deployed object directly.</p>
      *
-     * @return a mapper whose behaviour matches the deployed serialisation contract
+     * @return a mapper carrying the module's four declared serialisation settings
      */
     private static ObjectMapper newMapper() {
-        return JsonMapper.builder()
-                .defaultPropertyInclusion(JsonInclude.Value.construct(
-                        JsonInclude.Include.NON_NULL, JsonInclude.Include.NON_NULL))
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-                .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
-                .build();
+        return JsonContractSupport.declaredSettingsMapper();
     }
 
     /**
      * A fully populated instance. Values are deliberately awkward: leading zeroes that a numeric
      * type would erase, trailing blanks that a trimming type would eat, mixed case that a folding
      * type would flatten, a 26-blank processing stamp and a negative amount.
-     *
-     * @return a populated statement row that exercises every carriage hazard at once
      */
     private static StatementSummary populated() {
         return new StatementSummary(
@@ -247,7 +217,7 @@ final class StatementSummaryTest {
                 BLANK_STAMP);
     }
 
-    /** An instance whose every component is null, used to prove nothing here is mandatory. */
+    /** An instance whose every component is null: nothing in this type is mandatory. */
     private static StatementSummary allNull() {
         return new StatementSummary(null, null, null, null, null, null, null, null, null, null, null,
                 null, null);
@@ -255,10 +225,6 @@ final class StatementSummaryTest {
 
     /**
      * Serialises a value and reads it back as a property map, preserving the emitted property order.
-     *
-     * @param value the statement row to serialise
-     * @return the emitted properties, in emission order
-     * @throws Exception if serialisation or parsing fails, which is itself a contract failure
      */
     private static Map<String, Object> propertiesOf(StatementSummary value) throws Exception {
         ObjectMapper mapper = newMapper();
@@ -266,13 +232,6 @@ final class StatementSummaryTest {
                 new TypeReference<Map<String, Object>>() { });
     }
 
-    /**
-     * Sends a value out to JSON and back through a mapper configured like the deployed one.
-     *
-     * @param value the statement row to round-trip
-     * @return the value as it survives serialisation and deserialisation
-     * @throws Exception if either direction fails, which is itself a contract failure
-     */
     private static StatementSummary roundTrip(StatementSummary value) throws Exception {
         ObjectMapper mapper = newMapper();
         return mapper.readValue(mapper.writeValueAsString(value), StatementSummary.class);
@@ -281,10 +240,6 @@ final class StatementSummaryTest {
     /**
      * One size-bounded field: the property name, the measured copybook width that bounds it, and a
      * way to build an otherwise-empty instance carrying only that field.
-     *
-     * @param property the serialised property name
-     * @param maxWidth the measured width from the copybook
-     * @param with     builds an instance carrying only this field
      */
     private record BoundedField(String property, int maxWidth,
             Function<String, StatementSummary> with) {
@@ -296,11 +251,9 @@ final class StatementSummaryTest {
     }
 
     /**
-     * The twelve size-bounded fields at their measured widths, in declaration order. The amount is
-     * absent from this list on purpose: it carries no size bound and no numeric bound, because the
-     * legacy record declares none.
-     *
-     * @return every bounded field paired with its width and a single-field builder
+     * The twelve size-bounded fields at their measured widths. The amount is absent from this list
+     * on purpose: it carries no size bound and no numeric bound, because the legacy record declares
+     * none.
      */
     static Stream<BoundedField> boundedFields() {
         return Stream.of(
@@ -330,10 +283,6 @@ final class StatementSummaryTest {
                         null, null, null, null, null, null, null, null, null, null, null, null, v)));
     }
 
-    /**
-     * Mandated acceptance assertion: the 20-byte record tail is absent, and the emitted shape is
-     * exactly the thirteen live fields in reprojected order.
-     */
     @Nested
     @DisplayName("The unnamed 20-byte record tail is absent from the type and from the wire")
     class FillerAbsenceAndJsonShape {
@@ -435,8 +384,8 @@ final class StatementSummaryTest {
     }
 
     /**
-     * Mandated acceptance assertion: a 26-blank stamp round-trips byte for byte, on both stamp
-     * fields, and both punctuation shapes survive without one being normalised into the other.
+     * Both stamp fields are exercised, and both punctuation shapes survive without one being
+     * normalised into the other.
      */
     @Nested
     @DisplayName("Both 26-character stamps are opaque text and survive byte for byte")
@@ -619,11 +568,6 @@ final class StatementSummaryTest {
         }
     }
 
-
-    /**
-     * Group A: fields declared with a numeric picture are carried as bounded text, so leading zeroes
-     * and full widths survive.
-     */
     @Nested
     @DisplayName("Numeric-picture fields are bounded text, so leading zeroes survive")
     class NumericPicturesAsBoundedText {
@@ -726,10 +670,6 @@ final class StatementSummaryTest {
         }
     }
 
-    /**
-     * Group B: the amount is an exact decimal, is never rescaled by this type, and always reaches the
-     * wire in plain rather than scientific form.
-     */
     @Nested
     @DisplayName("The amount is an exact decimal, carried as given and written plainly")
     class MoneyIsExactDecimal {
@@ -879,10 +819,6 @@ final class StatementSummaryTest {
         }
     }
 
-    /**
-     * Group C: the source channel stays raw, blank-filled text and is never narrowed to an
-     * enumerated type.
-     */
     @Nested
     @DisplayName("The source channel stays raw blank-filled text, never an enumerated type")
     class SourceChannelStaysRawText {
@@ -949,11 +885,6 @@ final class StatementSummaryTest {
         }
     }
 
-
-    /**
-     * Group D: every text field is carried verbatim, and the three deliberately widened widths are
-     * never narrowed to the online view map's.
-     */
     @Nested
     @DisplayName("Text fields are carried verbatim, and the widened widths stay wide")
     class TextFieldsRoundTripVerbatim {
@@ -1097,10 +1028,6 @@ final class StatementSummaryTest {
         }
     }
 
-    /**
-     * Group E: a size bound at each measured width is the only validation, and nothing at all is
-     * mandatory.
-     */
     @Nested
     @DisplayName("A size bound at each measured width is the only validation")
     class SizeBoundsAreTheOnlyConstraint {
@@ -1224,10 +1151,6 @@ final class StatementSummaryTest {
         }
     }
 
-    /**
-     * Groups F and G: every component tolerates absence, the type is immutable, absent values are
-     * omitted from the wire, and every accessor is exercised.
-     */
     @Nested
     @DisplayName("Absence is tolerated, the value is immutable, and every accessor is exercised")
     class NullToleranceImmutabilityAndCoverage {
@@ -1387,15 +1310,12 @@ final class StatementSummaryTest {
         }
 
         /**
-         * The primary account number must not reach a rendering surface, and neither must the values
-         * that reconstruct a cardholder's spending alongside it.
-         *
-         * <p>This assertion is negative on purpose and is the security half of the rendering contract.
-         * The card number is a primary account number; the amount, the description and the four
-         * merchant components combine with the retained transaction identifier to describe what a
-         * specific cardholder spent and where. None of them appears in the rendered text, in whole or
-         * in part - a truncated primary account number is still cardholder data, so no partial mask is
-         * accepted either.</p>
+         * The primary account number must not reach a rendering surface, and neither must the
+         * values that reconstruct a cardholder's spending alongside it. This assertion is negative
+         * on purpose and is the security half of the rendering contract: the amount, the description
+         * and the four merchant components combine with the retained transaction identifier to
+         * describe what a specific cardholder spent and where. A truncated primary account number
+         * is still cardholder data, so no partial mask is accepted either.
          */
         @Test
         @DisplayName("the text rendering discloses no primary account number and no spending detail")
@@ -1426,32 +1346,25 @@ final class StatementSummaryTest {
          * Pins the boundary between what the rendering withholds and what it retains, in both
          * directions, because a one-directional assertion cannot detect the boundary moving.
          *
-         * <p><strong>Where the boundary sits, and why it sits there.</strong> Withheld: the card
-         * number, the amount, the description and the four merchant components. Retained: the
-         * transaction identifier, the type and category codes, the source channel and the two
-         * 26-character stamps.
+         * <p>Withheld: the card number, the amount, the description and the four merchant
+         * components - the set that reconstructs a statement line, meaning what was spent, on what
+         * and where. Retained: the transaction identifier, the type and category codes, the source
+         * channel and the two 26-character stamps, which identify and classify the line without
+         * describing it. The source channel is a channel literal such as {@code POS TERM} or
+         * {@code System}, a property of how the record entered the estate rather than an attribute
+         * of any person - the same category as the account status that DL-011 retains for exactly
+         * that reason. The stamps are what the batch tier keys and filters on, so a diagnostic that
+         * omitted them could not answer whether a line fell inside the requested reporting window,
+         * which is the most common batch-parity question there is.
          *
-         * <p>The withheld set is the set that reconstructs a statement line - what was spent, on what,
-         * and where. The retained set identifies and classifies the line without describing it. The
-         * source channel is {@code TRAN-SOURCE PIC X(10)} [{@code app/cpy/CVTRA05Y.cpy}:L8], a channel
-         * literal such as {@code POS TERM} or {@code System}, which is a property of how the record
-         * entered the estate and not an attribute of any person - the same category as the account
-         * status that DL-011 retains for exactly that reason. The stamps are
-         * {@code TRAN-ORIG-TS} and {@code TRAN-PROC-TS PIC X(26)} at record offsets 278 and 304
-         * [{@code app/cpy/CVTRA05Y.cpy}:L16-L17], and they are what the batch tier keys and filters on:
-         * the reporting procedure's {@code INCLUDE COND} selects rows by {@code TRAN-PROC-DT} at offset
-         * 305, so a diagnostic that omitted them could not answer whether a line fell inside the
-         * requested window, which is the most common batch-parity question there is.
-         *
-         * <p>The marginal disclosure from retaining them is nil, and that is the decisive point rather
-         * than a convenience: {@code transactionId} is retained by any reading of this contract, and it
-         * is the primary key of the row, so anything withheld is one keyed read away for a reader who
-         * has database access and unavailable to a reader who does not. Withholding a stamp while
-         * publishing the key that resolves it buys no privacy and costs the diagnostic its usefulness.
-         *
-         * <p>What the security half continues to guarantee is unchanged and is asserted first: no
-         * primary account number, no monetary amount, no description and no merchant component, whole
-         * or partial.
+         * <p>The marginal disclosure from retaining them is nil, and that is the decisive point
+         * rather than a convenience: {@code transactionId} is retained by any reading of this
+         * contract and it is the primary key of the row, so anything withheld is one keyed read away
+         * for a reader who has database access and unavailable to a reader who does not. Withholding
+         * a stamp while publishing the key that resolves it buys no privacy and costs the diagnostic
+         * its usefulness. What the security half guarantees is unchanged and is asserted first: no
+         * primary account number, no monetary amount, no description and no merchant component,
+         * whole or partial.
          */
         @Test
         @DisplayName("neither the card number nor the amount nor any merchant value is rendered, while "

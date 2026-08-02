@@ -18,13 +18,22 @@
 package com.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import jakarta.validation.Validation;
+import jakarta.validation.ValidatorFactory;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -39,14 +48,19 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.boot.env.YamlPropertySourceLoader;
+import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.EnumerablePropertySource;
 import org.springframework.core.env.MutablePropertySources;
 import org.springframework.core.env.PropertySource;
 import org.springframework.core.env.PropertySourcesPropertyResolver;
+import org.springframework.core.env.StandardEnvironment;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
+
+import com.carddemo.util.SensitiveFieldCodec;
 
 /**
  * Pins the fail-closed posture of the shipped configuration: that the shared baseline is the
@@ -72,6 +86,25 @@ import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
  * asserted directly. Nothing is bound to a configuration-properties type and no application context
  * is started for the value assertions, so the test observes exactly the bytes that ship rather than
  * the result of binding them.
+ *
+ * <h2>Why a document is resolved by its PHYSICAL copy and never by its bare class-path name</h2>
+ *
+ * <p>{@code application-test.yml} exists twice, and both copies are named deliverables:
+ * {@code src/main/resources/application-test.yml} is packaged inside the artefact and is the only
+ * definition of the profile outside a suite run, while {@code src/test/resources/application-test.yml}
+ * exists only while the suite runs and specialises it. The test class path places
+ * {@code target/test-classes} AHEAD of {@code target/classes}, so a lookup by bare name -
+ * {@code new ClassPathResource("application-test.yml")} - answers with the suite overlay and the
+ * packaged deliverable is never read at all. A suite that asserted through such a lookup would report
+ * the overlay's posture as though it were the artefact's, which is false assurance rather than
+ * coverage: an edit to the packaged document could not fail any assertion.
+ *
+ * <p>Every helper here therefore resolves {@code classpath*:} - which yields EVERY copy - and selects
+ * one by origin: the copy whose location carries {@link #SUITE_ORIGIN} is the suite overlay, and any
+ * other copy is the packaged document. The four profile constants always name the PACKAGED document,
+ * so every assertion in this class is an assertion about what ships. The overlay is asserted
+ * separately, by {@link TheTestProfileExistsTwiceAndBothCopiesAreAsserted}, which also pins the
+ * precedence itself so the duplicate name cannot silently start hiding a deliverable again.
  *
  * <h2>Independent expectations</h2>
  *
@@ -100,8 +133,23 @@ final class ConfigurationProfileBaselineTest {
     /** The overlay in which every secret is an environment reference with no fallback. */
     private static final String PRODUCTION = "application-prod.yml";
 
-    /** The overlay bound to Testcontainers-provided endpoints. */
+    /**
+     * The overlay bound to Testcontainers-provided endpoints.
+     *
+     * <p>Wherever this constant is used it names the PACKAGED copy - the one under
+     * {@code src/main/resources} - because that is the deliverable and the only definition of the
+     * profile outside a suite run. The suite-only copy of the same name is reached through
+     * {@link #suiteOverlay()} instead.
+     */
     private static final String TEST = "application-test.yml";
+
+    /**
+     * Class-path location segment that identifies the copy of a document present only while the suite
+     * runs. Maven compiles {@code src/test/resources} to {@code target/test-classes}, so this segment
+     * distinguishes the suite overlay from the packaged document without either file having to
+     * announce which one it is.
+     */
+    private static final String SUITE_ORIGIN = "/test-classes/";
 
     /** The management surface the baseline publishes: three endpoints, each a cross-file contract. */
     private static final String EXPECTED_CLOSED_EXPOSURE = "health,info,prometheus";
@@ -187,6 +235,71 @@ final class ConfigurationProfileBaselineTest {
     /** The queue endpoint, declared by the local overlay alongside the inherited strategy. */
     private static final String KEY_SQS_ENDPOINT = "spring.cloud.aws.sqs.endpoint";
 
+    /**
+     * The one key that decides whether traces are exported.
+     *
+     * <p>Boot resolves this before {@code management.tracing.enabled} when deciding whether to create
+     * the OTLP exporter at all, which is why it - and not the sampling probability - is what the test
+     * profile has to set.
+     */
+    private static final String KEY_OTLP_EXPORT_ENABLED =
+            "management.otlp.tracing.export.enabled";
+
+    /**
+     * The sampling probability, which is emphatically NOT an export control.
+     *
+     * <p>The effective sampler is parent-based over the ratio sampler, so the probability configures
+     * only the root decision: a request arriving with an already-sampled trace context is sampled
+     * whatever the ratio says, and its spans reach the exporter. The profile documents once claimed
+     * this key switched export off; it does not, and this constant exists so a test can pin the
+     * distinction rather than leave it to a comment.
+     */
+    private static final String KEY_TRACING_SAMPLING_PROBABILITY =
+            "management.tracing.sampling.probability";
+
+    /**
+     * Every AWS endpoint setting the test profile must declare - the global one and one per service.
+     *
+     * <p>Declaring all four is not redundancy. An absent data-source address fails closed; an absent
+     * AWS endpoint does NOT - the SDK resolves the region's real public endpoint and sends the request
+     * there on whatever credentials the default chain finds. So each of these has to be present for
+     * the corresponding client to be pinned at the emulator, and the global setting is restated per
+     * service so that dropping any one of them cannot leave a client addressing a real account.
+     */
+    private static final List<String> AWS_ENDPOINT_KEYS = List.of(
+            "spring.cloud.aws.endpoint",
+            "spring.cloud.aws.s3.endpoint",
+            KEY_SQS_ENDPOINT,
+            "spring.cloud.aws.sns.endpoint");
+
+    /** The host suffix that would prove an endpoint was bound for a real AWS account. */
+    private static final String REAL_AWS_HOST_SUFFIX = "amazonaws.com";
+
+    /**
+     * The keys the local overlay declares and the packaged test overlay deliberately does not.
+     *
+     * <p>Local addresses one fixed compose stack, so an address written there is correct. A
+     * container's port is ephemeral, so an address written in the test overlay could only be wrong or
+     * dangerous - a test that never started a container would connect to the developer's own database
+     * and pass. {@code AbstractPostgresIT} publishes these three instead.
+     */
+    private static final List<String> LOCAL_ONLY_KEYS = List.of(
+            KEY_DATASOURCE_URL,
+            "spring.datasource.username",
+            "spring.datasource.password");
+
+    /**
+     * The keys the packaged test overlay declares and the local overlay deliberately does not.
+     *
+     * <p>The interactive description surface is closed explicitly in a suite run rather than by
+     * inheritance, so its absence is provable there. Trace export is switched off in a suite run
+     * because there is no collector, while local exports to the one the compose stack runs and so
+     * wants the shipped default.
+     */
+    private static final List<String> TEST_ONLY_KEYS = List.of(
+            KEY_SWAGGER_UI_ENABLED,
+            KEY_OTLP_EXPORT_ENABLED);
+
     /** A withdrawn key: the record width, now a constant the publisher enforces. */
     private static final String KEY_RECORD_LENGTH = "carddemo.aws.sqs.record-length";
 
@@ -196,25 +309,98 @@ final class ConfigurationProfileBaselineTest {
     /** The migration location every profile reads, production included. */
     private static final String KEY_FLYWAY_LOCATIONS = "spring.flyway.locations";
 
-    /** The location carrying the schema and index migrations. */
-    private static final String MIGRATION_LOCATION = "classpath:db/migration";
+    /** The version ceiling that excludes the seeds from production. */
+    private static final String KEY_FLYWAY_TARGET = "spring.flyway.target";
 
-    /** The location reserved for reference rows and sign-on identities, which production never lists. */
-    private static final String SEED_LOCATION = "classpath:db/seed";
+    /** Whether the batch framework may create its own metadata tables at start-up. */
+    private static final String KEY_BATCH_INITIALIZE_SCHEMA = "spring.batch.jdbc.initialize-schema";
+
+    /** The single location carrying every migration - schema, framework metadata and seeds alike. */
+    private static final String MIGRATION_LOCATION = "classpath:db/migration";
 
     /** Class-path folder behind {@link #MIGRATION_LOCATION}, as a resource pattern reads it. */
     private static final String MIGRATION_FOLDER = "db/migration";
 
-    /** Class-path folder behind {@link #SEED_LOCATION}. */
-    private static final String SEED_FOLDER = "db/seed";
+    /**
+     * The folder a superseded revision used to hold the seeds, asserted to be gone.
+     *
+     * <p>Kept as a constant rather than inlined because two assertions refer to it and both are about
+     * its absence: the split it represented is what the version ceiling replaced.
+     */
+    private static final String WITHDRAWN_SEED_FOLDER = "db/seed";
 
     /**
-     * How a shipped document states the highest version a migration currently reaches.
+     * The withdrawn folder written as a location descriptor, which is the form a location list holds.
      *
-     * <p>The version number is appended by the assertion from the delivered scripts rather than
-     * written here, so the expectation is the delivered state and not a second copy of the claim.
+     * <p>Asserted against the resolved value of {@code spring.flyway.locations} rather than against a
+     * document's text, so the check is about what a deployment would migrate from and not about what a
+     * comment may mention.
      */
-    private static final String DELIVERED_VERSION_CLAIM = "currently ends at V";
+    private static final String WITHDRAWN_SEED_LOCATION = "classpath:" + WITHDRAWN_SEED_FOLDER;
+
+    /** The production version ceiling, above which a script is never resolved. */
+    private static final String PRODUCTION_VERSION_CEILING = "2";
+
+    /**
+     * The ceiling the two seeding profiles raise for themselves so the seed scripts apply.
+     *
+     * <p>The shared baseline declares the restrictive ceiling, so a profile that says nothing about
+     * seeding inherits a schema-only migration; a profile that wants the seeds lifts the ceiling to
+     * this value explicitly. The direction of that default is the control: a forgotten override then
+     * withholds seed data rather than depositing seeded credentials unnoticed.</p>
+     */
+    private static final String SEEDING_TARGET = "latest";
+
+    /**
+     * Every migration this module delivers, in the order a migration applies them.
+     *
+     * <p>Flat in one location by design. The first three sit at or below the production ceiling and
+     * reach every profile; the last two sit above it and reach local and test only.
+     */
+    private static final List<String> DELIVERED_MIGRATIONS = List.of(
+            "V1__create_schema.sql",
+            "V1_1__create_batch_metadata.sql",
+            "V2__create_indexes.sql",
+            "V3__seed_reference_data.sql",
+            "V4__seed_user_security.sql");
+
+    /** The delivered migrations production applies, being those at or below the ceiling. */
+    private static final List<String> MIGRATIONS_AT_OR_BELOW_CEILING = List.of(
+            "V1__create_schema.sql",
+            "V1_1__create_batch_metadata.sql",
+            "V2__create_indexes.sql");
+
+    /** The seed migration whose customer rows carry sealed government-issued identifiers. */
+    private static final String SEED_REFERENCE_DATA = "V3__seed_reference_data.sql";
+
+    /** The marker every protected value carries, matching the codec's envelope prefix. */
+    private static final String PROTECTED_VALUE_MARKER = SensitiveFieldCodec.ENVELOPE_PREFIX;
+
+    /** Customer rows the seed loads, each of which must carry one sealed identifier. */
+    private static final int SEEDED_CUSTOMER_ROWS = 50;
+
+    /** Width of the government-issued identifier in the legacy customer record. */
+    private static final int SEALED_IDENTIFIER_WIDTH = 20;
+
+    /** Decoded length the field-encryption key must have, as AES-256 requires. */
+    private static final int FIELD_ENCRYPTION_KEY_BYTES = SensitiveFieldCodec.KEY_LENGTH_BYTES;
+
+    /**
+     * A complete sealed identifier literal, as the seed embeds one.
+     *
+     * <p>The body length is taken from the codec rather than written down, so the pattern stays correct
+     * if the envelope layout ever changes and stops matching if a literal is truncated. Counting
+     * complete literals rather than bare occurrences of the marker matters: the seed also names the
+     * marker in a comment and uses it in its own self-check, and both would inflate a naive count.</p>
+     */
+    private static final Pattern SEALED_IDENTIFIER_LITERAL = Pattern.compile(
+            "'" + Pattern.quote(PROTECTED_VALUE_MARKER) + "[A-Za-z0-9+/=]{"
+                    + (SensitiveFieldCodec.envelopeLengthFor(SEALED_IDENTIFIER_WIDTH)
+                            - SensitiveFieldCodec.ENVELOPE_PREFIX.length()) + "}'");
+
+    /** A quoted run of digits at the legacy identifier width, which no seeded row may carry. */
+    private static final Pattern CLEARTEXT_IDENTIFIER_LITERAL =
+            Pattern.compile("'\\d{" + SEALED_IDENTIFIER_WIDTH + "}'");
 
     /** The legacy transient-data queue's name, carrying the suffix the queue service requires. */
     private static final String EXPECTED_JOB_SUBMISSION_QUEUE = "JOBS.fifo";
@@ -374,12 +560,30 @@ final class ConfigurationProfileBaselineTest {
         @Test
         @DisplayName("the test overlay supplies the two secrets and lets the container supply the url")
         void theTestOverlaySuppliesTheTwoSecrets() {
-            assertThat(properties(TEST).keySet())
+            assertThat(propertiesOf(packaged(TEST)).keySet())
                     .contains(KEY_JWT_SECRET, KEY_FIELD_ENCRYPTION_KEY);
-            assertThat(properties(TEST))
-                    .as("a Testcontainers-provided location is injected at run time, so declaring"
-                            + " one here would shadow the container that was actually started")
-                    .doesNotContainKey(KEY_DATASOURCE_URL);
+            assertThat(propertiesOf(suiteOverlay()).keySet())
+                    .as("the overlay the suite actually loads must supply them too, otherwise the"
+                            + " packaged declaration is never the one in force")
+                    .contains(KEY_JWT_SECRET, KEY_FIELD_ENCRYPTION_KEY);
+        }
+
+        @ParameterizedTest(name = "neither copy of the test profile declares {0}")
+        @ValueSource(strings = {KEY_DATASOURCE_URL, "spring.datasource.username",
+                "spring.datasource.password"})
+        @DisplayName("neither copy of the test profile declares a data source, so a context that was "
+                + "not wired to a container fails closed instead of reaching a developer's own server")
+        void neitherCopyOfTheTestProfileDeclaresADataSource(final String key) {
+            assertThat(propertiesOf(packaged(TEST)))
+                    .as("a Testcontainers-provided location is registered at run time by the shared"
+                            + " support base class; a declaration here would either shadow the"
+                            + " container that was actually started or, worse, answer with a"
+                            + " reachable developer address when no container was started at all")
+                    .doesNotContainKey(key);
+            assertThat(propertiesOf(suiteOverlay()))
+                    .as("the overlay the suite loads must fail closed for the same reason, and it is"
+                            + " the copy that wins during a suite run")
+                    .doesNotContainKey(key);
         }
     }
 
@@ -455,25 +659,80 @@ final class ConfigurationProfileBaselineTest {
             assertThat(text(PRODUCTION, KEY_REQUIRE_HTTPS)).isEqualTo("true");
         }
 
-        @ParameterizedTest(name = "{0} is an environment reference with no fallback")
-        @MethodSource("com.carddemo.config.ConfigurationProfileBaselineTest#requiredUndeclaredKeys")
-        @DisplayName("resolves every required value from the environment with no fallback default")
-        void resolvesEveryRequiredValueWithNoFallback(final String key) {
-            String declared = text(PRODUCTION, key);
+        @ParameterizedTest(name = "{0} is a bare reference to {1}")
+        @MethodSource("com.carddemo.config.ConfigurationProfileBaselineTest"
+                + "#requiredProductionSettings")
+        @DisplayName("declares every required value as the exact bare reference the guard watches")
+        void declaresEveryRequiredValueAsTheReferenceTheGuardWatches(final String key,
+                final String variable) {
+            assertThat(text(PRODUCTION, key))
+                    .as("%s must be written as a bare reference to %s. A fallback would put a usable"
+                            + " value in the repository, and a different variable name would leave the"
+                            + " guard watching a key that nothing supplies", key, variable)
+                    .isEqualTo("${" + variable + "}");
+        }
 
-            assertThat(declared)
-                    .as("%s must be a bare reference; a fallback would silently bind a placeholder"
-                            + " instead of failing start-up", key)
-                    .matches("\\$\\{[A-Z0-9_]+\\}");
+        @ParameterizedTest(name = "{0} resolves to nothing usable until {1} is supplied")
+        @MethodSource("com.carddemo.config.ConfigurationProfileBaselineTest"
+                + "#requiredProductionSettings")
+        @DisplayName("resolves every required value to nothing usable until the environment supplies it")
+        void resolvesEveryRequiredValueToNothingUsable(final String key, final String variable) {
+            String resolved = productionEnvironmentWithNothingSupplied()
+                    .resolvePlaceholders("${" + key + "}");
+
+            assertThat(resolved)
+                    .as("this is what a running application OBSERVES for %s while %s is unset: the"
+                            + " reference survives resolution instead of failing it. Asserting the"
+                            + " document's shape alone could never have shown that, which is the whole"
+                            + " reason the guard exists", key, variable)
+                    .isEqualTo("${" + variable + "}");
         }
 
         @Test
-        @DisplayName("resolves the data source user and credential from the environment too")
-        void resolvesTheUserAndCredentialFromTheEnvironment() {
-            assertThat(text(PRODUCTION, "spring.datasource.username"))
-                    .matches("\\$\\{[A-Z0-9_]+\\}");
-            assertThat(text(PRODUCTION, "spring.datasource.password"))
-                    .matches("\\$\\{[A-Z0-9_]+\\}");
+        @DisplayName("refuses to start when the environment supplies nothing, naming every variable")
+        void refusesToStartWhenTheEnvironmentSuppliesNothing() {
+            ConfigurableEnvironment environment = productionEnvironmentWithNothingSupplied();
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("an unsupplied production environment must stop the start rather than bind"
+                            + " placeholder text into a data source, a key store and a signing secret")
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateRequiredSettings(environment))
+                    .satisfies(failure -> ProductionConfigurationValidator.REQUIRED_SETTINGS
+                            .forEach(setting -> assertThat(failure.getMessage())
+                                    .as("the report must name %s and the variable that supplies it",
+                                            setting.propertyKey())
+                                    .contains(setting.propertyKey())
+                                    .contains(setting.environmentVariable())));
+        }
+
+        @Test
+        @DisplayName("the bare reference on its own fails nothing, which is why the guard is needed")
+        void theBareReferenceOnItsOwnFailsNothing() {
+            ConfigurableEnvironment environment = productionEnvironmentWithNothingSupplied();
+
+            JwtProperties bound = Binder.get(environment)
+                    .bind(JwtProperties.PREFIX, JwtProperties.class)
+                    .get();
+
+            assertThat(bound.secret())
+                    .as("a configuration-properties binding resolves placeholders leniently, so with"
+                            + " no variable supplied the signing secret binds as the text of its own"
+                            + " placeholder rather than failing")
+                    .isEqualTo("${" + variableFor(KEY_JWT_SECRET) + "}");
+            assertThat(bound.hasSecret())
+                    .as("the module's own predicate cannot tell the difference either: placeholder"
+                            + " text is not blank")
+                    .isTrue();
+
+            try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
+                assertThat(factory.getValidator().validate(bound))
+                        .as("neither can the @NotBlank constraint already declared on the secret."
+                                + " This is the falsifiability control for the two assertions above:"
+                                + " if a future revision made the bare form fail on its own, this"
+                                + " assertion would break and the guard could be reconsidered")
+                        .isEmpty();
+            }
         }
 
         @Test
@@ -495,15 +754,410 @@ final class ConfigurationProfileBaselineTest {
             assertThat(text(TEST, KEY_REQUIRE_HTTPS)).isEqualTo("false");
         }
 
-        @ParameterizedTest(name = "does not declare {0}")
-        @ValueSource(strings = {KEY_EXPOSURE, KEY_SHOW_DETAILS, KEY_SHOW_COMPONENTS,
-                KEY_API_DOCS_ENABLED, KEY_SWAGGER_UI_ENABLED})
+        @ParameterizedTest(name = "does not widen {0}")
+        @MethodSource("com.carddemo.config.ConfigurationProfileBaselineTest#closedSurfaceExpectations")
         @DisplayName("widens no management or description surface, so tests observe the shipped posture")
-        void widensNoManagementOrDescriptionSurface(final String key) {
-            assertThat(properties(TEST))
-                    .as("%s must stay inherited, otherwise a test asserting the shipped posture"
-                            + " would be asserting a test-only one", key)
-                    .doesNotContainKey(key);
+        void widensNoManagementOrDescriptionSurface(final String key, final String closedValue) {
+            assertThat(resolvedAcrossSharedThen(TEST, key))
+                    .as("the packaged test profile may restate %s at the value the baseline closes it"
+                            + " to - which it does, so that a widening becomes a conscious edit here -"
+                            + " but it must never resolve to anything else, or a test asserting the"
+                            + " shipped posture would be asserting a test-only one", key)
+                    .isEqualTo(closedValue);
+
+            assertThat(propertiesOf(suiteOverlay()).keySet())
+                    .as("the overlay the suite loads must not declare %s at all: it inherits the"
+                            + " packaged value, and a second declaration is a second place to widen"
+                            + " from", key)
+                    .doesNotContain(key);
+        }
+    }
+
+    @Nested
+    @DisplayName("the test profile exists twice, and both copies are asserted")
+    final class TheTestProfileExistsTwiceAndBothCopiesAreAsserted {
+
+        /**
+         * The keys whose value is a contract shared by both copies rather than a suite convenience.
+         *
+         * <p>Each of these is spoken by something outside the configuration - the queue service, the
+         * publisher, the token binder, the field codec, the migration tool - so the two copies
+         * disagreeing on any of them would mean a suite run exercised a different contract from the one
+         * the artefact carries. That is precisely the class of divergence a duplicate file name makes
+         * easy and a diff makes hard to see.
+         */
+        private static final List<String> CONTRACTUAL_KEYS = List.of(
+                KEY_JOB_SUBMISSION_QUEUE,
+                "carddemo.aws.sqs.message-group-id",
+                "carddemo.aws.sns.job-notification-topic",
+                "carddemo.aws.s3.bucket",
+                "carddemo.security.jwt.issuer",
+                KEY_FIELD_ENCRYPTION_KEY,
+                KEY_JWT_SECRET,
+                KEY_REQUIRE_HTTPS,
+                KEY_FLYWAY_LOCATIONS,
+                "spring.jpa.hibernate.ddl-auto");
+
+        @Test
+        @DisplayName("carries exactly two physical copies - one packaged, one suite-only - because "
+                + "both are named deliverables")
+        void carriesExactlyTwoPhysicalCopies() {
+            List<Resource> copies = physicalCopiesOf(TEST);
+
+            assertThat(copies)
+                    .as("%s is delivered under src/main/resources AND src/test/resources; a third copy"
+                            + " would mean a stray resource root, and a single copy would mean one of"
+                            + " the two deliverables was deleted", TEST)
+                    .hasSize(2);
+            assertThat(copies.stream().filter(ConfigurationProfileBaselineTest::isSuiteOverlay))
+                    .as("exactly one copy must come from src/test/resources")
+                    .hasSize(1);
+            assertThat(copies.stream()
+                    .filter(resource -> !ConfigurationProfileBaselineTest.isSuiteOverlay(resource)))
+                    .as("exactly one copy must be the packaged deliverable, which is what a"
+                            + " `test`-profile run of the built artefact loads")
+                    .hasSize(1);
+        }
+
+        @Test
+        @DisplayName("resolves the suite-only copy for a bare class-path name, which is why nothing "
+                + "here asks for a document that way")
+        void aBareClassPathNameResolvesTheSuiteCopy() {
+            String resolvedByName = physicalLocationOf(new ClassPathResource(TEST));
+
+            assertThat(resolvedByName)
+                    .as("this is the shadowing itself, pinned rather than assumed: the test class path"
+                            + " puts target/test-classes first, so a lookup by name answers with the"
+                            + " overlay. Every assertion in this class resolves classpath*: and picks a"
+                            + " copy by origin precisely because of this. If this ever stops holding,"
+                            + " the ordering changed and the packaged copy would start answering"
+                            + " suite-scoped questions")
+                    .contains(SUITE_ORIGIN);
+            assertThat(resolvedByName)
+                    .as("and it is the same file as the copy this class classifies as the overlay, so"
+                            + " the two ways of naming it cannot diverge")
+                    .isEqualTo(physicalLocationOf(suiteOverlay()));
+            assertThat(resolvedByName)
+                    .as("which is emphatically NOT the packaged deliverable - the distinction this"
+                            + " whole nested class exists to keep visible")
+                    .isNotEqualTo(physicalLocationOf(packaged(TEST)));
+        }
+
+        @Test
+        @DisplayName("loads both copies with properties, so neither is a stub that makes an assertion "
+                + "over it vacuous")
+        void bothCopiesLoadWithProperties() {
+            assertThat(propertiesOf(packaged(TEST)))
+                    .as("the packaged copy is the complete definition of the profile")
+                    .isNotEmpty()
+                    .hasSizeGreaterThan(20);
+            assertThat(propertiesOf(suiteOverlay()))
+                    .as("the overlay specialises the packaged copy; an empty overlay would mean the"
+                            + " suite silently ran on the packaged values alone")
+                    .isNotEmpty()
+                    .hasSizeGreaterThan(20);
+        }
+
+        @ParameterizedTest(name = "both copies agree on {0}")
+        @MethodSource("contractualKeys")
+        @DisplayName("both copies resolve every contractual value identically, so a suite run "
+                + "exercises the contract the artefact carries")
+        void bothCopiesAgreeOnEveryContractualValue(final String key) {
+            String fromPackaged = resolvedInResource(packaged(TEST), key);
+            String fromOverlay = resolvedInResource(suiteOverlay(), key);
+
+            assertThat(fromPackaged)
+                    .as("the packaged copy must declare %s: it is the only definition of the profile"
+                            + " outside a suite run", key)
+                    .isNotNull();
+            assertThat(fromOverlay)
+                    .as("the overlay must declare %s too, because it is the copy in force during a"
+                            + " suite run and an omission here silently swaps the contract", key)
+                    .isNotNull();
+            assertThat(fromOverlay)
+                    .as("%s is a contract rather than a suite convenience, so the two copies must"
+                            + " resolve it to the same value", key)
+                    .isEqualTo(fromPackaged);
+        }
+
+        @Test
+        @DisplayName("both copies switch trace export off at the property that switches it off, not at "
+                + "the sampling probability, which cannot")
+        void bothCopiesDisableTraceExportAtTheExportProperty() {
+            for (Resource copy : physicalCopiesOf(TEST)) {
+                assertThat(resolvedInResource(copy, KEY_OTLP_EXPORT_ENABLED))
+                        .as("%s must set %s to false. Boot resolves this key before"
+                                + " management.tracing.enabled when it decides whether to create the"
+                                + " OTLP exporter, so setting it here means no exporter bean exists and"
+                                + " nothing can open a connection to a collector that a suite run does"
+                                + " not have", physicalLocationOf(copy), KEY_OTLP_EXPORT_ENABLED)
+                        .isEqualTo("false");
+            }
+        }
+
+        @Test
+        @DisplayName("a zero sampling probability is not mistaken for the export control")
+        void aZeroSamplingProbabilityIsNotTheExportControl() {
+            Resource packagedCopy = packaged(TEST);
+
+            assertThat(resolvedInResource(packagedCopy, KEY_TRACING_SAMPLING_PROBABILITY))
+                    .as("the packaged copy does declare a zero probability, and that is fine as an"
+                            + " optimisation - it suppresses ROOT spans and so keeps recording cost off"
+                            + " several hundred context refreshes")
+                    .isEqualTo("0.0");
+            assertThat(resolvedInResource(packagedCopy, KEY_OTLP_EXPORT_ENABLED))
+                    .as("but it must NOT be the only thing standing between the suite and a collector."
+                            + " The effective sampler is parent-based over the ratio sampler, so a"
+                            + " request carrying an already-sampled trace context is sampled whatever"
+                            + " the ratio says and its spans reach the exporter. An earlier revision of"
+                            + " this profile relied on the probability alone and documented it as"
+                            + " disabling export; it does not, and this assertion is what stops that"
+                            + " belief coming back")
+                    .isEqualTo("false");
+        }
+
+        @ParameterizedTest(name = "both copies pin {0} at the emulator")
+        @MethodSource("awsEndpointKeys")
+        @DisplayName("both copies redirect every AWS client at the emulator, because an absent endpoint "
+                + "resolves the REAL service rather than failing")
+        void bothCopiesRedirectEveryAwsClientAtTheEmulator(final String key) {
+            for (Resource copy : physicalCopiesOf(TEST)) {
+                String endpoint = resolvedInResource(copy, key);
+
+                assertThat(endpoint)
+                        .as("%s must declare %s. Unlike an absent data-source address, an absent AWS"
+                                + " endpoint does not fail closed: the SDK resolves the region's real"
+                                + " public endpoint and sends the request there on whatever credentials"
+                                + " the default chain finds. An earlier revision of the suite overlay"
+                                + " declared none of these and relied on the support base classes,"
+                                + " which only ever bound the clients they built themselves",
+                                physicalLocationOf(copy), key)
+                        .isNotNull()
+                        .isNotBlank();
+                assertThat(endpoint)
+                        .as("%s in %s must not name a real service host", key, physicalLocationOf(copy))
+                        .doesNotContain(REAL_AWS_HOST_SUFFIX);
+                assertThat(URI.create(endpoint).getHost())
+                        .as("%s in %s must address the emulator over the loopback interface", key,
+                                physicalLocationOf(copy))
+                        .isIn("localhost", "127.0.0.1");
+            }
+        }
+
+        /**
+         * The contractual keys both copies must agree on.
+         *
+         * @return one argument per key
+         */
+        static Stream<Arguments> contractualKeys() {
+            return CONTRACTUAL_KEYS.stream().map(Arguments::of);
+        }
+
+        /**
+         * The AWS endpoint settings both copies must declare.
+         *
+         * @return one argument per key
+         */
+        static Stream<Arguments> awsEndpointKeys() {
+            return AWS_ENDPOINT_KEYS.stream().map(Arguments::of);
+        }
+    }
+
+    @Nested
+    @DisplayName("the local overlay and the packaged test overlay carry the same key set, and every "
+            + "divergence is a declared one")
+    final class TheLocalAndTestOverlaysCarryTheSameKeySet {
+
+        @Test
+        @DisplayName("neither overlay has gained or lost a leaf the other does not account for")
+        void neitherOverlayHasDriftedFromTheOther() {
+            Set<String> localKeys = properties(LOCAL).keySet();
+            Set<String> testKeys = properties(TEST).keySet();
+
+            assertThat(difference(localKeys, testKeys))
+                    .as("the local overlay declares these and the packaged test overlay does not. The"
+                            + " set is fixed by design and recorded as DIVERGENCE 1 in both files: a"
+                            + " new entry here means one overlay gained a key the other never got, and"
+                            + " the two profiles stopped reading a job parameter, a resource name or a"
+                            + " schema location identically")
+                    .containsExactlyInAnyOrderElementsOf(LOCAL_ONLY_KEYS);
+            assertThat(difference(testKeys, localKeys))
+                    .as("and these are the packaged test overlay's own, recorded as DIVERGENCE 2 and"
+                            + " DIVERGENCE 3. Same reasoning in the other direction")
+                    .containsExactlyInAnyOrderElementsOf(TEST_ONLY_KEYS);
+        }
+
+        @Test
+        @DisplayName("the shared part of the key set is the bulk of both overlays, so the comparison is "
+                + "not vacuous")
+        void theSharedPartIsTheBulkOfBoth() {
+            Set<String> localKeys = properties(LOCAL).keySet();
+            Set<String> testKeys = properties(TEST).keySet();
+            Set<String> shared = new LinkedHashSet<>(localKeys);
+            shared.retainAll(testKeys);
+
+            assertThat(shared)
+                    .as("an assertion that two nearly-empty key sets agree would prove nothing; this"
+                            + " pins that the agreement covers most of both documents")
+                    .hasSizeGreaterThan(30);
+            assertThat(shared.size())
+                    .as("the shared part must dominate the divergences by an order of magnitude")
+                    .isGreaterThan((LOCAL_ONLY_KEYS.size() + TEST_ONLY_KEYS.size()) * 5);
+        }
+
+        @Test
+        @DisplayName("no leaf count is asserted, because a number in a comment cannot survive an edit")
+        void noLeafCountIsAsserted() {
+            String testDocument = rawTextOf(TEST);
+
+            assertThat(testDocument)
+                    .as("an earlier revision of this file claimed a leaf total in prose - 'the same"
+                            + " forty-five leaf property paths' - and the number had already stopped"
+                            + " being true of either document. The claim is now a key-set comparison"
+                            + " asserted above, and the prose must not reintroduce a count")
+                    .doesNotContain("forty-five leaf")
+                    .doesNotContain("same forty-five");
+            assertThat(testDocument)
+                    .as("and it must still SAY that the agreement is asserted rather than counted, so a"
+                            + " reader knows where the real check lives")
+                    .contains("ASSERTED RATHER THAN COUNTED");
+        }
+
+        @Test
+        @DisplayName("every divergence the files document is a divergence that exists")
+        void everyDocumentedDivergenceExists() {
+            String testDocument = rawTextOf(TEST);
+            Set<String> localKeys = properties(LOCAL).keySet();
+            Set<String> testKeys = properties(TEST).keySet();
+
+            assertThat(testDocument)
+                    .as("the file must name all three divergences, so the prose and the assertion"
+                            + " describe the same reality")
+                    .contains("DIVERGENCE 1")
+                    .contains("DIVERGENCE 2")
+                    .contains("DIVERGENCE 3");
+            assertThat(LOCAL_ONLY_KEYS)
+                    .as("DIVERGENCE 1 must really be local-only")
+                    .allSatisfy(key -> {
+                        assertThat(localKeys).contains(key);
+                        assertThat(testKeys).doesNotContain(key);
+                    });
+            assertThat(TEST_ONLY_KEYS)
+                    .as("DIVERGENCE 2 and DIVERGENCE 3 must really be test-only")
+                    .allSatisfy(key -> {
+                        assertThat(testKeys).contains(key);
+                        assertThat(localKeys).doesNotContain(key);
+                    });
+        }
+    }
+
+    @Nested
+    @DisplayName("the non-production profiles bind ONE field-encryption key, because the seed is sealed "
+            + "under it")
+    final class TheNonProductionProfilesShareOneFieldEncryptionKey {
+
+        /**
+         * The three documents that must resolve the field-encryption key to the same value.
+         *
+         * <p>Production is deliberately absent: it binds an environment reference with no fallback, so
+         * it has no resolvable value here and must never acquire one.</p>
+         */
+        private static final List<String> NON_PRODUCTION_DOCUMENTS = List.of(LOCAL, TEST);
+
+        @Test
+        @DisplayName("every non-production document resolves the key to the same value, so one seeded "
+                + "envelope opens under all of them")
+        void everyNonProductionDocumentResolvesTheSameKey() {
+            String fromLocal = resolvedIn(LOCAL, KEY_FIELD_ENCRYPTION_KEY);
+            String fromPackagedTest = resolvedInResource(packaged(TEST), KEY_FIELD_ENCRYPTION_KEY);
+            String fromSuiteOverlay = resolvedInResource(suiteOverlay(), KEY_FIELD_ENCRYPTION_KEY);
+
+            assertThat(fromLocal)
+                    .as("%s must resolve %s: a local run seals and opens the same columns a test run"
+                            + " does", LOCAL, KEY_FIELD_ENCRYPTION_KEY)
+                    .isNotNull()
+                    .isNotBlank();
+            assertThat(fromPackagedTest)
+                    .as("the packaged %s must resolve it too - it is the profile a `test`-profile run"
+                            + " of the built artefact loads", TEST)
+                    .isNotNull()
+                    .isNotBlank();
+
+            assertThat(fromPackagedTest)
+                    .as("an AES-GCM envelope opens under exactly ONE key, and"
+                            + " V3__seed_reference_data.sql seeds fifty customer.govt_issued_id values"
+                            + " as fixed envelope literals that every non-production profile applies."
+                            + " Two divergent development keys - which these documents carried"
+                            + " before - make the same seeded row readable under one profile and"
+                            + " unreadable under the other, and the failure appears only at the moment"
+                            + " something decrypts")
+                    .isEqualTo(fromLocal);
+            assertThat(fromSuiteOverlay)
+                    .as("the overlay is the copy in force during a suite run, so it must agree as"
+                            + " well; SeededProtectedIdentifierIT reads its key from here and opens all"
+                            + " fifty seeded values with it")
+                    .isEqualTo(fromLocal);
+        }
+
+        @ParameterizedTest(name = "{0} binds a key that decodes to thirty-two bytes")
+        @ValueSource(strings = {LOCAL, TEST})
+        @DisplayName("the shared value is Base64 of exactly the thirty-two bytes AES-256 requires, so "
+                + "binding it cannot fail at start-up")
+        void theSharedKeyDecodesToThirtyTwoBytes(final String document) {
+            String resolved = resolvedIn(document, KEY_FIELD_ENCRYPTION_KEY);
+
+            assertThat(resolved).as("%s must resolve %s", document, KEY_FIELD_ENCRYPTION_KEY)
+                    .isNotNull();
+            assertThat(Base64.getDecoder().decode(resolved.trim()))
+                    .as("the service that binds %s refuses anything other than thirty-two decoded"
+                            + " bytes and names the property when it does, so a wrong length here is a"
+                            + " start-up failure rather than a runtime one",
+                            KEY_FIELD_ENCRYPTION_KEY)
+                    .hasSize(FIELD_ENCRYPTION_KEY_BYTES);
+        }
+
+        @Test
+        @DisplayName("the seed really does carry sealed values, which is what makes the agreement "
+                + "load-bearing rather than tidiness")
+        void theSeedCarriesSealedValuesRatherThanCleartext() {
+            String seed = contentsOfClassPathScript(MIGRATION_FOLDER, SEED_REFERENCE_DATA);
+
+            assertThat(countSealedLiterals(seed))
+                    .as("%s must seal every one of the %d customer rows it loads. A single cleartext"
+                            + " identifier here would satisfy the schema's NOT NULL and violate the"
+                            + " envelope contract that V1, the Customer entity and the encryption"
+                            + " service all declare", SEED_REFERENCE_DATA, SEEDED_CUSTOMER_ROWS)
+                    .isEqualTo(SEEDED_CUSTOMER_ROWS);
+            assertThat(CLEARTEXT_IDENTIFIER_LITERAL.matcher(seed).results().count())
+                    .as("and no literal of the legacy identifier width may remain - a run of %d"
+                            + " digits in quotes is exactly what the defective revision seeded",
+                            SEALED_IDENTIFIER_WIDTH)
+                    .isZero();
+            assertThat(seed)
+                    .as("the key itself must never appear in a migration - what is embedded is"
+                            + " ciphertext, not key material")
+                    .doesNotContain(resolvedIn(LOCAL, KEY_FIELD_ENCRYPTION_KEY));
+        }
+
+        @Test
+        @DisplayName("production is not one of them: it binds an environment reference with no "
+                + "fallback and applies no seed")
+        void productionIsExcludedFromTheSharedKey() {
+            assertThat(NON_PRODUCTION_DOCUMENTS)
+                    .as("the shared fixture key is a non-production concession and must stay one")
+                    .doesNotContain(PRODUCTION);
+            assertThat(text(PRODUCTION, KEY_FIELD_ENCRYPTION_KEY))
+                    .as("%s must declare %s as a bare environment reference: a fallback would let a"
+                            + " deployment encrypt under something accidental", PRODUCTION,
+                            KEY_FIELD_ENCRYPTION_KEY)
+                    .startsWith("${")
+                    .endsWith("}")
+                    .doesNotContain(":");
+            assertThatThrownBy(() -> resolvedIn(PRODUCTION, KEY_FIELD_ENCRYPTION_KEY))
+                    .as("so resolving it with the variable unset must FAIL rather than fall back to"
+                            + " the fixture value; the message names the variable an operator has to"
+                            + " supply")
+                    .hasMessageContaining("CARDDEMO_FIELD_ENCRYPTION_KEY");
         }
     }
 
@@ -759,119 +1413,266 @@ final class ConfigurationProfileBaselineTest {
     }
 
     /**
-     * Holds the documented migration set to the migration set that ships.
+     * Holds the documented migration set to the migration set that ships, and holds the production
+     * exclusion of the seeds to the mechanism that actually performs it.
      *
-     * <p>Two separate things are asserted here and they fail for different reasons.</p>
+     * <p>Three separate things are asserted here and they fail for different reasons.</p>
      *
-     * <p>The first is the separation itself: reference rows and sign-on identities live in a location
-     * production does not list, so a production migration cannot inherit them. That is structural rather
-     * than conditional - there is no flag to leave in the wrong position - and it is asserted against the
-     * merged environment as well as against each document, because inheritance is what a running
-     * application resolves and a per-document reading cannot answer an inheritance question.</p>
+     * <p>The first is the exclusion itself. The seeds are kept out of production by a VERSION CEILING -
+     * {@code spring.flyway.target: 2} - and not by a directory. The shared baseline declares that
+     * restrictive ceiling so a profile silent about seeding inherits a schema-only migration, the
+     * production overlay re-declares it so the guarantee is visible in the document that depends on it,
+     * and the two seeding profiles lift it to {@code latest} for themselves. Every profile lists the one
+     * location {@code classpath:db/migration}; production applies versions 1, 1.1 and 2 and never
+     * resolves 3 or 4. The ceiling is asserted against the merged environment as well as
+     * against the document, because inheritance is what a running application resolves and a
+     * per-document reading cannot answer an inheritance question.</p>
      *
-     * <p>The second is truthfulness. The documents once described the seed location as supplying sample
-     * rows and sign-on identities while it carried no script at all, and referred to a migration
-     * reaching a version the delivered scripts did not reach. Correcting that text was never durable on
-     * its own, because a correction goes stale the moment a script is added or removed - which is
-     * precisely the moment nobody is reading these comments. So the claim is asserted against the
-     * delivered scripts rather than against a second copy of itself: {@link
-     * #everyDocumentCitesTheHighestDeliveredVersion(String)} reads the highest version present under
-     * either location and requires every document that states how far a migration goes to cite that
-     * number, so changing the delivered set fails the build until the text catches up. The seed location
-     * now carries both the reference-data script and the sign-on-identity script, and the documents say
-     * so; the mechanism is what keeps that sentence true rather than the sentence itself.</p>
+     * <p>A superseded revision instead split the scripts across {@code db/migration} and {@code db/seed}
+     * and made the two location lists differ. That is asserted to be gone, for reasons worth recording
+     * because the superseded arrangement looked like the safer one: it made the guarantee a property of
+     * four location lists staying different from each other, which no single file states and no single
+     * review sees; it detached a version number from what any profile applies, so renumbering a seed or
+     * adding one entry to one list could change production's contents without either edit looking like a
+     * change to production; and it made a new script safe only if its author knew which directory to
+     * choose. A ceiling has none of those properties - no move, rename or renumber can make version 4
+     * fall below 2 - and it is what the frozen migration plan specifies.</p>
+     *
+     * <p>The second is that the arithmetic and the intent agree: {@link
+     * #theCeilingSeparatesSchemaFromSeedByArithmetic()} requires every delivered script at or below the
+     * ceiling to be a schema script and every script above it to be a seed. That is the assertion that
+     * would catch a seed numbered {@code V1_2} or a required schema script numbered {@code V5}, either of
+     * which reads as harmless and silently inverts the control.</p>
+     *
+     * <p>The third is truthfulness of the prose. The documents once described a seed location as
+     * supplying sample rows while it carried no script at all. Correcting such text is never durable on
+     * its own, because a correction goes stale the moment a script is added - precisely the moment nobody
+     * is reading these comments. So the claim is asserted against the delivered scripts rather than
+     * against a second copy of itself: {@link #everyDocumentNamesEveryDeliveredMigration(String)}
+     * requires each of the four profile documents to name every delivered script by file name, so adding
+     * or removing one fails the build until every document that enumerates them catches up. This
+     * replaced a highest-version-number claim, which one edit to one comment could satisfy without the
+     * document naming the new script at all.</p>
      */
     @Nested
-    @DisplayName("the documented migration set is the migration set that ships")
+    @DisplayName("the documented migration set is the migration set that ships, and the ceiling is what "
+            + "excludes the seeds")
     final class TheDocumentedMigrationSetIsTheDeliveredOne {
 
-        @Test
-        @DisplayName("the shared baseline lists the schema location alone, so no profile inherits the "
-                + "seeds by forgetting to exclude them")
-        void theSharedBaselineListsTheSchemaLocationAlone() {
-            assertThat(text(SHARED, KEY_FLYWAY_LOCATIONS))
-                    .as("the seeds are excluded by not being listed rather than by being switched off, "
-                            + "which is what makes their exclusion survive an overlay that copies this "
-                            + "block and edits one line of it")
-                    .isEqualTo(MIGRATION_LOCATION)
-                    .doesNotContain(SEED_LOCATION);
-        }
-
-        @Test
-        @DisplayName("the production overlay restates the schema location rather than relying on "
-                + "inheritance, and resolves without the seeds even when layered")
-        void theProductionOverlayNeverReachesTheSeeds() {
-            assertThat(text(PRODUCTION, KEY_FLYWAY_LOCATIONS))
-                    .isEqualTo(MIGRATION_LOCATION);
-
-            assertThat(resolvedAcrossSharedThen(PRODUCTION, KEY_FLYWAY_LOCATIONS))
-                    .as("the resolved value is what the running application migrates from; a baseline "
-                            + "that had listed the seeds would reach production through this merge no "
-                            + "matter what the overlay said about them")
-                    .isEqualTo(MIGRATION_LOCATION)
-                    .doesNotContain(SEED_LOCATION);
-        }
-
-        @ParameterizedTest(name = "{0} adds the seed location for itself")
-        @ValueSource(strings = {LOCAL, TEST})
-        @DisplayName("the two profiles that need reference rows add the seed location themselves, "
-                + "keeping the schema location alongside it")
-        void theProfilesThatNeedSeedsAddTheLocationThemselves(final String document) {
+        @ParameterizedTest(name = "{0} lists the one migration location and nothing else")
+        @ValueSource(strings = {SHARED, LOCAL, TEST, PRODUCTION})
+        @DisplayName("every profile lists exactly one migration location, so no profile's contents "
+                + "depend on how its location list differs from another's")
+        void everyProfileListsExactlyTheOneLocation(final String document) {
             assertThat(text(document, KEY_FLYWAY_LOCATIONS))
-                    .as("a seed location without the schema location would seed a database with no "
-                            + "tables, so both must be listed rather than one replacing the other")
-                    .contains(MIGRATION_LOCATION)
-                    .contains(SEED_LOCATION);
+                    .as("all five scripts are flat in %s. A second location would reintroduce the "
+                            + "superseded split, in which what production applied was a consequence of "
+                            + "four lists differing rather than of one reviewable line",
+                            MIGRATION_LOCATION)
+                    .isEqualTo(MIGRATION_LOCATION)
+                    .doesNotContain(WITHDRAWN_SEED_FOLDER);
         }
 
         @Test
-        @DisplayName("the schema location carries the schema migrations and the seed location carries "
-                + "the seeds, which is the split the documents must describe")
-        void theDeliveredScriptsAreTheOnesTheDocumentsName() {
-            assertThat(versionedScriptsIn(MIGRATION_FOLDER))
-                    .as("the schema and its indexes are the delivered set; a script added here without "
-                            + "a corresponding edit to the documents would leave them naming a shorter "
-                            + "set than ships")
-                    .containsExactly("V1__create_schema.sql", "V2__create_indexes.sql");
+        @DisplayName("the suite overlay lists the same one location, so a suite run migrates from the "
+                + "set the artefact carries")
+        void theSuiteOverlayListsTheSameOneLocation() {
+            assertThat(propertiesOf(suiteOverlay()).get(KEY_FLYWAY_LOCATIONS))
+                    .as("the overlay is the copy Spring reads during a suite run. Left listing a "
+                            + "withdrawn location it would resolve no seed at all, and every fixture "
+                            + "cardinality would fail on an empty result set rather than on the cause")
+                    .isEqualTo(MIGRATION_LOCATION);
+        }
 
-            assertThat(versionedScriptsIn(SEED_FOLDER))
-                    .as("both seeds are written into a place production already cannot see, because "
-                            + "production lists the schema location alone; either one placed in the "
-                            + "schema location instead would reach a production migration, and for the "
-                            + "sign-on seed that would mean ten known identities in production")
+        @Test
+        @DisplayName("the shared baseline declares the restrictive ceiling, so a profile silent about "
+                + "seeding inherits a schema-only migration rather than a seeding one")
+        void theSharedBaselineDeclaresTheRestrictiveCeiling() {
+            assertThat(text(SHARED, KEY_FLYWAY_TARGET))
+                    .as("the direction of this default is the control: an unpinned baseline would seed "
+                            + "sample personal data and ten known sign-on identities into every profile "
+                            + "that did not think to pin it")
+                    .isEqualTo(PRODUCTION_VERSION_CEILING);
+        }
+
+        @Test
+        @DisplayName("the production overlay declares the version ceiling itself, and it is 2")
+        void productionDeclaresTheVersionCeiling() {
+            assertThat(text(PRODUCTION, KEY_FLYWAY_TARGET))
+                    .as("this single line is the entire production exclusion: it applies versions at or "
+                            + "below %s and does not resolve anything above it",
+                            PRODUCTION_VERSION_CEILING)
+                    .isEqualTo(PRODUCTION_VERSION_CEILING);
+
+            assertThat(resolvedAcrossSharedThen(PRODUCTION, KEY_FLYWAY_TARGET))
+                    .as("the resolved value is what the running deployment migrates to; the overlay must "
+                            + "still carry the ceiling once layered over the baseline")
+                    .isEqualTo(PRODUCTION_VERSION_CEILING);
+        }
+
+        @Test
+        @DisplayName("the ceiling the documents declare is the ceiling the code control reads, so neither "
+                + "can drift into doing nothing")
+        void theDeclaredCeilingIsTheCeilingTheCodeControlReads() {
+            assertThat(FlywayConfig.SCHEMA_ONLY_TARGET)
+                    .as("FlywayConfig refuses a production profile whose resolved ceiling reaches the "
+                            + "seeds, and it names the boundary itself. Were that constant to name a "
+                            + "different version than these documents declare, one of the two controls "
+                            + "would be silently ineffective and the other would be the only thing between "
+                            + "a production migration and ten seeded sign-on identities")
+                    .isEqualTo(PRODUCTION_VERSION_CEILING);
+
+            assertThat(FlywayConfig.SEEDING_TARGET)
+                    .as("and the lifted ceiling the two seeding profiles declare must be the one the code "
+                            + "control completes for them, or a profile that omitted the property would be "
+                            + "lifted to a value no document names")
+                    .isEqualTo(SEEDING_TARGET);
+
+            assertThat(FlywayConfig.PRODUCTION_PROFILE)
+                    .as("the code control is scoped by profile name; a name matching no profile would "
+                            + "leave the configuration ceiling unaccompanied")
+                    .isEqualTo("prod");
+
+            assertThat(FlywayConfig.SCHEMA_LOCATION)
+                    .as("and the one location the code control admits under production must be the one "
+                            + "location these documents declare")
+                    .isEqualTo(MIGRATION_LOCATION);
+        }
+
+        @ParameterizedTest(name = "{0} raises the ceiling for itself")
+        @ValueSource(strings = {LOCAL, TEST})
+        @DisplayName("the two profiles that need the seeds raise the ceiling explicitly, which is the "
+                + "only way a seed script is ever applied")
+        void theSeedingProfilesRaiseTheCeilingThemselves(final String document) {
+            assertThat(text(document, KEY_FLYWAY_TARGET))
+                    .as("%s must apply every delivered script, and it opts in by lifting the ceiling "
+                            + "rather than by inheriting a permissive one. Left at the inherited value "
+                            + "it would leave the seeded cardinalities, the byte-parity comparison and "
+                            + "the sign-on tests asserting against an empty database", document)
+                    .isEqualTo(SEEDING_TARGET);
+
+            assertThat(resolvedAcrossSharedThen(document, KEY_FLYWAY_TARGET))
+                    .as("and the lift must survive the merge over the baseline, otherwise the fixtures "
+                            + "would run against empty reference tables")
+                    .isEqualTo(SEEDING_TARGET);
+        }
+
+        @Test
+        @DisplayName("the delivered scripts are flat in one folder and are exactly the five named")
+        void theDeliveredScriptsAreFlatAndExactlyTheFiveNamed() {
+            assertThat(versionedScriptsIn(MIGRATION_FOLDER))
+                    .as("the delivered set is the whole migration history: three schema scripts at or "
+                            + "below the ceiling and two seeds above it. A script added here without a "
+                            + "corresponding edit to the four profile documents would leave them naming "
+                            + "a shorter set than ships")
+                    .containsExactlyElementsOf(DELIVERED_MIGRATIONS);
+
+            assertThat(versionedScriptsIn(WITHDRAWN_SEED_FOLDER))
+                    .as("the superseded seed folder must carry no script and must not be recreated: a "
+                            + "seed placed there would be resolved by no profile at all, so it would "
+                            + "fail silently by never running rather than loudly by running")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the ceiling separates schema from seed by arithmetic, so a misnumbered script "
+                + "cannot invert the control")
+        void theCeilingSeparatesSchemaFromSeedByArithmetic() {
+            List<String> atOrBelow = versionedScriptsIn(MIGRATION_FOLDER).stream()
+                    .filter(script -> !isAboveCeiling(script))
+                    .toList();
+            List<String> above = versionedScriptsIn(MIGRATION_FOLDER).stream()
+                    .filter(ConfigurationProfileBaselineTest::isAboveCeiling)
+                    .toList();
+
+            assertThat(atOrBelow)
+                    .as("every script production applies must be schema or framework metadata. A SEED "
+                            + "numbered at or below %s - V1_2, say - would be applied by a production "
+                            + "migration, and for the sign-on seed that means ten known identities in "
+                            + "production", PRODUCTION_VERSION_CEILING)
+                    .containsExactlyElementsOf(MIGRATIONS_AT_OR_BELOW_CEILING);
+
+            assertThat(above)
+                    .as("and every script above the ceiling must be a seed. A REQUIRED schema script "
+                            + "numbered above %s would reach local and test and never reach production, "
+                            + "which is the failure mode the batch-metadata migration was numbered 1.1 "
+                            + "to avoid", PRODUCTION_VERSION_CEILING)
                     .containsExactly("V3__seed_reference_data.sql", "V4__seed_user_security.sql");
         }
 
-        @ParameterizedTest(name = "{0} cites the version its migrations actually reach")
-        @ValueSource(strings = {SHARED, LOCAL})
-        @DisplayName("every document that states how far a migration reaches cites the highest version "
-                + "actually delivered, so adding a migration cannot leave the claim stale")
-        void everyDocumentCitesTheHighestDeliveredVersion(final String document) {
-            int highest = highestDeliveredVersion();
+        @ParameterizedTest(name = "{0} names every delivered migration")
+        @ValueSource(strings = {SHARED, LOCAL, TEST, PRODUCTION})
+        @DisplayName("every profile document names every delivered script by file name, so adding one "
+                + "cannot leave a document describing a set that no longer ships")
+        void everyDocumentNamesEveryDeliveredMigration(final String document) {
+            String text = rawTextOf(document);
 
-            assertThat(rawTextOf(document))
-                    .as("%s must state that a migration currently ends at V%d, because that is the "
-                            + "highest version delivered under %s or %s. If a migration was just "
-                            + "added, this claim is now stale and the comment that carries it must be "
-                            + "updated or removed", document, highest, MIGRATION_FOLDER, SEED_FOLDER)
-                    .contains(DELIVERED_VERSION_CLAIM + highest);
+            assertThat(DELIVERED_MIGRATIONS)
+                    .allSatisfy(script -> assertThat(text)
+                            .as("%s must name %s. Each of these four documents enumerates the migration "
+                                    + "set and states which side of the ceiling each script falls on; a "
+                                    + "script missing from that enumeration is a script whose production "
+                                    + "applicability nobody stated", document, script)
+                            .contains(script));
+        }
+
+        @ParameterizedTest(name = "{0} leaves the framework schema initializer off")
+        @ValueSource(strings = {SHARED, LOCAL, TEST, PRODUCTION})
+        @DisplayName("every profile resolves the batch schema initializer to never, so one migration is "
+                + "the single owner of the framework metadata tables")
+        void everyProfileLeavesTheFrameworkSchemaInitializerOff(final String document) {
+            assertThat(resolvedAcrossSharedThen(document, KEY_BATCH_INITIALIZE_SCHEMA))
+                    .as("V1_1__create_batch_metadata.sql owns the six framework tables and three "
+                            + "sequences. Relaxing this to `always` under any profile gives the database "
+                            + "a second, unversioned schema owner - and relaxing it under local and test "
+                            + "specifically is what previously hid the absence of that migration from "
+                            + "the only environments able to reveal it, leaving production the one place "
+                            + "a job launch would have failed on a missing relation")
+                    .isEqualTo("never");
         }
 
         @Test
-        @DisplayName("no document reintroduces the superseded seed wording, so the durable version "
-                + "claim stays the single place a document says how far a migration goes")
-        void noDocumentReintroducesTheSupersededSeedWording() {
+        @DisplayName("the suite overlay also leaves the initializer off, so the copy Spring reads "
+                + "during a suite run exercises the migration")
+        void theSuiteOverlayAlsoLeavesTheInitializerOff() {
+            assertThat(propertiesOf(suiteOverlay()).get(KEY_BATCH_INITIALIZE_SCHEMA))
+                    .as("the overlay shadows the packaged copy during a suite run, so a value of "
+                            + "`always` here would let the framework create the tables and the migration "
+                            + "would go unexercised however the packaged copy is configured")
+                    .isEqualTo("never");
+        }
+
+        @Test
+        @DisplayName("the withdrawn second location returns neither as a delivered script nor as a "
+                + "documented location, so the exclusion cannot revert to a directory split")
+        void noDocumentOrDeliveredScriptReacquiresTheWithdrawnLocation() {
+            assertThat(versionedScriptsIn(WITHDRAWN_SEED_FOLDER))
+                    .as("a script delivered under %s would be invisible to every profile, because no "
+                            + "profile lists that location any more - it would look applied and would "
+                            + "never run", WITHDRAWN_SEED_FOLDER)
+                    .isEmpty();
+
             for (final String document : List.of(SHARED, LOCAL, PRODUCTION, TEST)) {
-                assertThat(rawTextOf(document))
-                        .as("%s must name the seed scripts it carries and cite the delivered version "
-                                + "through the claim asserted above, not through an inventory line that "
-                                + "names no script or a free-form statement about the version a "
-                                + "migration reaches - those are the phrasings that went stale silently",
-                                document)
-                        .doesNotContain("db/seed        sample rows")
-                        .doesNotContain("reach V4")
-                        .doesNotContain("reaches V4");
+                assertThat(text(document, KEY_FLYWAY_LOCATIONS))
+                        .as("%s must not list %s: the directory split it belonged to was withdrawn, and "
+                                + "a location list that reacquired it would give that profile a second "
+                                + "way to reach a script the ceiling does not govern", document,
+                                WITHDRAWN_SEED_LOCATION)
+                        .doesNotContain(WITHDRAWN_SEED_LOCATION)
+                        .doesNotContain(WITHDRAWN_SEED_FOLDER);
+
+                assertThat(resolvedAcrossSharedThen(document, KEY_FLYWAY_LOCATIONS))
+                        .as("and it must not reacquire it through inheritance either, which is the only "
+                                + "form of this defect a per-document reading cannot see")
+                        .doesNotContain(WITHDRAWN_SEED_FOLDER);
             }
+
+            // The documents' PROSE deliberately names the withdrawn folder: each of them explains why the
+            // directory split was abandoned in favour of the version ceiling, and that explanation is the
+            // most useful paragraph in the file for a reader who wonders where the seeds are kept out. So
+            // the assertions above read the resolved location VALUE and never the document text. Forbidding
+            // the words would forbid the explanation, and an unexplained control is the one most likely to
+            // be undone by the next author.
         }
     }
 
@@ -897,12 +1698,61 @@ final class ConfigurationProfileBaselineTest {
     }
 
     /**
+     * Every setting the production profile requires from its environment, taken from the guard itself.
+     *
+     * <p>Read from {@link ProductionConfigurationValidator#REQUIRED_SETTINGS} rather than restated here,
+     * so this class and the guard cannot disagree about what production requires. An earlier revision
+     * did restate a subset - three keys, then five - and the TLS, region and trace-collector settings
+     * went unasserted as a direct result.
+     *
+     * @return one argument pair per required setting: the property key and the variable that supplies it
+     */
+    private static Stream<Arguments> requiredProductionSettings() {
+        return ProductionConfigurationValidator.REQUIRED_SETTINGS.stream()
+                .map(setting -> Arguments.of(setting.propertyKey(), setting.environmentVariable()));
+    }
+
+    /**
+     * Names the environment variable the production profile references for a key.
+     *
+     * @param key the fully qualified property key
+     * @return the variable name recorded against that key
+     * @throws IllegalStateException when the key is not one the guard watches
+     */
+    private static String variableFor(final String key) {
+        return ProductionConfigurationValidator.REQUIRED_SETTINGS.stream()
+                .filter(setting -> setting.propertyKey().equals(key))
+                .map(ProductionConfigurationValidator.RequiredSetting::environmentVariable)
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "no required production setting declares " + key));
+    }
+
+    /**
      * The credential-shaped tokens that must not occur as a value in the shared baseline.
      *
      * @return one argument per token
      */
     private static Stream<Arguments> credentialTokens() {
         return CREDENTIAL_TOKENS.stream().map(Arguments::of);
+    }
+
+    /**
+     * The five surfaces the shared baseline closes, each paired with the value it closes them to.
+     *
+     * <p>Paired rather than listed, because the question the test profile raises is not whether a key
+     * is declared - restating a closed value is legitimate and deliberate - but whether the value that
+     * resolves is still the closed one.
+     *
+     * @return one argument pair per surface
+     */
+    private static Stream<Arguments> closedSurfaceExpectations() {
+        return Stream.of(
+                Arguments.of(KEY_EXPOSURE, EXPECTED_CLOSED_EXPOSURE),
+                Arguments.of(KEY_SHOW_DETAILS, EXPECTED_CLOSED_DETAIL),
+                Arguments.of(KEY_SHOW_COMPONENTS, EXPECTED_CLOSED_DETAIL),
+                Arguments.of(KEY_API_DOCS_ENABLED, "false"),
+                Arguments.of(KEY_SWAGGER_UI_ENABLED, "false"));
     }
 
     // Helpers.
@@ -933,12 +1783,22 @@ final class ConfigurationProfileBaselineTest {
      * @return every declared property, flattened; never {@code null}
      */
     private static Map<String, Object> properties(final String document) {
-        ClassPathResource resource = new ClassPathResource(document);
-        if (!resource.exists()) {
-            throw new IllegalStateException("shipped configuration document is missing: " + document);
-        }
+        return propertiesOf(packaged(document));
+    }
+
+    /**
+     * Loads one physical configuration resource into a flat map of key to value.
+     *
+     * <p>Separated from {@link #properties(String)} so that the suite overlay - which shares its name
+     * with a packaged deliverable and therefore cannot be addressed by name - is read through exactly
+     * the same flattening as everything else.
+     *
+     * @param resource the resolved resource to load
+     * @return every declared property, flattened; never {@code null}
+     */
+    private static Map<String, Object> propertiesOf(final Resource resource) {
         Map<String, Object> flattened = new LinkedHashMap<>();
-        for (PropertySource<?> source : loadDocuments(document, resource)) {
+        for (PropertySource<?> source : loadDocuments(resource.getDescription(), resource)) {
             if (source instanceof EnumerablePropertySource<?> enumerable) {
                 for (String name : enumerable.getPropertyNames()) {
                     flattened.put(name, enumerable.getProperty(name));
@@ -946,6 +1806,118 @@ final class ConfigurationProfileBaselineTest {
             }
         }
         return flattened;
+    }
+
+    /**
+     * Returns the keys present in the first set and absent from the second, in encounter order.
+     *
+     * <p>Written out rather than expressed as a stream filter because the result is asserted with
+     * {@code containsExactlyInAnyOrderElementsOf}, and a stable encounter order makes a failure message
+     * read in document order rather than in hash order.
+     *
+     * @param subject   the set whose exclusive members are wanted
+     * @param reference the set to subtract
+     * @return the difference; never {@code null}
+     */
+    private static Set<String> difference(final Set<String> subject, final Set<String> reference) {
+        Set<String> exclusive = new LinkedHashSet<>(subject);
+        exclusive.removeAll(reference);
+        return exclusive;
+    }
+
+    /**
+     * Returns every physical copy of a configuration document that the test class path carries.
+     *
+     * <p>Resolved with the {@code classpath*:} prefix rather than {@code classpath:}, which is the
+     * whole point: the single-copy form stops at the first match and would hide the packaged
+     * deliverable behind the suite overlay of the same name.
+     *
+     * @param document the class-path name of the document
+     * @return every copy found, in class-path order; never {@code null} and never empty for a
+     *         document this module ships
+     */
+    private static List<Resource> physicalCopiesOf(final String document) {
+        try {
+            Resource[] found = new PathMatchingResourcePatternResolver()
+                    .getResources("classpath*:" + document);
+            List<Resource> copies = Stream.of(found).filter(Resource::exists).toList();
+            if (copies.isEmpty()) {
+                throw new IllegalStateException(
+                        "shipped configuration document is missing: " + document);
+            }
+            return copies;
+        } catch (IOException failure) {
+            throw new UncheckedIOException("configuration document is unreadable: " + document,
+                    failure);
+        }
+    }
+
+    /**
+     * Resolves the copy of a document that is packaged inside the artefact.
+     *
+     * <p>This is what every profile assertion in this class reads, because the packaged copy is the
+     * deliverable: it is what a deployment loads and, for the test profile, it is the only definition
+     * that exists once the suite has finished.
+     *
+     * @param document the class-path name of the document
+     * @return the packaged copy
+     * @throws IllegalStateException when no packaged copy exists, which would mean the document was
+     *                               written under {@code src/test/resources} alone
+     */
+    private static Resource packaged(final String document) {
+        return physicalCopiesOf(document).stream()
+                .filter(resource -> !isSuiteOverlay(resource))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "no packaged copy of " + document + " exists; every copy on the class path is"
+                                + " suite-only, so nothing would ship"));
+    }
+
+    /**
+     * Resolves the copy of the test profile that exists only while the suite runs.
+     *
+     * @return the suite overlay
+     * @throws IllegalStateException when the overlay is absent
+     */
+    private static Resource suiteOverlay() {
+        return physicalCopiesOf(TEST).stream()
+                .filter(ConfigurationProfileBaselineTest::isSuiteOverlay)
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "no suite-only copy of " + TEST + " exists on the test class path"));
+    }
+
+    /**
+     * Reports whether a resolved resource is the suite-only copy rather than the packaged one.
+     *
+     * @param resource the resource to classify
+     * @return {@code true} when the resource was compiled from {@code src/test/resources}
+     */
+    private static boolean isSuiteOverlay(final Resource resource) {
+        return physicalLocationOf(resource).contains(SUITE_ORIGIN);
+    }
+
+    /**
+     * Reports where a resource physically lives, normalised to forward slashes.
+     *
+     * <p>The location is read from the resolved URL rather than from {@code getDescription()}. The two
+     * agree for a resource obtained by pattern resolution, but they do not agree for one constructed
+     * from a bare class-path name: that description repeats the name it was given and reveals nothing
+     * about which of two same-named copies the class loader actually answered with. Since telling
+     * those two copies apart is the whole purpose of this method, it uses the only value that always
+     * carries the answer.
+     *
+     * @param resource the resource to locate
+     * @return the resource's absolute location, using {@code /} as the separator
+     * @throws IllegalStateException when the resource cannot be resolved to a URL
+     */
+    private static String physicalLocationOf(final Resource resource) {
+        try {
+            return resource.getURL().toString().replace('\\', '/');
+        } catch (final IOException cause) {
+            throw new IllegalStateException(
+                    "cannot determine the physical location of " + resource.getDescription(), cause);
+        }
     }
 
     /**
@@ -976,8 +1948,8 @@ final class ConfigurationProfileBaselineTest {
      */
     private static String resolvedAcrossSharedThen(final String overlay, final String key) {
         MutablePropertySources merged = new MutablePropertySources();
-        loadDocuments(overlay, new ClassPathResource(overlay)).forEach(merged::addLast);
-        loadDocuments(SHARED, new ClassPathResource(SHARED)).forEach(merged::addLast);
+        loadDocuments(overlay, packaged(overlay)).forEach(merged::addLast);
+        loadDocuments(SHARED, packaged(SHARED)).forEach(merged::addLast);
         return new PropertySourcesPropertyResolver(merged).getProperty(key);
     }
 
@@ -992,21 +1964,111 @@ final class ConfigurationProfileBaselineTest {
      * @return the resolved value, or {@code null} when the document does not declare it
      */
     private static String resolvedIn(final String document, final String key) {
+        return resolvedInResource(packaged(document), key);
+    }
+
+    /**
+     * Assembles the environment a production start-up sees when the deployment supplies nothing.
+     *
+     * <p>Three properties of this environment make it the right instrument for a fail-fast assertion,
+     * and each is deliberate.
+     *
+     * <p><strong>It is a real {@link org.springframework.core.env.Environment}, not a bare resolver.</strong>
+     * {@link #resolvedIn} and {@link #resolvedAcrossSharedThen} resolve strictly and raise a
+     * placeholder-resolution failure on the first unsatisfied reference, which answers "is anything
+     * missing" but never "what does the application hold instead". An environment resolves leniently
+     * through {@code resolvePlaceholders}, so the unsatisfied reference survives as text and can be
+     * compared against the variable name the profile declares.
+     *
+     * <p><strong>The production overlay is layered above the shared baseline,</strong> in that order, so
+     * a key declared in both resolves to the production declaration exactly as a deployment resolves it.
+     *
+     * <p><strong>Both system-backed property sources are removed.</strong> A build agent that exports
+     * {@code AWS_REGION} - which agents hosted in that ecosystem routinely do - would otherwise satisfy
+     * one of the required settings by accident, and an assertion about an unsupplied environment would
+     * pass or fail according to where it ran.
+     *
+     * @return an environment carrying the two delivered documents and nothing from the machine
+     */
+    private static ConfigurableEnvironment productionEnvironmentWithNothingSupplied() {
+        StandardEnvironment environment = new StandardEnvironment();
+        environment.getPropertySources()
+                .remove(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME);
+        environment.getPropertySources()
+                .remove(StandardEnvironment.SYSTEM_PROPERTIES_PROPERTY_SOURCE_NAME);
+        loadDocuments(PRODUCTION, packaged(PRODUCTION))
+                .forEach(environment.getPropertySources()::addLast);
+        loadDocuments(SHARED, packaged(SHARED))
+                .forEach(environment.getPropertySources()::addLast);
+        return environment;
+    }
+
+    /**
+     * Resolves a key against one physical resource alone, substituting placeholder fallbacks.
+     *
+     * @param resource the resolved resource to read
+     * @param key      the fully qualified property key
+     * @return the resolved value, or {@code null} when the resource does not declare it
+     */
+    private static String resolvedInResource(final Resource resource, final String key) {
         MutablePropertySources sources = new MutablePropertySources();
-        loadDocuments(document, new ClassPathResource(document)).forEach(sources::addLast);
+        loadDocuments(resource.getDescription(), resource).forEach(sources::addLast);
         return new PropertySourcesPropertyResolver(sources).getProperty(key);
     }
 
     /**
-     * Returns the versioned migration scripts a class-path folder carries, in name order.
+     * Reads one delivered migration script in full, from the class path.
+     *
+     * <p>Read from the class path rather than from the source tree for the same reason
+     * {@link #versionedScriptsIn(String)} is: the answer is then what a running application would find
+     * on its own migration location, not what a directory listing of the repository suggests. A stale
+     * copy under {@code target/} therefore fails an assertion here rather than hiding one.</p>
+     *
+     * @param folder   the class-path folder, such as {@code db/migration}
+     * @param fileName the script's file name
+     * @return the script's full text
+     * @throws IllegalStateException if the script is not on the class path
+     * @throws UncheckedIOException  if the script cannot be read
+     */
+    private static String contentsOfClassPathScript(final String folder, final String fileName) {
+        Resource script = new ClassPathResource(folder + "/" + fileName);
+        if (!script.exists()) {
+            throw new IllegalStateException(
+                    "migration " + fileName + " is not on the class path under " + folder);
+        }
+        try {
+            return new String(script.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException(fileName + " is unreadable", unreadable);
+        }
+    }
+
+    /**
+     * Counts complete sealed identifier literals in a migration script.
+     *
+     * @param script the script text to scan
+     * @return the number of complete envelope literals the script embeds
+     */
+    private static long countSealedLiterals(final String script) {
+        return SEALED_IDENTIFIER_LITERAL.matcher(script).results().count();
+    }
+
+    /**
+     * Returns the versioned migration scripts a class-path folder carries, in the order a migration
+     * applies them.
      *
      * <p>Read from the class path rather than from the source tree, so the answer is what a running
      * application would find on its own migration location and not what a directory listing of the
      * repository suggests. A folder that exists and carries no script, and a folder that does not exist
      * at all, both yield an empty list; the distinction is not one a migration can act on.</p>
      *
+     * <p>Ordered by VERSION, numerically, and not by file name. The two disagree as soon as a dotted
+     * version exists: {@code V1_1__} sorts before {@code V1__} as text, because {@code 1} precedes
+     * {@code _}, while the migration tool applies 1 before 1.1. Sorting by name would therefore have
+     * made an assertion about apply order assert the wrong order.</p>
+     *
      * @param folder the class-path folder, such as {@code db/migration}
-     * @return the versioned script file names, sorted; never {@code null}
+     * @return the versioned script file names in apply order; never {@code null}
      */
     private static List<String> versionedScriptsIn(final String folder) {
         try {
@@ -1015,7 +2077,10 @@ final class ConfigurationProfileBaselineTest {
             return Stream.of(found)
                     .map(Resource::getFilename)
                     .filter(name -> name != null)
-                    .sorted()
+                    .sorted(Comparator
+                            .comparing(ConfigurationProfileBaselineTest::versionOf,
+                                    ConfigurationProfileBaselineTest::compareVersions)
+                            .thenComparing(Comparator.naturalOrder()))
                     .toList();
         } catch (IOException failure) {
             throw new UncheckedIOException("migration location is unreadable: " + folder, failure);
@@ -1023,24 +2088,59 @@ final class ConfigurationProfileBaselineTest {
     }
 
     /**
-     * Returns the highest migration version delivered under either location.
+     * Reports whether a delivered migration sits above the production version ceiling.
      *
-     * <p>Both locations are read because a version number orders the whole migration history rather than
-     * one folder of it: a seed script numbered above the schema scripts is the next version a migration
-     * reaches, and a claim about how far a migration goes has to account for it.</p>
+     * <p>This is the arithmetic the migration tool itself performs, reproduced rather than trusted: a
+     * version is read from the file name, its parts are compared numerically against the ceiling, and a
+     * script is above the ceiling exactly when the tool would decline to resolve it under
+     * {@code spring.flyway.target}. Comparing numerically matters - {@code V1_1} is version 1.1 and sits
+     * below 2, while a lexicographic comparison of the file names would place it after {@code V2}.</p>
      *
-     * @return the highest delivered version, or zero when no script is delivered
+     * @param script the migration file name, such as {@code V1_1__create_batch_metadata.sql}
+     * @return {@code true} when the script's version exceeds {@link #PRODUCTION_VERSION_CEILING}
+     * @throws IllegalArgumentException when the name carries no parsable version
      */
-    private static int highestDeliveredVersion() {
-        Pattern version = Pattern.compile("^V(\\d+)__");
-        return Stream.concat(versionedScriptsIn(MIGRATION_FOLDER).stream(),
-                        versionedScriptsIn(SEED_FOLDER).stream())
-                .map(version::matcher)
-                .filter(Matcher::find)
-                .map(matcher -> Integer.valueOf(matcher.group(1)))
-                .mapToInt(Integer::intValue)
-                .max()
-                .orElse(0);
+    private static boolean isAboveCeiling(final String script) {
+        return compareVersions(versionOf(script), PRODUCTION_VERSION_CEILING) > 0;
+    }
+
+    /**
+     * Extracts a migration's dotted version from its file name.
+     *
+     * @param script the migration file name
+     * @return the version, with {@code _} normalised to {@code .}
+     * @throws IllegalArgumentException when the name carries no parsable version
+     */
+    private static String versionOf(final String script) {
+        Matcher matcher = Pattern.compile("^V(\\d+(?:[._]\\d+)*)__").matcher(script);
+        if (!matcher.find()) {
+            throw new IllegalArgumentException("not a versioned migration file name: " + script);
+        }
+        return matcher.group(1).replace('_', '.');
+    }
+
+    /**
+     * Compares two dotted migration versions part by part, numerically.
+     *
+     * <p>A missing part is treated as zero, so {@code 2} and {@code 2.0} compare equal exactly as the
+     * migration tool treats them.</p>
+     *
+     * @param left  the first version
+     * @param right the second version
+     * @return a negative value, zero or a positive value as {@code left} is below, equal to or above
+     *         {@code right}
+     */
+    private static int compareVersions(final String left, final String right) {
+        String[] leftParts = left.split("\\.");
+        String[] rightParts = right.split("\\.");
+        for (int index = 0; index < Math.max(leftParts.length, rightParts.length); index++) {
+            int leftPart = index < leftParts.length ? Integer.parseInt(leftParts[index]) : 0;
+            int rightPart = index < rightParts.length ? Integer.parseInt(rightParts[index]) : 0;
+            if (leftPart != rightPart) {
+                return Integer.compare(leftPart, rightPart);
+            }
+        }
+        return 0;
     }
 
     /**
@@ -1055,15 +2155,21 @@ final class ConfigurationProfileBaselineTest {
      * @return the document's full text
      */
     private static String rawTextOf(final String document) {
-        ClassPathResource resource = new ClassPathResource(document);
-        if (!resource.exists()) {
-            throw new IllegalStateException("shipped configuration document is missing: " + document);
-        }
+        return rawTextOfResource(packaged(document));
+    }
+
+    /**
+     * Reads one physical resource as text, comments included.
+     *
+     * @param resource the resolved resource to read
+     * @return the resource's full text
+     */
+    private static String rawTextOfResource(final Resource resource) {
         try {
             return resource.getContentAsString(StandardCharsets.UTF_8);
         } catch (IOException failure) {
-            throw new UncheckedIOException("shipped configuration document is unreadable: "
-                    + document, failure);
+            throw new UncheckedIOException("configuration document is unreadable: "
+                    + resource.getDescription(), failure);
         }
     }
 
@@ -1075,7 +2181,7 @@ final class ConfigurationProfileBaselineTest {
      * @return one property source per YAML document
      */
     private static List<PropertySource<?>> loadDocuments(final String document,
-                                                         final ClassPathResource resource) {
+                                                         final Resource resource) {
         try {
             return new YamlPropertySourceLoader().load(document, resource);
         } catch (IOException failure) {

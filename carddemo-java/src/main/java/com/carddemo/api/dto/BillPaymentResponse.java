@@ -16,6 +16,7 @@
  */
 package com.carddemo.api.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 
@@ -34,18 +35,33 @@ import java.math.BigDecimal;
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, which is the stamp carried in this member's
  * own trailer comment at line 571.
  *
- * <p><strong>The two balances are the substance of this response, and they mean different
- * things.</strong> {@code currentBalance} is the <em>pre-payment</em> balance: the program moves the
- * account's balance to the screen at lines 193 to 194, <em>before</em> any payment is posted, so that
- * the operator sees the amount that is about to be paid and can decide whether to confirm it.
- * {@code paymentBalance} is the <em>resulting</em> balance, the balance the account is left holding.
- * On a successful payment that value is exactly zero, because the amount paid is always the whole
- * current balance: the program offers no partial-payment field, no amount input and no amount
- * validation, so the only payable amount is the balance itself. Both values are carried, never
+ * <p><strong>There is one balance, because the screen has one balance field.</strong>
+ * {@code currentBalance} is the <em>pre-payment</em> balance: the program moves the account's balance
+ * to the screen at lines 193 to 194, <em>before</em> any payment is posted, so that the operator sees
+ * the amount that is about to be paid and can decide whether to confirm it. It is carried, never
  * derived: this type performs no arithmetic whatsoever - no difference, no comparison, no zero test
- * and no sign test - and it does not assert that the resulting balance is zero. Its two accessors
- * simply return what was handed to them. The account read, the balance computation and the account
- * rewrite all belong to the service, and the ordering among them belongs there too.
+ * and no sign test - and its accessor simply returns what was handed to it. The account read, the
+ * balance computation and the account rewrite all belong to the service, and the ordering among them
+ * belongs there too.
+ *
+ * <p><strong>Why no second, resulting balance is carried.</strong> An earlier shape of this contract
+ * offered a resulting balance alongside the pre-payment one. It has been removed, because the legacy
+ * transaction has no such value to report and a client could not have obtained it from any observable
+ * source. The symbolic map declares exactly one balance item family - the inbound
+ * {@code CURBALI} at {@code app/cpy-bms/COBIL00.CPY} line 66 and its outbound counterpart
+ * {@code CURBALO} at line 128, both fourteen characters - and there is no second balance item on
+ * either half of the map. The program touches that item at exactly two sites, writing the
+ * pre-payment balance into it at line 194 and transmitting it at line 564, and it never writes a
+ * post-payment figure to the screen at all.
+ *
+ * <p>The resulting balance was also not independent information. The amount paid is always the whole
+ * current balance - the program moves the balance straight into the transaction amount at line 224 and
+ * subtracts it from the account at line 234, and it offers no partial-payment field, no amount input
+ * and no amount validation - so on a successful payment the resulting balance is necessarily zero and
+ * on any other outcome it is unchanged. A component whose value is either zero or a duplicate of its
+ * neighbour adds no observable fact, and publishing it would have implied a partial-payment capability
+ * the transaction does not have. Its removal is therefore a correction to the contract's scope rather
+ * than a loss of information.
  *
  * <p><strong>Money is a {@link BigDecimal} at scale two, and nothing here scales it.</strong> The
  * underlying field is {@code ACCT-CURR-BAL PIC S9(10)V99} at {@code app/cpy/CVACT01Y.cpy} line 7 -
@@ -61,8 +77,30 @@ import java.math.BigDecimal;
  * cent on a large share of computed values and the difference would be invisible to a test written
  * under the same wrong assumption. See decision log entries D-02 and DL-013. Consequently this type
  * contains no scaling call, no rounding mode, no decimal-format object and no numeric formatting of
- * any kind, and a caller must not add one: a value arrives already at its contractual scale or it
- * never reaches this boundary at all.
+ * any kind, and a caller must not add one.
+ *
+ * <p><strong>That contractual scale is now stated and checked, not merely assumed.</strong> The
+ * sentence above used to end by asserting that a value arrives already at its contractual scale or
+ * never reaches this boundary at all. That was the intent, and nothing enforced it: a producer could
+ * hand this record a three-decimal value and it would be transported and serialized as given, so a
+ * scale that was documented and unchecked was a scale a producer could silently break. The record
+ * field's own figures are therefore published in the schema and verified by the canonical constructor,
+ * which rejects a value whose scale is not two or which needs more than
+ * {@value #BALANCE_INTEGER_DIGITS} integer digits.
+ *
+ * <p><strong>Refusing is not scaling, and the distinction is the whole point.</strong> The check reads
+ * the value's scale and precision and either accepts it untouched or throws. It calls no scaling
+ * method, applies no rounding mode, performs no arithmetic, formats nothing and alters nothing, so
+ * every value that survives it crosses this boundary byte for byte exactly as before. The prohibition
+ * above is on <em>changing</em> a value, and this changes none.
+ *
+ * <p><strong>The figures come from the record layout, not from the screen.</strong> They are read from
+ * {@code ACCT-CURR-BAL PIC S9(10)V99} - ten integer digits and two decimal places, so total precision
+ * twelve - and specifically <em>not</em> from the fourteen-character width of the map's balance field.
+ * The distinction matters because the paragraph below forbids modelling that display width, and rightly
+ * so: it is terminal geometry. A record-layout precision is a different kind of fact from a column
+ * count, it is what the persisted column actually holds, and it is the only one of the two that says
+ * anything about scale.
  *
  * <p><strong>The map's balance display width is deliberately not modelled.</strong> The screen field
  * that shows the balance is a fixed-width character field, and the program moves an edited numeric
@@ -141,7 +179,7 @@ import java.math.BigDecimal;
  * highlight, no colour value and no cursor position. The screen's colours - the success text in green
  * and error text in red - are presentation decisions of a terminal and have no place in a machine
  * contract; where severity has to travel it travels as the semantic {@code generalError} flag. The
- * focus hint is an identity and nothing more, as described on {@link #fieldToFocus()}. None of the
+ * focus hint is an identity and nothing more, as described on {@link #focusScreenFieldId()}. None of the
  * fixed values the service stamps into the posted transaction appear either - its type, category,
  * source channel, description, merchant identity or timestamps - because they are properties of the
  * posted record rather than of this response, and the two twenty-six-character timestamp forms are
@@ -196,12 +234,12 @@ import java.math.BigDecimal;
  * @param currentBalance the <strong>pre-payment</strong> balance displayed to the operator, written to
  *     the screen at {@code app/cbl/COBIL00C.cbl} lines 193 to 194 before any payment occurs, from
  *     {@code ACCT-CURR-BAL PIC S9(10)V99} at {@code app/cpy/CVACT01Y.cpy} line 7. A
- *     {@link BigDecimal} at scale two, already scaled by the codec; never scaled, rounded, formatted
- *     or rearranged here. May be {@code null} when no account was read.
- * @param paymentBalance the <strong>resulting</strong> balance the account is left holding, which is
- *     exactly zero on a successful payment because the amount paid is always the whole current
- *     balance. A {@link BigDecimal} at scale two, carried and never computed here, and not asserted
- *     to be zero. May be {@code null} when no payment was attempted.
+ *     {@link BigDecimal} at scale exactly {@value #BALANCE_SCALE} and at most
+ *     {@value #BALANCE_INTEGER_DIGITS} integer digits, which is that record field read literally -
+ *     ten digits before the decimal point and two after it, so total precision twelve. Already scaled
+ *     by the zoned-decimal codec before it arrives; the canonical constructor confirms the shape and
+ *     refuses a value that does not have it, and never scales, rounds, formats or rearranges. May be
+ *     {@code null} when no account was read.
  * @param confirm the operator's confirmation answer, echoed from the one-character field of the map at
  *     {@code app/cpy-bms/COBIL00.CPY} line 72, whose width the screen definition at
  *     {@code app/bms/COBIL00.bms} lines 115 to 119 corroborates. One character of text rather than a
@@ -254,7 +292,7 @@ import java.math.BigDecimal;
  *     Explicit by contract and never inferred from {@code errorMessage} being present, because the
  *     confirmation prompt at line 237 and the success text at lines 525 to 531 both set a message
  *     while leaving the flag off.
- * @param fieldToFocus the identity of the screen field input focus belongs on, one of
+ * @param focusScreenFieldId the identity of the screen field input focus belongs on, one of
  *     {@link #ACCOUNT_ID_FIELD_ID} or {@link #CONFIRM_FIELD_ID}. An identity only: it is not a cursor
  *     row or column, not a negative sentinel and not an attribute byte. It travels independently of
  *     which check failed, because the program decides it per arm - the account-identifier input on
@@ -264,12 +302,12 @@ import java.math.BigDecimal;
  *     flag, attribute and value names of the transaction-name field at
  *     {@code app/cpy-bms/COBIL00.CPY} lines 19 to 24 show, and those data names are capped at eight.
  *     May be {@code null} when the response gives no hint.
- * @param route the declarative next route, carried as opaque text that this type never interprets.
+ * @param nextRoute the declarative next route, carried as opaque text that this type never interprets.
  *     The legacy transferred control to another program directly - to the caller or the main menu on
  *     the back key at lines 129 to 135 - whereas here the client drives the next call and the server
  *     forwards nothing. The route vocabulary belongs to the navigation service; no route table, route
  *     enumeration or dispatch appears here. May be {@code null} when the response nominates no route.
- * @param navigation the client-echoed navigation state, the replacement for the communication area
+ * @param navigationContext the client-echoed navigation state, the replacement for the communication area
  *     declared at {@code app/cpy/COCOM01Y.cpy} line 19 that the legacy program received and returned
  *     on every pseudo-conversational turn. Echoed request state, never a server session. May be
  *     {@code null}.
@@ -282,11 +320,18 @@ public record BillPaymentResponse(
         // literal at its point of use rather than through a shared name, because these are
         // independent legacy widths that coincide in places by accident and no other type has any
         // business reading them. A bound measures and never alters, so a space-padded value passes
-        // through validation untouched. NEVER place a bound on either BigDecimal: the balance display
-        // width on the map is terminal geometry, not a scale, a precision or a formatting hint.
+        // through validation untouched. NEVER place a character bound on the BigDecimal: the balance
+        // display width on the map is terminal geometry, not a scale, a precision or a formatting
+        // hint, and no @Size, @Digits or @DecimalMax belongs on it. Its record-layout shape is a
+        // different fact, published in the schema below and enforced by the canonical constructor.
         @Size(max = 11) String accountId,
+        @Schema(
+                description =
+                        "Pre-payment account balance. Derived from ACCT-CURR-BAL PIC S9(10)V99 at"
+                                + " app/cpy/CVACT01Y.cpy line 7: total precision 12, with 10 integer"
+                                + " digits and a scale of exactly 2. Carried at that scale and never"
+                                + " rescaled, rounded or formatted at this boundary.")
         BigDecimal currentBalance,
-        BigDecimal paymentBalance,
         @Size(max = 1) String confirm,
         @Size(max = 16) String newTransactionId,
         @Size(max = 4) String transactionName,
@@ -298,23 +343,96 @@ public record BillPaymentResponse(
         @Size(max = 78) String errorMessage,
         boolean paymentAccepted,
         boolean generalError,
-        @Size(max = 7) String fieldToFocus,
-        String route,
-        NavigationContext navigation) {
+        @Size(max = 7) String focusScreenFieldId,
+        String nextRoute,
+        NavigationContext navigationContext) {
 
-    // The canonical constructor generated for this record is intentionally left exactly as generated:
-    // no compact constructor, no defaulting, no normalisation and no validation. Every value crosses
-    // this boundary byte for byte, which is what lets a blank echoed field, a space-padded title and
-    // a scale-two balance reach a client unchanged. Scaling belongs to the zoned-decimal codec,
-    // message assembly and flag selection belong to the bill-payment service, and neither may be
-    // performed here.
+    /**
+     * Confirms the balance's decimal shape and changes nothing else.
+     *
+     * <p><strong>What it does not do.</strong> No value is defaulted, normalised, trimmed, padded,
+     * case-folded, scaled, rounded, reformatted or canonicalised here, and no business logic of any
+     * kind runs. Every component still crosses this boundary byte for byte, which is what lets a blank
+     * echoed field, a space-padded title and a scale-two balance reach a client unchanged. Message
+     * assembly and flag selection belong to the bill-payment service, scaling belongs to the
+     * zoned-decimal codec, and neither may be performed here.
+     *
+     * <p><strong>The one thing it refuses.</strong> The balance is checked against the decimal shape
+     * of the record field it represents, and a value of the wrong shape is rejected rather than
+     * repaired. This is a refusal and not a normalisation, and the distinction is the whole point:
+     * nothing here rescales, rounds, truncates or reformats the balance, so the value a producer
+     * published still crosses this boundary at exactly the scale it published it at. What changes is
+     * that a producer which published the wrong scale now finds out at construction instead of
+     * emitting a payload whose precision silently contradicts the schema this type publishes. A
+     * {@code null} balance is accepted untouched, because no account is read on several arms and
+     * because line 524 blanks the echoed values on success.
+     *
+     * @throws IllegalArgumentException if {@code currentBalance} carries a scale other than
+     *     {@link #BALANCE_SCALE} or needs more than {@link #BALANCE_INTEGER_DIGITS} integer digits
+     */
+    public BillPaymentResponse {
+        requireRecordShape(currentBalance);
+    }
+
+    /**
+     * The number of decimal places the balance carries, from the two decimal places of
+     * {@code ACCT-CURR-BAL PIC S9(10)V99} at {@code app/cpy/CVACT01Y.cpy} line 7.
+     *
+     * <p>Public because it is part of the numeric contract rather than an implementation choice: the
+     * service that builds a response, and the tests that check one, need a single authority for the
+     * figure instead of each restating it. Declared here rather than shared with the transaction
+     * contracts for the same reason the character widths are not shared - each contract states its own
+     * legacy field - and the two are not interchangeable in any case, because a transaction amount and
+     * an account balance are different record fields of different widths.
+     */
+    public static final int BALANCE_SCALE = 2;
+
+    /**
+     * The number of integer digits the balance may carry, from the ten integer digits of the same
+     * record field. With {@link #BALANCE_SCALE} this gives the total precision of twelve that the
+     * relational column declares.
+     *
+     * <p>Ten and not nine: the account balance is a wider field than a transaction amount, which
+     * carries nine integer digits at {@code app/cpy/CVTRA05Y.cpy} line 10. Reusing the narrower figure
+     * here would reject balances the legacy record can hold.
+     */
+    public static final int BALANCE_INTEGER_DIGITS = 10;
+
+    /**
+     * Confirms that the balance has the decimal shape of the record field it represents.
+     *
+     * <p>Reads only the balance's own scale and precision. It performs no arithmetic on the value,
+     * does not re-scale it, does not round it and does not format it, so it cannot change what the
+     * client receives. The failure text names the offending scale or digit count and never the balance
+     * itself, so a rejected value cannot reach a log through the diagnostic that reports it.
+     *
+     * @param currentBalance the balance to check, or {@code null} where no account was read or where
+     *     the success path has deliberately blanked the echoed values
+     * @throws IllegalArgumentException if the balance does not fit the record field
+     */
+    private static void requireRecordShape(final BigDecimal currentBalance) {
+        if (currentBalance == null) {
+            return;
+        }
+        if (currentBalance.scale() != BALANCE_SCALE) {
+            throw new IllegalArgumentException("currentBalance must carry scale " + BALANCE_SCALE
+                    + ", because its record field stores two decimal places, but its scale is "
+                    + currentBalance.scale());
+        }
+        final int integerDigits = currentBalance.precision() - currentBalance.scale();
+        if (integerDigits > BALANCE_INTEGER_DIGITS) {
+            throw new IllegalArgumentException("currentBalance must fit " + BALANCE_INTEGER_DIGITS
+                    + " integer digits, because that is the width of its record field, but it needs "
+                    + integerDigits);
+        }
+    }
 
     /**
      * Identity of the account-identifier input field: the name that screen definition
      * {@code app/bms/COBIL00.bms} gives it at lines 85 to 89, and that the symbolic map at
      * {@code app/cpy-bms/COBIL00.CPY} line 60 carries.
      *
-     * <p>This is the value {@link #fieldToFocus()} takes on all fourteen arms of the program except
+     * <p>This is the value {@link #focusScreenFieldId()} takes on all fourteen arms of the program except
      * the two that concern the confirmation answer: the empty-identifier arm at line 163, the
      * nothing-to-pay arm at line 203, the three not-found arms at lines 363, 394 and 427, the three
      * unable-to-access arms at lines 370, 401 and 434, the three transaction-browse arms at lines 458,
@@ -332,7 +450,7 @@ public record BillPaymentResponse(
      * {@code app/bms/COBIL00.bms} gives it at lines 115 to 119, and that the symbolic map at
      * {@code app/cpy-bms/COBIL00.CPY} line 72 carries.
      *
-     * <p>This is the value {@link #fieldToFocus()} takes on exactly two arms - the unaccepted
+     * <p>This is the value {@link #focusScreenFieldId()} takes on exactly two arms - the unaccepted
      * confirmation answer at line 189 and the confirmation prompt at line 239 - which is why the focus
      * hint has to travel as its own component rather than being inferred from whichever check failed.
      * Note that the second of those two arms is not a failure at all: it asks the operator to confirm,
@@ -527,13 +645,14 @@ public record BillPaymentResponse(
 
     /**
      * Returns a diagnostic representation that identifies the response and discloses neither the
-     * account nor either balance.
+     * account nor its balance.
      *
      * <p><strong>Why the implicit record rendering could not stand.</strong> A record's generated
-     * rendering prints every component, and the first three components of this one are an account
-     * identifier and two balances of that account. One instance exists per bill-payment request, so a
+     * rendering prints every component, and the first two components of this one are an account
+     * identifier and the balance of that account. One instance exists per bill-payment request, so a
      * default rendering would place an account identifier and the exact amount paid one interpolation
-     * away from every log line, assertion message and diagnostic dump on the payment path.
+     * away from every log line, assertion message and diagnostic dump on the payment path. The
+     * balance is the amount paid, in full, because the program always pays the whole of it.
      *
      * <p><strong>What is retained.</strong> The identifier of the posted transaction, the two explicit
      * flags, the focus hint, the route, the four header values and the summary message. That set is
@@ -547,8 +666,8 @@ public record BillPaymentResponse(
      * <p><strong>What is withheld, and why the list is wider than the account identifier alone.</strong>
      * The account identifier is withheld because it identifies an account. The confirmation answer is
      * withheld because it is operator input and a rejection must never echo the value it rejected
-     * (decision log entry D-16). Both balances are withheld because, together with the retained
-     * transaction identifier, they reveal exactly what a specific account owed and paid - which is not
+     * (decision log entry D-16). The balance is withheld because, together with the retained
+     * transaction identifier, it reveals exactly what a specific account owed and paid - which is not
      * something a diagnostic channel needs in order to be useful. Fail-closed is the correct default:
      * the retained set was chosen because it is sufficient, not because the remainder happened to look
      * harmless. The navigation state is withheld too, since it carries identifiers of its own; it
@@ -565,7 +684,6 @@ public record BillPaymentResponse(
         return "BillPaymentResponse["
                 + "accountId=" + REDACTION_PLACEHOLDER
                 + ", currentBalance=" + REDACTION_PLACEHOLDER
-                + ", paymentBalance=" + REDACTION_PLACEHOLDER
                 + ", confirm=" + REDACTION_PLACEHOLDER
                 + ", newTransactionId=" + newTransactionId
                 + ", transactionName=" + transactionName
@@ -577,9 +695,9 @@ public record BillPaymentResponse(
                 + ", errorMessage=" + errorMessage
                 + ", paymentAccepted=" + paymentAccepted
                 + ", generalError=" + generalError
-                + ", fieldToFocus=" + fieldToFocus
-                + ", route=" + route
-                + ", navigation=" + REDACTION_PLACEHOLDER
+                + ", focusScreenFieldId=" + focusScreenFieldId
+                + ", nextRoute=" + nextRoute
+                + ", navigationContext=" + REDACTION_PLACEHOLDER
                 + "]";
     }
 

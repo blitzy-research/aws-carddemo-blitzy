@@ -21,14 +21,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.StreamWriteFeature;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 
@@ -258,21 +255,23 @@ class SignOnRequestBoundaryTest {
             };
 
     /**
-     * Mapper mirroring the shared application settings.
+     * Mapper carrying the four settings the module declares in its own {@code application.yml}.
      *
-     * <p>Non-null value inclusion and non-null content inclusion, which is the pair the
-     * shared setting expands to; timestamps as text; unknown incoming properties tolerated;
-     * and plain rather than scientific decimal notation. That last setting has no field to
-     * act on here and is configured only so the mapper stays a faithful stand-in for the one
-     * the application builds.</p>
+     * <p>Non-null value inclusion and non-null content inclusion, which is the pair the shared
+     * setting expands to; timestamps as text; unknown incoming properties tolerated; and plain rather
+     * than scientific decimal notation. That last setting has no field to act on here, and it is in
+     * force anyway because this file does not assemble the mapper: it comes from
+     * {@link JsonContractSupport#declaredSettingsMapper()}, the single place in the test tree where
+     * the four settings are written out by hand.</p>
+     *
+     * <p>What it evidences is the shape this type takes <em>under those settings</em>, and nothing
+     * more; it is not the mapper a deployed instance holds.
+     * {@link ApplicationJsonContractTest} compares a mapper obtained from a real context against this
+     * very factory, so an edit to the module's file fails there rather than leaving this stand-in
+     * unrepresentative.</p>
      */
-    private static final ObjectMapper SHARED_SETTINGS_MAPPER = JsonMapper.builder()
-            .defaultPropertyInclusion(
-                    JsonInclude.Value.construct(JsonInclude.Include.NON_NULL, JsonInclude.Include.NON_NULL))
-            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-            .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-            .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
-            .build();
+    private static final ObjectMapper SHARED_SETTINGS_MAPPER =
+            JsonContractSupport.declaredSettingsMapper();
 
     /**
      * Mapper that rejects an unknown property instead of ignoring it.

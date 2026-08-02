@@ -103,7 +103,7 @@ import jakarta.validation.constraints.Size;
  * invert the module's layer direction, and the global failure handler one level up owns the
  * translation between the two.
  *
- * <p><strong>Navigation is declarative.</strong> {@link #route()} is an opaque label that names
+ * <p><strong>Navigation is declarative.</strong> {@link #nextRoute()} is an opaque label that names
  * where the client should go next, and {@link #navigationContext()} is echoed request state rather
  * than a server-held session. Neither is executed here: the legacy transferred control to another
  * program (line 473) and re-armed itself for the next turn (line 555), and the migrated equivalent
@@ -135,15 +135,38 @@ import jakarta.validation.constraints.Size;
  * It is modelled for exactly that reason and must be echoed back unchanged; it is not an editable
  * field and no client should present it as one.
  *
- * <p><strong>Deliberately absent.</strong> No version, entity-tag or concurrency component exists
- * here even though one of the messages reports a concurrent change: the legacy detected it by
- * comparing before and after images, the migrated card entity uses a version column, and both are
- * persistence concerns. The conflict reaches the client purely as {@link Messages#DATA_WAS_CHANGED}.
- * Equally absent are the abend path, which belongs to the abend service and whose default operator
- * text is owned there rather than restated here; the screen work area, whose key-action and
- * identity state is request-side and whose identifiers this response already carries; the card
- * status enumeration and every date and time type, for the reasons given above; and the standard
- * problem-detail representation, which this module switches off in favour of {@link ErrorResponse}.
+ * <p><strong>The concurrency proof is returned here because this is the presenting screen.</strong>
+ * {@link #concurrencyToken()} is the opaque, integrity-protected description of the card as it stood
+ * when this response was built. The legacy program carried the same state itself: the work area
+ * declared at program line 274, whose second group (line 291 onward) holds the fetched image, is
+ * filled by {@code 9000-READ-DATA} at line 1344, moved into the communication area returned with the
+ * screen at line 550 and sliced back off on the next turn at lines 392 to 400. When the operator
+ * confirms, {@code 9200-WRITE-PROCESSING} reads the record under lock and {@code 9300-CHECK-CHANGE-IN-REC}
+ * compares it against that image at lines 1503 to 1508, abandoning the write on any single difference
+ * by jumping back to line 1494 from line 1518. That comparison exists only because the image travelled
+ * with the conversation, so the migrated screen has to hand it out. This screen is both the presenting
+ * and the confirming screen, which is why the proof is minted and returned on this type and echoed
+ * back on {@link CardUpdateRequest} - the same round trip the communication area performed, with the
+ * value sealed because a client, unlike the transaction manager, is not trusted to hold it. Decision
+ * {@code DL-109} in {@code docs/decision-log.md} records this arrangement, and records that an earlier
+ * revision of this file declared no version, entity-tag or concurrency component to exist here at all -
+ * a statement the stale-update parity requirement overrules.
+ *
+ * <p><strong>The card entity's version column does not replace it.</strong> The provider's version
+ * check catches a change made between reading a row for update and writing it. This proof catches a
+ * change made between presenting this screen and confirming it. A confirming request that begins by
+ * loading the current row loads the current version with it and then agrees with itself, so the
+ * version column cannot see into the presentation window at all. The two are complementary, and
+ * {@link Messages#DATA_WAS_CHANGED} is the operator text for either.
+ *
+ * <p><strong>Deliberately absent.</strong> No readable version number, entity tag, timestamp or
+ * fetched-image snapshot exists here, because each of those is a value a client could assert for
+ * itself; only the sealed proof crosses the boundary. Equally absent are the abend path, which
+ * belongs to the abend service and whose default operator text is owned there rather than restated
+ * here; the screen work area, whose key-action and identity state is request-side and whose
+ * identifiers this response already carries; the card status enumeration and every date and time
+ * type, for the reasons given above; and the standard problem-detail representation, which this
+ * module switches off in favour of {@link ErrorResponse}.
  *
  * <p><strong>Wire and thread contract.</strong> The module omits {@code null} values globally and
  * tolerates unknown properties globally, so no serialization annotation is needed and none is
@@ -154,14 +177,14 @@ import jakarta.validation.constraints.Size;
  * @param transactionName    the transaction identifier echoed into the screen header, four
  *                           characters, map line 128. The program supplies its own identifier
  *                           {@code CCUP} at line 1059.
- * @param screenTitleLine1   the first title line, 40 characters, map line 134, supplied from the
+ * @param title01            the first title line, 40 characters, map line 134, supplied from the
  *                           shared title constants at program line 1057.
  * @param currentDate        the header date as the screen rendered it, eight characters, map line
  *                           140, supplied at program line 1068. An already-rendered display string,
  *                           not a date value.
  * @param programName        the program name echoed into the screen header, eight characters, map
  *                           line 146, supplied at program line 1060.
- * @param screenTitleLine2   the second title line, 40 characters, map line 152, supplied at program
+ * @param title02            the second title line, 40 characters, map line 152, supplied at program
  *                           line 1058.
  * @param currentTime        the header time as the screen rendered it, eight characters, map line
  *                           158, supplied at program line 1074. An already-rendered display string,
@@ -203,10 +226,21 @@ import jakarta.validation.constraints.Size;
  *                           shape.
  * @param focusScreenFieldId the legacy screen field identifier that should receive input focus, or
  *                           {@code null} when the response offers no hint. An opaque label only.
- * @param route              the declarative next route, or {@code null}. An opaque label that this
+ * @param nextRoute          the declarative next route, or {@code null}. An opaque label that this
  *                           type neither interprets nor acts on.
  * @param navigationContext  the echoed navigation state, or {@code null} when the caller carries
  *                           none. Immutable request state, not a server session.
+ * @param concurrencyToken   the opaque, integrity-protected description of the card as it stood when
+ *                           this response was built, minted by
+ *                           {@code com.carddemo.service.CardConcurrencyTokenService}, or {@code null}
+ *                           on a shape that presents no card to confirm. Not a map field: it is the
+ *                           sealed counterpart of the program work area the legacy transaction returns
+ *                           with the screen at program line 550. A client stores it untouched and
+ *                           echoes it on the confirming {@link CardUpdateRequest}; it carries no
+ *                           readable structure, so nothing may be parsed out of it, compared against
+ *                           another card's proof or used for anything but that echo. Carried without
+ *                           a width constraint because its length follows the sealing envelope's
+ *                           encoding rather than any legacy screen field.
  * @since 1.0.0
  */
 public record CardUpdateResponse(
@@ -215,7 +249,7 @@ public record CardUpdateResponse(
         @Size(max = CardUpdateResponse.TRANSACTION_NAME_LENGTH) String transactionName,
 
         /* TITLE01O, width 40, COCRDUP.CPY line 134 - screen header. */
-        @Size(max = CardUpdateResponse.SCREEN_TITLE_LENGTH) String screenTitleLine1,
+        @Size(max = CardUpdateResponse.SCREEN_TITLE_LENGTH) String title01,
 
         /* CURDATEO, width 8, COCRDUP.CPY line 140 - screen header, already rendered. */
         @Size(max = CardUpdateResponse.CURRENT_DATE_LENGTH) String currentDate,
@@ -224,7 +258,7 @@ public record CardUpdateResponse(
         @Size(max = CardUpdateResponse.PROGRAM_NAME_LENGTH) String programName,
 
         /* TITLE02O, width 40, COCRDUP.CPY line 152 - screen header. */
-        @Size(max = CardUpdateResponse.SCREEN_TITLE_LENGTH) String screenTitleLine2,
+        @Size(max = CardUpdateResponse.SCREEN_TITLE_LENGTH) String title02,
 
         /* CURTIMEO, width 8, COCRDUP.CPY line 158 - screen header, already rendered. */
         @Size(max = CardUpdateResponse.CURRENT_TIME_LENGTH) String currentTime,
@@ -266,10 +300,16 @@ public record CardUpdateResponse(
         @Size(max = CardUpdateResponse.SCREEN_FIELD_ID_LENGTH) String focusScreenFieldId,
 
         /* Declarative next route; opaque, never resolved or dispatched here. */
-        String route,
+        String nextRoute,
 
         /* Echoed navigation state, from COCOM01Y; immutable, not a server session. */
-        NavigationContext navigationContext) {
+        NavigationContext navigationContext,
+
+        /* Not a map field. The sealed counterpart of the program work area COCRDUPC returns with the
+         * screen at line 550, described on the type above. Opaque and unbounded by design, and
+         * deliberately unannotated: a width or pattern rule on a sealed value would couple this
+         * contract to the envelope's internal encoding. */
+        String concurrencyToken) {
 
     /**
      * Fixed stand-in emitted by {@link #toString()} in place of each regulated component.
@@ -283,8 +323,14 @@ public record CardUpdateResponse(
      * serialized payload a client receives, always carry the full untouched value, which is the
      * contract the legacy screen and record established. Private because it is a rendering detail
      * and not part of the card-update contract.
+     *
+     * <p>The name and the literal are the ones every other redacting contract in this package uses,
+     * deliberately rather than incidentally. A single stand-in text across the package makes the
+     * absence of a regulated value auditable by one search over the whole DTO surface; two spellings
+     * would mean a search that finds one and misses the other, which is the failure mode a
+     * fail-closed rendering rule exists to remove.
      */
-    private static final String WITHHELD_VALUE = "***WITHHELD***";
+    private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
 
     /**
      * Width in characters of the transaction identifier echoed into the screen header: 4.
@@ -468,10 +514,10 @@ public record CardUpdateResponse(
      * with the error row blank, no field decorated and its own error flag clear.
      *
      * @param transactionName    the header transaction identifier
-     * @param screenTitleLine1   the first header title line
+     * @param title01            the first header title line
      * @param currentDate        the header date as rendered
      * @param programName        the header program name
-     * @param screenTitleLine2   the second header title line
+     * @param title02            the second header title line
      * @param currentTime        the header time as rendered
      * @param accountId          the account identifier the update was keyed by
      * @param cardNumber         the card number, in full
@@ -481,14 +527,19 @@ public record CardUpdateResponse(
      * @param expiryYear         the expiry year characters
      * @param expiryDay          the hidden expiry day characters, echoed for carry-through
      * @param informationMessage the information line, or {@code null}
-     * @param route              the declarative next route, or {@code null}
+     * @param nextRoute          the declarative next route, or {@code null}
      * @param navigationContext  the echoed navigation state, or {@code null}
+     * @param concurrencyToken   the minted concurrency proof for the card being presented, or
+     *                           {@code null} on a shape that presents no card to confirm. Declared
+     *                           explicitly rather than defaulted to {@code null}, because this is the
+     *                           presenting shape: a screen sent out without a proof cannot have one
+     *                           echoed back, so the caller has to state its absence deliberately.
      */
     public CardUpdateResponse(String transactionName,
-                              String screenTitleLine1,
+                              String title01,
                               String currentDate,
                               String programName,
-                              String screenTitleLine2,
+                              String title02,
                               String currentTime,
                               String accountId,
                               String cardNumber,
@@ -498,13 +549,14 @@ public record CardUpdateResponse(
                               String expiryYear,
                               String expiryDay,
                               String informationMessage,
-                              String route,
-                              NavigationContext navigationContext) {
+                              String nextRoute,
+                              NavigationContext navigationContext,
+                              String concurrencyToken) {
         this(transactionName,
-                screenTitleLine1,
+                title01,
                 currentDate,
                 programName,
-                screenTitleLine2,
+                title02,
                 currentTime,
                 accountId,
                 cardNumber,
@@ -518,8 +570,9 @@ public record CardUpdateResponse(
                 false,
                 List.of(),
                 null,
-                route,
-                navigationContext);
+                nextRoute,
+                navigationContext,
+                concurrencyToken);
     }
 
     /**
@@ -542,12 +595,20 @@ public record CardUpdateResponse(
     /**
      * Renders this response for diagnostics with every regulated component withheld.
      *
-     * <p>The account identifier, the card number and the embossed cardholder name are replaced by a
-     * fixed stand-in, so that a stringified instance reaching a log, a diagnostic message or a
-     * failure report discloses none of them. Every other component is shown as-is: the header items,
-     * the expiry components, the status code, the two message lines, the error surface and the
-     * navigation state are all needed to diagnose a response and none of them identifies a
-     * cardholder. The navigation state renders itself under the same discipline.
+     * <p>The account identifier, the card number, the embossed cardholder name and the three expiry
+     * components are replaced by a fixed stand-in, so that a stringified instance reaching a log, a
+     * diagnostic message or a failure report discloses none of them. The expiry parts go with the
+     * number rather than with the screen furniture: month, year and day reconstruct the card's
+     * expiration date, which is an authentication factor whenever it can be read beside the number,
+     * and the withheld set here is deliberately the same one
+     * {@link CardDetailResponse#toString()} withholds - the two card screens describe the same record,
+     * so a value that is unsafe to print from one is not made safe by having been reached through the
+     * other. The concurrency proof is withheld for a third reason: it is not cardholder data but a live
+     * integrity credential, and a proof recovered from a log line would let a stale confirmation be
+     * replayed against the record it describes. Every other component is shown as-is: the header items,
+     * the status code, the two message lines, the error surface and the navigation state are all needed
+     * to diagnose a response and none of them identifies a cardholder or authenticates anything. The
+     * navigation state renders itself under the same discipline.
      *
      * <p>This override changes only the stringified form. The component accessors and the serialized
      * payload are unaffected and continue to carry the full untouched values, which is the contract
@@ -560,25 +621,26 @@ public record CardUpdateResponse(
     public String toString() {
         return "CardUpdateResponse["
                 + "transactionName=" + transactionName
-                + ", screenTitleLine1=" + screenTitleLine1
+                + ", title01=" + title01
                 + ", currentDate=" + currentDate
                 + ", programName=" + programName
-                + ", screenTitleLine2=" + screenTitleLine2
+                + ", title02=" + title02
                 + ", currentTime=" + currentTime
-                + ", accountId=" + WITHHELD_VALUE
-                + ", cardNumber=" + WITHHELD_VALUE
-                + ", embossedName=" + WITHHELD_VALUE
+                + ", accountId=" + REDACTION_PLACEHOLDER
+                + ", cardNumber=" + REDACTION_PLACEHOLDER
+                + ", embossedName=" + REDACTION_PLACEHOLDER
                 + ", activeStatus=" + activeStatus
-                + ", expiryMonth=" + expiryMonth
-                + ", expiryYear=" + expiryYear
-                + ", expiryDay=" + expiryDay
+                + ", expiryMonth=" + REDACTION_PLACEHOLDER
+                + ", expiryYear=" + REDACTION_PLACEHOLDER
+                + ", expiryDay=" + REDACTION_PLACEHOLDER
                 + ", informationMessage=" + informationMessage
                 + ", errorMessage=" + errorMessage
                 + ", generalError=" + generalError
                 + ", fieldErrors=" + fieldErrors
                 + ", focusScreenFieldId=" + focusScreenFieldId
-                + ", route=" + route
+                + ", nextRoute=" + nextRoute
                 + ", navigationContext=" + navigationContext
+                + ", concurrencyToken=" + REDACTION_PLACEHOLDER
                 + "]";
     }
 
@@ -823,11 +885,16 @@ public record CardUpdateResponse(
          * <strong>"some one" is two words.</strong>
          *
          * <p>This is the concurrency text, and it is the <em>only</em> way a concurrent change is
-         * reported to a client. The legacy program detected the conflict by comparing the values it
-         * had fetched against the ones it re-read (lines 1503 to 1508) and then refreshed its
-         * before-image and left the write path at line 1518; the migrated equivalent is a version
-         * column on the card entity. Both are persistence concerns, which is why the enclosing type
-         * carries no version, entity-tag or concurrency component - only this text.
+         * reported to a client: the operator is told to review, never which field moved, who moved it
+         * or what it now holds. The legacy program detected the conflict by comparing the image it had
+         * fetched when the screen was built against the record it re-read under lock (lines 1503 to
+         * 1508), then refreshed that image and left the write path at line 1518. Two migrated checks
+         * cover that behaviour between them and both surface as this one text. The sealed proof on
+         * {@link CardUpdateResponse#concurrencyToken()}, verified before the write, covers the window
+         * between presenting this screen and confirming it, which is the window the legacy comparison
+         * covered. The version column on the card entity covers the shorter window between reading the
+         * row for update and writing it. Neither subsumes the other, and neither is described to the
+         * client in any more detail than this sentence.
          */
         public static final String DATA_WAS_CHANGED = "Record changed by some one else. Please review";
 

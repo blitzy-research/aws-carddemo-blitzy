@@ -94,13 +94,13 @@ import jakarta.validation.constraints.Size;
  * components as record semantics require, and the password component carries no serialization
  * annotation because it must still deserialize from the request body for sign-on to work.
  *
- * <p><strong>Credential verification is out of scope for this type, and does not yet exist in the
- * module.</strong> The legacy comparison is a direct equality test against a stored cleartext
- * password. Replacing it with hashed verification is a documented parity exception recorded as
- * decision log entry D-12, which also records that <strong>no password encoder and no verifying
- * sign-on path has been delivered yet</strong> - this contract carries the two values and asserts
- * nothing about how they are checked. No credential literal, hash, salt or work factor appears in
- * this file.
+ * <p><strong>Credential verification is out of scope for this type.</strong> The legacy comparison is
+ * a direct equality test against a stored cleartext password. Replacing it with hashed verification is
+ * a documented parity exception recorded as decision log entry D-12, which records that the encoder
+ * and the verifying comparison are delivered in {@code service.CredentialDigestService} while
+ * <strong>no sign-on path that calls them has been delivered yet</strong> - this contract carries the
+ * two values and asserts nothing about how they are checked. No credential literal, hash, salt or work
+ * factor appears in this file.
  *
  * <p>Lines 118-131 of {@code COSGN00C} form a single ordered evaluation cascade: the user
  * id is tested for emptiness first, the password second, and because the construct stops

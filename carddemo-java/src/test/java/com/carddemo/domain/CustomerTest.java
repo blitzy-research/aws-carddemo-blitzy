@@ -27,31 +27,31 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 /**
- * Unit test for {@link Customer}, the 500-byte customer record and the widest entity in this
- * package.
+ * Unit test for {@link Customer}, the 500-byte customer record and the widest entity in this package.
  *
- * <p><strong>What this suite is an oracle for.</strong> Every expected value below was derived by
- * hand and independently of the class under test. The eighteen widths were read off the customer
- * copybook and summed by hand; the running sums that place each field are written out in the
- * assertions so a reviewer can check the arithmetic without a calculator; and every literal value
- * was decoded by hand from the first record of the seeded customer reference file, which measures
- * 25,050 bytes and holds 50 records of 500 characters each. The record length is corroborated
- * independently of the copybook by the customer cluster definition, which declares
- * {@code KEYS(9 0)} and {@code RECORDSIZE(500 500)}. No assertion calls a production method to
- * compute its own expectation.
+ * <p>Every expected value below was derived by hand and independently of the class under test. The
+ * eighteen widths were read off the customer copybook and summed by hand; the running sums that place
+ * each field are written out in the assertions so a reviewer can check the arithmetic without a
+ * calculator; and every literal was decoded by hand from the first record of the seeded customer
+ * reference file, which measures 25,050 bytes and holds 50 records of 500 characters each. The record
+ * length and the key are corroborated independently of the copybook by the customer cluster
+ * definition. No assertion calls a production method to compute its own expectation.
  *
- * <p><strong>Eighteen mapped fields, all of them text.</strong> The mapped widths are 9, 25, 25,
- * 25, 50, 50, 50, 2, 3, 10, 15, 15, 9, 20, 10, 10, 1 and 3, which sum to 332; a 168-byte trailing
- * filler closes the record at 500 and is deliberately neither a field nor a column here. Three of
- * the eighteen are external decimal in the copybook - the identifier, the national identifier and
- * the credit score - and all three are nevertheless carried as text, because their external
- * representation is the contract: an identifier must stay nine characters rather than collapsing to
- * one. There is consequently no monetary attribute, no numeric attribute and no optimistic-locking
- * attribute on this entity, and this suite parses nothing to a number.
+ * <p>Eighteen mapped fields, all of them text, summing to 332, with a 168-byte trailing filler closing
+ * the record at 500 that is deliberately neither a field nor a column here. Three of the eighteen are
+ * external decimal in the copybook - the identifier, the national identifier and the credit score -
+ * and all three are nevertheless carried as text, because their external representation is the
+ * contract: an identifier must stay nine characters rather than collapsing to one. There is
+ * consequently no monetary, numeric or optimistic-locking attribute on this entity, and this suite
+ * parses nothing to a number. Widths are measured in encoded bytes under
+ * {@link StandardCharsets#US_ASCII} explicitly, never in characters, because the value described is a
+ * position in a fixed-width record image.
  *
- * <p><strong>Widths are measured in encoded bytes, never in characters.</strong> Every width
- * assertion encodes with {@link StandardCharsets#US_ASCII} explicitly rather than relying on the
- * platform default, because the value being described is a position in a fixed-width record image.
+ * <p>Two legacy spellings, one entity. The estate declares this record twice: the copybook the six
+ * online and batch programs include hyphenates the date-of-birth field, and the alternate copybook the
+ * statement generator includes spells the same field without the hyphens. Both denote the same 10
+ * bytes at offset 308, so one attribute, one column and one test class serve both; no variant flag,
+ * discriminator, second entity or second test class exists.
  *
  * <p><strong>Two legacy spellings, one entity.</strong> The estate declares this record twice. The
  * copybook the six online and batch programs include hyphenates the date-of-birth field; the
@@ -61,9 +61,13 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *
  * <p><strong>Deliberately out of scope here.</strong> This is a pure unit test: it starts no
  * container, opens no connection, reads no file and loads no Spring context. Column names, declared
- * lengths and nullability are verified in the integration tier, where the persistence provider
- * validates the mapping against a real PostgreSQL 16 schema and aborts start-up on any mismatch;
- * nullability is proved here behaviourally instead, by round-tripping an absent value. State-code,
+ * lengths and nullability are asserted by {@code EntityPersistenceMappingTest}, which compares the
+ * mapping the persistence provider computes against the shipped migration {@code V1__create_schema.sql}
+ * and against an independent copybook-width oracle - including this record's two ciphertext-sized
+ * columns, which deliberately depart from their legacy field widths. Nullability is additionally proved
+ * here behaviourally, by round-tripping an absent value. The runtime configuration also fixes the
+ * provider at schema validation, so a divergence aborts start-up in a deployed environment, though
+ * that is a property of a deployment rather than a check this build performs. State-code,
  * area-code and state-plus-postal-prefix membership belong to the validation-lookup service, and
  * calendar validity belongs to the date-validation service; neither is asserted here, and this
  * suite deliberately proves that the entity itself performs no such check.
@@ -76,131 +80,92 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
 @DisplayName("Customer - the 500-byte customer record, 18 mapped fields plus a 168-byte filler")
 class CustomerTest {
 
-    // ------------------------------------------------------------------------------------------
-    // Hand-derived record geometry. Each width was read from the copybook's picture clause; each
-    // offset is the running sum of the widths before it. These are the oracle for every position
-    // and length assertion in this file.
-    // ------------------------------------------------------------------------------------------
+    // Hand-derived record geometry: each width read from the copybook, each offset the running sum of
+    // the widths before it. These are the oracle for every position and length assertion here.
 
-    /** Declared record length, corroborated by {@code RECORDSIZE(500 500)} on the cluster. */
+    /** Declared record length, corroborated independently by the cluster definition. */
     private static final int RECORD_WIDTH = 500;
 
-    /** Sum of the eighteen mapped widths, where the trailing filler begins. */
     private static final int MAPPED_WIDTH = 332;
 
-    /** Unmapped trailing filler: 500 - 332. */
     private static final int FILLER_WIDTH = 168;
 
-    /** Key length, corroborated by {@code KEYS(9 0)} on the cluster. */
     private static final int WIDTH_CUST_ID = 9;
 
-    /** Width shared by the three name fields. */
     private static final int WIDTH_NAME = 25;
 
-    /** Width shared by the three address lines. */
     private static final int WIDTH_ADDR_LINE = 50;
 
-    /** State-code width. */
     private static final int WIDTH_STATE_CD = 2;
 
-    /** Country-code width. */
     private static final int WIDTH_COUNTRY_CD = 3;
 
-    /** Postal-code width. */
     private static final int WIDTH_ZIP = 10;
 
-    /** Width shared by both telephone numbers. */
     private static final int WIDTH_PHONE = 15;
 
-    /** National-identifier width in the record image, before the column was widened. */
+    /** National-identifier width in the record image, before the column was widened for protection. */
     private static final int WIDTH_CUST_SSN = 9;
 
-    /** Government-identifier width in the record image, before the column was widened. */
+    /** Government-identifier width in the record image, before the column was widened for protection. */
     private static final int WIDTH_GOVT_ISSUED_ID = 20;
 
     /** Date-of-birth width, identical under both legacy spellings of the field. */
     private static final int WIDTH_CUST_DOB = 10;
 
-    /** Transfer-account-identifier width. */
     private static final int WIDTH_EFT_ACCOUNT_ID = 10;
 
-    /** Primary-cardholder-indicator width. */
     private static final int WIDTH_PRI_CARD_HOLDER_IND = 1;
 
-    /** Credit-score width. */
     private static final int WIDTH_FICO = 3;
 
-    /** Zero-based offset of the national identifier: the running sum of the twelve widths before it. */
     private static final int OFFSET_CUST_SSN = 279;
 
-    /** Zero-based offset of the government identifier: 279 + 9. */
     private static final int OFFSET_GOVT_ISSUED_ID = 288;
 
-    /** Zero-based offset of the date of birth: 288 + 20. Identical under both legacy spellings. */
     private static final int OFFSET_CUST_DOB = 308;
 
-    /** Zero-based offset of the transfer account identifier: 308 + 10. */
     private static final int OFFSET_EFT_ACCOUNT_ID = 318;
 
-    /** Zero-based offset of the primary-cardholder indicator: 318 + 10. */
     private static final int OFFSET_PRI_CARD_HOLDER_IND = 328;
 
-    /** Zero-based offset of the credit score: 328 + 1. */
     private static final int OFFSET_FICO = 329;
 
-    // ------------------------------------------------------------------------------------------
-    // Hand-decoded values from the first seeded customer record. Padding is spelled out in full
-    // rather than generated, so that each literal is auditable by eye against its declared width.
-    // ------------------------------------------------------------------------------------------
+    // Hand-decoded values from the first seeded reference record. Padding is spelled out in full
+    // rather than generated, so each literal is auditable by eye against its declared width.
 
-    /** Identifier of the first seeded customer: nine characters, zero filled. */
     private static final String CUST_ID = "000000001";
 
-    /** Given name, 8 characters plus 17 trailing spaces. */
     private static final String FIRST_NAME = "Immanuel                 ";
 
-    /** Middle name, 8 characters plus 17 trailing spaces. */
     private static final String MIDDLE_NAME = "Madeline                 ";
 
-    /** Family name, 7 characters plus 18 trailing spaces. */
     private static final String LAST_NAME = "Kessler                  ";
 
-    /** First address line, 17 characters plus 33 trailing spaces. */
     private static final String ADDR_LINE_1 = "618 Deshaun Route                                 ";
 
-    /** Second address line, 8 characters plus 42 trailing spaces. Carries a period and digits. */
     private static final String ADDR_LINE_2 = "Apt. 802                                          ";
 
-    /** Third address line, 15 characters plus 35 trailing spaces. */
     private static final String ADDR_LINE_3 = "Altenwerthshire                                   ";
 
-    /** State code of the first seeded customer. */
     private static final String ADDR_STATE_CD = "NC";
 
-    /** Country code of the first seeded customer. */
     private static final String ADDR_COUNTRY_CD = "USA";
 
-    /** Postal code, 5 characters plus 5 trailing spaces. */
     private static final String ADDR_ZIP = "12546     ";
 
-    /** Primary telephone number, 13 characters plus 2 trailing spaces. */
     private static final String PHONE_NUM_1 = "(908)119-8310  ";
 
-    /** Secondary telephone number, 13 characters plus 2 trailing spaces. */
     private static final String PHONE_NUM_2 = "(373)693-8684  ";
 
-    /** Date of birth of the first seeded customer, ten characters of text. */
     private static final String CUST_DOB = "1961-06-08";
 
-    /** Transfer account identifier of the first seeded customer, ten characters, leading zero kept. */
     private static final String EFT_ACCOUNT_ID = "0053581756";
 
-    /** Primary-cardholder indicator of the first seeded customer. */
     private static final String PRI_CARD_HOLDER_IND = "Y";
 
     /**
-     * Credit score of the first seeded customer. This value sits below the 300-to-850 band the
-     * account-update screen enforces, and is stored exactly as the file holds it.
+     * Credit score of the first seeded record: below the band the account-update screen enforces.
      */
     private static final String FICO_ROW_ZERO = "274";
 
@@ -210,54 +175,42 @@ class CustomerTest {
     /** Upper bound of the band the account-update screen enforces, stored here without checking. */
     private static final String FICO_SCREEN_UPPER_BOUND = "850";
 
-    /** Seeded customer rows in the reference file. */
     private static final int SEEDED_ROWS = 50;
 
-    /** Seeded rows whose credit score falls below the band the account-update screen enforces. */
     private static final int SEEDED_ROWS_BELOW_SCREEN_BAND = 21;
 
-    // ------------------------------------------------------------------------------------------
     // Protected-value envelopes, hand-built from the RFC 4648 base-64 specification.
     //
-    // DIVERGENCE FROM THE SUMMARISED CONTRACT, RESOLVED IN FAVOUR OF THE PRODUCTION CLASS.
-    // The contract summary describes plain-assignment mutators for all eighteen attributes. The
-    // class as written is stricter for the two regulated identifiers: both write paths refuse any
-    // value that does not already carry the module's protected-value envelope - a scheme marker,
-    // then a base-64 body decoding to at least 28 bytes, being a 96-bit initialisation vector plus a
-    // 128-bit authentication tag. The entity still transforms nothing; it either stores the value
-    // unchanged or refuses it. This suite therefore asserts the behaviour the class actually has,
-    // and additionally pins the refusal of legacy-width cleartext, which is the property that keeps
-    // regulated cleartext away from the persistence boundary.
-    //
-    // The literals below were derived from the RFC 4648 base-64 specification rather than by calling any
-    // production or platform encoder, so that nothing in this file uses the implementation as its
-    // own oracle: a body of n base-64 characters carries 3n/4 bytes, less one byte per padding
-    // character. Each decoded plaintext reads as an obviously synthetic, non-secret marker.
-    // ------------------------------------------------------------------------------------------
+    // DIVERGENCE FROM THE SUMMARISED CONTRACT, RESOLVED IN FAVOUR OF THE PRODUCTION CLASS. The contract
+    // summary describes plain-assignment mutators for all eighteen attributes; the class as written is
+    // stricter for the two regulated identifiers, both write paths refusing any value that does not
+    // already carry the module's protected-value envelope - a scheme marker, then a base-64 body
+    // decoding to at least 28 bytes, being a 96-bit initialisation vector plus a 128-bit authentication
+    // tag. The entity still transforms nothing: it either stores the value unchanged or refuses it.
+    // This suite asserts the behaviour the class actually has, and additionally pins the refusal of
+    // legacy-width cleartext, which is what keeps regulated cleartext away from the persistence
+    // boundary. The literals were derived from that specification rather than by calling any production
+    // or platform encoder, so nothing here uses the implementation as its own oracle: a body of n
+    // base-64 characters carries 3n/4 bytes, less one byte per padding character.
 
-    /** Scheme marker every protected value opens with. */
     private static final String ENVELOPE_MARKER = "ENC1:";
 
-    /** 40 base-64 characters with two padding characters: 9 * 3 + 1 = 28 decoded bytes, the minimum. */
+    /** 9 * 3 + 1 = 28 decoded bytes, the shortest body an authenticated envelope can carry. */
     private static final String ENVELOPE_BODY_MINIMUM = "U1lOVEhFVElDLVRFU1QtRU5WRUxPUEUtMDAwMQ==";
 
-    /** A second 28-byte body, distinct from the first, so two attributes cannot be confused. */
     private static final String ENVELOPE_BODY_SECOND = "U1lOVEhFVElDLVRFU1QtRU5WRUxPUEUtMDAwMg==";
 
-    /** 64 base-64 characters, no padding: 16 * 3 = 48 decoded bytes, a longer ciphertext shape. */
+    /** 16 * 3 = 48 decoded bytes, a longer ciphertext shape. */
     private static final String ENVELOPE_BODY_LONG =
             "U1lOVEhFVElDLVRFU1QtRU5WRUxPUEUtTE9OR0VSLUNJUEhFUlRFWFQtRk9STS0x";
 
-    /** 36 base-64 characters, no padding: 9 * 3 = 27 decoded bytes, exactly one below the minimum. */
+    /** 9 * 3 = 27 decoded bytes, exactly one below the minimum. */
     private static final String ENVELOPE_BODY_ONE_BYTE_SHORT = "U1lOVEhFVElDLVRFU1QtU0hPUlQtQk9EWS0x";
 
-    /** Accepted protected value carrying the minimum body. */
     private static final String PROTECTED_MINIMUM = ENVELOPE_MARKER + ENVELOPE_BODY_MINIMUM;
 
-    /** Accepted protected value carrying the second body. */
     private static final String PROTECTED_SECOND = ENVELOPE_MARKER + ENVELOPE_BODY_SECOND;
 
-    /** Accepted protected value carrying the long body. */
     private static final String PROTECTED_LONG = ENVELOPE_MARKER + ENVELOPE_BODY_LONG;
 
     /** Refused: the marker is present but the body is one byte short of an authenticated envelope. */
@@ -267,24 +220,20 @@ class CustomerTest {
     private static final String PROTECTED_BODY_NOT_ENCODED = ENVELOPE_MARKER + "not-encoded!!";
 
     /**
-     * Refused: no marker, and exactly the nine characters the record image reserves for the
-     * national identifier. An obviously synthetic, non-secret token stands in for a real value.
+     * Refused: no marker, and exactly the width the record image reserves. Synthetic, non-secret.
      */
     private static final String UNPROTECTED_NINE_CHARACTERS = "NOTSECRET";
 
     /**
-     * Refused: no marker, and exactly the twenty characters the record image reserves for the
-     * government identifier. Again an obviously synthetic, non-secret token.
+     * Refused: no marker, and exactly the width the record image reserves. Synthetic, non-secret.
      */
     private static final String UNPROTECTED_TWENTY_CHARACTERS = "NOTSECRETNOTSECRET00";
 
     /**
-     * Builds a fully populated customer from the hand-decoded first seeded record, supplying a
-     * well-formed protected value for each of the two regulated identifiers.
-     *
-     * <p>Construction goes through the public eighteen-argument constructor in record order. No
-     * builder and no parameter object is introduced: the module admits no code generation, and the
-     * eighteen-argument shape is exactly the record contract.
+     * Builds a fully populated customer from the hand-decoded first seeded record, with a well-formed
+     * protected value for each regulated identifier. Construction goes through the public
+     * eighteen-argument constructor in record order; no builder and no parameter object is introduced,
+     * because the module admits no code generation and that shape is exactly the record contract.
      *
      * @return a customer carrying the first seeded record's values
      */
@@ -311,9 +260,8 @@ class CustomerTest {
     }
 
     /**
-     * Measures a value the way the fixed-width record image measures it.
+     * Measures a value as the fixed-width record image measures it: in encoded bytes.
      *
-     * @param value the value to measure
      * @return the number of bytes the value occupies when encoded as US-ASCII
      */
     private static int encodedWidthOf(final String value) {
@@ -321,8 +269,7 @@ class CustomerTest {
     }
 
     /**
-     * Proves the record geometry the entity is mapped against, by summing the copybook widths in the
-     * open rather than quoting a total.
+     * Record geometry the entity is mapped against, summed in the open rather than quoted as a total.
      */
     @Nested
     @DisplayName("Record geometry derived by summing the copybook widths")
@@ -343,8 +290,6 @@ class CustomerTest {
             assertThat(9 + 25 + 25 + 25 + 50 + 50 + 50 + 2 + 3 + 10 + 15 + 15 + 9 + 20 + 10 + 10 + 1 + 3)
                     .isEqualTo(332);
 
-            // The remainder is the unmapped trailing filler: it is neither an attribute nor a column,
-            // and only the fixed-width record mapper in the utility layer consumes it.
             assertThat(MAPPED_WIDTH + FILLER_WIDTH).isEqualTo(RECORD_WIDTH);
             assertThat(332 + 168).isEqualTo(500);
         }
@@ -387,8 +332,8 @@ class CustomerTest {
     }
 
     /**
-     * Proves that the eighteen-argument constructor binds each argument to the attribute of the same
-     * name, in record order, with nothing transformed on the way in.
+     * The eighteen-argument constructor binds each argument to the attribute of the same name, in record
+     * order, with nothing transformed on the way in.
      */
     @Nested
     @DisplayName("The eighteen-argument constructor binds every attribute in record order")
@@ -451,8 +396,7 @@ class CustomerTest {
     }
 
     /**
-     * Proves that each of the eighteen mutators replaces the attribute it names and no other, and
-     * that none of them transforms the value on the way in.
+     * Each of the eighteen mutators replaces the attribute it names and no other, transforming nothing.
      */
     @Nested
     @DisplayName("All eighteen mutators assign the attribute they name, verbatim")
@@ -541,9 +485,9 @@ class CustomerTest {
     }
 
     /**
-     * Proves each attribute carries exactly the number of encoded bytes its picture clause reserves.
-     * Every measurement encodes as US-ASCII explicitly; character counts are never used, because the
-     * value being described is a span of a fixed-width record image.
+     * Each attribute carries exactly the encoded bytes the record image reserves for it. Every
+     * measurement encodes as US-ASCII explicitly and character counts are never used, because the value
+     * described is a span of a fixed-width record image.
      */
     @Nested
     @DisplayName("Encoded field widths measured in US-ASCII bytes, never in characters")
@@ -571,9 +515,6 @@ class CustomerTest {
             assertThat(encodedWidthOf(customer.getPriCardHolderInd())).isEqualTo(1);
             assertThat(encodedWidthOf(customer.getFicoCreditScore())).isEqualTo(3);
 
-            // The two regulated identifiers occupy 9 and 20 bytes in the legacy record image, and
-            // those two spans are asserted here on record-image-shaped values. The stored form is a
-            // protected value and is deliberately longer, which is why the columns were widened.
             assertThat(encodedWidthOf(UNPROTECTED_NINE_CHARACTERS)).isEqualTo(WIDTH_CUST_SSN);
             assertThat(encodedWidthOf(UNPROTECTED_TWENTY_CHARACTERS)).isEqualTo(WIDTH_GOVT_ISSUED_ID);
         }
@@ -607,14 +548,14 @@ class CustomerTest {
     }
 
     /**
-     * Proves the behaviour of the national identifier, the one attribute that may be absent.
+     * Proves the behaviour of the national identifier, the one column of this entity that may be absent.
      */
     @Nested
-    @DisplayName("The national identifier - the only attribute in the schema that may be absent")
+    @DisplayName("The national identifier - the one column of this entity that may be absent")
     class NationalIdentifier {
 
         @Test
-        @DisplayName("an absent national identifier round-trips as absent: it is the only nullable column across the eleven application tables, widened to 255 characters because it holds application-encrypted ciphertext wider than the nine-character legacy field, and the reference-data seed writes an absent value for all 50 rows")
+        @DisplayName("an absent national identifier round-trips as absent: it is the one nullable column across the eleven application tables, widened to 255 characters because it holds application-encrypted ciphertext wider than the nine-character legacy field, and the reference-data seed writes an absent value for all 50 rows")
         void anAbsentNationalIdentifierRoundTripsAsAbsent() {
             final Customer customer = firstSeededCustomer();
 
@@ -668,10 +609,8 @@ class CustomerTest {
         @Test
         @DisplayName("DIVERGENCE from the summarised contract: a nine-character unprotected value the width of the legacy field is refused rather than stored, so regulated cleartext cannot reach the persistence boundary")
         void anUnprotectedValueOfTheLegacyWidthIsRefused() {
-            // The contract summary anticipated a plain-assignment mutator that would store a
-            // nine-character value unchanged. The class as written is fail-closed instead: it refuses
-            // any value lacking the protected-value envelope. Following the class, this suite asserts
-            // the refusal, and asserts separately above that an accepted value is stored verbatim.
+            // Following the class rather than the contract summary: the refusal is asserted here, and an
+            // accepted value is asserted stored verbatim above.
             final Customer customer = new Customer();
 
             assertThat(encodedWidthOf(UNPROTECTED_NINE_CHARACTERS)).isEqualTo(WIDTH_CUST_SSN);
@@ -718,8 +657,8 @@ class CustomerTest {
     }
 
     /**
-     * Proves the behaviour of the government-issued identifier, which is guarded in the same way as
-     * the national identifier and differs in exactly one respect: it may not be absent.
+     * The government-issued identifier, guarded in the same way as the national identifier and differing
+     * in exactly one respect: it may not be absent.
      */
     @Nested
     @DisplayName("The government-issued identifier - guarded identically, but never absent")
@@ -740,9 +679,8 @@ class CustomerTest {
         @Test
         @DisplayName("DIVERGENCE from the summarised contract: a twenty-character unprotected value the width of the legacy field is refused rather than stored")
         void anUnprotectedValueOfTheLegacyWidthIsRefused() {
-            // As with the national identifier, the summarised contract expected the twenty legacy
-            // characters to be stored unchanged; the class refuses them. The 20-byte record-image span
-            // is still asserted, on the value that is refused.
+            // As with the national identifier, the refusal is what the class does. The 20-byte
+            // record-image span is still asserted, on the value that is refused.
             final Customer customer = new Customer();
 
             assertThat(encodedWidthOf(UNPROTECTED_TWENTY_CHARACTERS)).isEqualTo(WIDTH_GOVT_ISSUED_ID);
@@ -755,25 +693,31 @@ class CustomerTest {
         }
 
         @Test
-        @DisplayName("an absent government-issued identifier is refused, because unlike the national identifier its column is not nullable")
-        void anAbsentIdentifierIsRefused() {
+        @DisplayName("an absent government-issued identifier is accepted at this boundary, because a record image read at a boundary need not carry a protected value yet; the column itself is NOT NULL, so it is the database and not this class that refuses to store the absence")
+        void anAbsentIdentifierIsAccepted() {
             final Customer customer = new Customer();
 
-            assertThatIllegalArgumentException()
-                    .isThrownBy(() -> customer.setGovtIssuedId(null))
-                    .withMessageContaining("govtIssuedId");
+            customer.setGovtIssuedId(null);
+
+            assertThat(customer.getGovtIssuedId()).isNull();
+            assertThat(customer.getGovtIssuedId()).isNotEqualTo("null");
+            assertThat(customer.getGovtIssuedId()).isNotEqualTo("");
         }
 
         @Test
-        @DisplayName("the eighteen-argument constructor likewise refuses an absent government-issued identifier")
-        void theConstructorRefusesAnAbsentIdentifier() {
-            assertThatIllegalArgumentException().isThrownBy(() -> new Customer(
+        @DisplayName("the eighteen-argument constructor likewise accepts an absent government-issued identifier in memory, even though the reference-data seed writes a sealed envelope into every one of its 50 rows")
+        void theConstructorAcceptsAnAbsentIdentifier() {
+            final Customer seeded = new Customer(
                     CUST_ID, FIRST_NAME, MIDDLE_NAME, LAST_NAME,
                     ADDR_LINE_1, ADDR_LINE_2, ADDR_LINE_3,
                     ADDR_STATE_CD, ADDR_COUNTRY_CD, ADDR_ZIP,
                     PHONE_NUM_1, PHONE_NUM_2,
-                    PROTECTED_MINIMUM, null, CUST_DOB,
-                    EFT_ACCOUNT_ID, PRI_CARD_HOLDER_IND, FICO_ROW_ZERO));
+                    null, null, CUST_DOB,
+                    EFT_ACCOUNT_ID, PRI_CARD_HOLDER_IND, FICO_ROW_ZERO);
+
+            assertThat(seeded.getCustSsn()).isNull();
+            assertThat(seeded.getGovtIssuedId()).isNull();
+            assertThat(seeded.getCustId()).isEqualTo(CUST_ID);
         }
 
         @Test
@@ -809,8 +753,8 @@ class CustomerTest {
     }
 
     /**
-     * Proves the credit score is carried as three characters of text with no range applied, which is
-     * the only way the seeded reference data can be read back at all.
+     * The credit score as three characters of text with no range applied, which is the only way the
+     * seeded reference data can be read back at all.
      */
     @Nested
     @DisplayName("The credit score - three characters of text, no range applied")
@@ -867,8 +811,8 @@ class CustomerTest {
     }
 
     /**
-     * Proves the fixed-width digit-only identifiers keep their external decimal form, which is what
-     * makes them stable keys and stable record spans.
+     * The fixed-width digit-only identifiers keep their external decimal form, which is what makes them
+     * stable keys and stable record spans.
      */
     @Nested
     @DisplayName("Fixed-width identifiers keep their external decimal form")
@@ -896,8 +840,18 @@ class CustomerTest {
     }
 
     /**
-     * Proves that trailing padding is part of the stored value rather than incidental whitespace, so
-     * a record written back out is still the width the cluster declares.
+     * Proves that the entity returns a padded value exactly as it was supplied, rather than treating
+     * the trailing spaces as incidental whitespace to be tidied away, so a record written back out is
+     * still the width the cluster declares.
+     *
+     * <p>The fixture here is padded deliberately: these assertions are about the entity's own
+     * behaviour, which is plain assignment in both directions, and not about what any particular
+     * source of data happens to supply. Two sources supply different forms and both are correct - a
+     * value sliced out of a fixed-width record image arrives padded to the field width, while the
+     * reference seed stores display text right-trimmed. The entity must not normalise either one
+     * towards the other, because the record writer pads whatever it is handed and so both forms
+     * reproduce the same bytes; a setter that trimmed would instead destroy padding that the record
+     * image genuinely carries.</p>
      */
     @Nested
     @DisplayName("Trailing padding is part of the value, never incidental whitespace")
@@ -966,8 +920,8 @@ class CustomerTest {
     }
 
     /**
-     * Proves the two attributes the legacy account-update path decorates for error display but never
-     * edits remain unconstrained here, so input the legacy system accepts is not rejected.
+     * The two attributes the legacy account-update path decorates for error display but never edits stay
+     * unconstrained here, so input the legacy system accepts is not rejected.
      */
     @Nested
     @DisplayName("The two decorated-but-never-edited attributes carry no constraint")
@@ -1014,8 +968,8 @@ class CustomerTest {
     }
 
     /**
-     * Proves the entity performs none of the reference-data or calendar checks that belong to the
-     * service layer, by storing values those services would reject.
+     * The entity performs none of the reference-data or calendar checks that belong to the service
+     * layer, shown by storing values those services would reject.
      */
     @Nested
     @DisplayName("Reference-data and calendar checks belong to the service layer, not to this entity")
@@ -1078,8 +1032,8 @@ class CustomerTest {
     }
 
     /**
-     * Proves identity is the business key alone, which is what keeps an instance stable in a
-     * hash-based collection across an update to any other attribute.
+     * Identity is the business key alone, which is what keeps an instance stable in a hash-based
+     * collection across an update to any other attribute.
      */
     @Nested
     @DisplayName("Identity is the business key alone, never a surrogate")
@@ -1182,8 +1136,7 @@ class CustomerTest {
     }
 
     /**
-     * Proves the provider-facing constructor exists and leaves the instance empty, and records the
-     * documented non-features of this entity.
+     * The provider-facing constructor exists and leaves the instance empty; documented non-features.
      */
     @Nested
     @DisplayName("The persistence constructor, and this entity's documented non-features")
@@ -1192,8 +1145,7 @@ class CustomerTest {
         @Test
         @DisplayName("the no-argument persistence constructor leaves all eighteen attributes absent, so the provider can populate them after construction")
         void thePersistenceConstructorLeavesEveryAttributeAbsent() {
-            // This test class sits in the same package as the entity, so Java package access reaches
-            // the protected no-argument constructor directly. This is same-package visibility and is
+            // Same-package visibility reaches the protected no-argument constructor directly. This is
             // explicitly NOT reflection: no member is resolved by name and no accessibility flag is
             // changed anywhere in this file.
             final Customer customer = new Customer();
@@ -1219,13 +1171,10 @@ class CustomerTest {
         }
 
         @Test
-        @DisplayName("no surrogate identifier exists: the key is the 9-character business key at offset 0, matching KEYS(9 0), no generated value is declared, and the caller assigns it - proved by compile-time absence, since this file never names a generated-identifier accessor")
+        @DisplayName("the key is the 9-character business key the caller assigns: a provider-constructed instance carries none until one is supplied, and a supplied key is never replaced")
         void noSurrogateIdentifierExists() {
-            // The proof of absence is that this file compiles while naming only getCustId and
-            // setCustId. There is no getId, no setId and no generated-identifier accessor to call, and
-            // no reflection is used to look for one. What is asserted behaviourally is that the key is
-            // caller-assigned and survives verbatim: a provider-constructed instance has no key until
-            // one is supplied, and a supplied key is never replaced by a generated value.
+            // What is asserted is behavioural: the key is caller-assigned and survives verbatim at its
+            // declared width. No reflection is used, here or anywhere in this file.
             final Customer customer = new Customer();
 
             assertThat(customer.getCustId()).isNull();
@@ -1254,22 +1203,65 @@ class CustomerTest {
         @Test
         @DisplayName("this entity declares no diagnostic string of its own, so no attribute value can escape through one; the inherited description names the type and carries no stored value")
         void noDiagnosticStringExposesAnyAttribute() {
-            // The class deliberately declares no diagnostic string, because every attribute is
-            // personally identifiable. What is inherited names the type and a hash only, so the two
-            // regulated values in particular cannot leak through it. The prefix checked below is the
-            // documented format of the inherited description - the type name, an at sign, then the
-            // hash in hexadecimal - and is asserted solely as evidence that no override was added.
-            // No entity-authored diagnostic format is being pinned here, because there is none.
+            // The class deliberately declares no diagnostic string, because every attribute is personally
+            // identifiable, so the two regulated values in particular cannot leak through one. The prefix
+            // checked below is the documented format of the inherited description and is asserted solely
+            // as evidence that no override was added; no entity-authored format is being pinned.
             final Customer customer = firstSeededCustomer();
 
             final String inheritedDescription = customer.toString();
 
+            // The complete negative oracle, and the decisive assertion of this test: the rendering is
+            // the inherited description in its entirety - the type name, an at sign, then the hash in
+            // lower-case hexadecimal, and nothing whatever besides. Any disclosure of any attribute
+            // would have to introduce a character outside that pattern, so this single assertion covers
+            // all eighteen populated components at once, including the three whose literals are too
+            // short or too numeric to test by absence against a hexadecimal hash.
+            assertThat(inheritedDescription)
+                    .matches("com\\.carddemo\\.domain\\.Customer@[0-9a-f]+");
             assertThat(inheritedDescription).startsWith("com.carddemo.domain.Customer@");
+
+            // Absence is then asserted component by component as defence in depth, so that a future
+            // override which happened to keep the type-name prefix still fails here. Every populated
+            // component is covered except the three noted below.
             assertThat(inheritedDescription).doesNotContain(PROTECTED_MINIMUM);
             assertThat(inheritedDescription).doesNotContain(PROTECTED_SECOND);
             assertThat(inheritedDescription).doesNotContain(CUST_ID);
             assertThat(inheritedDescription).doesNotContain(EFT_ACCOUNT_ID);
             assertThat(inheritedDescription).doesNotContain(CUST_DOB);
+            assertThat(inheritedDescription).doesNotContain(FIRST_NAME);
+            assertThat(inheritedDescription).doesNotContain(MIDDLE_NAME);
+            assertThat(inheritedDescription).doesNotContain(LAST_NAME);
+            assertThat(inheritedDescription).doesNotContain(ADDR_LINE_1);
+            assertThat(inheritedDescription).doesNotContain(ADDR_LINE_2);
+            assertThat(inheritedDescription).doesNotContain(ADDR_LINE_3);
+            assertThat(inheritedDescription).doesNotContain(ADDR_STATE_CD);
+            assertThat(inheritedDescription).doesNotContain(ADDR_COUNTRY_CD);
+            assertThat(inheritedDescription).doesNotContain(ADDR_ZIP);
+            assertThat(inheritedDescription).doesNotContain(PHONE_NUM_1);
+            assertThat(inheritedDescription).doesNotContain(PHONE_NUM_2);
+
+            // The unpadded forms of the three name components are asserted separately, because a
+            // rendering that trimmed before disclosing would evade the padded literals above.
+            assertThat(inheritedDescription).doesNotContain(FIRST_NAME.strip());
+            assertThat(inheritedDescription).doesNotContain(MIDDLE_NAME.strip());
+            assertThat(inheritedDescription).doesNotContain(LAST_NAME.strip());
+            assertThat(inheritedDescription).doesNotContain(ADDR_LINE_1.strip());
+            assertThat(inheritedDescription).doesNotContain(ADDR_ZIP.strip());
+            assertThat(inheritedDescription).doesNotContain(PHONE_NUM_1.strip());
+            assertThat(inheritedDescription).doesNotContain(PHONE_NUM_2.strip());
+
+            // No attribute is named either, so neither a value nor the fact that it is carried leaks.
+            assertThat(inheritedDescription).doesNotContain("custSsn", "govtIssuedId", "ficoCreditScore",
+                    "firstName", "lastName", "phoneNum", "addrLine", "priCardHolderInd");
+
+            // Three populated components are deliberately absent from the absence checks above:
+            // the credit score, the primary-cardholder indicator and the state code reduce to a short
+            // run of characters - "274", "Y" and "NC" - and the first of those could occur inside a
+            // hexadecimal hash by pure coincidence, which would make an absence assertion on it
+            // intermittently fail for a reason unrelated to disclosure. The exact-pattern assertion at
+            // the top of this test already excludes them structurally, which is the stronger statement,
+            // and their attribute names are covered by the check immediately above.
         }
     }
 }

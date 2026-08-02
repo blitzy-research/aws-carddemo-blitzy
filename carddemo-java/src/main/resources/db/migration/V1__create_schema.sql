@@ -15,15 +15,16 @@
 
 -- V1__create_schema.sql - foundational application schema.
 --
--- Creates exactly eleven application tables and nothing else: the relational realization of the
--- eleven verified fixed-width record layouts of the legacy estate (ten indexed base clusters plus
--- the sequential daily-transaction input). Each primary key is the natural business key taken from
--- the corresponding cluster key definition, whose width and offset are recorded per table below.
+-- Creates exactly eleven application tables and nothing else: the relational form of the eleven
+-- verified fixed-width record layouts of the legacy estate - ten indexed base clusters plus the
+-- sequential daily-transaction input. Every primary key is the natural business key taken from the
+-- corresponding cluster key definition, whose width and offset are recorded per table below.
 --
--- APPLIES TO ALL PROFILES. V1 is resolved from classpath:db/migration, the only Flyway location
--- configured on the base profile, so no profile can start without it. Sample rows and sign-on
--- identities belong to a separate, profile-scoped classpath:db/seed location that production does
--- not list, so a production migration inherits schema and indexes and nothing else. This file
+-- APPLIES TO ALL PROFILES. V1 is resolved from classpath:db/migration, the only Flyway location any
+-- profile configures, so no profile can start without it. Sample rows and sign-on identities live in
+-- the same location as V3 and V4 and are excluded from production by VERSION, not by directory: the
+-- production overlay sets spring.flyway.target: 2, so it applies V1, V1_1 and V2 and never resolves
+-- V3 or V4. A production migration therefore inherits schema and indexes and nothing else. This file
 -- inserts no row of any kind.
 --
 -- Forward-only and in order: no schema.sql, no data.sql, no framework SQL initialization, no
@@ -35,24 +36,27 @@
 -- resolves no dialect and does not run. The DDL below is driver-version independent.
 --
 -- Translation decisions and the source anomalies cited below are recorded in docs/decision-log.md.
--- No legacy source text is copied here: only names, widths, offsets, record sizes, counts and
--- anomaly descriptions appear.
 
 -- GLOBAL SCHEMA RULES - each is a deliberate decision, not an omission.
 --
---  1. Eleven tables exactly, all lower case: account, card, customer, card_cross_reference,
---     transaction, daily_transaction, transaction_category_balance, disclosure_group,
---     transaction_type, transaction_category, user_security.
+--  1. Eleven tables, all lower case, and no existence guard anywhere, so schema drift fails this
+--     migration loudly instead of being silently absorbed.
 --
---  2. No existence guard on any statement, so schema drift fails this migration loudly instead of
---     being silently absorbed.
+--  2. NOTHING ELSE IS CREATED - no twelfth table, no extra schema, no sequence, no surrogate key
+--     column, no view, no routine, no trigger, no extension, no lookup table. The transaction-report
+--     copybook is print formatting; the alternate 500-byte customer copybook restates the same
+--     nineteen fields at the same offsets under one differently spelled date field name, so it is an
+--     alternate projection of customer; Spring Batch provisions its own metadata; and the validation
+--     lookup sets are loaded from src/main/resources/lookup/*.json.
 --
 --  3. NOTHING ELSE IS CREATED - no twelfth table, no additional schema, no sequence, no surrogate
 --     key column, no view, no routine, no trigger, no extension and no lookup table. The
 --     transaction-report copybook is print formatting, not a table. The alternate 500-byte customer
 --     copybook restates the same nineteen fields at the same offsets under one differently spelled
---     date field name, so it is an alternate projection of customer and not a second table. Spring
---     Batch owns its own metadata tables and provisions them from its bundled schema. The validation
+--     date field name, so it is an alternate projection of customer and not a second table. The six
+--     Spring Batch metadata tables and their three sequences are created by
+--     V1_1__create_batch_metadata.sql, which keeps them visibly separate from these eleven; the
+--     framework's own start-up initializer is switched off under every profile. The validation
 --     lookup data - 490 North American area codes as an exact partition of 410 general-purpose plus
 --     80 easily-recognizable, 56 state codes and 240 state-with-ZIP-prefix combinations - is loaded
 --     from src/main/resources/lookup/*.json.
@@ -61,36 +65,28 @@
 --     state them. No number-issuing database object is created: the online transaction identifier
 --     stays highest-existing-key-plus-one computed inside the posting transaction, because a
 --     database-issued number diverges permanently after the first gap and a rollback guarantees one.
+--     V1 defines primary keys only - the foreign-key set and the three nonunique indexes that stand
+--     in for the legacy alternate indexes belong to V2__create_indexes.sql.
 --
---  5. V1 defines primary keys only. The authoritative foreign-key set and the three nonunique
---     indexes that stand in for the legacy alternate indexes belong to V2__create_indexes.sql.
+--  4. Bounded VARCHAR(n) for every fixed-width alphanumeric and digit-only lexeme, because leading
+--     zeros and external text widths are contractual and must survive a round trip; a blank-padded
+--     fixed-length type would let implicit padding hide a distinction the record image makes. Date
+--     and timestamp fields stay bounded strings - parsing and strict calendar validation belong in
+--     Java, and the raw daily processing timestamp is legitimately blank on input.
 --
---  6. Bounded VARCHAR(n) for every fixed-width alphanumeric and digit-only lexeme, because leading
---     zeros and external text widths are contractual and must survive a round trip. A blank-padded
---     fixed-length type is deliberately not used: its implicit padding and padded comparison can
---     hide a distinction the record image makes. Date and timestamp record fields stay bounded
---     strings - parsing and strict calendar validation belong in Java, and the raw daily processing
---     timestamp is legitimately blank on input.
+--  5. Exact NUMERIC(p,2), sized from each record field: five account amounts NUMERIC(12,2);
+--     transaction amount, daily-transaction amount and category balance NUMERIC(11,2); disclosure
+--     interest rate NUMERIC(6,2). The estate declares no rounding anywhere, so every store into a
+--     two-decimal field truncates toward zero and Java scales with RoundingMode.DOWN; an approximate
+--     binary type would break byte parity of the fixed-width output at 80, 100, 133 and 430 bytes.
 --
---  7. Every amount and rate column is exact NUMERIC(p,2), sized from its record field: five account
---     amounts NUMERIC(12,2); transaction amount, daily-transaction amount and category balance
---     NUMERIC(11,2); disclosure interest rate NUMERIC(6,2). An estate census found zero rounding
---     clauses, so every store into a two-decimal field truncates toward zero and Java scales with
---     RoundingMode.DOWN; an approximate binary type would break byte parity of the fixed-width
---     output at 80, 100, 133 and 430 bytes.
+--  6. Every mapped field is NOT NULL except customer.cust_ssn, documented at that table. No filler
+--     column exists: trailing filler carries no information and is reconstructed on output from the
+--     declared record width. account and card carry a version column for optimistic locking.
 --
---  8. Every mapped fixed-width field is NOT NULL, with the single intentional exception of
---     customer.cust_ssn, documented at that table. No filler column is created: trailing filler
---     carries no information and is reconstructed on output from the declared record width.
---
---  9. account and card each carry a version column for JPA optimistic locking; the legacy baseline
---     is documented at those tables.
---
--- 10. The unsafe and low-level code audit - raw SQL string concatenation, process invocation,
---     reflection, unchecked casts, suppressed warnings - is scoped to src/main/java/** only. The
---     versioned SQL artifacts of this module are declarative schema definitions, not application
---     code assembling SQL from strings; without that scoping rule an auditor would report phantom
---     raw-SQL violations that are in fact the versioned schema this module requires.
+--  7. The unsafe and low-level code audit is scoped to src/main/java/** only, because the versioned
+--     SQL of this module is declarative schema definition rather than application code assembling
+--     SQL from strings.
 
 
 -- -------------------------------------------------------------------------------------------------
@@ -107,7 +103,7 @@
 --
 -- OPTIMISTIC LOCKING: version backs a JPA @Version check replacing the legacy before-and-after
 -- image comparison. Every online file definition in the legacy resource definition specified
--- uncommitted read integrity, locking update model, no recovery and no journaling, so correctness
+-- uncommitted read integrity, a locking update model, no recovery and no journaling, so correctness
 -- rested solely on that comparison. READ COMMITTED plus this column is STRICTLY STRONGER than the
 -- verified baseline - an improvement, not a behavioral regression.
 -- -------------------------------------------------------------------------------------------------
@@ -131,17 +127,15 @@ CREATE TABLE account (
 
 
 -- -------------------------------------------------------------------------------------------------
--- card - 150-byte record, key width 16 at offset 0.
+-- card - 150-byte record, key width 16 at offset 0. version: same rationale as account.
 --
 -- ANOMALY: the expiry field at offset 80 is misspelled in the same way; the corrected spelling
 -- card_expiration_date is used and the mapper position is unchanged.
 --
 -- PRIMARY ACCOUNT NUMBER AND VERIFICATION CODE: the legacy design applies no field-level
 -- encryption, tokenization or masking to either value, and no requirement in scope introduces one.
--- None is invented here, because that would be feature expansion. The gap is UNCLOSED and is carried
+-- None is invented here, because that would be feature expansion. The gap is UNCLOSED and carried
 -- forward as an explicit finding: decision D-14.
---
--- version: same optimistic-locking rationale as account.
 -- -------------------------------------------------------------------------------------------------
 CREATE TABLE card (
     card_num                    VARCHAR(16)     NOT NULL,   -- offset   0, width 16, business key
@@ -165,9 +159,9 @@ CREATE TABLE card (
 -- cust_ssn and govt_issued_id - DOCUMENTED SECURITY EXCEPTION, not unmapped fields.
 --   The legacy record holds the national identifier as nine cleartext digits at offset 279 and the
 --   government-issued identifier as twenty cleartext characters at offset 288. Both are regulated
---   identity data and neither is persisted in that form here. Both columns are therefore deliberately
---   far wider than their legacy widths, because each stores an application-produced authenticated
---   ciphertext envelope rather than the cleartext value.
+--   identity data and neither is persisted in that form here, so both columns are deliberately far
+--   wider than their legacy widths: each stores an application-produced authenticated ciphertext
+--   envelope rather than the cleartext value.
 --
 --   HOW THE PROHIBITION IS ENFORCED, rather than merely asserted:
 --     * com.carddemo.util.SensitiveFieldCodec produces and reads the envelope. It is AES-256 in
@@ -178,23 +172,40 @@ CREATE TABLE card (
 --       introduce a successor scheme beside it.
 --     * com.carddemo.service.SensitiveFieldEncryptionService holds the key. The key is bound from
 --       carddemo.security.field-encryption.key as Base64 and must decode to exactly 32 bytes. No
---       default is declared in the shared configuration; the local and test overlays bind a throwaway
---       development value and the production overlay binds an environment reference with NO fallback,
---       so a deployment that omits it fails to start rather than encrypting under something
---       accidental. No key material appears in this schema, in any migration, or in any source file.
+--       default is declared in the shared configuration; the local overlay and both copies of the
+--       test overlay bind ONE shared throwaway fixture value - the same literal in all three, because
+--       an envelope opens under exactly one key and V3 seeds sealed values that every non-production
+--       profile must be able to open - and the production overlay binds an environment reference with
+--       NO fallback, so a deployment that omits it fails to start rather than encrypting under
+--       something accidental. No key material appears in this schema or in any migration.
 --     * com.carddemo.domain.Customer refuses. Its constructor and both mutators admit only a value
---       carrying the envelope shape - and, for cust_ssn alone, NULL - so cleartext cannot reach this
---       boundary through application code. Nine cleartext digits cannot satisfy that shape.
+--       carrying the envelope shape, or NULL, so cleartext cannot reach this boundary through
+--       application code. Nine cleartext digits cannot satisfy that shape, and neither can twenty
+--       cleartext characters.
 --
---   Encryption is randomised, so these columns cannot be searched by equality. That costs this estate
---   nothing: the legacy design defines no alternate index, no browse and no screen lookup over either
---   identifier, so no access path is lost. The divergence from at-rest faithfulness is recorded in
---   docs/decision-log.md; it changes no record image and no output byte.
+--   The seeded rows, the shared non-production fixture key and the reason cust_ssn stays NULL are
+--   recorded in docs/decision-log.md DL-103.
+--
+--   Encryption is randomised, so these columns cannot be searched by equality. That costs this
+--   estate nothing: the legacy design defines no alternate index, no browse and no screen lookup
+--   over either identifier, so no access path is lost. The divergence from at-rest faithfulness is
+--   recorded in docs/decision-log.md; it changes no record image and no output byte.
 --
 --   cust_ssn is the one intentional nullable field in V1 because V3__seed_reference_data.sql leaves it
---   NULL in static SQL rather than embedding raw national identifiers, or a hardcoded encryption key,
---   in a checked-in artifact. govt_issued_id is NOT NULL, so any row a seed migration inserts must
---   carry an envelope produced under the deployment's own key - never a cleartext identifier.
+--   NULL rather than carrying raw national identifiers in a checked-in artifact - and sealing them
+--   would not help, since anything sealed under a committed fixture key is recoverable by anyone
+--   holding the repository.
+--
+--   govt_issued_id is NOT NULL, and no exemption is granted to it either: every one of the fifty rows
+--   V3 inserts carries an ENC1 envelope produced by the service above, over the fabricated twenty-
+--   character fixture value, under the shared non-production fixture key. That value has no subject
+--   behind it and that key is worth nothing, so the two properties that make cust_ssn unsafe to carry
+--   do not apply. The envelopes are fixed literals because AES-GCM draws a fresh initialisation vector
+--   per call and cannot be reproduced; SeededProtectedIdentifierIT opens all fifty through the service
+--   and compares each against its fixture record, so a rotated key or an edited literal fails the
+--   build. V3's own self-check additionally refuses any row whose value is not envelope-shaped.
+--   Production applies V1 and V2 only - spring.flyway.target caps it at version 2 - so it receives no
+--   row from that file and stores only envelopes its own deployment key produced.
 --
 -- middle_name and addr_line_2 are mapped and stored but must NOT be validated anywhere downstream:
 -- the legacy update path decorates them for error display while coding no edit for either, so a
@@ -223,7 +234,6 @@ CREATE TABLE customer (
     fico_credit_score           VARCHAR(3)      NOT NULL,   -- offset 329, width  3
     CONSTRAINT pk_customer PRIMARY KEY (cust_id)
 );
--- Mapped bytes end at offset 332; the remaining 168 bytes are trailing filler and are not columns.
 
 
 -- -------------------------------------------------------------------------------------------------
@@ -232,8 +242,8 @@ CREATE TABLE customer (
 --
 -- The trailing 14 bytes are filler and deliberately not a column. That 36-versus-50 split is why
 -- the sample ASCII fixture measures 1,850 bytes for 50 newline-terminated rows - 50 x (36 + 1) -
--- while the fixed-length 50-byte dataset of the same 50 records measures 2,500. Both are correct;
--- a loader expecting 50 data bytes per ASCII row misparses every record.
+-- while the fixed-length 50-byte dataset of the same 50 records measures 2,500. Both are correct; a
+-- loader expecting 50 data bytes per ASCII row misparses every record.
 -- -------------------------------------------------------------------------------------------------
 CREATE TABLE card_cross_reference (
     xref_card_num               VARCHAR(16)     NOT NULL,   -- offset   0, width 16, business key
@@ -247,9 +257,9 @@ CREATE TABLE card_cross_reference (
 -- -------------------------------------------------------------------------------------------------
 -- transaction - 350-byte record, key width 16 at offset 0. Posted transaction master.
 --
--- The table name is required verbatim by the target contract. TRANSACTION is a non-reserved key word
--- in PostgreSQL 16, so the unquoted identifier is legal and this migration applying cleanly is the
--- proof; it is used unquoted everywhere so no part of the module has to remember to quote it.
+-- The table name is required verbatim by the target contract. TRANSACTION is a non-reserved key
+-- word in PostgreSQL 16, so the unquoted identifier is legal and this migration applying cleanly is
+-- the evidence; it is used unquoted everywhere so no part of the module has to remember to quote it.
 --
 -- Two offsets are load-bearing beyond this table: tran_card_num at offset 262 and tran_proc_ts at
 -- offset 304 are the fields the legacy report sort addressed (1-based positions 263 and 305) and the
@@ -385,15 +395,16 @@ CREATE TABLE transaction_category (
 --   satisfy parity and violate the no-hardcoded-credentials constraint at the same time, so this
 --   column is sized 60 to hold a BCrypt digest - never the legacy width of 8 and never a cleartext
 --   value. The digest format is what this schema fixes; the encoder and the verifying sign-on path
---   are the obligation of whatever component later reads this table, and no component may store or
---   compare a cleartext credential.
+--   are the obligation of whatever component reads this table, and no component may store or compare
+--   a cleartext credential.
 --
 -- sec_usr_type is the single character that selects the administrative or standard role and is the
 -- sole authority for that split.
 --
 -- NO ROWS ARE INSERTED HERE and no credential literal appears in this file, in DDL or in comment.
--- Any seed script belongs under db/seed, profile-scoped to local and test, so no production
--- deployment receives a seeded login.
+-- Any seed script is numbered ABOVE the production version ceiling of 2, so no production deployment
+-- receives a seeded login. V4__seed_user_security.sql is the one that seeds this table, and it stores
+-- every credential only as a hash.
 -- -------------------------------------------------------------------------------------------------
 CREATE TABLE user_security (
     sec_usr_id                  VARCHAR(8)      NOT NULL,   -- offset   0, width  8, business key
@@ -405,10 +416,3 @@ CREATE TABLE user_security (
     CONSTRAINT pk_user_security PRIMARY KEY (sec_usr_id)
 );
 -- Mapped bytes end at offset 57; the remaining 23 bytes are trailing filler and are not a column.
-
-
--- End of V1. Eleven application tables, eleven primary keys - eight single column and three
--- composite (transaction_category_balance, disclosure_group, transaction_category). Zero foreign
--- keys, zero explicit indexes, zero other persistent objects. V2__create_indexes.sql adds the
--- foreign-key set and the three nonunique indexes that replace the legacy alternate indexes on card
--- account identifier, cross-reference account identifier and transaction processing timestamp.

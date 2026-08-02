@@ -1,0 +1,656 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ */
+package com.carddemo.config;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
+
+import com.carddemo.config.ProductionConfigurationValidator.RequiredSetting;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.springframework.boot.env.YamlPropertySourceLoader;
+import org.springframework.core.env.EnumerablePropertySource;
+import org.springframework.core.env.MapPropertySource;
+import org.springframework.core.env.PropertySource;
+import org.springframework.core.env.StandardEnvironment;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
+
+/**
+ * Proves that {@link ProductionConfigurationValidator} refuses every unusable form of a required
+ * production setting, and that the set it guards is the set the production profile actually declares.
+ *
+ * <h2>What this class establishes, and what its companion establishes</h2>
+ *
+ * <p>Two things had to be shown, and they need different instruments.
+ *
+ * <p><strong>Here:</strong> that each of the twelve required variables is judged independently, in each
+ * of the three ways it can be unusable - absent, empty and whitespace - and that the report names the
+ * offending property and variable without blaming any other. This is done against a real environment
+ * assembled from the real {@code application-prod.yml} and {@code application.yml}, so the keys, the
+ * variable names and the fallback tails are the delivered ones rather than a copy of them. No container
+ * and no application context are involved, which is why every one of the thirty-six independent cases
+ * can be exercised.
+ *
+ * <p><strong>In {@code ProductionInfrastructureIsUntouchedTest}:</strong> that a real Spring context
+ * activated on the production profile stops before any bean is created, and that no other profile is
+ * affected. That question is about container lifecycle and can only be answered by starting a container.
+ *
+ * <h2>Why the environment here excludes the machine's own settings</h2>
+ *
+ * <p>Both system-backed property sources are removed from every environment this class builds. A build
+ * agent that happens to export {@code AWS_REGION} - which agents hosted in that ecosystem routinely do -
+ * would otherwise satisfy one of the twelve by accident and quietly turn a negative case positive. The
+ * removal makes each case depend only on what the case itself supplies.
+ *
+ * <h2>Why the supplied values are shaped the way they are</h2>
+ *
+ * <p>Each variable is satisfied with text derived from its own name. The validator judges usability, not
+ * shape - it does not parse a location, decode a key or inspect a queue suffix, because the components
+ * that consume those values already do - so a value that merely exists and is not blank is exactly the
+ * right fixture, and deriving it from the variable name keeps anything credential-shaped out of the
+ * repository.
+ *
+ * @see ProductionConfigurationValidator
+ */
+@DisplayName("A production start-up refuses every unusable required setting")
+final class ProductionConfigurationValidatorTest {
+
+    /** The production overlay, the document that declares the required settings. */
+    private static final String PRODUCTION_DOCUMENT = "application-prod.yml";
+
+    /** The shared baseline, loaded beneath the overlay exactly as a running application loads it. */
+    private static final String SHARED_DOCUMENT = "application.yml";
+
+    /**
+     * An environment reference with no fallback tail: {@code ${NAME}}. A value of this shape is required
+     * from the environment, because nothing else can supply it.
+     */
+    private static final Pattern BARE_REFERENCE = Pattern.compile("^\\$\\{([A-Za-z0-9_]+)}$");
+
+    /**
+     * An environment reference that carries a fallback: {@code ${NAME:something}}. A value of this shape
+     * is <em>not</em> required from the environment, and guarding it would turn a documented default
+     * into a deployment obligation.
+     */
+    private static final Pattern DEFAULTED_REFERENCE = Pattern.compile("^\\$\\{([A-Za-z0-9_]+):.*}$");
+
+    /** Text a failure message must carry so a reader can find the recorded reasoning. */
+    private static final String RECORDED_DECISION = "docs/decision-log.md DL-105";
+
+    /**
+     * Builds the text that satisfies one variable.
+     *
+     * <p>Derived from the variable's own name so that a failure message quoting a value is immediately
+     * traceable, and so that nothing in this file resembles a credential.
+     *
+     * @param variable environment variable being satisfied
+     * @return a non-blank value carrying no placeholder syntax
+     */
+    private static String suppliedValueFor(final String variable) {
+        return "supplied-by-this-test-for-" + variable;
+    }
+
+    /**
+     * Supplies every required variable with a usable value.
+     *
+     * @return a mutable map from variable name to value, in the order the validator checks them
+     */
+    private static Map<String, String> everyRequiredVariable() {
+        final Map<String, String> variables = new LinkedHashMap<>();
+        for (final RequiredSetting setting : ProductionConfigurationValidator.REQUIRED_SETTINGS) {
+            variables.put(setting.environmentVariable(), suppliedValueFor(setting.environmentVariable()));
+        }
+        return variables;
+    }
+
+    /**
+     * Assembles an environment that loads the delivered profile documents and nothing from the machine.
+     *
+     * <p>The overlay is added before the baseline so that a key declared in both resolves to the
+     * production declaration, which is the precedence a running application applies.
+     *
+     * @param variables environment variables to make resolvable
+     * @return an environment carrying the production overlay, the shared baseline and those variables
+     */
+    private static StandardEnvironment environmentWith(final Map<String, String> variables) {
+        final StandardEnvironment environment = new StandardEnvironment();
+        environment.getPropertySources()
+                .remove(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME);
+        environment.getPropertySources()
+                .remove(StandardEnvironment.SYSTEM_PROPERTIES_PROPERTY_SOURCE_NAME);
+        for (final PropertySource<?> source : documentSources(PRODUCTION_DOCUMENT)) {
+            environment.getPropertySources().addLast(source);
+        }
+        for (final PropertySource<?> source : documentSources(SHARED_DOCUMENT)) {
+            environment.getPropertySources().addLast(source);
+        }
+        environment.getPropertySources().addLast(new MapPropertySource(
+                "variables-supplied-by-this-test", new LinkedHashMap<String, Object>(variables)));
+        return environment;
+    }
+
+    /**
+     * Loads one profile document from the class path.
+     *
+     * <p>Reads the single-copy form deliberately for the production overlay and the shared baseline,
+     * because each of those exists exactly once. The test profile is the only document this module
+     * ships twice, and the one assertion that reads it uses {@link #physicalCopiesOf} instead.
+     *
+     * @param document file name of the document
+     * @return the property sources the document produces
+     */
+    private static List<PropertySource<?>> documentSources(final String document) {
+        return sourcesOf(new ClassPathResource(document), document);
+    }
+
+    /**
+     * Loads a named document from a specific physical location.
+     *
+     * @param resource location to read
+     * @param name     name to record against the produced property sources
+     * @return the property sources the document produces
+     */
+    private static List<PropertySource<?>> sourcesOf(final Resource resource, final String name) {
+        try {
+            return new YamlPropertySourceLoader().load(name, resource);
+        } catch (final IOException ex) {
+            throw new UncheckedIOException("Could not read " + resource, ex);
+        }
+    }
+
+    /**
+     * Returns every physical copy of a document the test class path carries.
+     *
+     * <p>Resolved with {@code classpath*:} rather than {@code classpath:}. The single-copy form stops at
+     * the first match, and for {@code application-test.yml} that is the suite-only overlay, which would
+     * hide the packaged deliverable of the same name - the shadowing this checkpoint already had to
+     * correct once.
+     *
+     * @param document file name of the document
+     * @return every copy found, in class-path order
+     */
+    private static List<Resource> physicalCopiesOf(final String document) {
+        try {
+            final Resource[] found = new PathMatchingResourcePatternResolver()
+                    .getResources("classpath*:" + document);
+            final List<Resource> copies = Stream.of(found).filter(Resource::exists).toList();
+            if (copies.isEmpty()) {
+                throw new IllegalStateException("shipped configuration document is missing: " + document);
+            }
+            return copies;
+        } catch (final IOException ex) {
+            throw new UncheckedIOException("configuration document is unreadable: " + document, ex);
+        }
+    }
+
+    /**
+     * Reads a document's declarations without resolving anything.
+     *
+     * @param sources property sources produced by the document
+     * @return every declared key mapped to its raw text, in declaration order
+     */
+    private static Map<String, String> rawDeclarationsIn(final List<PropertySource<?>> sources) {
+        final Map<String, String> declarations = new LinkedHashMap<>();
+        for (final PropertySource<?> source : sources) {
+            if (source instanceof EnumerablePropertySource<?> enumerable) {
+                for (final String name : enumerable.getPropertyNames()) {
+                    final Object raw = enumerable.getProperty(name);
+                    declarations.put(name, raw == null ? "" : raw.toString());
+                }
+            }
+        }
+        return declarations;
+    }
+
+    /**
+     * Selects the declarations whose raw text matches a reference shape.
+     *
+     * @param sources property sources produced by the document
+     * @param shape   pattern whose first group is the variable name
+     * @return every matching key mapped to the variable it references
+     */
+    private static Map<String, String> referencesIn(final List<PropertySource<?>> sources,
+            final Pattern shape) {
+        final Map<String, String> references = new LinkedHashMap<>();
+        rawDeclarationsIn(sources).forEach((key, text) -> {
+            final Matcher matcher = shape.matcher(text);
+            if (matcher.matches()) {
+                references.put(key, matcher.group(1));
+            }
+        });
+        return references;
+    }
+
+    /**
+     * Selects the declarations of one document whose raw text matches a reference shape.
+     *
+     * @param document file name of the document
+     * @param shape    pattern whose first group is the variable name
+     * @return every matching key mapped to the variable it references
+     */
+    private static Map<String, String> referencesIn(final String document, final Pattern shape) {
+        return referencesIn(documentSources(document), shape);
+    }
+
+    /** @return the property keys the validator guards, in checking order */
+    private static List<String> guardedKeys() {
+        return ProductionConfigurationValidator.REQUIRED_SETTINGS.stream()
+                .map(RequiredSetting::propertyKey)
+                .toList();
+    }
+
+    /**
+     * Builds the exact line a report carries for one setting.
+     *
+     * <p>Used instead of a bare key comparison because three of the twelve keys are prefixes of each
+     * other - the key store, its credential and its format - so "the report does not mention this key"
+     * can only be asked safely against a whole line.
+     *
+     * @param setting setting to build the line prefix for
+     * @return the report line's leading text, unique to that setting
+     */
+    private static String reportLineFor(final RequiredSetting setting) {
+        return "  " + setting.propertyKey() + " <- " + setting.environmentVariable() + ":";
+    }
+
+    /** @return one argument pair per required setting: the property key and its variable */
+    private static Stream<Arguments> requiredSettings() {
+        return ProductionConfigurationValidator.REQUIRED_SETTINGS.stream()
+                .map(setting -> arguments(setting.propertyKey(), setting.environmentVariable()));
+    }
+
+    /**
+     * Finds the recorded setting for a property key.
+     *
+     * @param propertyKey key to look up
+     * @return the setting carrying that key
+     */
+    private static RequiredSetting settingFor(final String propertyKey) {
+        return ProductionConfigurationValidator.REQUIRED_SETTINGS.stream()
+                .filter(setting -> setting.propertyKey().equals(propertyKey))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("No required setting declares " + propertyKey));
+    }
+
+    @Nested
+    @DisplayName("A fully supplied environment is accepted")
+    class ACompleteEnvironmentIsAccepted {
+
+        @Test
+        @DisplayName("every required setting resolves, so the check passes silently")
+        void everyRequiredSettingResolves() {
+            assertThatCode(() -> ProductionConfigurationValidator
+                    .validateRequiredSettings(environmentWith(everyRequiredVariable())))
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("the settings that carry a fallback resolve without being supplied")
+        void theDefaultedSettingsAreNotRequired() {
+            final StandardEnvironment environment = environmentWith(everyRequiredVariable());
+            final Map<String, String> defaulted =
+                    referencesIn(PRODUCTION_DOCUMENT, DEFAULTED_REFERENCE);
+
+            assertThat(defaulted)
+                    .as("the production profile must still contain settings that may default, "
+                            + "otherwise the distinction this validator relies on is untested")
+                    .isNotEmpty();
+
+            defaulted.keySet().forEach(key -> {
+                final String resolved = environment.resolvePlaceholders("${" + key + "}");
+                assertThat(resolved)
+                        .as("%s carries a fallback and no variable was supplied for it", key)
+                        .isNotBlank()
+                        .doesNotContain("${");
+            });
+        }
+
+        @Test
+        @DisplayName("a value supplied as a literal rather than through a variable is accepted too")
+        void aLiterallyDeclaredValueIsAccepted() {
+            final Map<String, String> variables = everyRequiredVariable();
+            variables.remove("CARDDEMO_DB_URL");
+            final StandardEnvironment environment = environmentWith(variables);
+            environment.getPropertySources().addFirst(new MapPropertySource("literal-override",
+                    Map.<String, Object>of("spring.datasource.url", "jdbc:postgresql://named/db")));
+
+            assertThatCode(() -> ProductionConfigurationValidator.validateRequiredSettings(environment))
+                    .as("the check judges whether a value is usable, not how it came to be declared; a "
+                            + "deployment that overrides the key outright is not missing anything")
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("a null environment is rejected rather than silently passing")
+        void aNullEnvironmentIsRejected() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator.validateRequiredSettings(null))
+                    .withMessageContaining("environment");
+        }
+    }
+
+    @Nested
+    @DisplayName("Every required variable is judged independently")
+    class EveryRequiredVariableIsJudgedIndependently {
+
+        static Stream<Arguments> settings() {
+            return requiredSettings();
+        }
+
+        @ParameterizedTest(name = "{0} is unusable when {1} is not set")
+        @MethodSource("settings")
+        @DisplayName("omitting one variable stops the start and names it")
+        void omittingOneVariableStopsTheStart(final String propertyKey, final String variable) {
+            final Map<String, String> variables = everyRequiredVariable();
+            variables.remove(variable);
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateRequiredSettings(environmentWith(variables)))
+                    .withMessageContaining(reportLineFor(settingFor(propertyKey)))
+                    .withMessageContaining("the variable is not set")
+                    .withMessageContaining("${" + variable + "}");
+        }
+
+        @ParameterizedTest(name = "{0} is unusable when {1} is set to an empty string")
+        @MethodSource("settings")
+        @DisplayName("an empty variable stops the start and is described as empty")
+        void anEmptyVariableStopsTheStart(final String propertyKey, final String variable) {
+            final Map<String, String> variables = everyRequiredVariable();
+            variables.put(variable, "");
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateRequiredSettings(environmentWith(variables)))
+                    .withMessageContaining(reportLineFor(settingFor(propertyKey)))
+                    .withMessageContaining("set but empty");
+        }
+
+        @ParameterizedTest(name = "{0} is unusable when {1} is set to whitespace")
+        @MethodSource("settings")
+        @DisplayName("a whitespace-only variable stops the start and is described as whitespace")
+        void aWhitespaceOnlyVariableStopsTheStart(final String propertyKey, final String variable) {
+            final Map<String, String> variables = everyRequiredVariable();
+            variables.put(variable, "   ");
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> ProductionConfigurationValidator
+                            .validateRequiredSettings(environmentWith(variables)))
+                    .withMessageContaining(reportLineFor(settingFor(propertyKey)))
+                    .withMessageContaining("whitespace only");
+        }
+
+        @ParameterizedTest(name = "only {0} is blamed when only {1} is missing")
+        @MethodSource("settings")
+        @DisplayName("no other setting is blamed for one missing variable")
+        void noOtherSettingIsBlamed(final String propertyKey, final String variable) {
+            final Map<String, String> variables = everyRequiredVariable();
+            variables.remove(variable);
+
+            final String message = messageFrom(variables);
+
+            assertThat(message).contains(reportLineFor(settingFor(propertyKey)));
+            assertThat(message).contains("1 of "
+                    + ProductionConfigurationValidator.REQUIRED_SETTINGS.size());
+            ProductionConfigurationValidator.REQUIRED_SETTINGS.stream()
+                    .filter(setting -> !setting.propertyKey().equals(propertyKey))
+                    .forEach(other -> assertThat(message)
+                            .as("%s was supplied and must not appear in the report", other.propertyKey())
+                            .doesNotContain(reportLineFor(other)));
+        }
+
+        /**
+         * Runs the check and returns the failure text.
+         *
+         * @param variables variables to make resolvable
+         * @return the message of the failure the check raised
+         */
+        private String messageFrom(final Map<String, String> variables) {
+            try {
+                ProductionConfigurationValidator.validateRequiredSettings(environmentWith(variables));
+            } catch (final IllegalStateException expected) {
+                return expected.getMessage();
+            }
+            throw new AssertionError("The check accepted an environment it should have refused");
+        }
+    }
+
+    @Nested
+    @DisplayName("The report is complete and actionable")
+    class TheReportIsCompleteAndActionable {
+
+        @Test
+        @DisplayName("an empty environment is reported in full rather than one fault at a time")
+        void everyFaultIsReportedTogether() {
+            final IllegalStateException failure = failureFrom(environmentWith(Map.of()));
+            final String message = failure.getMessage();
+            final int required = ProductionConfigurationValidator.REQUIRED_SETTINGS.size();
+
+            assertThat(message).contains(required + " of " + required + " required settings");
+            ProductionConfigurationValidator.REQUIRED_SETTINGS.forEach(setting -> {
+                assertThat(message).contains(reportLineFor(setting));
+                assertThat(message).contains(setting.environmentVariable());
+            });
+        }
+
+        @Test
+        @DisplayName("the report names the profile it refused to start")
+        void theReportNamesTheProfile() {
+            assertThat(failureFrom(environmentWith(Map.of())).getMessage())
+                    .contains("'" + ProductionConfigurationValidator.PRODUCTION_PROFILE + "' profile");
+        }
+
+        @Test
+        @DisplayName("the report states that no fallback exists by design")
+        void theReportExplainsTheAbsenceOfAFallback() {
+            assertThat(failureFrom(environmentWith(Map.of())).getMessage())
+                    .contains("carries no fallback by design");
+        }
+
+        @Test
+        @DisplayName("the report points at the recorded decision and the profile document")
+        void theReportPointsAtTheRecordedDecision() {
+            assertThat(failureFrom(environmentWith(Map.of())).getMessage())
+                    .contains(RECORDED_DECISION)
+                    .contains(PRODUCTION_DOCUMENT);
+        }
+
+        @Test
+        @DisplayName("an undeclared property is distinguished from an unset variable")
+        void anUndeclaredPropertyIsDistinguishedFromAnUnsetVariable() {
+            final StandardEnvironment bare = new StandardEnvironment();
+            bare.getPropertySources()
+                    .remove(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME);
+            bare.getPropertySources()
+                    .remove(StandardEnvironment.SYSTEM_PROPERTIES_PROPERTY_SOURCE_NAME);
+
+            final String message = failureFrom(bare).getMessage();
+
+            assertThat(message)
+                    .as("with no profile document loaded, the properties themselves are missing")
+                    .contains("not declared by any active profile");
+            ProductionConfigurationValidator.REQUIRED_SETTINGS.forEach(setting ->
+                    assertThat(message).contains(reportLineFor(setting)));
+        }
+
+        @Test
+        @DisplayName("the report lists faults in the order the profile declares them")
+        void theReportPreservesDeclarationOrder() {
+            final String message = failureFrom(environmentWith(Map.of())).getMessage();
+            int previous = -1;
+            for (final RequiredSetting setting : ProductionConfigurationValidator.REQUIRED_SETTINGS) {
+                final int position = message.indexOf(reportLineFor(setting));
+                assertThat(position)
+                        .as("%s must appear in the report", setting.propertyKey())
+                        .isGreaterThan(previous);
+                previous = position;
+            }
+        }
+
+        /**
+         * Runs the check against an environment expected to be rejected.
+         *
+         * @param environment environment to check
+         * @return the failure the check raised
+         */
+        private IllegalStateException failureFrom(final StandardEnvironment environment) {
+            try {
+                ProductionConfigurationValidator.validateRequiredSettings(environment);
+            } catch (final IllegalStateException expected) {
+                return expected;
+            }
+            throw new AssertionError("The check accepted an environment it should have refused");
+        }
+    }
+
+    @Nested
+    @DisplayName("The guarded set is the set the profile declares")
+    class TheGuardedSetMatchesTheDocument {
+
+        @Test
+        @DisplayName("every bare environment reference in the production profile is guarded")
+        void everyBareReferenceIsGuarded() {
+            final Set<String> declared =
+                    new LinkedHashSet<>(referencesIn(PRODUCTION_DOCUMENT, BARE_REFERENCE).keySet());
+
+            assertThat(declared)
+                    .as("a bare reference with no fallback can only be satisfied by the environment, "
+                            + "so every one of them must be guarded; add the new key to "
+                            + "REQUIRED_SETTINGS or give it a fallback")
+                    .containsExactlyInAnyOrderElementsOf(guardedKeys());
+        }
+
+        @ParameterizedTest(name = "{0} is guarded against the variable the profile names, {1}")
+        @MethodSource("settings")
+        @DisplayName("each guarded key names the variable the profile actually references")
+        void eachGuardedKeyNamesTheDeclaredVariable(final String propertyKey, final String variable) {
+            assertThat(referencesIn(PRODUCTION_DOCUMENT, BARE_REFERENCE))
+                    .containsEntry(propertyKey, variable);
+        }
+
+        static Stream<Arguments> settings() {
+            return requiredSettings();
+        }
+
+        @Test
+        @DisplayName("no setting that carries a fallback is guarded")
+        void noDefaultedSettingIsGuarded() {
+            final Set<String> defaulted =
+                    new LinkedHashSet<>(referencesIn(PRODUCTION_DOCUMENT, DEFAULTED_REFERENCE).keySet());
+
+            assertThat(defaulted)
+                    .as("a documented default must not become a deployment obligation")
+                    .isNotEmpty()
+                    .doesNotContainAnyElementsOf(guardedKeys());
+        }
+
+        @Test
+        @DisplayName("no other profile document, in any physical copy, carries a bare reference")
+        void theRequirementBelongsToProductionAlone() {
+            final List<String> elsewhere = new ArrayList<>();
+            for (final String document :
+                    List.of(SHARED_DOCUMENT, "application-local.yml", "application-test.yml")) {
+                for (final Resource copy : physicalCopiesOf(document)) {
+                    referencesIn(sourcesOf(copy, document), BARE_REFERENCE).keySet()
+                            .forEach(key -> elsewhere.add(copy.getDescription() + " -> " + key));
+                }
+            }
+
+            assertThat(elsewhere)
+                    .as("a bare reference outside the production profile would make some other profile "
+                            + "require an environment variable that nothing guards; the test profile is "
+                            + "checked in both of its physical copies for that reason")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("no key is guarded twice and no variable is reused")
+        void theGuardedSetHasNoDuplicate() {
+            assertThat(guardedKeys()).doesNotHaveDuplicates();
+            assertThat(ProductionConfigurationValidator.REQUIRED_SETTINGS.stream()
+                    .map(RequiredSetting::environmentVariable)
+                    .toList())
+                    .doesNotHaveDuplicates();
+        }
+    }
+
+    @Nested
+    @DisplayName("A required setting refuses a half-built entry")
+    class TheSettingRecordRefusesAHalfBuiltEntry {
+
+        @Test
+        @DisplayName("a null property key is rejected")
+        void aNullPropertyKeyIsRejected() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> new RequiredSetting(null, "CARDDEMO_DB_URL"))
+                    .withMessageContaining("propertyKey");
+        }
+
+        @Test
+        @DisplayName("a null variable name is rejected")
+        void aNullVariableIsRejected() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> new RequiredSetting("spring.datasource.url", null))
+                    .withMessageContaining("environmentVariable");
+        }
+
+        @Test
+        @DisplayName("a blank property key is rejected")
+        void aBlankPropertyKeyIsRejected() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new RequiredSetting("  ", "CARDDEMO_DB_URL"))
+                    .withMessageContaining("property key");
+        }
+
+        @Test
+        @DisplayName("a blank variable name is rejected")
+        void aBlankVariableIsRejected() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new RequiredSetting("spring.datasource.url", ""))
+                    .withMessageContaining("variable name");
+        }
+
+        @Test
+        @DisplayName("a well-formed entry keeps both halves")
+        void aWellFormedEntryKeepsBothHalves() {
+            final RequiredSetting setting =
+                    new RequiredSetting("spring.datasource.url", "CARDDEMO_DB_URL");
+
+            assertThat(setting.propertyKey()).isEqualTo("spring.datasource.url");
+            assertThat(setting.environmentVariable()).isEqualTo("CARDDEMO_DB_URL");
+        }
+    }
+}

@@ -35,9 +35,9 @@
 #   in this module. The legacy estate is cited by member name, resource name, record width, field
 #   count and code value only, and is never copied here.
 #
-# THIS BASELINE IS FAIL-CLOSED, and that is a property to be preserved rather than a description
-# of how it happens to be set today. The rule for every setting here is: assume the profile that
-# inherits it is production. A convenience is therefore never declared here and then narrowed by
+# THIS BASELINE IS FAIL-CLOSED, and that is a property to be preserved rather than a description of
+# how one environment happens to have it set. The rule for every setting here is: assume the profile
+# that inherits it is production. A convenience is therefore never declared here and then narrowed by
 # the production overlay - it is declared closed here and WIDENED by the profile that needs it,
 # because a deployment can forget to select a profile but it cannot forget to inherit this file.
 # Concretely, four settings are closed here and opened only in application-local.yml:
@@ -92,12 +92,29 @@ spring:
   # ISO-8601 rather than epoch numbers, unknown request properties are tolerated so a client may
   # echo a field this endpoint does not consume, and decimals are rendered plainly because
   # scientific notation would corrupt a fixed-scale value carried from a zoned-decimal field.
+  #
+  # Reading a request is deliberately strict, because a screen field is a fixed-width external text
+  # value and a silent coercion into it is a corrupted value rather than a lenient one. Two of the
+  # three coercions that must fail are expressible here; the third - a JSON number arriving where the
+  # contract declares text - has no configuration property in this framework and is closed in Java by
+  # com.carddemo.config.WebMvcConfig, which extends this configuration rather than replacing it.
   jackson:
     default-property-inclusion: non_null
     serialization:
       write-dates-as-timestamps: false
     deserialization:
       fail-on-unknown-properties: false
+      # A bare JSON number must never bind an enumerated component. Left at its default, this mapper
+      # reads such a number as an ordinal index, so a body carrying 8 would select the ninth constant
+      # of whichever enumeration the component declares. No 3270 attention identifier is an index -
+      # each is a named byte, and the key vocabulary has no catch-all branch - so an ordinal is never
+      # a value an operator could have produced. Enabled, so the body is rejected instead.
+      fail-on-numbers-for-enums: true
+      # A fractional JSON number must never bind an integral component. Left at its default, this
+      # mapper discards the fraction, so 7.9 binds as 7 and becomes indistinguishable from a 7 the
+      # caller actually sent. Every integral component in the contract is a screen row count or a menu
+      # option number, where a truncated value is a different instruction. Disabled, so it is rejected.
+      accept-float-as-int: false
     generator:
       write-bigdecimal-as-plain: true
 
@@ -126,22 +143,48 @@ spring:
   # -----------------------------------------------------------------------------------------------
   # Schema evolution: versioned, forward-only, and the only path by which a table or a row is
   # created. There is no framework-managed initialisation script and no boot-time initialiser
-  # property, so the migrations on the location list below are the whole story.
+  # property, so the migrations on the single location below are the whole story.
   #
-  #   V1__create_schema.sql   the eleven application tables       db/migration - every profile
-  #   V2__create_indexes.sql  keys and alternate-index equivalents db/migration - every profile
+  #   V1__create_schema.sql          the eleven application tables            schema
+  #   V1_1__create_batch_metadata.sql the batch job-repository metadata       schema
+  #   V2__create_indexes.sql         keys and alternate-index equivalents     schema
+  #   V3__seed_reference_data.sql    the sample reference rows                SEED
+  #   V4__seed_user_security.sql     the ten seeded sign-on identities        SEED
   #
-  # The location list is deliberately db/migration alone. Reference-data and sign-on seeds must not
-  # be reachable from this file: they belong under db/seed, which application-local.yml and
-  # application-test.yml add for themselves and application-prod.yml never does. That is what keeps
-  # reference rows and seeded sign-on identities out of a production migration.
+  # ONE LOCATION, FIVE SCRIPTS. All five live in classpath:db/migration and every profile resolves
+  # all five. That flat set is what the frozen plan names, and it is also the only arrangement in
+  # which a version number means what it appears to mean.
   #
-  # The two scripts named above are the whole delivered set for this location, so a migration reaches
-  # V2 under every profile including production. db/seed now carries V3__seed_reference_data.sql and
-  # V4__seed_user_security.sql, so a migration currently ends at V4 under the local and test
-  # overlays, which list that location, and at V2 under production, which never does. The separation
-  # is therefore load-bearing rather than anticipatory: the reference rows and the ten seeded sign-on
-  # identities both exist, and production still cannot reach either.
+  # THE SEEDS ARE EXCLUDED BY VERSION, NOT BY DIRECTORY. The ceiling below is the shared default and
+  # it is deliberately the restrictive one: target "2" applies 1, 1.1 and 2 and never resolves 3 or 4,
+  # so an overlay that says nothing about seeding inherits a schema-only migration. application-prod.yml
+  # re-asserts "2" explicitly rather than relying on inheritance, and the two overlays that genuinely
+  # want the seeds - application-local.yml and application-test.yml - raise the ceiling to latest for
+  # themselves. Defaulting to latest and expecting production to opt out would let a forgotten override
+  # deposit seeded credentials in silence; defaulting to "2" makes a forgotten override fail loudly,
+  # because the tests assert the seeded rows are present. An earlier revision split
+  # the scripts into db/migration and db/seed and made the LOCATION LIST the exclusion control
+  # instead; the effect was that the version numbers no longer described what any profile would
+  # apply, and a seed script that was moved or a location list that gained an entry silently changed
+  # what production ran. A version ceiling cannot be defeated that way: a new script above 2 is
+  # excluded from production by arithmetic, wherever a future author happens to put it.
+  #
+  # THE CONSEQUENCE FOR A NEW SCRIPT, stated once here and repeated at each profile: a script that
+  # production MUST run is numbered at or below 2, and a script that production must NEVER run is
+  # numbered above 2. Nothing else governs it.
+  #
+  # WHAT THE CEILING MEANS TO THE MIGRATION TOOL, CHECKED RATHER THAN ASSUMED. target "2" applies V1,
+  # V1.1 and V2 and stops there. V3 and V4 are reported ABOVE_TARGET, are never executed, and - checked
+  # against PostgreSQL 16 with the five delivered scripts - do not fail validation while they remain
+  # pending, so the ceiling does not trade a seeded database for a refused start-up. The
+  # configuration-baseline test asserts the ceiling against the delivered scripts, so the sentences
+  # above cannot go stale unnoticed.
+  #
+  # THE CEILING IS ENFORCED A SECOND TIME IN CODE. com.carddemo.config.FlywayConfig refuses to start a
+  # production profile whose resolved ceiling reaches version 3 or beyond, and refuses one whose
+  # resolved location list reaches outside the single location above. Restoring the seeds to a
+  # production deployment therefore takes more than an overlay edit: the refusal is unconditional and
+  # is not expressed in any configuration file, and the two controls fail in the same direction.
   #
   # Version 11 of the migration tool resolves PostgreSQL support from a separate artefact declared
   # beside flyway-core in pom.xml; without it the build still succeeds and the application then
@@ -151,7 +194,9 @@ spring:
   # skipped in silence against a database that already holds objects.
   flyway:
     enabled: true
+    # See docs/decision-log.md DL-102.
     locations: classpath:db/migration
+    target: "2"
     baseline-on-migrate: false
     validate-on-migrate: true
     clean-disabled: true
@@ -169,15 +214,30 @@ spring:
   # program; the rest are dataset-utility invocations absorbed by the migrations, the Compose
   # service definitions and test fixtures.
   #
-  # The batch metadata tables come from the batch framework's own bundled script, not from
-  # V1__create_schema.sql, which is what keeps the application-table count at eleven. The prefix
-  # below lets a reader tell the two families apart. The production overlay narrows this to `never`
-  # so production DDL only arrives through a reviewed migration.
+  # THE BATCH METADATA TABLES ARE OWNED BY A MIGRATION, AND initialize-schema IS `never` EVERYWHERE.
+  #
+  # The framework can create its own six tables and three sequences on start-up from a bundled script,
+  # and this module declines that offer under every profile. Two reasons, and the second is the one
+  # that decided it:
+  #
+  #   1. A framework issuing unversioned DDL against a database whose every other object arrived
+  #      through a checksum-validated migration is a second, invisible schema owner.
+  #   2. It cannot be switched off for production alone. An earlier revision set `never` here only in
+  #      the production overlay while no migration created the tables, so production was the ONE
+  #      environment where a job launch would have failed on a missing relation - and local and test,
+  #      where the framework still created them, could not reveal it. Either the framework owns them
+  #      in every environment or a migration does. A migration does.
+  #
+  # V1_1__create_batch_metadata.sql transcribes the framework's own PostgreSQL script for the exact
+  # resolved version, and is numbered 1.1 so that the production version ceiling of 2 still applies
+  # it. Those six tables are deliberately NOT part of V1__create_schema.sql, which is what keeps the
+  # application-table count at eleven; the prefix below is what lets a reader tell the two families
+  # apart at a glance.
   batch:
     job:
       enabled: false
     jdbc:
-      initialize-schema: always
+      initialize-schema: never
       table-prefix: BATCH_
 
   # Region only. Endpoint overrides and credentials are profile scoped: local and test aim the
@@ -193,9 +253,10 @@ spring:
   # resolve.
   #
   # That is the wrong behaviour for this module, and specifically for the one queue it publishes to.
-  # The legacy transient-data queue was defined with OPENTIME(INITIAL): the resource existed before
-  # first use, and the program that wrote to it never created it. Provisioning stays outside the
-  # application - the emulator bootstrap script locally, and infrastructure in a deployment - which
+  # The legacy transient-data queue was declared as already open at region start-up: the resource
+  # existed before first use, and the program that wrote to it never created it. Provisioning stays
+  # outside the application - the emulator bootstrap script locally, and infrastructure in a
+  # deployment - which
   # is exactly what CREATE would undermine. Worse, it undermines it silently and in the most
   # expensive direction: a queue name that is merely wrong rather than malformed would be created on
   # demand, the publish would succeed against it, and the submission would sit in a queue nothing
@@ -342,10 +403,10 @@ management:
 # The generated OpenAPI document is the module's single machine-readable contract description:
 # there is no separate hand-maintained contract document to keep in step with the code.
 #
-# WHAT IT CARRIES TODAY, stated plainly so a reader is not misled by the switch below: identity
+# WHAT IT CARRIES, stated plainly so a reader is not misled by the switch below: identity
 # metadata, the reusable component shapes, and the bearer security scheme - AND NO PATHS. A path
 # appears in the document when a request-mapped controller exists to produce it, and the delivered
-# main tree has none yet, so the document is presently a description of the shapes and the
+# main tree declares none, so the document describes the shapes and the
 # authentication rule rather than of an endpoint inventory. That is not a defect in this
 # configuration; it is the delivered state, and a contract test asserts the emptiness rather than
 # leaving it to be discovered - com.carddemo.config.OpenApiConfigBoundaryTest. The endpoint
@@ -433,14 +494,14 @@ carddemo:
     # external interface is that its contract is reproduced rather than renegotiated. So the only
     # transformation applied to the name is the suffix the queue service demands.
     #
-    # An earlier revision used a module-namespaced name instead, on the reasoning that an
-    # infrastructure name and an operator-visible message are two different contracts and only the
-    # second is byte-compared, so the resource could be renamed freely to avoid colliding with an
-    # unrelated queue in a shared account. That reasoning is reversed here. The distinction it draws
-    # is real but it does not license the rename: the resource name is itself part of the frozen
-    # inventory, no exception authorises editing it, and a collision-avoidance concern is a
-    # deployment concern that the environment override below already answers without changing what
-    # the module ships. The namespaced name also disagreed with the provisioned resource, which is
+    # A module-namespaced name is deliberately not used, and the argument for one is worth stating so
+    # it is not re-made: an infrastructure name and an operator-visible message are two different
+    # contracts and only the second is byte-compared, so the resource could be renamed freely to avoid
+    # colliding with an unrelated queue in a shared account. That reasoning is reversed here. The
+    # distinction it draws is real but it does not license the rename: the resource name is itself part
+    # of the frozen inventory, no exception authorises editing it, and a collision-avoidance concern is
+    # a deployment concern that the environment override below already answers without changing what
+    # the module ships. A namespaced name would also disagree with the provisioned resource, which is
     # how a valid-but-wrong name becomes possible in the first place - see the fail-fast strategy
     # above, which exists to make exactly that mistake loud.
     #
@@ -457,10 +518,10 @@ carddemo:
     # TWO FACTS ABOUT THIS QUEUE ARE DELIBERATELY NOT KEYS HERE: the 80-byte fixed record width and
     # the ignore-on-error failure tolerance. Both come from the legacy queue definition, and neither
     # is a deployment choice - a different width is a different record format, and a different
-    # tolerance is a different failure contract, so neither describes this queue. An earlier revision
-    # declared them as `record-length` and `fail-on-error`, which read as configuration while nothing
-    # in the application bound either one; the values were inert, and the file advertised an
-    # adjustability that did not exist. Binding them to a validator that permits only 80 and only
+    # tolerance is a different failure contract, so neither describes this queue. Declaring them as
+    # `record-length` and `fail-on-error` keys is rejected: they read as configuration while nothing in
+    # the application binds either one; the values would be inert, and the file would advertise an
+    # adjustability that does not exist. Binding them to a validator that permits only 80 and only
     # false would not fix that - it would relocate it, leaving a switch with one position and, for
     # the tolerance, a branch no deployment could ever reach.
     #

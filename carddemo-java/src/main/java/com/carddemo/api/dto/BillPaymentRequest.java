@@ -17,6 +17,7 @@
 package com.carddemo.api.dto;
 
 import com.carddemo.domain.enums.KeyAction;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -128,9 +129,14 @@ import jakarta.validation.constraints.Size;
  * through the screen. Values cross this boundary character for character and are never trimmed,
  * padded, case folded, stripped, canonicalised or reformatted.
  *
- * <p>The only constraint declared is an upper bound on length. It measures and never alters, so
- * leading and trailing spaces survive validation untouched - which matters because the legacy fields
- * are fixed-width and their padding is contract. No presence, pattern, character-class or
+ * <p>The only constraint declared on a carried value is an upper bound on length. It measures and never
+ * alters, so leading and trailing spaces survive validation untouched - which matters because the legacy
+ * fields are fixed-width and their padding is contract. The navigation component additionally carries a
+ * cascade, which constrains nothing this record declares and instead makes the widths that component
+ * declares for itself actually evaluated: a nested constraint fires only when the enclosing component
+ * asks for it, so without the cascade they are stated on paper and enforced nowhere. It cannot pre-empt
+ * either cascade below, because an over-wide nested value is a state no 3270 submission could produce
+ * and the estate has no ordered check and no message for it. No presence, pattern, character-class or
  * numeric-range constraint appears anywhere in this file. Each would reject input the legacy
  * transaction accepts, and, more decisively, both checks that do exist are message-bearing and
  * strictly ordered: the emptiness test at line 161 runs first and ends the pass, and the
@@ -167,11 +173,20 @@ import jakarta.validation.constraints.Size;
  *
  * <p>A record, so every component is final, no mutator exists, no mutable state is held or exposed,
  * and no code generation or annotation processing is involved. The type depends only on the platform
- * library, the single length constraint, the attention-key enumeration in the domain enumeration
+ * library, the two validation annotations, the attention-key enumeration in the domain enumeration
  * package and the navigation record in this package; it holds no framework, persistence, messaging or
  * service type. It performs no input or output, logs nothing, and reads nothing at run time - least of
- * all anything under {@code app/}. Equality, hashing and stringification are the record defaults:
- * neither carried value is a secret, so nothing is redacted and nothing is suppressed.
+ * all anything under {@code app/}.
+ *
+ * <p>Equality and hashing are the record defaults, comparing every component by value.
+ * <strong>Stringification is not.</strong> The account identifier identifies an account holder and the
+ * confirmation character is operator input, so both are replaced by a fixed placeholder in
+ * {@link #toString()} while every accessor and the serialized wire form continue to carry them byte for
+ * byte. An earlier revision of this file asserted that neither carried value was sensitive and that the
+ * generated rendering could therefore stand; that assessment was wrong about the identifier and
+ * disagreed with the outbound contract for this same screen, which already withholds both. Nothing is
+ * suppressed from the wire form here - that is a different channel with a different requirement, and the
+ * service needs both values intact.
  *
  * <h2>Provenance</h2>
  *
@@ -205,13 +220,32 @@ import jakarta.validation.constraints.Size;
  * @param navigationContext the client-echoed navigation state handed back on this turn, the REST-era
  *     stand-in for the communication area the legacy transaction received and returned. Declarative
  *     only; this record performs no routing. May be {@code null}; the navigation record additionally
- *     offers a wholly empty instance for a turn that carries nothing yet.
+ *     offers a wholly empty instance for a turn that carries nothing yet. Marked for cascading
+ *     validation so that the bounds the nested type declares are actually applied: Bean Validation
+ *     does not descend into a nested object unless it is told to, so without the cascade every bound
+ *     inside it is decorative and an over-long identifier reaches the service unreported. Cascading a
+ *     bound is not the same as adding one - no new constraint is introduced, and the ordered
+ *     service-tier cascade this record deliberately stays out of is untouched.
  */
 public record BillPaymentRequest(
         @Size(max = BillPaymentRequest.ACCOUNT_ID_LENGTH) String accountId,
         @Size(max = BillPaymentRequest.CONFIRM_LENGTH) String confirm,
         KeyAction keyAction,
-        NavigationContext navigationContext) {
+        @Valid NavigationContext navigationContext) {
+
+    /**
+     * Fixed stand-in emitted by {@link #toString()} in place of each withheld component.
+     *
+     * <p>A constant rather than any transformation of the value, so nothing about a withheld component
+     * - not its length, not a prefix or suffix, not a digest, not a partial mask - can be recovered from
+     * a stringified instance. A partial rendering of the account identifier was rejected deliberately:
+     * eleven digits of which some are shown is still a search key for the remainder, and a rendered
+     * length still discriminates.
+     *
+     * <p>Private because it is a rendering detail and not part of the request contract. It stands in
+     * only on the rendering path: every accessor returns its component exactly as supplied.
+     */
+    private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
 
     /**
      * Width in characters of the account-id field: 11.
@@ -237,4 +271,48 @@ public record BillPaymentRequest(
      * absent character is a legitimate state rather than a violation.
      */
     public static final int CONFIRM_LENGTH = 1;
+
+    /**
+     * Returns a diagnostic representation that identifies the request and discloses neither the account
+     * nor the operator's answer.
+     *
+     * <p><strong>Why the implicit record rendering could not stand.</strong> A record's generated
+     * {@code toString()} prints every component, and the first of these is an account identifier. One
+     * instance exists per bill-payment submission, so a default rendering would put an account
+     * identifier one interpolation away from every log line, failed assertion, framework diagnostic and
+     * exception message on the payment path - and, on the settlement arm, beside the transaction the
+     * outbound contract names, which is enough to say what that specific account paid.
+     *
+     * <p><strong>What is withheld, and why the list is wider than the identifier alone.</strong> The
+     * account identifier is withheld because it identifies an account. The confirmation answer is
+     * withheld because it is operator input and a rejection must never echo the value it rejected -
+     * decision log entry D-16, the same reasoning the outbound contract for this screen records for the
+     * same component. Fail-closed is the correct default here: the retained set was chosen because it is
+     * sufficient, not because the remainder happened to look harmless.
+     *
+     * <p><strong>Why the remainder is retained.</strong> The attention key is the operator's navigation
+     * choice and identifies nobody; on this screen it is the component that says whether the submission
+     * was a settlement attempt, a return to the previous screen, a clear or an unmapped key, which is
+     * the single most useful thing a diagnostic on this transaction can carry. The navigation context is
+     * printed by delegation because it redacts its own identifying values.
+     *
+     * <p><strong>Withholding is confined to this method.</strong> Both accessors return their component
+     * exactly as supplied - the account identifier is a lookup key compared to a stored key character
+     * for character, and the confirmation character must reach the service intact so that the diagnostic
+     * at line 187 of {@code app/cbl/COBIL00C.cbl} can report a value that is neither acceptable answer.
+     * {@code equals} and {@code hashCode} remain exactly as the record contract generates them,
+     * comparing every component by value, because an in-memory comparison emits nothing.
+     *
+     * @return the request identification, with the account identifier and the confirmation answer
+     *     replaced by a fixed placeholder
+     */
+    @Override
+    public String toString() {
+        return "BillPaymentRequest["
+                + "accountId=" + REDACTION_PLACEHOLDER
+                + ", confirm=" + REDACTION_PLACEHOLDER
+                + ", keyAction=" + keyAction
+                + ", navigationContext=" + navigationContext
+                + "]";
+    }
 }

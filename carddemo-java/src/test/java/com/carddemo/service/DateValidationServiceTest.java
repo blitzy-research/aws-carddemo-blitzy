@@ -50,9 +50,9 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * legacy never did:
  *
  * <ul>
- *   <li>the <em>copybook cascade</em>, {@code PERFORM EDIT-DATE-CCYYMMDD THRU
- *       EDIT-DATE-CCYYMMDD-EXIT} spanning {@code [app/cpy/CSUTLDPY.cpy:L18]} to
- *       {@code [app/cpy/CSUTLDPY.cpy:L329]}, an <strong>eleven-paragraph fall-through range</strong>
+ *   <li>the <em>copybook cascade</em>, the {@code EDIT-DATE-CCYYMMDD} range run through to its own
+ *       exit label in {@code [app/cpy/CSUTLDPY.cpy]}, an
+ *       <strong>eleven-paragraph fall-through range</strong>
  *       whose head paragraph validates nothing at all, so the behaviour lives entirely in the five
  *       stages it falls through; and</li>
  *   <li>the <em>callable subprogram</em>, {@code CALL 'CSUTLDTC'}, whose procedure division runs from
@@ -65,7 +65,7 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * message literals carry the source's own irregular spacing - three suffixes open with
  * {@code " : "}, two with {@code ": "}, four with {@code ":"} alone, one with no colon at all, and
  * one closes with a trailing space - and that irregularity is asserted rather than tidied, because it
- * is displayed on the account-update screen today.
+ * is displayed on the account-update screen.
  *
  * <p>Three properties of the cascade are the ones a careless translation loses, so each has its own
  * nested class:
@@ -85,14 +85,14 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  *
  * <p><strong>Every width asserted below is a byte width.</strong> The eight-character cascade input
  * field, the two ten-character linkage parameters and the eighty-character result area are all
- * {@code PIC X(n)} declarations, and a {@code PIC X(n)} field reserves <em>n bytes</em>. Width
+ * fixed-width character declarations, and such a field reserves its declared byte count. Width
  * assertions therefore measure {@code getBytes(StandardCharsets.US_ASCII).length} rather than a
  * {@code String} character count, and no fixed-width comparison anywhere below is trimmed: a trailing
  * space that the layout reserves is part of the value, so trimming it would assert a contract the
  * legacy does not have.
  *
  * <p><strong>Deliberately not covered here.</strong> The five-paragraph range
- * {@code 1260-EDIT-US-PHONE-NUM THRU 1260-EDIT-US-PHONE-NUM-EXIT}, invoked from two sites in
+ * {@code 1260-EDIT-US-PHONE-NUM} run through to its own exit label, invoked from two sites in
  * {@code app/cbl/COACTUPC.cbl}, is <em>not</em> a member of either range this service translates and
  * the service exposes no phone-number entry point. It belongs to the account-update translation and is
  * covered there; duplicating it here would assert a member this class does not own.
@@ -183,25 +183,25 @@ final class DateValidationServiceTest {
 
     // Widths and codes, every one read from a record layout rather than assumed.
 
-    /** {@code LS-RESULT PIC X(80)}, {@code [app/cbl/CSUTLDTC.cbl:L86]}. */
+    /** Width of {@code LS-RESULT}, {@code [app/cbl/CSUTLDTC.cbl]}. */
     private static final int ORACLE_RESULT_BLOCK_WIDTH = 80;
 
-    /** {@code CSUTLDTC-RESULT-MSG PIC X(61)}, {@code [app/cbl/CORPT00C.cbl:L136]}. */
+    /** Width of {@code CSUTLDTC-RESULT-MSG}, {@code [app/cbl/CORPT00C.cbl]}. */
     private static final int ORACLE_MESSAGE_SEGMENT_WIDTH = 61;
 
-    /** {@code WS-SEVERITY PIC X(04)} and {@code WS-MSG-NO}, {@code [app/cbl/CSUTLDTC.cbl:L43]}. */
+    /** Width of {@code WS-SEVERITY} and of {@code WS-MSG-NO}, {@code [app/cbl/CSUTLDTC.cbl]}. */
     private static final int ORACLE_CODE_WIDTH = 4;
 
-    /** {@code WS-RESULT PIC X(15)}, {@code [app/cbl/CSUTLDTC.cbl:L49]}. */
+    /** Width of {@code WS-RESULT}, {@code [app/cbl/CSUTLDTC.cbl]}. */
     private static final int ORACLE_RESULT_TEXT_WIDTH = 15;
 
-    /** {@code LS-DATE} and {@code LS-DATE-FORMAT PIC X(10)}, {@code [app/cbl/CSUTLDTC.cbl:L84]}. */
+    /** Width of {@code LS-DATE} and of {@code LS-DATE-FORMAT}, {@code [app/cbl/CSUTLDTC.cbl]}. */
     private static final int ORACLE_LINKAGE_TEXT_WIDTH = 10;
 
-    /** {@code WS-EDIT-DATE-CCYYMMDD PIC X(08)}, {@code [app/cpy/CSUTLDWY.cpy:L4]}. */
+    /** Width of {@code WS-EDIT-DATE-CCYYMMDD}, {@code [app/cpy/CSUTLDWY.cpy]}. */
     private static final int ORACLE_CCYYMMDD_WIDTH = 8;
 
-    /** The three-character group {@code WS-EDIT-DATE-FLGS}, {@code [app/cpy/CSUTLDWY.cpy:L43]}. */
+    /** The three-character group {@code WS-EDIT-DATE-FLGS}, {@code [app/cpy/CSUTLDWY.cpy]}. */
     private static final int ORACLE_FLAG_GROUP_WIDTH = 3;
 
     /** The severity the callers accept outright, {@code [app/cbl/CORPT00C.cbl:L396]}. */
@@ -433,7 +433,7 @@ final class DateValidationServiceTest {
     }
 
     /**
-     * Measures a value the way a {@code PIC X(n)} field measures it: in bytes.
+     * Measures a value the way a fixed-width character field measures it: in bytes.
      *
      * <p>Declared here rather than reached for through the production class, so that a width assertion
      * cannot silently inherit whatever the code under test happens to believe a width is. Nothing is
@@ -1701,11 +1701,11 @@ final class DateValidationServiceTest {
         }
     }
 
-    // THE DECISIVE PROOF: the eleven-paragraph THRU range really is an ordered cascade.
+    // THE DECISIVE EVIDENCE: the eleven-paragraph range really is an ordered cascade.
 
     /**
-     * Proves that the behaviour of the range lives in the paragraphs the {@code THRU} falls through and
-     * not in its head.
+     * Establishes that the behaviour of the range lives in the paragraphs the invocation falls
+     * through and not in its head.
      *
      * <p>The head paragraph {@code EDIT-DATE-CCYYMMDD} at {@code [app/cpy/CSUTLDPY.cpy:L18]} has a body
      * of exactly one statement, at {@code [app/cpy/CSUTLDPY.cpy:L19]}: it writes the all-invalid value

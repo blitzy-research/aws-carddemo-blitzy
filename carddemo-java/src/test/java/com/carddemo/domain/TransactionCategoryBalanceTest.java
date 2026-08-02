@@ -44,15 +44,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * record in five parts: an eleven-byte account identifier, a two-byte transaction type, a four-byte
  * transaction category, a signed balance of nine integer digits and two decimals, and a twenty-two-byte
  * filler. The first three fields form a named key group, and the cluster definition at
- * {@code app/jcl/TCATBALF.jcl} confirms the arithmetic independently with {@code KEYS(17 0)} and
- * {@code RECORDSIZE(50 50)}: eleven plus two plus four is the seventeen-byte key, and the key starts at
- * the front of the record.
+ * {@code app/jcl/TCATBALF.jcl} confirms the arithmetic independently: a seventeen-byte key at
+ * offset zero over a fifty-byte record, and eleven plus two plus four is that seventeen-byte key,
+ * so the key starts at the front of the record.
  *
  * <p><strong>Why the key width is asserted rather than assumed.</strong> The copybook that declares this
  * key and the copybook behind {@link TransactionCategory} give their key groups the <em>same</em> legacy
  * name, yet one key is seventeen bytes over three components and the other is six bytes over two, and
  * this one leads with an account identifier the other does not contain at all. A translation that reached
- * for the wrong identifier class would still compile, so the distinction is proved here from three
+ * for the wrong identifier class compiles just as cleanly, so the distinction is established here
+ * from three
  * independent directions: the copybook widths, the two cluster key lengths, and the primary-key column
  * lists the migration declares for the two tables. Decision log entry D-37 records the collision.
  *
@@ -64,10 +65,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * against the migration and against a decode of the real seeded image - and pins that the entity itself
  * neither scales nor computes.
  *
- * <p><strong>Why the seeded composition is asserted.</strong> All fifty seeded rows carry a zero balance.
- * That is not an accident of the fixture, it is what makes the accrual paths reachable from seed data
- * alone alongside the disclosure-group rows, and it is why the entity must round-trip a zero at scale two
- * without normalising it away.
+ * <p><strong>Why the seeded composition is asserted.</strong> All fifty seeded rows carry a zero balance,
+ * and all fifty sit on the same type and category. That is not an accident of the fixture: together with
+ * the disclosure-group rows it is what makes the accrual rate lookup exercisable from seed data, and the
+ * arm a seed-only run takes is the default-group fallback, because every seeded account holds ten spaces
+ * in its group identifier. The direct group hit and the zero-rate skip need a constructed account. It is
+ * also why the entity must round-trip a zero at scale two without normalising it away.
  *
  * <p><strong>Deliberately not asserted.</strong> Nothing here computes interest, decodes a record image
  * into an entity or exercises the foreign key. Those belong to the interest-calculation service, the
@@ -83,13 +86,13 @@ class TransactionCategoryBalanceTest {
     /** The table behind the six-byte key that shares this record's legacy key-group name. */
     private static final String COLLIDING_TABLE = "transaction_category";
 
-    /** {@code RECORDSIZE(50 50)} in the cluster definition. */
+    /** Record width, from the cluster definition. */
     private static final int RECORD_WIDTH = 50;
 
-    /** {@code KEYS(17 0)} in {@code app/jcl/TCATBALF.jcl} — key length. */
+    /** Key length, from {@code app/jcl/TCATBALF.jcl}. */
     private static final int KEY_WIDTH = 17;
 
-    /** {@code KEYS(6 0)} in {@code app/jcl/TRANCATG.jcl} — the colliding key's length. */
+    /** The colliding key's length, from {@code app/jcl/TRANCATG.jcl}. */
     private static final int COLLIDING_KEY_WIDTH = 6;
 
     /** The five copybook widths, in declaration order. */
@@ -650,8 +653,8 @@ class TransactionCategoryBalanceTest {
         }
 
         @Test
-        @DisplayName("every seeded record carries a zero balance, which is what makes the accrual "
-                + "branches reachable from seed data alone")
+        @DisplayName("every seeded record carries a zero balance, which is what makes the accrual rate "
+                + "lookup exercisable from seed data at all")
         void everySeededRecordCarriesAZeroBalance() {
             for (int ordinal = 1; ordinal <= SEEDED_RECORDS; ordinal++) {
                 assertThat(seededBalance(ordinal))

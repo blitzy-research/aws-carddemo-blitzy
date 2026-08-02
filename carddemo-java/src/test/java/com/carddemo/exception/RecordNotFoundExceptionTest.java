@@ -36,204 +36,157 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Unit tests for {@link RecordNotFoundException}.
  *
  * <p>A plain JUnit 5 test: no application context, no container, no mock. The subject is a
- * value-carrying exception, so everything it promises can be proved by construction, accessor
+ * value-carrying exception, so everything it promises can be established by construction, accessor
  * round-tripping, message inspection and one serialisation round-trip.</p>
  *
- * <p><strong>What the estate actually does with status 23.</strong> The record-not-found status is
- * the two-character value {@code "23"}, and it occurs at six sites across three batch programs that
- * do <em>not</em> agree on whether a miss is a failure - three carry on and three abend - which is
- * why this exception type is deliberately not the universal answer to a not-found.</p>
+ * <p>The record-not-found status is the two-character value {@code "23"}, and it occurs at six sites
+ * across three batch programs that do <em>not</em> agree on whether a miss is a failure - three carry
+ * on and three abend - which is why this exception type is deliberately not the universal answer to a
+ * not-found.</p>
  *
- * <p><em>Three sites fold the miss in as a non-error.</em> {@code CBACT04C} paragraph
- * {@code 1200-GET-INTEREST-RATE} (lines 415 to 440) emits a missing-record diagnostic and a
- * retry-with-default diagnostic from its invalid-key handler, then line 422 folds {@code "23"} in
- * <em>with</em> {@code "00"} as the non-error outcome giving the coarse result 0, and only afterwards
- * does line 436 test for {@code "23"} specifically, substitute the default group key and perform the
- * default-rate lookup. {@code CBTRN02C} paragraph {@code 2700-UPDATE-TCATBAL} (lines 470 to 501)
- * initialises a create flag to no, emits a not-found-and-creating diagnostic and raises the flag from
- * its invalid-key handler, folds {@code "23"} in with {@code "00"} at line 481, and lets the flag
- * select create-the-row over update-the-row: a missing category-balance row is <strong>not an error
- * and not a reject</strong>, the row is <strong>created</strong>. The retry in the first program
- * happens <strong>exactly once</strong> and there is <strong>no third fallback</strong>, because its
- * paragraph {@code 1200-A-GET-DEFAULT-INT-RATE} (from line 443) accepts only {@code "00"}, so a
- * second consecutive miss becomes the coarse error value 12, produces an error diagnostic and
- * abends.</p>
+ * <p>Three sites fold the miss in as a non-error. The interest-rate lookup of {@code CBACT04C} emits a
+ * missing-record diagnostic and a retry-with-default diagnostic from its invalid-key handler, folds
+ * {@code "23"} in <em>with</em> {@code "00"} as the non-error outcome giving the coarse result 0, and
+ * only afterwards tests for {@code "23"} specifically, substitutes the default group key and performs
+ * the default-rate lookup. The category-balance update of {@code CBTRN02C} initialises a create flag
+ * to no, emits a not-found-and-creating diagnostic and raises the flag from its invalid-key handler,
+ * folds {@code "23"} in with {@code "00"}, and lets the flag select create-the-row over
+ * update-the-row: a missing category-balance row is not an error and not a reject, the row is created.
+ * The retry in the first program happens exactly once and there is no third fallback, because its
+ * default-rate paragraph accepts only {@code "00"}, so a second consecutive miss becomes the coarse
+ * error value 12, produces an error diagnostic and abends.</p>
  *
- * <p><em>Three sites treat the miss as terminal.</em> {@code CBTRN03C} paragraphs
- * {@code 1500-A-LOOKUP-XREF} (line 484), {@code 1500-B-LOOKUP-TRANTYPE} (line 494) and
- * {@code 1500-C-LOOKUP-TRANCATG} (line 504) each assign 23 to the display status - at lines 488, 498
- * and 508 - format it, and then abend. That program assigns the value as an unquoted numeric literal
- * while the two above compare the quoted two-character literal, which is one reason the Java
- * constant is declared as text: both renderings normalise onto a single value.</p>
+ * <p>Three sites treat the miss as terminal. The three lookup paragraphs of {@code CBTRN03C} each
+ * assign 23 to the display status, format it, and then abend. That program assigns the value as an
+ * unquoted numeric literal while the two above compare the quoted two-character literal, which is one
+ * reason the Java constant is declared as text: both renderings normalise onto a single value.</p>
  *
- * <p><strong>The coarse outcome.</strong> Every batch program normalises a raw two-byte file status
- * into a coarse outcome before it branches - {@code "00"} becomes 0, {@code "10"} becomes 16 and
- * anything else becomes 12, the error arm - the canonical expression being {@code CBACT01C} lines 94
- * to 103 followed by the all-clear test at line 104. That coarse variable is referenced on 223
- * source lines in the program tree, which is why the target keeps a raw status and a tri-state
- * outcome rather than collapsing both into one enumeration. Recorded as decision log entry D-21.</p>
+ * <p>Every batch program normalises a raw two-byte file status into a coarse outcome before it
+ * branches - {@code "00"} becomes 0, {@code "10"} becomes 16 and anything else becomes 12, the error
+ * arm. That coarse variable is referenced throughout the program tree, which is why the target keeps a
+ * raw status and a tri-state outcome rather than collapsing both into one enumeration. Recorded as
+ * decision log entry D-21.</p>
  *
- * <p><strong>The boundary this file exists to pin down.</strong>
- * {@code RecordNotFoundException} is raised <strong>only where the legacy code treats a miss as a
- * genuine failure</strong>. Where the legacy code folds {@code "23"} in with {@code "00"} and
- * continues - the disclosure-group default fallback and the category-balance create-on-missing path -
- * the Java service returns an empty {@link Optional} or raises a create flag and throws nothing at
- * all. That fallback and create-on-missing <em>logic</em> is not tested here; it belongs to the
- * interest-calculation and transaction-posting tests. This file records the boundary so that no
- * downstream service throws where the source continued.</p>
+ * <p>The boundary this file exists to pin down: {@code RecordNotFoundException} is raised only where
+ * the legacy code treats a miss as a genuine failure. Where the legacy code folds {@code "23"} in with
+ * {@code "00"} and continues - the disclosure-group default fallback and the category-balance
+ * create-on-missing path - the Java service returns an empty {@link Optional} or raises a create flag
+ * and throws nothing at all. That fallback and create-on-missing <em>logic</em> is not tested here; it
+ * belongs to the interest-calculation and transaction-posting tests. This file records the boundary so
+ * that no downstream service throws where the source continued.</p>
  *
- * <p><strong>The key is withheld from the detail message</strong></p>
+ * <p>The key is withheld from the detail message. The subject carries the searched key for its
+ * accessor and deliberately keeps it out of the detail message, rendering a fixed placeholder in the
+ * key position instead. That is not a cosmetic choice: because the module uses natural keys throughout,
+ * a key can be a sixteen-digit primary account number or a customer identifier, and a detail message
+ * is the single most widely copied string on a throwable - the default logging of anything uncaught
+ * writes it, test reports echo it and stack-trace aggregation captures it. Every message assertion in
+ * this file therefore has two halves: the message must <em>not</em> contain the key, and
+ * {@link RecordNotFoundException#key()} must still return it byte-identically. The placeholder is
+ * fixed rather than derived from the key, so neither the key's value nor its length is disclosed.</p>
  *
- * <p>The subject carries the searched key for its accessor and deliberately
- * keeps it out of the detail message, rendering a fixed placeholder in the key
- * position instead. That is not a cosmetic choice: because the module uses
- * natural keys throughout, a key can be a sixteen-digit primary account number
- * or a customer identifier, and a detail message is the single most widely
- * copied string on a throwable - the default logging of anything uncaught writes
- * it, test reports echo it and stack-trace aggregation captures it. Every
- * message assertion in this file therefore has two halves: the message must
- * <em>not</em> contain the key, and {@link RecordNotFoundException#key()} must
- * still return it byte-identically. The placeholder is fixed rather than derived
- * from the key, so neither the key's value nor its length is disclosed.</p>
- *
- * <p><strong>Credential handling</strong></p>
- *
- * <p>A not-found on the user-security record carries the user identifier and
- * nothing else. The legacy user record holds an eight-character cleartext
- * credential, and no credential value may ever be passed as a key, appear in a
- * message, or appear anywhere in this file. The test below proves the message is
- * composed from the record type, the resource name and the fixed placeholder
+ * <p>A not-found on the user-security record carries the user identifier and nothing else. The legacy
+ * user record holds an eight-character cleartext credential, and no credential value may ever be
+ * passed as a key, appear in a message, or appear anywhere in this file. The test below establishes
+ * that the message is composed from the record type, the resource name and the fixed placeholder
  * alone - not even the supplied identifier reaches it.</p>
- *
- * <p>Provenance: the legacy estate at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Program names,
- * paragraph names, line numbers, field widths and status codes are cited as
- * metadata; no COBOL source text is reproduced in this module.</p>
  */
 @DisplayName("RecordNotFoundException")
 class RecordNotFoundExceptionTest {
 
     /**
-     * The four-character rendering that must never reach a diagnostic. It is
-     * used exclusively in negative assertions: an accessor must never equal it
-     * and a message must never contain it. A normalised absent value is the
-     * empty string.
+     * The rendering that must never reach a diagnostic, used exclusively in negative assertions: an
+     * accessor must never equal it and a message must never contain it. A normalised absent value is
+     * the empty string.
      */
     private static final String ABSENT_VALUE_RENDERING = "null";
 
     /**
-     * The stand-in the detail message carries in the key position.
-     *
-     * <p>The production constant is private, and it is restated here rather than
-     * relaxed to package-private and imported, so that changing the rendering
-     * has to be a deliberate edit in both places instead of a silent one that
-     * the assertions follow automatically. The value is a placeholder and not a
-     * transcribed secret; it is named without the word it stands in for so a
-     * credential scan of this module cannot mistake it for one.</p>
+     * The stand-in the detail message carries in the key position. The production constant is private,
+     * and it is restated here rather than relaxed to package-private and imported, so that changing the
+     * rendering has to be a deliberate edit in both places instead of a silent one the assertions
+     * follow automatically. The value is a placeholder and not a transcribed secret; it is named
+     * without the word it stands in for so a credential scan of this module cannot mistake it for
+     * one.
      */
     private static final String KEY_PLACEHOLDER = "***REDACTED***";
 
-    /** Account record type name. */
     private static final String ACCOUNT_RECORD_TYPE = "ACCOUNT";
 
     /**
-     * An account identifier at its legacy width of eleven characters, with
-     * leading zeros. The legacy key is a character substring of the record
-     * image, never an integer, so the zeros are significant.
+     * An account identifier at its legacy width, with leading zeros. The legacy key is a character
+     * substring of the record image, never an integer, so the zeros are significant.
      */
     private static final String ACCOUNT_KEY = "00000000011";
 
-    /** Legacy data-definition name of the account resource. */
     private static final String ACCOUNT_RESOURCE = "ACCTDAT";
 
-    /** Card record type name. */
     private static final String CARD_RECORD_TYPE = "CARD";
 
     /**
-     * A sixteen-character card number stand-in. Every digit is a nine so the
-     * value is obviously synthetic and cannot be mistaken for a real account
-     * number.
+     * A card number stand-in in which every digit is a nine, so the value is obviously synthetic and
+     * cannot be mistaken for a real account number.
      */
     private static final String SYNTHETIC_CARD_KEY = "9999999999999999";
 
-    /** Legacy data-definition name of the card resource. */
     private static final String CARD_RESOURCE = "CARDDAT";
 
-    /** Disclosure-group record type name. */
     private static final String DISCLOSURE_GROUP_RECORD_TYPE = "DISCLOSURE_GROUP";
 
     /**
-     * A disclosure-group composite key at its full sixteen-character width: a
-     * group code padded to ten characters, a two-character transaction type and
-     * a four-character transaction category. The embedded padding is part of the
-     * key and must survive untouched.
+     * A disclosure-group composite key at its full width: a group code padded to ten characters, a
+     * two-character transaction type and a four-character transaction category. The embedded padding is
+     * part of the key and must survive untouched.
      */
     private static final String DISCLOSURE_GROUP_KEY = "ZEROAPR   010005";
 
-    /** Legacy data-definition name of the disclosure-group resource. */
     private static final String DISCLOSURE_GROUP_RESOURCE = "DISCGRP";
 
     /**
-     * A group code alone, padded to the full ten-character width of its field.
-     * Used to prove that trailing padding is never trimmed.
+     * A group code alone, padded to the full width of its field, so that trailing padding is checked
+     * never to be trimmed.
      */
     private static final String PADDED_GROUP_CODE = "A         ";
 
-    /** Transaction-category-balance record type name. */
     private static final String CATEGORY_BALANCE_RECORD_TYPE = "TRANSACTION_CATEGORY_BALANCE";
 
     /**
-     * A category-balance composite key at its full seventeen-character width: an
-     * eleven-character account identifier, a two-character transaction type and
-     * a four-character transaction category.
+     * A category-balance composite key at its full width: an eleven-character account identifier, a
+     * two-character transaction type and a four-character transaction category.
      */
     private static final String CATEGORY_BALANCE_KEY = "00000000011010005";
 
-    /** Legacy data-definition name of the category-balance resource. */
     private static final String CATEGORY_BALANCE_RESOURCE = "TCATBALF";
 
-    /** Card cross-reference record type name. */
     private static final String CARD_XREF_RECORD_TYPE = "CARD_XREF";
 
-    /** Legacy data-definition name of the cross-reference resource. */
     private static final String CARD_XREF_RESOURCE = "CARDXREF";
 
-    /** Transaction-type record type name. */
     private static final String TRANSACTION_TYPE_RECORD_TYPE = "TRANSACTION_TYPE";
 
-    /** A transaction-type code at its legacy width of two characters. */
     private static final String TRANSACTION_TYPE_KEY = "01";
 
-    /** Legacy data-definition name of the transaction-type resource. */
     private static final String TRANSACTION_TYPE_RESOURCE = "TRANTYPE";
 
-    /** Transaction-category record type name. */
     private static final String TRANSACTION_CATEGORY_RECORD_TYPE = "TRANSACTION_CATEGORY";
 
     /**
-     * A transaction-category composite key: a two-character transaction type
-     * followed by a four-character category code.
+     * A transaction-category composite key: a transaction type followed by a category code.
      */
     private static final String TRANSACTION_CATEGORY_KEY = "010005";
 
-    /** Legacy data-definition name of the transaction-category resource. */
     private static final String TRANSACTION_CATEGORY_RESOURCE = "TRANCATG";
 
-    /** User-security record type name. */
     private static final String USER_SECURITY_RECORD_TYPE = "USER_SECURITY";
 
     /**
-     * A neutral, obviously synthetic user identifier at the legacy identifier
-     * width of eight characters. It is an identifier and nothing else; a
-     * credential value is never a valid key.
+     * A neutral, obviously synthetic user identifier at the legacy identifier width. It is an
+     * identifier and nothing else; a credential value is never a valid key.
      */
     private static final String USER_SECURITY_IDENTIFIER = "TESTUSR1";
 
-    /** Legacy data-definition name of the user-security resource. */
     private static final String USER_SECURITY_RESOURCE = "USRSEC";
 
-    /** Diagnostic text for a chained cause. Deliberately terse and factual. */
     private static final String CAUSE_DETAIL = "indexed read failed";
 
     @Nested
@@ -279,10 +232,9 @@ class RecordNotFoundExceptionTest {
         @DisplayName("is usable as the supplier method reference the repository layer relies on, "
                 + "as in findById(id).orElseThrow(RecordNotFoundException::new)")
         void isUsableAsASupplierMethodReference() {
-            // This assertion is a compile-time proof as much as a runtime one:
-            // if the no-argument constructor were removed, the method reference
-            // below would stop compiling, which is a stronger signal than any
-            // runtime check. The type witness is explicit so that no inference
+            // A compile-time dependency as much as a runtime check: if the no-argument constructor
+            // were removed the method reference below would stop compiling, which is a stronger
+            // signal than any runtime check. The type witness is explicit so that no inference
             // diagnostic can fire under a warnings-as-errors build.
             assertThatThrownBy(() -> Optional.<String>empty().orElseThrow(RecordNotFoundException::new))
                     .isInstanceOf(RecordNotFoundException.class)
@@ -497,16 +449,14 @@ class RecordNotFoundExceptionTest {
 
             // Equality rather than containment for the whole rendering: a
             // non-disclosure claim is only as strong as the set of things the
-            // message is allowed to contain, and pinning the exact text is what
-            // makes that set closed. The record type and the resource name are
-            // both fixed vocabulary - a layout name and a legacy data-definition
-            // name - so neither is sensitive; the key is the value that is.
+            // message may contain, and pinning the exact text closes that set.
+            // The record type and the resource name are both fixed vocabulary,
+            // so neither is sensitive; the key is the value that is.
             assertThat(thrown.getMessage()).isEqualTo("RecordNotFound[recordType=" + CATEGORY_BALANCE_RECORD_TYPE
                     + ", key=" + KEY_PLACEHOLDER
                     + ", resourceName=" + CATEGORY_BALANCE_RESOURCE + "]");
             assertThat(thrown.getMessage()).doesNotContain(CATEGORY_BALANCE_KEY);
 
-            // The value is still reachable, deliberately, through the accessor.
             assertThat(thrown.key()).isEqualTo(CATEGORY_BALANCE_KEY);
         }
 
@@ -529,12 +479,7 @@ class RecordNotFoundExceptionTest {
         @Test
         @DisplayName("withholds every key the estate can produce, whatever its width or shape")
         void withholdsEveryKeyShapeTheEstateCanProduce() {
-            // One case per key shape the eleven legacy layouts actually yield: a
-            // zero-padded eleven-character account identifier, a sixteen-digit
-            // card number, a space-padded sixteen-character composite, a
-            // seventeen-character composite, a two-character type code, a
-            // six-character category composite, an eight-character user
-            // identifier and a key that is nothing but a code and its padding.
+            // One case per key shape the eleven legacy layouts actually yield.
             record Case(String recordType, String key, String resourceName) { }
             Case[] cases = {
                 new Case(ACCOUNT_RECORD_TYPE, ACCOUNT_KEY, ACCOUNT_RESOURCE),
@@ -703,8 +648,8 @@ class RecordNotFoundExceptionTest {
 
             // Exact equality against a message composed solely from the record
             // type, the resource name and the fixed placeholder is the strongest
-            // available proof that the diagnostic carries nothing beyond them.
-            // The legacy user record holds an eight-character cleartext
+            // available statement that the diagnostic carries nothing beyond
+            // them. The legacy user record holds an eight-character cleartext
             // credential in a field adjacent to the identifier; a credential is
             // never a valid key, and now not even the identifier is rendered, so
             // an operator reading a log finds the record type and the dataset and

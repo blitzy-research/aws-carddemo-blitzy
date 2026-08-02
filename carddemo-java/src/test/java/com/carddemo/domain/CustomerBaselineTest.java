@@ -64,10 +64,12 @@ import org.junit.jupiter.params.provider.ValueSource;
  * the out-of-range seeded value is stored unchanged.
  *
  * <p><strong>Two deliberate divergences from the copybook widths.</strong> The national identifier
- * column is widened well beyond its nine source digits and is the only nullable column of the entity,
- * because the value is protected at rest and ciphertext does not fit the plaintext width. The credit
- * score stays three characters wide and text typed, so a leading zero survives. Both are asserted
- * here so that neither is mistaken for a mapping slip.
+ * and the government-issued identifier are widened well beyond their nine and twenty source
+ * characters, because both values are protected at rest and ciphertext does not fit the plaintext
+ * width. The national identifier is additionally the entity's one nullable column, because the seed
+ * leaves it absent rather than committing a protected national identifier to a checked-in artifact;
+ * the government-issued identifier is NOT NULL and its every seeded row carries a sealed envelope. The credit score stays three characters wide and text typed, so a
+ * leading zero survives. Both are asserted here so that neither is mistaken for a mapping slip.
  *
  * <p><strong>No diagnostic representation is overridden.</strong> Every field of this record is
  * personal data, so the entity inherits the identity representation instead of rendering its state.
@@ -330,8 +332,8 @@ class CustomerBaselineTest {
         @Test
         @DisplayName("absent record-layout values are accepted and returned unchanged, because the "
                 + "entity performs no validation of those and the database enforces their non-null "
-                + "contract; the national identifier may be absent too, and the government-issued one "
-                + "may not, because its column is the one that forbids it")
+                + "contract; both regulated identifiers may be absent in memory too, since a record "
+                + "image read at a boundary need not carry a protected value yet")
         void absentValuesAreAcceptedAndReturnedUnchanged() {
             final Customer sparse = new Customer(FIRST_ID, null, null, null, null, null, null, null,
                     null, null, null, null, null, GOVT_ISSUED_ID, null, null, null, null);
@@ -341,11 +343,15 @@ class CustomerBaselineTest {
             assertThat(sparse.getCustSsn()).isNull();
             assertThat(sparse.getFicoCreditScore()).isNull();
 
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new Customer(FIRST_ID, null, null, null, null, null, null,
-                            null, null, null, null, null, null, null, null, null, null, null))
-                    .satisfies(refusal -> assertThat(refusal.getMessage())
-                            .contains("govtIssuedId"));
+            final Customer whollyAbsent = new Customer(FIRST_ID, null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null);
+
+            assertThat(whollyAbsent.getCustSsn()).isNull();
+            assertThat(whollyAbsent.getGovtIssuedId())
+                    .as("absence is representable in memory for both regulated attributes, and"
+                            + " only cleartext is refused here; the column constraint is the"
+                            + " database's to enforce, not this class's")
+                    .isNull();
         }
     }
 
@@ -536,7 +542,7 @@ class CustomerBaselineTest {
     }
 
     @Nested
-    @DisplayName("National identifier held in a widened, nullable column")
+    @DisplayName("National identifier held in the schema's one widened, nullable column")
     class NationalIdentifier {
 
         @Test

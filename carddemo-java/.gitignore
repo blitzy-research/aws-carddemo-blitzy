@@ -13,41 +13,36 @@
 # either express or implied. See the License for the specific
 # language governing permissions and limitations under the License
 
-# Module-scoped exclusions: every pattern resolves relative to this directory, and
-# none may use a parent traversal or an absolute path, so nothing here can reach the
-# legacy estate that is the parity baseline.
+# Module-scoped exclusions: every pattern resolves relative to this directory, and none uses
+# a parent traversal or an absolute path, so nothing here can reach the legacy estate that is
+# the parity baseline.
 #
-# Four broad patterns are forbidden here because each would silently untrack a required
-# deliverable: *.properties (the wrapper descriptor), application-*.yml (the committed
-# Spring profiles), *.txt (the fixed-width golden fixtures and the banner) and *.json
-# (the validation lookup tables and the metrics dashboard). Patterns are therefore
-# written as narrowly as the artefact allows, anchored with a leading slash when the
-# artefact only ever appears at the module root, and the highest-risk deliverables are
-# re-included by name at the foot of the file. Git applies the last matching pattern, so
-# those negations also act as a tripwire against a future broad addition.
-#
-# Extension globs are paired lowercase/UPPERCASE because the estate mixes extension
-# casing; fixed names that a tool only ever emits in lowercase are matched as emitted.
+# Four broad patterns are forbidden because each would silently untrack a required deliverable:
+# *.properties (the wrapper descriptor), application-*.yml (the committed Spring profiles),
+# *.txt (the fixed-width golden fixtures and the banner) and *.json (the validation lookup
+# tables and the metrics dashboard). Patterns are therefore written as narrowly as the artefact
+# allows, anchored with a leading slash where the artefact only ever appears at the module root,
+# and the highest-risk deliverables are re-included by name at the foot of the file. Git applies
+# the last matching pattern, so those negations also act as a tripwire against a future broad
+# addition. Extension globs are paired lowercase/UPPERCASE because the estate mixes casing.
 
-# Build output. Anchored: Maven writes it at the module root only.
+# Anchored: Maven writes build output at the module root only.
 /target/
 
-# Defensive only: Gradle is not this module's build tool and IDE compilation writes
-# elsewhere, but none of these directories is ever a source.
+# Defensive: Gradle is not this module's build tool, and none of these is ever a source.
 /build/
 /out/
 /bin/
 
-# The wrapper ships as scripts only, so no wrapper jar is committed. The wrapper
-# DIRECTORY is deliberately not excluded: a negation cannot resurrect a file beneath an
-# excluded directory, so excluding .mvn/ would make the descriptor negation below inert
-# and break the hermetic build.
+# The wrapper ships as scripts only, so no wrapper jar is committed. The wrapper DIRECTORY is
+# deliberately not excluded: a negation cannot resurrect a file beneath an excluded directory,
+# so excluding .mvn/ would make the descriptor negation below inert and break the build.
 .mvn/wrapper/maven-wrapper.jar
 .mvn/.develocity/
 .mvn/.gradle-enterprise/
 
-# Residue of the release, versions, shade, flatten and buildnumber plugins. Each is a
-# complete file name, so none can match the wrapper descriptor.
+# Release, versions, shade, flatten and buildnumber residue. Each is a complete file name, so
+# none can match the wrapper descriptor.
 dependency-reduced-pom.xml
 release.properties
 pom.xml.releaseBackup
@@ -57,39 +52,38 @@ pom.xml.tag
 buildNumber.properties
 .flattened-pom.xml
 
-# Compiled classes, wherever a tool drops them.
 *.class
 *.CLASS
 
-# Gate evidence is reproducible from a clean checkout plus one build, so no report is
-# committed and no stale report can be mistaken for a current one. Coverage data and
-# report trees already fall under /target/; they are named again because both locations
-# are overridable from the command line and would then land outside it.
+# Gate evidence is reproducible from a clean checkout plus one build, so no report is committed
+# and no stale one can be mistaken for current. Coverage data and report trees already fall
+# under /target/, but both locations are overridable from the command line and would then land
+# outside it.
 *.exec
 *.EXEC
 surefire-reports/
 failsafe-reports/
 /target/test-output/
 
-# Vulnerability scan output: bound to verify, emits HTML, JSON and XML.
+# Three output formats are emitted, hence the wildcard suffix.
 dependency-check-report.*
 
-# Local vulnerability database. Regenerable, resolved beneath the user's home directory
-# by default; these patterns cover a redirect into the module.
+# Regenerable, and resolved beneath the user's home directory by default; these patterns cover
+# a redirect into the module.
 .dependency-check/
 dependency-check-data/
 
-# Local secrets. Every secret resolves from the environment with no fallback default, so
-# a missing one fails startup; an ignore file cannot enforce that but is the last line of
-# defence. Compose reads a .env file from this directory and interpolates the AWS keys and
-# the database password from it, which makes a module-level .env the most likely place for
-# a real credential to be committed by accident. Last matching pattern wins, so the
-# template re-inclusion must follow the exclusions.
+# Local secrets. The production profile resolves every secret from the environment with no
+# fallback default, so a missing one fails startup there; the local and test profiles carry
+# development values instead, which is precisely why a real credential must never reach this
+# tree. Compose reads a .env file from this directory and interpolates the AWS keys and the
+# database password from it, which makes a module-level .env the most likely place for a real
+# credential to be committed by accident. Last matching pattern wins, so the template
+# re-inclusion must follow the exclusions.
 .env
 .env.*
 !.env.example
 
-# Keys, certificates and keystores. None is a source file in this module.
 *.pem
 *.PEM
 *.key
@@ -106,24 +100,22 @@ dependency-check-data/
 *.TRUSTSTORE
 secrets/
 
-# Developer overrides, which commonly carry real credentials. None of these can match a
-# committed profile document: application-secret*.yml requires the literal segment
-# "secret", and application-*.local.yml requires a ".local.yml" suffix that
-# application-local.yml does not have.
+# Developer overrides, which commonly carry real credentials. None can match a committed
+# profile document: application-secret*.yml requires the literal segment "secret", and
+# application-*.local.yml requires a ".local.yml" suffix that application-local.yml lacks.
 application-local.properties
 application-secret*.yml
 application-secret*.yaml
 application-*.local.yml
 application-*.local.yaml
 
-# Cloud credential files, anchored to the module root: an unanchored "credentials"
-# pattern would also match a package directory of that name.
+# Cloud credential files, anchored to the module root: an unanchored "credentials" pattern
+# would also match a package directory of that name.
 /credentials
 /credentials.*
 /aws.properties
 .aws/
 
-# IDE and editor state, so a pull request diff shows only the contributed change.
 .idea/
 *.iml
 *.IML
@@ -132,24 +124,21 @@ application-*.local.yaml
 *.iws
 *.IWS
 
-# Eclipse
 .classpath
 .project
 .settings/
 .factorypath
 .apt_generated/
 
-# Visual Studio Code
 .vscode/
 
-# NetBeans: private and generated subtrees only, since a shared nbproject would be
-# a committed artefact.
+# NetBeans: private and generated subtrees only, since a shared nbproject would be a
+# committed artefact.
 nbproject/private/
 nbbuild/
 nbdist/
 .nb-gradle/
 
-# Editor scratch, patch and merge residue
 *~
 *.swp
 *.SWP
@@ -162,34 +151,32 @@ nbdist/
 *.rej
 *.REJ
 
-# Operating-system noise
 .DS_Store
 Thumbs.db
 Desktop.ini
 desktop.ini
 
-# Logging is structured JSON to the console only, so these are defensive: they cover a
-# developer who enables a file destination locally.
+# Logging is structured JSON to the console only, so these cover a developer who enables a
+# file destination locally.
 *.log
 *.LOG
 *.log.*
 /logs/
 
-# JVM fatal-error, compiler-replay and heap-dump output.
 hs_err_pid*
 replay_pid*
 *.hprof
 *.HPROF
 heapdump*
 
-# Core dumps, narrowed on purpose: a bare core.* would wrongly exclude core.json or
-# core.yml, whereas a Linux core dump is named core or core followed by the process id.
+# Narrowed on purpose: a bare core.* would wrongly exclude core.json or core.yml, whereas a
+# Linux core dump is named core or core followed by the process id.
 /core
 core.[0-9]*
 
-# Local stack state. It lives in named Docker volumes today, so nothing appears in the
-# working tree; these patterns cover switching a named volume to a bind mount. The
-# read-only assets the stack mounts - config/ and localstack/ - are never excluded.
+# Local stack state lives in named Docker volumes, so nothing appears in the working tree;
+# these patterns cover switching a named volume to a bind mount. The read-only assets the
+# stack mounts - config/ and localstack/ - are never excluded.
 postgres-data/
 localstack-data/
 prometheus-data/
@@ -198,27 +185,21 @@ volume/
 volumes/
 .localstack/
 
-# Required committed artefacts, re-included by name. Last matching pattern wins, so these
-# also neutralise a future broad pattern added above them. They are effective because no
-# directory pattern here excludes any of their parents.
+# Required committed artefacts, re-included by name. Last matching pattern wins, so these also
+# neutralise a future broad pattern added above them.
 
-# The wrapper descriptor. Losing it breaks the hermetic build.
 !.mvn/wrapper/maven-wrapper.properties
 
-# The four Spring profile documents. Three are application resources; the
-# test profile is a TEST resource, because it binds to endpoints
-# Testcontainers only publishes while a test JVM is running and must never
-# ship inside the deployable artifact. Its negation therefore names
-# src/test/resources - naming src/main/resources would protect a path that
-# does not exist and leave the real file unprotected. The production profile
-# is safe to commit precisely because it holds no secret value, only
-# unresolved environment references with no fallback default.
+# The four Spring profile documents. The test profile is a TEST resource, because it binds to
+# endpoints Testcontainers only publishes while a test JVM is running and must never ship inside
+# the deployable artifact; its negation therefore names src/test/resources rather than
+# src/main/resources. The production profile is safe to commit precisely because it holds no
+# secret value, only unresolved environment references with no fallback default.
 !src/main/resources/application.yml
 !src/main/resources/application-local.yml
 !src/main/resources/application-prod.yml
 !src/test/resources/application-test.yml
 
-# Startup banner and logging configuration.
 !src/main/resources/banner.txt
 !src/main/resources/logback-spring.xml
 

@@ -28,14 +28,22 @@ import jakarta.persistence.Table;
 import com.carddemo.domain.id.TransactionCategoryBalanceId;
 
 /**
- * Per-account, per-category transaction balance - the Java translation of the
- * {@code TRAN-CAT-BAL-RECORD} layout declared in copybook {@code app/cpy/CVTRA01Y.cpy}, whose header
- * states a record length of 50.
+ * Per-account, per-category accumulated balance, mapping the 50-byte record of
+ * {@code app/cpy/CVTRA01Y.cpy}. The 22-byte trailing filler is deliberately not persisted: it carries no
+ * information and is reconstructed on output from the declared record width. Offset arithmetic lives only
+ * in the fixed-width mapper for this layout, and the accrual that consumes the balance belongs to the
+ * service layer, so this class computes nothing.
  *
- * <p>One row holds the accumulated balance of a single account within a single transaction
- * type-and-category combination. It is the value the interest-accrual run multiplies by the matching
- * disclosure rate, which makes this the most arithmetically load-bearing table in the estate even
- * though the class itself computes nothing.
+ * <p><strong>Composite identity, and a name collision worth knowing about.</strong> The key is the
+ * account identifier, transaction type code and transaction category code in that order, together the
+ * 17-byte leading substring of the record image, attested independently by the copybook, by the cluster
+ * geometry in {@code app/jcl/TCATBALF.jcl} and by the migration's primary-key order. It is realised with
+ * an identifier class the provider matches by field name and type, so a divergence in either fails
+ * start-up. The legacy key group name is shared with {@code app/cpy/CVTRA04Y.cpy}, whose key is a
+ * structurally unrelated 6-byte pair behind {@link TransactionCategory}; the two align at no offset and
+ * share no supertype or helper (decision-log D-37). The copybook's own prefix inconsistency between the
+ * key components and the balance is transcribed exactly, because the mapping is validated against the
+ * migrated schema at start-up.
  *
  * <p><strong>Verified layout, and what is deliberately absent from it.</strong> Four fields make up
  * the 50-byte image and only three of them plus the balance are persisted: an 11-byte account
@@ -47,10 +55,13 @@ import com.carddemo.domain.id.TransactionCategoryBalanceId;
  *
  * <p>Offset arithmetic appears nowhere in this class. It lives exclusively in the fixed-width record
  * mapper for this layout, {@code TranCatBalRecordMapper} of the utility layer, so record-image
- * knowledge stays in one place and this entity carries nothing but column widths. The dependency is
- * one-way: the mapper <em>produces</em> instances of this class, and this class names no type of the
- * utility, service, repository, interface or batch layers in code - only in this prose, and only to say
- * where a responsibility deliberately does not live.
+ * knowledge stays in one place and this entity carries nothing but column widths. That mapper is a
+ * separate deliverable of the record-mapper boundary and is <em>not present at this checkpoint</em>;
+ * the name above is a plain code reference rather than a resolved link, so neither compilation nor
+ * Javadoc generation here depends on it. The dependency runs one way once it lands: the mapper
+ * <em>produces</em> instances of this class, and this class names no type of the utility, service,
+ * repository, interface or batch layers in code - only in this prose, and only to say where a
+ * responsibility deliberately does not live.
  *
  * <p><strong>VSAM origin corroborates the component order.</strong> The record is stored in base
  * cluster {@code TCATBALF}, defined in {@code app/jcl/TCATBALF.jcl} as an {@code INDEXED} KSDS with
@@ -120,14 +131,19 @@ import com.carddemo.domain.id.TransactionCategoryBalanceId;
  * though both read like references, so neither is modelled as an association either - decision log
  * entry D-38 records why. This class therefore holds no association attribute and no collection.
  *
- * <p><strong>Seeded volume, and the branches it makes reachable.</strong> The reference data seeds
- * exactly 50 rows from {@code app/data/ASCII/tcatbal.txt}, measured at 2,550 bytes for 50 records at
- * the 50-byte record length, and <em>every one of them carries a balance of zero</em>. Those 50 rows
- * together with the 51 disclosure-group rows are what make both arms of the accrual rate lookup
- * reachable from seeded data alone - the direct group hit and the default-group fallback - and what
- * make the zero-rate skip branch reachable, without any synthetic fixture. That every seeded balance is
- * zero is also why the balance attribute is left unset by the no-argument constructor rather than
- * pre-seeded with a zero: an unpopulated instance must stay distinguishable from a genuine zero balance.
+ * <p><strong>Seeded volume, and the accrual path it reaches.</strong> The reference data seeds exactly
+ * 50 rows from {@code app/data/ASCII/tcatbal.txt}, measured at 2,550 bytes for 50 records at the
+ * 50-byte record length, and <em>every one of them carries a balance of zero</em>. All 50 sit on the
+ * same {@code (01, 0001)} type and category. Those 50 rows together with the 51 disclosure-group rows
+ * are what make the accrual rate lookup exercisable from seeded data alone, and the arm they reach is
+ * the default-group fallback: every seeded account carries ten spaces in its group identifier and no
+ * seeded group key is ten spaces, so all fifty accounts miss their first probe, re-probe as
+ * {@code "DEFAULT   "}, and find a rate of 15.00 on this type and category. The other two arms need a
+ * constructed fixture rather than the seed - a direct group hit needs an account whose group identifier
+ * matches a seeded group key, and the zero-rate skip needs that account pointed at the zero-rate group;
+ * {@link DisclosureGroup} states both requirements in one place. That every seeded balance is zero is
+ * also why the balance attribute is left unset by the no-argument constructor rather than pre-seeded
+ * with a zero: an unpopulated instance must stay distinguishable from a genuine zero balance.
  *
  * <p><strong>Carried here, computed elsewhere.</strong> This class performs no arithmetic and applies no
  * scaling. The accrual computation that consumes this balance belongs to
@@ -154,120 +170,49 @@ import com.carddemo.domain.id.TransactionCategoryBalanceId;
 public class TransactionCategoryBalance {
 
     /**
-     * Account identifier - legacy field {@code TRANCAT-ACCT-ID}, offset 0, width 11, and the first
-     * component of the 17-byte composite key. Mapped to column {@code trancat_acct_id}, declared
-     * {@code VARCHAR(11) NOT NULL} by the schema migration.
-     *
-     * <p>The legacy field is a zero-filled external-decimal field, yet it is carried as text because
-     * its external width and its leading zeros are contractual: the seeded data identifies accounts
-     * with values such as {@code "00000000001"}, and a numeric attribute would discard the padding
-     * that the 17-byte key image is assembled from. Values are stored exactly as supplied, with no
-     * trimming and no normalization.
-     *
-     * <p>The migration constrains this column with a foreign key to the account table. That
-     * constraint is enforced by the database and is deliberately <em>not</em> mirrored as a mapped
-     * relationship here: the column is simultaneously a key component under the composite-identifier
-     * mapping, so an association would drag in an identifier-mapping layer that nothing upstream
-     * requires. The attribute stays a plain string and the referential rule stays in the schema.
+     * First component of the composite key, and a foreign key at the database level only. Held as text so
+     * that the zero-filled external width survives a round trip and the key image reconstructs.
      */
     @Id
     @Column(name = "trancat_acct_id", length = 11, nullable = false)
     private String trancatAcctId;
 
-    /**
-     * Transaction type code - legacy field {@code TRANCAT-TYPE-CD}, offset 11, width 2, and the second
-     * component of the 17-byte composite key. Mapped to column {@code trancat_type_cd}, declared
-     * {@code VARCHAR(2) NOT NULL} by the schema migration. Stored verbatim, with no trimming and no
-     * normalization.
-     *
-     * <p>This is the type code as it appears in the record image. Although the estate also holds a
-     * transaction-type reference table, no foreign key joins the two, so this is a classification
-     * lexeme carried on the record and a component of this key - not an association.
-     */
     @Id
     @Column(name = "trancat_type_cd", length = 2, nullable = false)
     private String trancatTypeCd;
 
-    /**
-     * Transaction category code - legacy field {@code TRANCAT-CD}, offset 13, width 4, and the third
-     * component of the 17-byte composite key. Mapped to column {@code trancat_cd}, declared
-     * {@code VARCHAR(4) NOT NULL} by the schema migration. Stored verbatim, so leading zeros survive.
-     *
-     * <p>As with the account identifier the legacy field is digit-only and is nonetheless carried as
-     * text, because the four-character external width is part of the key. A category of {@code "0005"}
-     * must remain {@code "0005"} and must never narrow to a value that renders as {@code 5}; the
-     * seeded data contains exactly such values. No foreign key joins this column to the
-     * transaction-category reference table, so this too is a key component rather than an association.
-     */
     @Id
     @Column(name = "trancat_cd", length = 4, nullable = false)
     private String trancatCd;
 
     /**
-     * Accumulated category balance - legacy field {@code TRAN-CAT-BAL}, offset 17, width 11, a signed
-     * external-decimal field of nine integer digits and two decimal digits. Mapped to column
-     * {@code tran_cat_bal}, declared {@code NUMERIC(11,2) NOT NULL} by the schema migration, hence a
-     * declared precision of 11 and a scale of 2.
+     * Accumulated balance as an exact decimal: nine integer digits and two decimals, signed. No
+     * approximate binary type may appear here or anywhere in the module. The legacy field is zoned
+     * decimal, so its sign is folded into the trailing byte of the record image, and decoding that byte
+     * belongs to the record mapper.
      *
-     * <p>An exact decimal type is mandatory. The mandated construct mapping requires decimal precision
-     * identical to the legacy field with no floating-point substitution, so no binary approximate type
-     * appears anywhere in this module. The legacy field is zoned decimal under display usage, not
-     * packed, so the sign is folded into the trailing byte of the image rather than into a packed
-     * nibble; decoding that overpunched byte is the record mapper's responsibility and never this
-     * class's.
+     * <p>Carried, never computed and never rescaled. Scaling is the single responsibility of
+     * {@link com.carddemo.util.ZonedDecimalCodec}, which applies one truncating policy uniformly; a
+     * carrier that rescaled on the way in or out would apply it twice, and could round where the legacy
+     * truncates. The accrual this balance feeds is order-sensitive - the balance is multiplied by the
+     * disclosure rate before the monthly divisor is applied, and the estate specifies no rounding
+     * anywhere - so pre-scaling an operand would move the truncation point and change the resulting cent.
      *
-     * <p><strong>Carried, never computed, never rescaled.</strong> This class applies no scaling and
-     * performs no arithmetic on the balance - it adds nothing, subtracts nothing, multiplies nothing,
-     * divides nothing, negates nothing and rounds nothing. Scaling is the single responsibility of
-     * {@code ZonedDecimalCodec} in the utility layer, which applies one truncating policy uniformly so
-     * that no other component can introduce a different one. A passive carrier that rescaled on the way
-     * in or out would apply the policy twice, and could round where the legacy truncates.
-     *
-     * <p><strong>The arithmetic this balance feeds is order-sensitive, which is why it is not done
-     * here.</strong> The accrual program multiplies this balance by the disclosure rate <em>first</em>
-     * and only then divides the product by the twelve-hundred monthly divisor, storing the result into
-     * a field of the same nine-integer, two-decimal shape. A census of the estate found no rounding
-     * clause anywhere, so that store truncates toward zero. Pre-scaling either operand before the
-     * multiplication is algebraically identical in exact arithmetic but moves the truncation point and
-     * changes the resulting cent, so the operand order is contractual and is reproduced literally by
-     * {@code InterestCalculationService}, which owns the computation. Interest is computed only where
-     * the matching rate is non-zero, and no fee logic may be invented: the fee routine invoked
-     * alongside accrual is empty in the legacy program and is preserved as a documented no-op.
-     *
-     * <p>The attribute is deliberately left unset by the no-argument constructor rather than seeded
-     * with a zero, so an unpopulated instance stays distinguishable from a genuine zero balance - and
-     * genuine zero balances are the norm, since every seeded row carries one.
+     * <p>Left unset by the no-argument constructor rather than seeded with a zero, so an unpopulated
+     * instance stays distinguishable from a genuine zero balance.
      */
     @Column(name = "tran_cat_bal", precision = 11, scale = 2, nullable = false)
     private BigDecimal tranCatBal;
 
     /**
-     * Creates an empty instance. This constructor exists for the persistence provider, which requires a
-     * no-argument constructor in order to materialise an entity before populating its state; it is also
-     * why this type is a plain mutable class rather than a record. Application and test code should use
-     * {@link #TransactionCategoryBalance(String, String, String, BigDecimal)}.
+     * Required by the persistence provider, which assigns state after construction.
      */
     protected TransactionCategoryBalance() {
-        // Intentionally empty: the provider assigns state after construction.
     }
 
     /**
-     * Creates a fully populated category balance from its three key components, in the contractual order
-     * in which they occupy the record image, followed by the balance.
-     *
-     * <p>Every argument is stored exactly as supplied. Nothing is trimmed, padded, folded, scaled,
-     * rounded or validated here, because the fixed-width padding on the key components and the scale on
-     * the balance are both part of the persisted contract.
-     *
-     * <p>Fields are assigned directly rather than through the mutators below, so that no overridable
-     * method is invoked while construction is still in progress.
-     *
-     * @param trancatAcctId account identifier, key part 1, 11 bytes at offset 0, stored verbatim
-     *                      including leading zeros
-     * @param trancatTypeCd transaction type code, key part 2, 2 bytes at offset 11, stored verbatim
-     * @param trancatCd     transaction category code, key part 3, 4 bytes at offset 13, stored verbatim
-     *                      including leading zeros
-     * @param tranCatBal    accumulated category balance at scale two, stored verbatim with no rescaling
+     * Creates a fully populated row from its three key components in contractual order plus the balance.
+     * Every value is stored exactly as supplied.
      */
     public TransactionCategoryBalance(String trancatAcctId,
                                       String trancatTypeCd,
@@ -279,116 +224,54 @@ public class TransactionCategoryBalance {
         this.tranCatBal = tranCatBal;
     }
 
-    /**
-     * Returns the account identifier exactly as stored, at its full declared width and with its leading
-     * zeros intact.
-     *
-     * @return the 11-byte account identifier, unmodified
-     */
     public String getTrancatAcctId() {
         return trancatAcctId;
     }
 
-    /**
-     * Replaces the account identifier. The argument is assigned as supplied: the value is not trimmed,
-     * padded, folded or validated, because its external width is part of the key.
-     *
-     * @param trancatAcctId the 11-byte account identifier to store verbatim
-     */
     public void setTrancatAcctId(String trancatAcctId) {
         this.trancatAcctId = trancatAcctId;
     }
 
-    /**
-     * Returns the transaction type code exactly as stored.
-     *
-     * @return the 2-byte transaction type code, unmodified
-     */
     public String getTrancatTypeCd() {
         return trancatTypeCd;
     }
 
-    /**
-     * Replaces the transaction type code. The argument is assigned as supplied, with no normalization of
-     * any kind.
-     *
-     * @param trancatTypeCd the 2-byte transaction type code to store verbatim
-     */
     public void setTrancatTypeCd(String trancatTypeCd) {
         this.trancatTypeCd = trancatTypeCd;
     }
 
-    /**
-     * Returns the transaction category code exactly as stored, with its leading zeros intact.
-     *
-     * @return the 4-byte transaction category code, unmodified
-     */
     public String getTrancatCd() {
         return trancatCd;
     }
 
-    /**
-     * Replaces the transaction category code. The argument is assigned as supplied, so leading zeros
-     * survive and the external width is preserved.
-     *
-     * @param trancatCd the 4-byte transaction category code to store verbatim
-     */
     public void setTrancatCd(String trancatCd) {
         this.trancatCd = trancatCd;
     }
 
-    /**
-     * Returns the accumulated category balance exactly as stored, at the scale it was given. The value
-     * is not rescaled on the way out, so a genuine zero balance is returned at its stored scale rather
-     * than normalized - and every seeded row carries such a zero.
-     *
-     * @return the accumulated category balance, unmodified, or {@code null} on an unpopulated instance
-     */
     public BigDecimal getTranCatBal() {
         return tranCatBal;
     }
 
-    /**
-     * Replaces the accumulated category balance. The argument is assigned as supplied: it is not
-     * rescaled, rounded, clamped or range-checked here. Scaling is applied once, in the zoned-decimal
-     * codec of the utility layer, and no range constraint is imposed because the legacy field is signed
-     * and both a zero and a negative balance are legitimate values the accrual run must be able to read.
-     *
-     * @param tranCatBal the accumulated category balance to store verbatim at scale two
-     */
     public void setTranCatBal(BigDecimal tranCatBal) {
         this.tranCatBal = tranCatBal;
     }
 
     /**
-     * Returns this row's composite key as a single addressable value, built from the three key
-     * components in their contractual order.
+     * Returns this row's composite key as one addressable value, in contractual component order.
      *
-     * <p>A new key is produced on each call and the components are copied by reference exactly as
-     * stored, so leading zeros are carried through unchanged. No instance is retained, cached or shared
-     * between calls.
-     *
-     * @return a key equal to the identity of this row
+     * @return a key carrying the three components as stored
      */
     public TransactionCategoryBalanceId toId() {
         return new TransactionCategoryBalanceId(trancatAcctId, trancatTypeCd, trancatCd);
     }
 
     /**
-     * Compares this row with another by its three key components only, in declaration order, byte for
-     * byte.
-     *
-     * <p>The balance is deliberately excluded. Equality follows persistent identity, and the balance is
-     * mutable state that the accrual run rewrites: including it would let an instance change its own
-     * equality and hash across a flush, which would corrupt any set or map that had already stored it.
-     *
-     * <p>No component is trimmed, padded or case folded before comparison. That is intentional - a
-     * zero-filled identifier is a different key from its shortened form and must compare unequal in Java
-     * exactly as the two remain distinct rows in the database.
+     * Compares rows by the three key components only, in declaration order and byte for byte, so that
+     * Java equality agrees with the database's notion of the same row. The balance is excluded because it
+     * is mutable state, not identity.
      *
      * @param o the object to compare against
-     * @return {@code true} only if {@code o} is a {@code TransactionCategoryBalance} whose three key
-     *         components each equal this row's corresponding component
+     * @return {@code true} only if {@code o} is a {@code TransactionCategoryBalance} with an equal key
      */
     @Override
     public boolean equals(Object o) {
@@ -403,25 +286,18 @@ public class TransactionCategoryBalance {
                 && Objects.equals(this.trancatCd, other.trancatCd);
     }
 
-    /**
-     * Hashes the three key components, in declaration order, from their stored values so that the hash
-     * agrees with {@link #equals(Object)} for zero-filled and shortened values alike. The balance is
-     * excluded for the same reason it is excluded from equality.
-     *
-     * @return the hash code of this row's key
-     */
     @Override
     public int hashCode() {
         return Objects.hash(trancatAcctId, trancatTypeCd, trancatCd);
     }
 
     /**
-     * Returns a diagnostic rendering of the three key components and nothing else. Each value is quoted
-     * and printed as stored, so a width or padding difference stays visible in logs and in assertion
-     * failures.
+     * Renders the three key components and nothing else, each quoted and printed as stored so that a
+     * width or padding difference stays visible. The balance is omitted because it is financial data.
      *
-     * <p>The balance is deliberately omitted: it is financial data and has no place in an incidental
-     * diagnostic rendering.
+     * <p>The first component is the account identifier, so this rendering is account-linked identifying
+     * data: it requires the same controlled handling as the identifier itself and must not be emitted to
+     * unrestricted logs.
      *
      * @return a diagnostic string containing the three key components
      */

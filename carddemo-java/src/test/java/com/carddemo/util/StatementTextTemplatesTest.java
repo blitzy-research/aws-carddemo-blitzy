@@ -22,6 +22,8 @@ import java.nio.charset.StandardCharsets;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -30,68 +32,52 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Unit test for {@link StatementTextTemplates}, the holder of the plain-text account statement
  * layout.
  *
- * <p><strong>What this test is for.</strong> The statement text record is exactly 80 US-ASCII bytes
- * wide and the layout has exactly seventeen line groups, every one of which sums to those 80 bytes.
- * The emitted statement file is compared byte for byte against a golden fixture, so this class is a
- * byte-parity surface: a template that is one space out, or that picks the wrong amount mask,
- * produces output that looks entirely plausible in a diff viewer and still fails the comparison.
- * Every assertion below is therefore made on the {@link StandardCharsets#US_ASCII} encoded image
- * rather than on a trimmed or normalised string, and every width is measured in encoded bytes rather
- * than in string characters.</p>
+ * <p>The statement text record is exactly 80 US-ASCII bytes wide and the layout has exactly
+ * seventeen line groups, every one of which sums to those 80 bytes. The emitted file is compared
+ * byte for byte against a golden fixture, so a template that is one space out, or that picks the
+ * wrong amount mask, produces output that looks entirely plausible in a diff viewer and still fails
+ * the comparison. Every assertion is therefore made on the {@link StandardCharsets#US_ASCII}
+ * encoded image rather than on a trimmed or normalised string, and every width is measured in
+ * encoded bytes rather than in string characters.</p>
  *
- * <p><strong>The expectations are an independent oracle.</strong> Every expected record is
- * hand-written from the verified component widths and caption literals of the seventeen line groups.
- * No expectation is produced by calling a constant or a method of the class under test, no
- * expectation is a captured snapshot of previous output, and no assertion compares a value to
- * itself. A dedicated test asserts the geometry of the oracle itself, so a typing slip in an
- * expectation fails loudly here instead of silently agreeing with a wrong implementation.</p>
+ * <p>The expectations are an independent oracle: each is hand-written from the verified component
+ * widths and caption literals, none is produced by calling a constant or a method of the class under
+ * test, none is a captured snapshot of previous output, and no assertion compares a value to itself.
+ * A dedicated test asserts the geometry of the oracle itself, so a typing slip in an expectation
+ * fails loudly here instead of silently agreeing with a wrong implementation.</p>
  *
- * <p><strong>The three hazards this test exists to pin down.</strong>
+ * <p>Three hazards are pinned. The two banners use different splits - 31 asterisks around an 18-byte
+ * text against 32 around a 16-byte text - because the texts differ in length by two; both total 80
+ * and both are correct, so their inequality is asserted to stop a later tidy-up unifying them. The
+ * pad counts inside the captions are contractual content rather than accidents: one trailing pad
+ * byte after the basic-details heading, one trailing space inside the transaction-summary heading,
+ * 35 trailing spaces after the detail column heading, two leading spaces before the amount column
+ * heading, and nine, four and nine spaces before the colons of the account-id, current-balance and
+ * credit-score labels. And two 13-character trailing-minus masks coexist: mask A prints leading
+ * zeros and serves the current-balance line, mask B suppresses them and serves the transaction
+ * amount and the total, each exercised through its own name.</p>
  *
- * <ol>
- *   <li><strong>The two banners use different splits.</strong> The start banner is 31 asterisks, an
- *       18-byte text and 31 asterisks. The end banner is 32 asterisks, a 16-byte text and 32
- *       asterisks. Both total 80 and both are correct; they are simply not the same split, because
- *       the two texts differ in length by two. The two are asserted independently, and their
- *       inequality is asserted, so no future tidy-up can unify them.</li>
- *   <li><strong>The pad counts inside the captions are contractual.</strong> One trailing pad byte
- *       after the basic-details heading, one trailing space inside the transaction-summary heading,
- *       35 trailing spaces after the detail column heading, two leading spaces before the amount
- *       column heading, and nine, four and nine spaces respectively before the colons of the
- *       account-id, current-balance and credit-score labels. None of them is trimmed, collapsed or
- *       re-derived here.</li>
- *   <li><strong>Two 13-character trailing-minus masks coexist.</strong> Mask A prints leading zeros
- *       and serves the current-balance line; mask B suppresses them and serves the transaction
- *       amount and the total. Each is exercised through its own name, and the two are shown to
- *       differ for the same zero-suppressible input.</li>
- * </ol>
+ * <p>Both masks carry a trailing sign - a negative value ends in a minus, a non-negative value in a
+ * space - and a plus sign is never emitted, which is asserted by byte value. A blank-when-zero
+ * clause appears nowhere in the legacy estate, so a zero always renders its decimal point and two
+ * fraction digits rather than an empty field. Amounts arrive already at scale two with truncation
+ * toward zero applied upstream; nothing here re-scales, selects a rounding mode or performs
+ * arithmetic. A value at another scale (decision D-05) and one whose integer part needs more than
+ * nine digits (decision D-06) are rejected rather than quietly adjusted, on type and on message.</p>
  *
- * <p><strong>Shared mask semantics asserted here.</strong> The sign is trailing in both masks: a
- * negative value ends in a minus and a non-negative value ends in a space. A plus sign is never
- * emitted, and its absence is asserted by byte value. A blank-when-zero clause appears nowhere in
- * the legacy estate, so a zero value always renders its decimal point and two fraction digits
- * rather than an empty field. Values arrive already at scale two with truncation applied upstream;
- * this test never re-scales, never selects a rounding mode and never performs arithmetic on an
- * amount. A value at another scale (decision D-05) and a value whose integer part needs more than
- * nine digits (decision D-06) are both rejected rather than quietly adjusted, and both rejections
- * are asserted on type and on message content.</p>
+ * <p>Every expectation is a hand-written literal, mirroring the production decision to hold this
+ * layout as literal constants rather than render it through a templating engine (decision D-27),
+ * which would introduce whitespace and ordering variability that a byte-for-byte comparison cannot
+ * absorb. No format-string abstraction and no locale-sensitive number formatting builds one.</p>
  *
- * <p><strong>How the expectations are built.</strong> Every expected record and every expected mask
- * below is a hand-written literal, mirroring the production decision to hold this layout as literal
- * constants rather than render it through a templating engine (decision D-27): a template introduces
- * whitespace and ordering variability that a byte-for-byte comparison cannot absorb, so the literals
- * are the contract. For the same reason no format-string abstraction, no locale-sensitive number
- * formatting and no text-block reflow is used to build an expectation.</p>
- *
- * <p><strong>Deliberately not covered here.</strong> The order in which records are emitted, the
- * fact that the rule line occupies three distinct positions in that order, page structure, and the
- * mapping of the altered 350-byte transaction record all belong to the batch tier and the statement
- * generation service; this test asserts only that the rule line is a single reusable constant. The
- * 100-byte HTML statement stream is a separate record width in a separate holder, and the job stream
- * declares the same data-definition name at 80 in one step and at 100 in the next - a conflict
- * resolved to 80 for the text stream and 100 for the HTML stream (decision D-44), which is why 80 is
- * what is asserted here. The two-byte timestamp truncation introduced by the job's re-projection is
- * likewise outside this class.</p>
+ * <p>Out of scope: emission order, the three positions the rule line occupies within it, page
+ * structure and the mapping of the 350-byte transaction record all belong to the batch tier and the
+ * statement generation service - this test asserts only that the rule line is a single reusable
+ * constant. The 100-byte HTML stream is a separate record width in a separate holder; the job stream
+ * declares the same data-definition name at 80 in one step and at 100 in the next, a conflict
+ * resolved to 80 for text and 100 for HTML (decision D-44), which is why 80 is asserted here. The
+ * two-byte timestamp truncation introduced by the job's re-projection is likewise outside this
+ * class.</p>
  */
 @DisplayName("StatementTextTemplates :: eighty-byte plain-text statement line templates")
 class StatementTextTemplatesTest {
@@ -100,43 +86,30 @@ class StatementTextTemplatesTest {
     // than a character escape, so that no escape sequence appears anywhere in this file - in
     // particular none that could be mistaken for an emitted line terminator or tab.
 
-    /** ASCII horizontal tab, 9. Detected and asserted absent; never emitted. */
     private static final byte ASCII_TAB_BYTE = 9;
 
-    /** ASCII line feed, 10. Detected and asserted absent; never emitted. */
     private static final byte ASCII_LINE_FEED_BYTE = 10;
 
-    /** ASCII carriage return, 13. Detected and asserted absent; never emitted. */
     private static final byte ASCII_CARRIAGE_RETURN_BYTE = 13;
 
-    /** ASCII space, 32. The one and only pad byte of every character field. */
     private static final byte ASCII_SPACE_BYTE = 32;
 
-    /** ASCII dollar sign, 36. Present on two line groups and deliberately absent from a third. */
     private static final byte ASCII_DOLLAR_BYTE = 36;
 
-    /** ASCII asterisk, 42. The fill byte of both banner runs. */
     private static final byte ASCII_ASTERISK_BYTE = 42;
 
-    /** ASCII plus sign, 43. Asserted absent everywhere: the trailing sign is a minus or a space. */
     private static final byte ASCII_PLUS_BYTE = 43;
 
-    /** ASCII hyphen-minus, 45. The fill byte of the rule line and the trailing negative sign. */
     private static final byte ASCII_HYPHEN_BYTE = 45;
 
-    /** ASCII full stop, 46. The literal decimal point of both amount masks. */
     private static final byte ASCII_DECIMAL_POINT_BYTE = 46;
 
-    /** ASCII colon, 58. Closes each of the three twenty-byte labels. */
     private static final byte ASCII_COLON_BYTE = 58;
 
-    /** ASCII delete, 127. The one control code above the printable range; rejected, never emitted. */
     private static final byte ASCII_DELETE_BYTE = 127;
 
-    /** Lowest code point the class admits, the space, 32. */
     private static final int FIRST_PRINTABLE_CODE_POINT = 32;
 
-    /** Highest code point the class admits, the tilde, 126. */
     private static final int LAST_PRINTABLE_CODE_POINT = 126;
 
     /**
@@ -149,165 +122,116 @@ class StatementTextTemplatesTest {
     // Expected geometry, written out as literals so that every number this test asserts against
     // is visible at the point of use rather than borrowed from the class under test.
 
-    /** Expected width of one statement text record, in encoded bytes. */
     private static final int EXPECTED_RECORD_LENGTH = 80;
 
-    /** Expected number of line groups in the statement layout. */
     private static final int EXPECTED_LINE_GROUP_COUNT = 17;
 
-    /** Expected rendered width of either amount mask, in encoded bytes. */
     private static final int EXPECTED_MASK_LENGTH = 13;
 
-    /** Expected asterisk run per side of the start banner. */
     private static final int EXPECTED_START_BANNER_ASTERISK_RUN = 31;
 
-    /** Expected text width of the start banner. */
     private static final int EXPECTED_START_BANNER_TEXT_WIDTH = 18;
 
-    /** Expected asterisk run per side of the end banner. One more per side than the start banner. */
     private static final int EXPECTED_END_BANNER_ASTERISK_RUN = 32;
 
-    /** Expected text width of the end banner. Two fewer than the start banner's. */
     private static final int EXPECTED_END_BANNER_TEXT_WIDTH = 16;
 
-    // The eight wholly fixed line groups. Composition of each, hand-derived from the declared
-    // component widths:
-    //   start banner  31 asterisk + 18 text          + 31 asterisk
-    //   rule line     80 hyphen
-    //   basic details 33 space    + 14 field         + 33 space   (13-char literal, ONE pad byte)
-    //   summary       30 space    + 20 field         + 30 space   (19 caps, ONE trailing space)
-    //   columns       16 field    + 51 field         + 13 field   (35 pad; TWO leading spaces)
-    //   end banner    32 asterisk + 16 text          + 32 asterisk
-
-    /** Start banner: 31 asterisks, the 18-byte start text, 31 asterisks. */
     private static final String E_ST_LINE0_START_BANNER =
             "*******************************START OF STATEMENT*******************************";
 
-    /** Rule line: 80 hyphens and nothing else. */
     private static final String E_RULE_LINE =
             "--------------------------------------------------------------------------------";
 
-    /** Basic-details heading: 33 spaces, the 13-character heading, ONE pad byte, 33 spaces. */
     private static final String E_ST_LINE6_BASIC_DETAILS_HEADING =
             "                                 Basic Details                                  ";
 
-    /** Transaction-summary heading: 30 spaces, 19 capitals, ONE trailing space, 30 spaces. */
     private static final String E_ST_LINE11_TRANSACTION_SUMMARY_HEADING =
             "                              TRANSACTION SUMMARY                               ";
 
-    /** Column headings: heading plus 9 spaces, heading plus 4 then 35 spaces, TWO spaces plus heading. */
     private static final String E_ST_LINE13_TRANSACTION_COLUMN_HEADINGS =
             "Tran ID         Tran Details                                         Tran Amount";
 
-    /** End banner: 32 asterisks, the 16-byte end text, 32 asterisks. */
     private static final String E_ST_LINE15_END_BANNER =
             "********************************END OF STATEMENT********************************";
 
-    // The nine line groups that carry substituted values. Character fields follow a fixed-width
-    // move: a shorter value is padded on the right with spaces and a longer value is truncated on
-    // the right, both measured in encoded bytes.
+    // The line groups that carry substituted values. A character field is a fixed-width move: a
+    // shorter value is right-padded with spaces and a longer one is right-truncated, in encoded bytes.
 
-    /** Name line: a 13-character name padded to 75, then the 5-byte filler. */
     private static final String E_ST_LINE1_SHORT_NAME =
             "JOHN Q PUBLIC                                                                   ";
 
-    /** Name line: a name of exactly 75 bytes, unchanged, then the 5-byte filler. */
     private static final String E_ST_LINE1_EXACT_NAME =
             "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX     ";
 
-    /** Name line: a 90-byte name cut on the right to 75, then the 5-byte filler. */
     private static final String E_ST_LINE1_TRUNCATED_NAME =
             "YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY     ";
 
-    /** Name line: an empty name, so the whole record is spaces. */
     private static final String E_ST_LINE1_EMPTY_NAME =
             "                                                                                ";
 
-    /** First address line: a 15-character value padded to 50, then the 30-byte filler. */
     private static final String E_ST_LINE2_ADDRESS_LINE_1 =
             "123 MAIN STREET                                                                 ";
 
-    /** First address line: a 65-byte value cut on the right to 50, then the 30-byte filler. */
     private static final String E_ST_LINE2_TRUNCATED =
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA                              ";
 
-    /** Second address line: a 6-character value padded to 50, then the 30-byte filler. */
     private static final String E_ST_LINE3_ADDRESS_LINE_2 =
             "APT 4B                                                                          ";
 
-    /** Second address line: a value of exactly 50 bytes, unchanged, then the 30-byte filler. */
     private static final String E_ST_LINE3_EXACT =
             "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB                              ";
 
-    /** Third address line: a 20-character value padded across the whole 80-byte field. */
     private static final String E_ST_LINE4_ADDRESS_LINE_3 =
             "SEATTLE WA USA 98101                                                            ";
 
-    /** Third address line: a value of exactly 80 bytes, filling the record with no filler. */
     private static final String E_ST_LINE4_EXACT =
             "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
 
-    /** Third address line: a 95-byte value cut on the right to 80. */
     private static final String E_ST_LINE4_TRUNCATED =
             "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ";
 
-    /** Account-id line: label with NINE spaces before the colon, an 11-byte value padded to 20, 40 spaces. */
     private static final String E_ST_LINE7_ACCOUNT_ID =
             "Account ID         :00000000011                                                 ";
 
-    /** Account-id line: a value of exactly 20 bytes, unchanged. */
     private static final String E_ST_LINE7_EXACT =
             "Account ID         :11111111111111111111                                        ";
 
-    /** Account-id line: a 30-byte value cut on the right to 20. */
     private static final String E_ST_LINE7_TRUNCATED =
             "Account ID         :99999999999999999999                                        ";
 
-    /** Current-balance line: label with FOUR spaces before the colon, mask A, 7 spaces, 40 spaces, NO dollar sign. */
     private static final String E_ST_LINE8_CURRENT_BALANCE =
             "Current Balance    :000001234.56                                                ";
 
-    /** Current-balance line, negative: mask A ends in a minus. */
     private static final String E_ST_LINE8_NEGATIVE =
             "Current Balance    :000001234.56-                                               ";
 
-    /** Current-balance line, zero: mask A prints nine zeros and the fraction still prints. */
     private static final String E_ST_LINE8_ZERO =
             "Current Balance    :000000000.00                                                ";
 
-    /** Current-balance line at the mask's full capacity: nine significant integer digits. */
     private static final String E_ST_LINE8_MAXIMUM =
             "Current Balance    :999999999.99                                                ";
 
-    /** Credit-score line: label with NINE spaces before the colon, a 3-byte value padded to 20, 40 spaces. */
     private static final String E_ST_LINE9_FICO_SCORE =
             "FICO Score         :789                                                         ";
 
-    /** Transaction line: 16-byte id, one space, 49-byte detail, dollar sign, mask B. */
     private static final String E_ST_LINE14_TRANSACTION =
             "0000000000000001 PURCHASE AT STORE                                $       42.99 ";
 
-    /** Transaction line, negative: mask B ends in a minus. */
     private static final String E_ST_LINE14_NEGATIVE =
             "0000000000000002 RETURN                                           $       42.99-";
 
-    /** Transaction line: a 24-byte id cut to 16 and a 60-byte detail cut to 49. */
     private static final String E_ST_LINE14_TRUNCATED =
             "9999999999999999 DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD$        5.00 ";
 
-    /** Transaction line, zero: mask B suppresses all nine integer positions and still prints the fraction. */
     private static final String E_ST_LINE14_ZERO =
             "0000000000000004 ZERO VALUE                                       $         .00 ";
 
-    /** Total line: the 10-byte label, 56 spaces, dollar sign, mask B. */
     private static final String E_ST_LINE14A_TOTAL =
             "Total EXP:                                                        $     1234.56 ";
 
-    /** Total line, negative: mask B ends in a minus. */
     private static final String E_ST_LINE14A_NEGATIVE =
             "Total EXP:                                                        $     1234.56-";
 
-    /** Total line, zero: mask B suppresses the integer positions and still prints the fraction. */
     private static final String E_ST_LINE14A_ZERO =
             "Total EXP:                                                        $         .00 ";
 
@@ -316,52 +240,36 @@ class StatementTextTemplatesTest {
     // zeros; mask B replaces them with spaces up to but never past the decimal point. Fraction
     // digits are never suppressed by either mask.
 
-    /** Mask A for one point two three: eight zeros, a nine, the point, the fraction, a space. */
     private static final String E_MASK_A_ONE_POINT_TWO_THREE = "000000001.23 ";
 
-    /** Mask B for one point two three: eight spaces where mask A prints eight zeros. */
     private static final String E_MASK_B_ONE_POINT_TWO_THREE = "        1.23 ";
 
-    /** Mask A for one cent: nine printed zeros before the point. */
     private static final String E_MASK_A_ONE_CENT = "000000000.01 ";
 
-    /** Mask B for one cent: nine spaces before the point, the fraction still printed. */
     private static final String E_MASK_B_ONE_CENT = "         .01 ";
 
-    /** Mask A for zero: the fraction always prints, and the trailing sign is a space. */
     private static final String E_MASK_A_ZERO = "000000000.00 ";
 
-    /** Mask B for zero: nine leading spaces, the fraction still prints, trailing space. */
     private static final String E_MASK_B_ZERO = "         .00 ";
 
-    /** Mask A for minus one cent: the trailing sign is a minus. */
     private static final String E_MASK_A_NEGATIVE_ONE_CENT = "000000000.01-";
 
-    /** Mask B for minus one cent: suppressed integer positions and a trailing minus. */
     private static final String E_MASK_B_NEGATIVE_ONE_CENT = "         .01-";
 
-    /** Mask A for minus one thousand two hundred and thirty-four point five six. */
     private static final String E_MASK_A_NEGATIVE = "000001234.56-";
 
-    /** Mask B for the same negative value: five spaces where mask A prints five zeros. */
     private static final String E_MASK_B_NEGATIVE = "     1234.56-";
 
-    /** Mask A at full capacity: nine significant integer digits, nothing to suppress. */
     private static final String E_MASK_A_MAXIMUM = "999999999.99 ";
 
-    /** Mask B at full capacity: identical to mask A, because there is no leading zero to suppress. */
     private static final String E_MASK_B_MAXIMUM = "999999999.99 ";
 
-    /** Mask A at full capacity, negative. */
     private static final String E_MASK_A_MAXIMUM_NEGATIVE = "999999999.99-";
 
-    /** Mask B at full capacity, negative: again identical to mask A. */
     private static final String E_MASK_B_MAXIMUM_NEGATIVE = "999999999.99-";
 
-
-    // The oracle checks itself first. If a hand-written expectation above has one space too many
-    // or too few, this test fails before any comparison against the class under test runs, which
-    // is what stops a mistyped expectation from quietly agreeing with a wrong implementation.
+    // The oracle checks itself first: an expectation with one space too many or too few fails here,
+    // before any comparison against the class under test agrees with a wrong implementation.
 
     @Test
     @DisplayName("the hand-written oracle is itself well formed: every expected record is eighty "
@@ -419,8 +327,6 @@ class StatementTextTemplatesTest {
         assertThat(asciiLength(E_MASK_B_MAXIMUM_NEGATIVE)).isEqualTo(EXPECTED_MASK_LENGTH);
     }
 
-    // Record width :: every fixed constant and every builder result is exactly eighty bytes.
-
     @Test
     @DisplayName("every wholly fixed line group is exactly eighty encoded bytes")
     void everyFixedLineGroupIsExactlyEightyEncodedBytes() {
@@ -469,8 +375,6 @@ class StatementTextTemplatesTest {
                 StatementTextTemplates.stLine14aTotalExpenditure(new BigDecimal("1234.56"))))
                 .isEqualTo(EXPECTED_RECORD_LENGTH);
     }
-
-    // TRAP ONE :: the two banners use different asterisk splits.
 
     @Test
     @DisplayName("the start banner is thirty-one asterisks, an eighteen-byte text and thirty-one "
@@ -538,8 +442,6 @@ class StatementTextTemplatesTest {
                 .isEqualTo(EXPECTED_RECORD_LENGTH);
     }
 
-    // The rule line :: one constant, three emitted positions.
-
     @Test
     @DisplayName("the rule line is exactly eighty hyphens and nothing else")
     void ruleLineIsExactlyEightyHyphens() {
@@ -569,7 +471,6 @@ class StatementTextTemplatesTest {
         assertThat(asciiBytes(StatementTextTemplates.ST_LINE12_RULE))
                 .isEqualTo(asciiBytes(E_RULE_LINE));
     }
-
 
     // TRAP TWO :: the pad counts inside the fixed captions are contractual content.
 
@@ -652,8 +553,6 @@ class StatementTextTemplatesTest {
         assertThat(StatementTextTemplates.ST_LINE13_TRAN_DETAILS_WIDTH).isEqualTo(51);
         assertThat(StatementTextTemplates.ST_LINE13_TRAN_AMOUNT_WIDTH).isEqualTo(13);
     }
-
-    // The value-carrying line groups.
 
     @Test
     @DisplayName("the name line is a seventy-five-byte name field followed by a five-byte filler")
@@ -809,7 +708,6 @@ class StatementTextTemplatesTest {
         assertThat(line[66]).isEqualTo(ASCII_DOLLAR_BYTE);
         assertThat(containsByte(line, ASCII_DOLLAR_BYTE)).isTrue();
 
-        // Mask B occupies the final thirteen bytes, leading zeros suppressed to spaces.
         assertThat(slice(line, 67, EXPECTED_MASK_LENGTH)).isEqualTo(asciiBytes("     1234.56 "));
 
         assertThat(StatementTextTemplates.ST_LINE14A_LABEL_WIDTH).isEqualTo(10);
@@ -817,10 +715,8 @@ class StatementTextTemplatesTest {
         assertThat(StatementTextTemplates.ST_LINE14A_CURRENCY_WIDTH).isEqualTo(1);
     }
 
-
-    // TRAP THREE :: two thirteen-character trailing-minus masks, differing only in whether the
-    // leading integer positions are suppressed. Each is exercised through its own name; neither
-    // is selected here by a flag, and the two are never merged.
+    // TRAP THREE :: two 13-character trailing-minus masks differing only in whether the leading
+    // integer positions are suppressed. Each is exercised by name; neither is selected by a flag.
 
     @Test
     @DisplayName("mask A does NOT suppress leading zeros: they are printed as zero characters")
@@ -1025,8 +921,6 @@ class StatementTextTemplatesTest {
         assertThat(runLength(asciiBytes(withSuppression), 0, ASCII_SPACE_BYTE)).isEqualTo(0);
     }
 
-    // The declared geometry constants.
-
     @Test
     @DisplayName("the record width is eighty, the line group count is seventeen and the mask width "
             + "is thirteen")
@@ -1064,12 +958,10 @@ class StatementTextTemplatesTest {
                 .isEqualTo(1);
     }
 
-
-    // The value contract: amounts arrive already at scale two with truncation toward zero already
-    // applied upstream, because the estate declares no rounding clause anywhere. Nothing here
-    // re-scales, selects a rounding mode or performs arithmetic; a value at any other scale is a
-    // caller defect and is rejected so that a truncation-policy violation cannot hide inside
-    // formatting.
+    // Amounts arrive at scale two with truncation toward zero already applied upstream, because the
+    // estate declares no rounding clause anywhere. Nothing here re-scales, selects a rounding mode or
+    // performs arithmetic; a value at any other scale is a caller defect and is rejected so that a
+    // truncation-policy violation cannot hide inside formatting.
 
     @Test
     @DisplayName("a value at scale zero is rejected, and the rejection names both the expected and "
@@ -1207,8 +1099,6 @@ class StatementTextTemplatesTest {
                 .isExactlyInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("does not fit mask Z(9).99-");
     }
-
-    // Character-field semantics :: right-truncate, right-pad, both measured in encoded bytes.
 
     @Test
     @DisplayName("a character value shorter than its field is padded on the right with spaces to "
@@ -1424,10 +1314,9 @@ class StatementTextTemplatesTest {
                 .hasMessageContaining("must contain no line terminator");
     }
 
-    // Diagnostic hygiene and the input boundary. Decision DL-041, also recorded as D-16, forbids a
-    // rejection message from carrying the value it rejected; decision D-09 requires a character
-    // outside printable US-ASCII to be refused in printed output, and names this class as one of the
-    // three embodiments of that rule. The tests below hold both.
+    // Diagnostic hygiene and the input boundary. DL-041, also recorded as D-16, forbids a rejection
+    // message from carrying the value it rejected; D-09 requires a character outside printable
+    // US-ASCII to be refused in printed output and names this class as one of its three embodiments.
 
     @Test
     @DisplayName("no rejection message echoes the value it rejected, and none carries a raw "
@@ -1586,16 +1475,12 @@ class StatementTextTemplatesTest {
         }
     }
 
-
     // Private helpers. Every width and every content comparison in this test goes through these,
     // so no assertion is ever made on a trimmed, normalised or default-charset-encoded value.
 
     /**
-     * Encodes a value to its US-ASCII image. Named explicitly at every boundary so that no
-     * assertion in this test can accidentally use the platform default charset.
-     *
-     * @param value the value to encode
-     * @return the freshly allocated US-ASCII image
+     * Encodes to US-ASCII, named at every boundary so that no assertion here can fall back to the
+     * platform default charset.
      */
     private static byte[] asciiBytes(String value) {
         return value.getBytes(StandardCharsets.US_ASCII);
@@ -1603,22 +1488,13 @@ class StatementTextTemplatesTest {
 
     /**
      * Measures a value in US-ASCII encoded bytes rather than in string characters.
-     *
-     * @param value the value to measure
-     * @return the encoded length in bytes
      */
     private static int asciiLength(String value) {
         return value.getBytes(StandardCharsets.US_ASCII).length;
     }
 
     /**
-     * Copies a window out of an encoded image so that a section of a record can be compared as
-     * bytes without ever converting it back to a string.
-     *
-     * @param image         the encoded record image
-     * @param fromInclusive the first byte position of the window
-     * @param length        the window length in bytes
-     * @return the window as a freshly allocated array
+     * Copies a window out of an encoded image so a section is compared as bytes, never as a string.
      */
     private static byte[] slice(byte[] image, int fromInclusive, int length) {
         byte[] window = new byte[length];
@@ -1628,10 +1504,6 @@ class StatementTextTemplatesTest {
 
     /**
      * Counts the run of a given byte at the start of an image.
-     *
-     * @param image the encoded record image
-     * @param fill  the byte to count
-     * @return the number of consecutive occurrences at the start
      */
     private static int leadingRun(byte[] image, byte fill) {
         int run = 0;
@@ -1643,10 +1515,6 @@ class StatementTextTemplatesTest {
 
     /**
      * Counts the run of a given byte at the end of an image.
-     *
-     * @param image the encoded record image
-     * @param fill  the byte to count
-     * @return the number of consecutive occurrences at the end
      */
     private static int trailingRun(byte[] image, byte fill) {
         int run = 0;
@@ -1657,13 +1525,8 @@ class StatementTextTemplatesTest {
     }
 
     /**
-     * Counts the run of a given byte starting at a position, which is how every declared pad count
-     * inside a caption is asserted without collapsing or re-deriving it.
-     *
-     * @param image         the encoded record image
-     * @param fromInclusive the position to start counting at
-     * @param fill          the byte to count
-     * @return the number of consecutive occurrences from that position
+     * Counts the run of a given byte from a position, which is how a declared pad count inside a
+     * caption is asserted rather than collapsed or re-derived.
      */
     private static int runLength(byte[] image, int fromInclusive, byte fill) {
         int run = 0;
@@ -1674,14 +1537,8 @@ class StatementTextTemplatesTest {
     }
 
     /**
-     * Asserts that a window of an encoded image is entirely ASCII spaces, position by position.
-     *
-     * <p>This is how a declared pad count inside one field is asserted without letting the check
-     * run past the field boundary into whatever the next field happens to begin with.</p>
-     *
-     * @param image         the encoded record image
-     * @param fromInclusive the first byte position of the window
-     * @param length        the window length in bytes
+     * Asserts that a window is entirely ASCII spaces, position by position, so a declared pad count
+     * is checked without running past the field boundary into whatever the next field begins with.
      */
     private static void assertAllSpaces(byte[] image, int fromInclusive, int length) {
         for (int offset = 0; offset < length; offset++) {
@@ -1694,10 +1551,6 @@ class StatementTextTemplatesTest {
 
     /**
      * Reports whether an encoded image carries a given byte anywhere.
-     *
-     * @param image     the encoded record image
-     * @param candidate the byte to look for
-     * @return {@code true} if the byte occurs
      */
     private static boolean containsByte(byte[] image, byte candidate) {
         for (byte imageByte : image) {
@@ -1710,8 +1563,6 @@ class StatementTextTemplatesTest {
 
     /**
      * Asserts that a record carries no line feed, no carriage return and no tab.
-     *
-     * @param record the assembled record
      */
     private static void assertFreeOfTerminatorsAndTabs(String record) {
         byte[] image = asciiBytes(record);
@@ -1727,10 +1578,7 @@ class StatementTextTemplatesTest {
     }
 
     /**
-     * Asserts that a record carries no plus sign: the trailing sign of both masks is a minus or a
-     * space, and a plus is never emitted.
-     *
-     * @param record the assembled record
+     * Asserts no plus sign: the trailing sign of both masks is a minus or a space, never a plus.
      */
     private static void assertNoPlusSign(String record) {
         assertThat(containsByte(asciiBytes(record), ASCII_PLUS_BYTE))
@@ -1739,12 +1587,9 @@ class StatementTextTemplatesTest {
     }
 
     /**
-     * Builds the hostile value planted into every entry point that takes caller text: the printable
-     * marker, then a carriage return and a line feed, then more printable text. Both terminators are
-     * given as decimal code points, so no character escape sequence appears in this file and the
-     * marker can only reach a diagnostic by being echoed.
-     *
-     * @return a value carrying a marker and an embedded CRLF
+     * Builds the hostile value planted into every entry point that takes caller text: the marker,
+     * a carriage return and line feed, then more printable text. Both terminators are given as
+     * decimal code points, so the marker can only reach a diagnostic by being echoed.
      */
     private static String hostileText() {
         byte[] terminators = {ASCII_CARRIAGE_RETURN_BYTE, ASCII_LINE_FEED_BYTE};
@@ -1753,21 +1598,16 @@ class StatementTextTemplatesTest {
     }
 
     /**
-     * Builds a one-character value from a code point, so a single non-printable character can be fed
-     * to a builder without writing an escape sequence.
-     *
-     * @param codePoint the code point to carry
-     * @return a value of exactly one character
+     * Builds a one-character value from a code point, so a non-printable character reaches a builder
+     * without an escape sequence appearing in this file.
      */
     private static String oneCharacterValue(byte codePoint) {
         return Character.toString(codePoint);
     }
 
     /**
-     * Builds the whole printable US-ASCII range in ascending order, used to prove the input boundary
-     * refuses nothing legitimate.
-     *
-     * @return the ninety-five printable characters, space first and tilde last
+     * Builds the whole printable US-ASCII range ascending, to show the input boundary refuses nothing
+     * legitimate.
      */
     private static String allPrintableUsAscii() {
         StringBuilder printable = new StringBuilder();
@@ -1780,10 +1620,8 @@ class StatementTextTemplatesTest {
     }
 
     /**
-     * Asserts that a call is rejected and that its message is hygienic in the sense decision DL-041
-     * requires: it carries no raw terminator, no raw tab, and no fragment of the value it rejected.
-     *
-     * @param call the call expected to be rejected
+     * Asserts that a call is rejected and that its message is hygienic in the sense DL-041 requires:
+     * no raw terminator, no raw tab, and no fragment of the value it rejected.
      */
     private static void assertRejectionIsHygienic(ThrowingCallable call) {
         assertThatThrownBy(call)
@@ -1793,13 +1631,9 @@ class StatementTextTemplatesTest {
 
     /**
      * Asserts that one rejection message carries no control character and does not echo the rejected
-     * value.
-     *
-     * <p>The marker is printable and appears in no message prose, so finding it in a diagnostic can
-     * only mean the value was interpolated. The control-character checks are the direct expression of
-     * why that matters: a raw terminator inside a log line is a log-injection primitive.</p>
-     *
-     * @param thrown the rejection to inspect
+     * value. The marker is printable and appears in no message prose, so finding it in a diagnostic
+     * can only mean the value was interpolated; a raw terminator in a log line is an injection
+     * primitive, which is why the control-character checks sit beside it.
      */
     private static void assertMessageIsHygienic(Throwable thrown) {
         String message = thrown.getMessage();
@@ -1822,11 +1656,6 @@ class StatementTextTemplatesTest {
      * Asserts that a value is refused at the input boundary rather than at the assembled-record
      * invariant, and that the rejection names the parameter, the offending position and the code
      * point without echoing the value.
-     *
-     * @param call             the call expected to be rejected
-     * @param expectedField    the parameter name the message must name
-     * @param expectedPosition the zero-based character position the message must report
-     * @param expectedByte     the code point the message must report
      */
     private static void assertInputBoundaryRejection(ThrowingCallable call,
                                                      String expectedField,
@@ -1842,12 +1671,8 @@ class StatementTextTemplatesTest {
     }
 
     /**
-     * Builds an eighty-byte record of spaces carrying one given byte, used to prove that an
-     * embedded terminator is rejected. The byte is supplied as a decimal code point so that no
-     * character escape sequence appears in this file.
-     *
-     * @param embedded the byte to embed at the midpoint
-     * @return a record of exactly eighty US-ASCII bytes
+     * Builds an eighty-byte record of spaces carrying one given byte, so an embedded terminator is
+     * rejected without a character escape appearing in this file.
      */
     private static String eightyByteRecordWith(byte embedded) {
         byte[] image = new byte[EXPECTED_RECORD_LENGTH];
@@ -1859,9 +1684,7 @@ class StatementTextTemplatesTest {
     }
 
     /*
-     * ========================================================================================
      * Locale invariance - decision D-27.
-     * ========================================================================================
      */
 
     /**
@@ -1870,12 +1693,10 @@ class StatementTextTemplatesTest {
     private static final java.util.Locale TURKISH = java.util.Locale.forLanguageTag("tr-TR");
 
     /**
-     * The locales the amount masks are re-rendered under.
-     *
-     * <p>Four carry a non-Latin default numbering system, under which
-     * {@code String.format("%03d", 7)} and {@code new DecimalFormat("000")} emit non-ASCII digits;
-     * the fifth carries the Turkish casing rules. Between them they cover both ways a default locale
-     * could change an emitted byte.
+     * The locales the amount masks are re-rendered under. Four carry a non-Latin default numbering
+     * system, under which {@code String.format("%03d", 7)} and {@code new DecimalFormat("000")} emit
+     * non-ASCII digits; the fifth carries the Turkish casing rules. Between them they cover both ways
+     * a default locale could change an emitted byte.
      */
     private static final java.util.List<java.util.Locale> HOSTILE_LOCALES = java.util.List.of(
             TURKISH,
@@ -1890,9 +1711,15 @@ class StatementTextTemplatesTest {
      * <p>The build pins {@code -Duser.language=en -Duser.country=US}, so no other test in this class
      * can observe a locale defect. The previous default is restored in a {@code finally} block, and
      * the format category is restored explicitly because
-     * {@link java.util.Locale#setDefault(java.util.Locale)} overwrites both categories. Surefire runs
-     * this module with no parallelism, so mutating this process-wide setting cannot disturb a
-     * concurrently running test.
+     * {@link java.util.Locale#setDefault(java.util.Locale)} overwrites both categories.
+     *
+     * <p>The setting being replaced belongs to the process rather than to the test, so every caller
+     * declares exclusive access through {@link org.junit.jupiter.api.parallel.ResourceLock}, naming
+     * both the global resource and the locale. The global one is what actually confers the guarantee:
+     * a lock on the locale alone excludes only tests that claim the locale themselves, and every
+     * byte-parity test around this one claims nothing while depending on the pinned default. The
+     * isolation therefore travels with this code rather than resting on the execution settings
+     * happening to run one test at a time.
      *
      * @param locale the locale to install for the duration of the call
      * @param body   the value to compute under that locale
@@ -1914,14 +1741,27 @@ class StatementTextTemplatesTest {
 
     @Test
     @DisplayName("both amount masks render byte-identically under every hostile locale, which is what makes decision D-27 an enforced property rather than an implementation habit")
+    // Replaces the JVM-wide default locale, which is process state rather than test state, so the
+    // isolation is declared here rather than left to the accident of the current execution settings.
+    // This class is flat, so each of the three replacing tests carries the declaration itself.
+    //
+    // Both locks are needed, and the wider one is the load-bearing one. A lock on the locale alone
+    // only excludes tests that themselves claim the locale, and the byte-parity tests that surround
+    // this one claim nothing while depending entirely on the en-US pin the build applies - so a narrow
+    // lock would leave them free to run alongside the replacement and read a grouping separator or a
+    // non-Latin digit into a fixed-width mask. The global lock is what actually excludes them. The
+    // narrow lock is kept alongside it because it names the specific resource being written, so a
+    // future test that declares a read lock on the locale interlocks with this correctly.
+    @ResourceLock(Resources.GLOBAL)
+    @ResourceLock(Resources.LOCALE)
     void bothAmountMasksRenderByteIdenticallyUnderEveryHostileLocale() {
         // D-27 forbids BigDecimal.toString, NumberFormat, DecimalFormat and every other
         // locale-sensitive formatter here, because a locale can introduce a grouping separator, a
-        // different decimal separator, a different minus glyph or a non-Latin digit set - and any one
-        // of those is a byte-parity failure in a fixed 13-position mask. The build pins en-US, so
-        // until now nothing could observe a regression against that decision. These values are chosen
-        // to exercise each of the four hazards: a grouping-width magnitude, a fractional part, a
-        // negative sign, and a value whose leading zeros are suppressed.
+        // different decimal separator, a different minus glyph or a non-Latin digit set - any one of
+        // which is a byte-parity failure in a fixed 13-position mask. The build pins en-US, so only a
+        // test that installs another locale can observe a regression against that decision. These
+        // values exercise each hazard: a grouping-width magnitude, a fractional part, a negative sign,
+        // and a value whose leading zeros are suppressed.
         final java.util.List<BigDecimal> amounts = java.util.List.of(
                 new BigDecimal("1234567.89"),
                 new BigDecimal("-1234567.89"),
@@ -1970,6 +1810,8 @@ class StatementTextTemplatesTest {
 
     @Test
     @DisplayName("every 80-byte record that embeds an amount is byte-identical under every hostile locale")
+    @ResourceLock(Resources.GLOBAL)
+    @ResourceLock(Resources.LOCALE)
     void everyRecordEmbeddingAnAmountIsByteIdenticalUnderEveryHostileLocale() {
         // The masks are asserted above in isolation; this asserts the three builders that place a
         // mask inside a complete 80-byte record, because a record is what actually reaches a file and
@@ -2003,12 +1845,13 @@ class StatementTextTemplatesTest {
 
     @Test
     @DisplayName("the record encoder and the input-boundary guard behave identically under a Turkish default locale, where a locale-sensitive case fold would diverge")
+    @ResourceLock(Resources.GLOBAL)
+    @ResourceLock(Resources.LOCALE)
     void theEncoderAndTheInputGuardAreUnchangedUnderATurkishDefaultLocale() {
-        // Turkish is the case that would break a fold built on String.toUpperCase: ASCII i folds to
-        // U+0130 there, which is not a US-ASCII byte. Nothing in this class folds case, and this test
-        // is what keeps that true - both for the emitted record and for the guard that inspects
-        // incoming text, since a guard that lower-cased its input before comparing would be just as
-        // wrong as a builder that upper-cased its output.
+        // Turkish would break a fold built on String.toUpperCase: ASCII i folds to U+0130 there, which
+        // is not a US-ASCII byte. Nothing in this class folds case, and this test keeps that true for
+        // the emitted record and for the guard that inspects incoming text alike - a guard that
+        // lower-cased its input before comparing would be as wrong as a builder that upper-cased.
         final String mixedCase = "Ibrahim Iliescu";
         final String pinned = StatementTextTemplates.stLine1CustomerName(mixedCase);
 

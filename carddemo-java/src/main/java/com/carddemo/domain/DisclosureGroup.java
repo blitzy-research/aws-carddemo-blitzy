@@ -65,15 +65,28 @@ import com.carddemo.domain.id.DisclosureGroupId;
  * unequal to its shortened form, exactly as the two are distinct in the database. The account group
  * identifier documents why this is load-bearing rather than stylistic.
  *
- * <p><strong>Seeded data and the branches it makes reachable.</strong> The reference data holds 51
- * rows measuring 2,601 bytes at a 50-byte record length, forming three complete 17-row groups keyed
- * {@code "A000000000"}, {@code "DEFAULT   "} and {@code "ZEROAPR   "} - the latter two padded to the
- * full ten characters. That composition makes both arms of the rate lookup reachable from seeded data
- * alone, the direct group hit and the status-{@code 23} default fallback, without any synthetic
- * fixture. Two further seeded facts matter to accrual tests: every one of the 50 seeded account rows
- * carries exactly ten spaces in its account group identifier, so seeded data exercises the
- * default-fallback path only; and every rate in the zero-rate group is exactly zero, which makes the
- * accrual skip branch reachable, since interest is computed only when the rate is non-zero.
+ * <p><strong>Seeded data, and exactly which accrual branches it reaches.</strong> The reference data
+ * holds 51 rows measuring 2,601 bytes at a 50-byte record length, forming three complete 17-row groups
+ * keyed {@code "A000000000"}, {@code "DEFAULT   "} and {@code "ZEROAPR   "} - the latter two padded to
+ * the full ten characters. Every rate in the zero-rate group is exactly zero, and the other two groups
+ * carry 15.00 on the {@code (01, 0001)} type and category that every seeded balance uses. Which
+ * branches that composition actually reaches follows from one further seeded fact, which belongs to the
+ * account table rather than to this one: all 50 seeded account rows carry exactly ten spaces in their
+ * account group identifier, and no seeded group key is ten spaces.
+ *
+ * <ul>
+ *   <li><strong>The status-{@code 23} default fallback is reachable from seeded data alone.</strong>
+ *       Every seeded account misses its first probe and re-probes as {@code "DEFAULT   "}, so the
+ *       fallback is the path a seed-only accrual run takes for all fifty of them.</li>
+ *   <li><strong>The direct group hit is not reachable from seeded data alone.</strong> It needs an
+ *       account constructed with {@code "A000000000"} or {@code "ZEROAPR   "} in its group identifier,
+ *       together with a category balance on the matching type and category.</li>
+ *   <li><strong>The accrual skip branch is not reachable from seeded data alone either</strong>, even
+ *       though the zero-rate rows are genuinely seeded and genuinely zero. Interest is computed only
+ *       when the rate is non-zero, but the fallback lands on {@code "DEFAULT   "}, whose rate on this
+ *       type and category is 15.00, so a seed-only run always computes. Reaching the skip needs that
+ *       same constructed account, pointed at the zero-rate group.</li>
+ * </ul>
  *
  * <p><strong>No foreign key references this table, by design.</strong> The account table's group
  * identifier is deliberately not a foreign key here, and cannot be one: the group identifier is only

@@ -32,41 +32,30 @@ import java.util.Objects;
  *
  * <h2>Verified layout - 60 bytes, of which 56 are mapped</h2>
  *
- * <pre>{@code
- * #   COBOL field           PIC    offset   length   Java property
- * -   TRAN-CAT-KEY (group)  -           0        6   the composite identifier
- * 1   TRAN-TYPE-CD          X(02)       0        2   tranTypeCd       (String, @Id)
- * 2   TRAN-CAT-CD           9(04)       2        4   tranCatCd        (String, @Id)
- * 3   TRAN-CAT-TYPE-DESC    X(50)       6       50   tranCatTypeDesc  (String)
- * -   FILLER                X(04)      56        4   not mapped, not persisted
- * }</pre>
  *
  * <p><strong>Width arithmetic.</strong> The key is 2 + 4 = 6; the 50-byte description then brings
  * the mapped data to 6 + 50 = 56; the 4 filler bytes bring the stored record to 56 + 4 = 60. The
  * cluster definition corroborates both figures independently: the base cluster is defined
- * {@code INDEXED} with {@code KEYS(6 0)} and {@code RECORDSIZE(60 60)} [app/jcl/TRANCATG.jcl]. A key
- * length of 6 at offset 0 confirms the key has exactly the two components above, in that order, and
+ * with an indexed organisation, a 6-byte key at offset 0 and a fixed 60-byte record
+ * [app/jcl/TRANCATG.jcl]. A key length of 6 at offset 0 confirms the key has exactly the two
+ * components above, in that order, and
  * confirms that the key is the leading substring of the record image - which is why the identifier
  * is the legacy business key itself and never a surrogate (decision D-29). A surrogate would break
  * the record-image-to-row correspondence on which byte-level output parity depends.
  *
  * <h2>Collision one - {@code TRAN-CAT-KEY} is 6 bytes here and 17 bytes in CVTRA01Y</h2>
  *
- * <p>Two different copybooks declare a group named {@code TRAN-CAT-KEY}, and they are different
- * sizes:
+ * <p>Two different copybooks declare a group named {@code TRAN-CAT-KEY} and they are different
+ * sizes: 6 bytes here - a 2-byte type code plus a 4-byte category code [app/cpy/CVTRA04Y.cpy] -
+ * against 17 bytes for the category-balance group, which leads with an 11-byte account identifier
+ * before its own type and category components [app/cpy/CVTRA01Y.cpy].
  *
- * <pre>{@code
- * copybook                     TRAN-CAT-KEY composition                        width
- * app/cpy/CVTRA04Y.cpy (here)  TRAN-TYPE-CD X(02) + TRAN-CAT-CD 9(04)          6 bytes
- * app/cpy/CVTRA01Y.cpy         TRANCAT-ACCT-ID 9(11) + TRANCAT-TYPE-CD X(02)
- *                              + TRANCAT-CD 9(04)                             17 bytes
- * }</pre>
  *
  * <p><strong>The 6-byte key is NOT a prefix of the 17-byte key</strong> - the 17-byte key leads with
  * an 11-byte account identifier that this key does not have at all [app/cpy/CVTRA01Y.cpy]. The two
  * type-and-category pairs sit at <strong>completely different offsets</strong>: here at 0 and 2,
- * there at 11 and 13. The provisioning jobs attest both widths independently, {@code KEYS(6 0)}
- * [app/jcl/TRANCATG.jcl] against {@code KEYS(17 0)} for the category-balance cluster
+ * there at 11 and 13. The provisioning jobs attest both widths independently, 6 bytes here
+ * [app/jcl/TRANCATG.jcl] against 17 for the category-balance cluster
  * [app/jcl/TCATBALF.jcl]. Consequently no key constant, no key-building helper and no identifier
  * class is ever shared between this mapper and the category-balance mapper, and no shared supertype
  * is introduced to "reuse" the overlapping components. Decision D-37 records the collision.
@@ -106,8 +95,9 @@ import java.util.Objects;
  *
  * <h2>Filler bytes and the exact comparison bound [0, 56)</h2>
  *
- * <p>{@code toRecord} emits the 4-byte filler as <strong>spaces</strong>. COBOL {@code FILLER X(04)}
- * with no {@code VALUE} clause is uninitialised, so no byte value is canonical, and this layout's
+ * <p>{@code toRecord} emits the 4-byte filler as <strong>spaces</strong>. The legacy filler run is
+ * declared without an initial value and is uninitialised, so no byte value is canonical, and this
+ * layout's
  * fixture is one of the four that disagree with the module-wide default: the four master fixtures
  * carry space filler while the four reference-table fixtures, this one included, carry ASCII-zero
  * filler. Decision D-10 records the resolution and anomaly 20 the source divergence.
@@ -121,11 +111,11 @@ import java.util.Objects;
  *
  * <h2>The description is 50 bytes here and is narrowed elsewhere</h2>
  *
- * <p>{@code TRAN-CAT-TYPE-DESC} is {@code X(50)} and this mapper always maps all 50 bytes,
- * untruncated and untrimmed. The daily transaction report narrows it: the report line declares
- * {@code TRAN-REPORT-CAT-DESC} as {@code X(29)} [app/cpy/CVTRA07Y.cpy], so moving the 50-byte
- * description into it keeps only the leading 29 characters [app/cbl/CBTRN03C.cbl]. The sibling type
- * description in the same report line is narrowed to {@code X(15)}, not 29 - two different truncation
+ * <p>The category description is 50 bytes wide here and this mapper always maps all 50,
+ * untruncated and untrimmed. The daily transaction report narrows it: the report line declares its
+ * own 29-byte description field [app/cpy/CVTRA07Y.cpy], so moving the 50-byte description into it
+ * keeps only the leading 29 characters [app/cbl/CBTRN03C.cbl]. The sibling type description in the
+ * same report line is narrowed to 15, not 29 - two different truncation
  * widths in one line. Both narrowings belong to {@link ReportLineFormatter} and neither belongs here,
  * so the report's shorter text is not a defect in this mapper. Two of the 18 seeded descriptions are
  * exactly 29 characters long once their padding is disregarded - {@code Online purchase
@@ -135,7 +125,7 @@ import java.util.Objects;
  *
  * <h2>Both codes stay text</h2>
  *
- * <p>{@code TRAN-TYPE-CD} is {@code X(02)} and {@code TRAN-CAT-CD} is {@code 9(04)} carrying values
+ * <p>The type code is 2 bytes and the category code 4, the latter carrying values
  * such as {@code 0001}, so leading zeros are significant in both. Neither is ever parsed to
  * {@code int} or {@code long} and re-formatted, and neither is treated as numeric even though every
  * seeded value happens to consist of digits: a category of {@code 0001} that narrowed to {@code 1}
@@ -216,26 +206,26 @@ import java.util.Objects;
  * <h2>Translation decisions this layout raises</h2>
  *
  * <p>Seven decisions govern this mapper, each recorded so that a later reader finds the reasoning
- * rather than rediscovering it. Five already carry an identifier in the module's decision log and are
- * cited by it; the remaining two are stated here in full because the log holds no entry for them yet,
- * and no identifier is invented for them rather than risk colliding with one already in use.
+ * rather than rediscovering it. Five carry an identifier in the module's decision log and are cited
+ * by it; the remaining two are stated here in full, and no identifier is invented for them rather
+ * than risk colliding with one already in use.
  *
  * <ol>
  *   <li>{@code TRAN-CAT-KEY} is declared in two copybooks at two different widths, 6 bytes here and
  *       17 bytes in the category-balance layout, and the 6-byte key is not a prefix of the 17-byte
  *       one; the type-and-category pair sits at different offsets in each. No key constant, helper or
- *       identifier class is shared. {@code KEYS(6 0)} and {@code KEYS(17 0)} attest both widths.
+ *       identifier class is shared. The two cluster definitions attest both widths.
  *       Recorded as decision D-37.</li>
  *   <li>Two distinct 60-byte layouts coexist - this one at 2 + 4 + 50 + 4 and the transaction-type
  *       layout at 2 + 50 + 8 - so a length check cannot distinguish them. No content sniffing is
- *       attempted and the two mappers share no constant, offset or helper. <em>Not yet carried in the
- *       decision log.</em></li>
+ *       attempted and the two mappers share no constant, offset or helper. <em>Stated here rather
+ *       than by decision identifier.</em></li>
  *   <li>No enumeration is introduced for the 18 seeded category codes; they are reference data loaded
  *       by a seed migration, not a compile-time vocabulary. Consistent with decision D-24.</li>
  *   <li>The 50-byte description is narrowed to 29 characters by the report line while the sibling type
  *       description is narrowed to 15 - two different widths in one line - and both narrowings belong
- *       to {@link ReportLineFormatter}, never to this mapper. <em>Not yet carried in the decision
- *       log.</em></li>
+ *       to {@link ReportLineFormatter}, never to this mapper. <em>Stated here rather than by
+ *       decision identifier.</em></li>
  *   <li>Filler bytes are not uniform in the estate: this layout's fixture carries 4 ASCII-zero filler
  *       bytes while this mapper emits spaces, so round-trip assertions compare only
  *       {@code [0, 56)}; a whole-record comparison would fail on four bytes alone, which makes the
@@ -278,8 +268,9 @@ public final class TranCatRecordMapper {
     public static final String KEY_ARTEFACT = "TRAN-CAT-KEY (CVTRA04Y, 6 bytes)";
 
     /**
-     * Stored record width in encoded bytes, 60, corroborated by {@code RECORDSIZE(60 60)}
-     * [app/jcl/TRANCATG.jcl]. Equal to {@link #MAPPED_DATA_WIDTH} plus {@link #FILLER_LENGTH}.
+     * Stored record width in encoded bytes, 60, corroborated by the fixed record length of the
+     * cluster definition [app/jcl/TRANCATG.jcl]. Equal to {@link #MAPPED_DATA_WIDTH} plus
+     * {@link #FILLER_LENGTH}.
      *
      * <p>This width is shared with the transaction-type layout, which is why it can never be used to
      * tell the two apart; see the collision-two discussion on this class.
@@ -298,7 +289,7 @@ public final class TranCatRecordMapper {
 
     /**
      * Width in encoded bytes of the composite key, <strong>6</strong>, comprising the 2-byte type
-     * code followed by the 4-byte category code and corroborated by {@code KEYS(6 0)}
+     * code followed by the 4-byte category code and corroborated by the cluster's key length
      * [app/jcl/TRANCATG.jcl].
      *
      * <p>Named for its two components on purpose. The identically named key group of the
@@ -311,13 +302,13 @@ public final class TranCatRecordMapper {
     /** Zero-based byte offset of {@code TRAN-TYPE-CD}, key component 1: 0. */
     public static final int TRAN_TYPE_CD_OFFSET = 0;
 
-    /** Byte length of {@code TRAN-TYPE-CD}, declared {@code X(02)}: 2. */
+    /** Byte length of the transaction type code: 2. */
     public static final int TRAN_TYPE_CD_LENGTH = 2;
 
     /** Zero-based byte offset of {@code TRAN-CAT-CD}, key component 2: 2. */
     public static final int TRAN_CAT_CD_OFFSET = 2;
 
-    /** Byte length of {@code TRAN-CAT-CD}, declared {@code 9(04)} and carried as text: 4. */
+    /** Byte length of the transaction category code, carried as text rather than a number: 4. */
     public static final int TRAN_CAT_CD_LENGTH = 4;
 
     /**
@@ -330,7 +321,7 @@ public final class TranCatRecordMapper {
     public static final int TRAN_CAT_TYPE_DESC_OFFSET = 6;
 
     /**
-     * Byte length of {@code TRAN-CAT-TYPE-DESC}, declared {@code X(50)}: 50.
+     * Byte length of the category description: 50.
      *
      * <p>All 50 bytes are always mapped. The narrowing to 29 for the report line, and the sibling
      * type description's narrowing to 15, belong to {@link ReportLineFormatter}.
@@ -341,7 +332,7 @@ public final class TranCatRecordMapper {
     public static final int FILLER_OFFSET = 56;
 
     /**
-     * Byte length of the trailing {@code FILLER} run, declared {@code X(04)}: 4.
+     * Byte length of the trailing filler run: 4.
      *
      * <p>Four, not eight. The transaction-type layout's filler run is 8 bytes at offset 52, which is
      * the other half of collision two. Four bytes is the narrowest filler run in the estate, so a
@@ -470,8 +461,8 @@ public final class TranCatRecordMapper {
      * the mapped prefix {@code [0, 56)}.
      *
      * <p>Values are placed exactly as the copybook justifies them: the type code and the description
-     * are left-justified and space-padded as {@code X(n)} fields, and the category code is
-     * right-justified and zero-padded as a {@code 9(n)} field. A value already at its full field
+     * are left-justified and space-padded, and the category code is right-justified and
+     * zero-padded. A value already at its full field
      * width is placed unchanged, which is what preserves the description's trailing spaces and a
      * category code's leading zeros. An over-length value is rejected rather than truncated: a
      * truncated field would leave the record exactly the right width while carrying a wrong value,
@@ -540,7 +531,7 @@ public final class TranCatRecordMapper {
      * Renders the 6-byte composite key image of an entity, the leading substring of its record image.
      *
      * <p>The exact inverse of taking the leading {@link #TYPE_AND_CATEGORY_KEY_WIDTH} bytes of a
-     * record image, which is what the cluster's {@code KEYS(6 0)} definition makes the stored key
+     * record image, which is what the cluster definition makes the stored key
      * [app/jcl/TRANCATG.jcl]. Useful wherever the key is needed as one value rather than two - key
      * ordering, a keyed extract, or asserting that a key round-trips - without any caller
      * reassembling it and risking the component order.

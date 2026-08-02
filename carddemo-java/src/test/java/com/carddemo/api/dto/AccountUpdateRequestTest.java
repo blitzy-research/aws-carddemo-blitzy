@@ -26,13 +26,8 @@ import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.core.StreamWriteFeature;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.databind.json.JsonMapper;
 
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
@@ -53,78 +48,74 @@ import org.junit.jupiter.params.provider.ValueSource;
  * {@code CAUP}, derived from program {@code app/cbl/COACTUPC.cbl}, symbolic map
  * {@code app/cpy-bms/COACTUP.CPY} and mapset {@code app/bms/COACTUP.bms}.
  *
- * <p>The legacy program runs a <strong>first-error-wins</strong> validation cascade: every edit
- * stage is gated on the summary-message slot still being empty, so a submission with five bad
- * fields yields exactly one summary message - that of the first failing stage in source order -
- * alongside as many independently set field flags as there are bad fields. Bean Validation
- * evaluates constraints in an unspecified order and would report all of them at once under an
- * arbitrary message, which is a different externally observable contract. The ordered cascade
- * therefore lives in the service layer, and this request must <em>tolerate</em> null, blank and
- * out-of-range input rather than reject it.
+ * <p>The legacy program runs a first-error-wins validation cascade: every edit stage is gated on
+ * the summary-message slot still being empty, so a submission with five bad fields yields exactly
+ * one summary message - that of the first failing stage in source order - alongside as many
+ * independently set field flags as there are bad fields. Bean Validation evaluates constraints in
+ * an unspecified order and would report all of them at once under an arbitrary message, which is a
+ * different externally observable contract. The ordered cascade therefore lives in the service
+ * layer, and this request must <em>tolerate</em> null, blank and out-of-range input rather than
+ * reject it.
  *
- * <p>That makes the interesting property of this type the constraints it does <strong>not</strong>
- * carry. A test that only checked happy-path accessors would pass while a well-meaning future edit
- * silently added a bound and broke parity. Every assertion below therefore either proves a value is
- * carried untouched or proves that no rule fired on it, and two of them are contrast proofs that
- * would fail if the constraint inventory ever drifted.
+ * <p>That makes the interesting property of this type the constraints it does <em>not</em> carry. A
+ * test that only checked happy-path accessors would pass while a well-meaning future edit silently
+ * added a bound and broke parity. Every assertion below therefore either establishes that a value
+ * is carried untouched or establishes that no rule fired on it, and two of them are contrast checks
+ * that would fail if the constraint inventory ever drifted.
  *
  * <p>The map declares 54 input families, eleven of which are non-editable screen furniture and are
- * absent from the request, leaving the <strong>43</strong> components exercised here - 38 bounded
- * strings and 5 exact decimals. Thirty nine of the 43 are error-decoration targets, so exactly four
- * are editable-but-undecorated - the account id, the account group id, the customer id and the
+ * absent from the request, leaving the 43 components exercised here - 38 bounded strings and 5
+ * exact decimals. Thirty nine of the 43 are error-decoration targets, so exactly four are
+ * editable-but-undecorated - the account id, the account group id, the customer id and the
  * government-issued id - and {@link StringComponent#UNDECORATED} pins that set down.
  *
- * <p><strong>Independent oracles.</strong> No expected value here is produced by the type under
- * test or by any production collaborator. Every declared width in {@link StringComponent} and
- * {@link MoneyComponent} was read from the symbolic map, not from the request. The only helpers used
- * to build an expectation are the platform's own {@link String#repeat(int)} and string
- * concatenation, which produce literal runs rather than compute anything. The zoned-decimal codec is
- * deliberately not imported: it owns truncation for the whole module, and using it to generate an
- * expectation would make this test agree with a defect rather than detect one.
+ * <p>Independent oracles: no expected value here is produced by the type under test or by any
+ * production collaborator. Every declared width in {@link StringComponent} and
+ * {@link MoneyComponent} was read from the symbolic map, not from the request. The only helpers
+ * used to build an expectation are the platform's own {@link String#repeat(int)} and string
+ * concatenation, which produce literal runs rather than compute anything. The zoned-decimal codec
+ * is deliberately not imported: it owns truncation for the whole module, and using it to generate
+ * an expectation would make this test agree with a defect rather than detect one.
  *
- * <p><strong>Byte-exact, never trimmed.</strong> Leading, interior and trailing spaces are
- * contractual data on a 3270 screen, so no comparison here trims, strips, case-folds or normalises
- * either side. Nothing in this class parses a date, assembles a telephone number, concatenates a
- * lookup key, slices a fixed-width image or rescales a decimal.
+ * <p>Byte-exact, never trimmed: leading, interior and trailing spaces are contractual data on a
+ * 3270 screen, so no comparison here trims, strips, case-folds or normalises either side. Nothing
+ * in this class parses a date, assembles a telephone number, concatenates a lookup key, slices a
+ * fixed-width image or rescales a decimal.
  */
 @DisplayName("AccountUpdateRequest - the CAUP inbound contract")
 class AccountUpdateRequestTest {
 
     /**
-     * Shared factory for the whole class. {@link ValidatorFactory} is expensive to build and is
-     * closed once in {@link #closeValidatorFactory()}. This is the reference implementation
-     * obtained straight from the specification's bootstrap entry point, never a framework-managed
-     * validator bean, because this is a pure unit test with no application context.
+     * Shared factory for the whole class, closed once in {@link #closeValidatorFactory()}. This is
+     * the reference implementation obtained straight from the specification's bootstrap entry point,
+     * never a framework-managed validator bean, because this is a pure unit test with no
+     * application context.
      */
     private static ValidatorFactory validatorFactory;
 
-    /** Validator drawn from {@link #validatorFactory}. */
     private static Validator validator;
 
     /**
-     * Mapper mirroring the module's serialisation settings by hand: null-valued properties omitted,
-     * date-as-timestamp serialisation off, unknown incoming properties tolerated and decimals
-     * written in plain notation. Built locally and per-class rather than injected, so the test
-     * cannot accidentally depend on framework auto-configuration.
+     * Mapper configured with the four settings the module declares in its own
+     * {@code application.yml}: null-valued properties omitted, date-as-timestamp serialisation off,
+     * unknown incoming properties tolerated and decimals written in plain notation.
      *
-     * <p>The builder form matters: the single-argument inclusion setter is deprecated in the
-     * pinned databind release and the module compiles with warnings promoted to errors, so the
-     * value-based setter is used instead.
+     * <p>It comes from {@link JsonContractSupport#declaredSettingsMapper()} rather than being built
+     * here. That factory is the single place in the test tree where those four settings are written
+     * out by hand, so this file cannot transcribe them differently from any sibling suite. No
+     * framework context is started and no auto-configuration is consulted, which is what keeps this
+     * suite fast.
      *
-     * <p>A hand-built mapper can only assert the settings this file believes are in force, so it is
-     * not on its own evidence about the deployed contract. {@link ApplicationJsonContractTest}
-     * closes that gap: it obtains the mapper from a real context in which the module's own
-     * {@code application.yml} has been read, asserts the same four behaviours against it, and
-     * compares its output byte for byte with a mapper built exactly as this one is. An edit to the
-     * module's file therefore fails that test rather than silently invalidating this one.
+     * <p>What this mapper evidences is the shape this type takes <em>under those settings</em>, and
+     * nothing more. It is not evidence about the mapper a deployed instance holds, and no assertion
+     * below is worded as though it were. Two separate facts in {@link ApplicationJsonContractTest}
+     * carry that burden instead, both against a mapper taken from a real context that has read the
+     * module's file: one compares that mapper's output with this very factory's output, so an edit
+     * to the module's settings fails there rather than silently invalidating this file; the other
+     * binds this type through the deployed object directly, so its participation in the deployed
+     * contract does not rest on the comparison alone.
      */
-    private static final ObjectMapper MAPPER = JsonMapper.builder()
-            .defaultPropertyInclusion(JsonInclude.Value.construct(
-                    JsonInclude.Include.NON_NULL, JsonInclude.Include.NON_NULL))
-            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-            .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-            .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
-            .build();
+    private static final ObjectMapper MAPPER = JsonContractSupport.declaredSettingsMapper();
 
     @BeforeAll
     static void openValidatorFactory() {
@@ -133,12 +124,10 @@ class AccountUpdateRequestTest {
     }
 
     /**
-     * Releases the validator factory, tolerating the case where it was never opened.
-     *
-     * <p>The guard is not decoration. This method runs even when {@link #openValidatorFactory()}
-     * threw - a missing provider on the classpath is the realistic cause - and an unguarded call
-     * would then raise a second failure that hides the first. Reporting the real cause is worth one
-     * null test.
+     * Releases the validator factory, tolerating the case where it was never opened. The guard is
+     * not decoration: this method runs even when {@link #openValidatorFactory()} threw - a missing
+     * provider on the classpath is the realistic cause - and an unguarded call would then raise a
+     * second failure that hides the first.
      */
     @AfterAll
     static void closeValidatorFactory() {
@@ -153,18 +142,17 @@ class AccountUpdateRequestTest {
     }
 
     /**
-     * The literal the request emits in place of every withheld component.
-     *
-     * <p>Restated here rather than read from the request, so that a change to the production constant
-     * has to be made deliberately in both places and cannot silently weaken these assertions.
+     * The literal the request emits in place of every withheld component. Restated here rather than
+     * read from the request, so that a change to the production constant has to be made deliberately
+     * in both places and cannot silently weaken these assertions.
      */
     private static final String REDACTION_PLACEHOLDER_TEXT = "***REDACTED***";
 
     /**
-     * Stand-in for the sealed concurrency token. It is shaped like one - the module's envelope prefix
-     * followed by Base64 text - and is deliberately not a real one: minting a real token needs a
-     * server-held key, and this contract never opens what it carries. Nothing in this file may read a
-     * token's content, so a stand-in is exactly as informative as the genuine article.
+     * Stand-in for the sealed concurrency token: shaped like one, and deliberately not a real one
+     * because minting a real token needs a server-held key. This contract never opens what it
+     * carries and nothing in this file may read a token's content, so a stand-in is exactly as
+     * informative as the genuine article.
      */
     private static final String SEALED_TOKEN = "ENC1:dGhpcy1pcy1ub3QtYS1yZWFsLXRva2Vu";
 
@@ -181,19 +169,14 @@ class AccountUpdateRequestTest {
         return value + " ".repeat(width - value.length());
     }
 
-    /* =================================================================================
-     * Staging holder.
-     *
-     * The request has 43 components, so the canonical constructor takes 43 arguments.
-     * Writing that call out at every test site would be unreadable and would invite a
-     * silent argument transposition, so the call appears EXACTLY ONCE, in build().
-     * Tests assign only the fields they care about and leave the rest null, which is
-     * itself faithful: an operator who tabs past a 3270 field transmits nothing for it.
-     *
-     * This is a hand-written holder. There is no builder library, no annotation
-     * processor and no code generation of any kind, and nothing here reads or writes a
-     * field by name at run time - every assignment below is an ordinary typed one.
-     * ================================================================================= */
+    /*
+     * Staging holder. The canonical constructor takes one argument per component, so the call
+     * appears exactly once, in build(), rather than at every test site where a silent argument
+     * transposition would be invisible. Tests assign only the fields they care about and leave the
+     * rest null, which is itself faithful: an operator who tabs past a 3270 field transmits nothing
+     * for it. Hand-written throughout - no builder library, no annotation processor, no code
+     * generation, and nothing here reads or writes a field by name at run time.
+     */
     static final class Draft {
 
         String accountId;
@@ -242,10 +225,10 @@ class AccountUpdateRequestTest {
         String concurrencyToken;
 
         /**
-         * The one and only invocation of the 44-argument canonical constructor. Argument order
-         * follows the symbolic map's declaration order, which interleaves the account group id
-         * between two of the monetary components and places the three date-of-birth parts before
-         * the credit score.
+         * The one and only invocation of the canonical constructor - the 43 map components plus the
+         * concurrency token. Argument order follows the symbolic map's declaration order, which
+         * interleaves the account group id between two of the monetary components and places the
+         * three date-of-birth parts before the credit score.
          */
         AccountUpdateRequest build() {
             return new AccountUpdateRequest(
@@ -272,19 +255,16 @@ class AccountUpdateRequestTest {
          * declared width. Deliberate properties of this seed data:
          *
          * <ul>
-         *   <li>The names carry <strong>embedded spaces</strong>, which the legacy alphabetic
-         *       check accepts.</li>
-         *   <li>The account group id and the padded text fields carry <strong>trailing
-         *       spaces</strong>, which must survive untrimmed.</li>
-         *   <li>The monetary lexemes span positive, negative, zero and the full ten-integer-
-         *       digit width, each written the way an operator types it.</li>
+         *   <li>The names carry embedded spaces, which the legacy alphabetic check accepts.</li>
+         *   <li>The account group id and the padded text fields carry trailing spaces, which must
+         *       survive untrimmed.</li>
+         *   <li>The monetary lexemes span positive, negative, zero and the full width, each written
+         *       the way an operator types it.</li>
          *   <li>The social-security parts use a number range that is never issued and the
          *       government-issued id is self-evidently invented, so no real identifier and no
          *       credential of any kind appears in this file.</li>
-         *   <li>The middle name and the second address line are deliberately punctuated and are
-         *       <strong>not</strong> padded to a width, because no width applies to them.</li>
-         *   <li>The concurrency token is a stand-in that is shaped like a sealed one and is not a
-         *       real one, because minting one needs a key and this contract never opens it.</li>
+         *   <li>The middle name and the second address line are deliberately punctuated and are not
+         *       padded to a width, because no width applies to them.</li>
          * </ul>
          */
         static Draft realistic() {
@@ -337,18 +317,14 @@ class AccountUpdateRequestTest {
         }
     }
 
-    /**
-     * Convenience for the common shape "one string component populated, the other 42 absent".
-     */
+    /** One string component populated, the other 42 absent. */
     private static AccountUpdateRequest withOnly(StringComponent component, String value) {
         Draft draft = new Draft();
         component.write(draft, value);
         return draft.build();
     }
 
-    /**
-     * Convenience for the common shape "one monetary component populated, the other 42 absent".
-     */
+    /** One monetary component populated, the other 42 absent. */
     private static AccountUpdateRequest withOnly(MoneyComponent component, String value) {
         Draft draft = new Draft();
         component.write(draft, value);
@@ -431,12 +407,12 @@ class AccountUpdateRequestTest {
         }
 
         /**
-         * Contrast proof. Without this, "no violation was raised" could equally mean the width
-         * constraints are missing everywhere and the suite is asserting nothing. Here each of the
-         * 36 annotated string components is pushed one character past its declared width and must
-         * raise exactly one violation naming itself - which establishes that width enforcement is
-         * genuinely active, and therefore that its deliberate absence on the other two components
-         * is a real, load-bearing property rather than a vacuous one.
+         * The contrast check. Without it, "no violation was raised" could equally mean the width
+         * constraints are missing everywhere and the suite is asserting nothing. Each of the 36
+         * annotated string components is pushed one character past its declared width and must raise
+         * exactly one violation naming itself, which establishes that width enforcement is genuinely
+         * active - and therefore that its deliberate absence on the other two components is a real,
+         * load-bearing property rather than a vacuous one.
          */
         @ParameterizedTest(name = "{0} rejects one character past its declared width")
         @EnumSource(value = StringComponent.class, mode = EnumSource.Mode.EXCLUDE,
@@ -537,23 +513,21 @@ class AccountUpdateRequestTest {
 
     /**
      * The middle name and the second address line are decorated for error display but are never
-     * validated. The program says so in its own comments - line 3345 for the middle name and line
-     * 3369 for the second address line, with a related note at line 3124 - and measurement bears
-     * it out: the second address line's validation flag is declared at line 295 and consumed by
-     * the decoration at line 3370 but is never assigned anywhere in the 4,236 lines, and the
-     * statement that would set its error label is commented out at line 1614 as optional. The
-     * middle name does pass through the <em>optional</em> alphabetic stage at lines 1568-1574,
-     * whose flag line 3110 reads for cursor placement, but an optional stage accepts blank values
-     * and accepts embedded spaces, which no declarative constraint can express while leaving
-     * cascade order intact.
+     * validated. The program says so in its own comments, and measurement bears it out: the second
+     * address line's validation flag is declared and consumed by the decoration but is never
+     * assigned anywhere in the program, and the statement that would set its error label is
+     * commented out as optional. The middle name does pass through the <em>optional</em> alphabetic
+     * stage, whose flag is read for cursor placement, but an optional stage accepts blank values and
+     * accepts embedded spaces, which no declarative constraint can express while leaving cascade
+     * order intact.
      *
-     * <p>So both components must carry <strong>zero</strong> constraints - not even a width
-     * constraint. Attaching one would reject input the legacy system accepts, which is exactly the
-     * behavioural regression the migration forbids.
+     * <p>So both components must carry zero constraints - not even a width constraint. Attaching one
+     * would reject input the legacy system accepts, which is exactly the behavioural regression the
+     * migration forbids.
      *
-     * <p>Unvalidated is not the same as undecorable. Both fields <em>can</em> carry a per-field
-     * error state, and the response contract's own test proves they can be marked missing or
-     * invalid. "Unvalidated" here means precisely "no rule fires on the way in".
+     * <p>Unvalidated is not the same as undecorable. Both fields <em>can</em> carry a per-field error
+     * state, and the response contract's own test covers marking them missing or invalid.
+     * "Unvalidated" here means precisely "no rule fires on the way in".
      */
     @Nested
     @DisplayName("The middle name and second address line carry no constraint at all")
@@ -637,7 +611,7 @@ class AccountUpdateRequestTest {
         }
 
         /**
-         * The sharpest form of the proof: the unvalidated component and its width-bounded
+         * The sharpest form of the argument: the unvalidated component and its width-bounded
          * neighbour are pushed past their widths in the <em>same</em> submission. Exactly one
          * violation must come back, and it must name the neighbour.
          */
@@ -689,21 +663,18 @@ class AccountUpdateRequestTest {
     }
 
     /**
-     * The credit score window is inclusive 300 through 850. The range is declared as a condition
-     * name at lines 848-849, applied by paragraph {@code 1275-EDIT-FICO-SCORE} at lines 2514-2530,
-     * and reached only after the score has already passed the required-numeric stage because of
-     * the gate at lines 1553-1554. Its message is the 31-character suffix
-     * {@code : should be between 300 and 850}.
+     * The credit score window is inclusive 300 through 850, declared as a condition name and applied
+     * by an edit stage that is reached only after the score has already passed the required-numeric
+     * stage. Its message is the 31-character suffix {@code : should be between 300 and 850}.
      *
-     * <p>That gating is the whole reason the bound is <strong>delegated to the service layer and
-     * not annotated here</strong>. A
-     * declarative minimum and maximum would hoist the check out of the ordered cascade and change
-     * which single summary message a bad submission produces, so this request must accept 299 and
-     * 851 exactly as readily as it accepts 300 and 850. The window is not weakened by that - it is
-     * simply enforced one layer in, where source order can be honoured.
+     * <p>That gating is the whole reason the bound is delegated to the service layer and not
+     * annotated here. A declarative minimum and maximum would hoist the check out of the ordered
+     * cascade and change which single summary message a bad submission produces, so this request must
+     * accept 299 and 851 exactly as readily as it accepts 300 and 850. The window is not weakened by
+     * that - it is simply enforced one layer in, where source order can be honoured.
      *
-     * <p>The value also crosses the API as a three-character string rather than a number, so that
-     * a score such as 001 survives. Twenty-one of the fifty seeded customers score below 300, the
+     * <p>The value also crosses the API as a three-character string rather than a number, so that a
+     * score such as 001 survives. Twenty-one of the fifty seeded customers score below 300, the
      * lowest being 001, which is why the read path must never apply the window either.
      */
     @Nested
@@ -925,9 +896,8 @@ class AccountUpdateRequestTest {
      * into independently entered, independently validated and independently decorated sub-fields.
      * Merging any of them would destroy the field-level error contract, because each sub-field owns
      * its own validation flag and its own decoration site. Nothing here parses, converts or
-     * assembles: no platform date type is imported, no date is interpreted and no telephone number
-     * is formatted. The persisted telephone form is assembled by the service, never by this
-     * request.
+     * assembles: no platform date type is imported, no date is interpreted and no telephone number is
+     * formatted. The persisted telephone form is assembled by the service, never by this request.
      */
     @Nested
     @DisplayName("Split fields stay split")
@@ -1049,18 +1019,15 @@ class AccountUpdateRequestTest {
         }
 
         /**
-         * The telephone cascade always runs all three stages - the range head at line 2225, the
-         * area code at 2246, the prefix at 2316, the line number at 2370, the inner exit at 2424
-         * and the range exit at 2427, invoked at lines 1632-1638 and 1640-1646 - and sets all three
-         * flags independently.
+         * The telephone cascade always runs all three stages - area code, prefix and line number -
+         * and sets all three flags independently.
          *
-         * <p>It carries a <strong>preserved defect</strong>: the all-blank shortcut at lines
-         * 2238-2239 tests the area-code sub-field where the two clauses beside it test their own
-         * sub-fields, so a submission with a blank area code, a blank prefix and a populated line
-         * number is silently treated as no telephone supplied. That is reproduced in the service
-         * and recorded in the module decision log; it is contract, not a defect to correct. This
-         * request must therefore deliver exactly that combination to the service without pattern
-         * matching it away first.
+         * <p>It carries a preserved defect: the all-blank shortcut tests the area-code sub-field
+         * where the two clauses beside it test their own sub-fields, so a submission with a blank
+         * area code, a blank prefix and a populated line number is silently treated as no telephone
+         * supplied. That is reproduced in the service and recorded in the module decision log; it is
+         * contract, not a defect to correct. This request must therefore deliver exactly that
+         * combination to the service without pattern matching it away first.
          */
         @Test
         @DisplayName("the combination the preserved shortcut mishandles reaches the service intact")
@@ -1083,16 +1050,16 @@ class AccountUpdateRequestTest {
     }
 
     /**
-     * The legacy alphabetic check blanks every letter in the field and then tests whether anything
-     * is left, so <strong>embedded spaces pass</strong>. A letters-only predicate would reject
-     * values the legacy system accepts, and the seeded customer data contains such values, so it
-     * would break existing data on the first submission. The four character-class stages are
-     * required-alphabetic at line 1898, required-alphanumeric at 1955, optional-alphabetic at 2012
-     * and optional-alphanumeric at 2061; the optional variants accept blank and the required ones
-     * do not, and that distinction is the service's rather than this contract's.
+     * The legacy alphabetic check blanks every letter in the field and then tests whether anything is
+     * left, so embedded spaces pass. A letters-only predicate would reject values the legacy system
+     * accepts, and the seeded customer data contains such values, so it would break existing data on
+     * the first submission. The four character-class stages are required-alphabetic,
+     * required-alphanumeric, optional-alphabetic and optional-alphanumeric; the optional variants
+     * accept blank and the required ones do not, and that distinction is the service's rather than
+     * this contract's.
      *
-     * <p>One source comment is stale: line 2078 claims alphabetic-plus-space while lines 2079-2082
-     * use the 62-character alphanumeric table. The code governs, so an alphanumeric value must be
+     * <p>One source comment is stale: it claims alphabetic-plus-space while the lines beneath it use
+     * the 62-character alphanumeric table. The code governs, so an alphanumeric value must be
      * accepted in the affected field.
      */
     @Nested
@@ -1197,13 +1164,11 @@ class AccountUpdateRequestTest {
     }
 
     /**
-     * The state and the postal code are two independent components. The flat state-membership test
-     * is paragraph {@code 1270-EDIT-US-STATE-CD} at lines 2493-2510, which performs no trim, no
-     * numeric check and no blank pre-check. The combination test is paragraph
-     * {@code 1280-EDIT-US-STATE-ZIP-CD} at lines 2536-2557, which builds its lookup key at lines
-     * 2537-2540 by <strong>positional concatenation with no trimming</strong> - the two-character
-     * state followed by the first two characters of the postal code - and on failure sets
-     * <strong>both</strong> flags, so one comparison can decorate two fields.
+     * The state and the postal code are two independent components. The flat state-membership stage
+     * performs no trim, no numeric check and no blank pre-check. The combination stage builds its
+     * lookup key by positional concatenation with no trimming - the two-character state followed by
+     * the first two characters of the postal code - and on failure sets <em>both</em> flags, so one
+     * comparison can decorate two fields.
      *
      * <p>All of that is the service's work. This request performs no concatenation, no lookup, no
      * slicing and no trimming; it only has to deliver both components at their exact widths with
@@ -1292,21 +1257,21 @@ class AccountUpdateRequestTest {
     }
 
     /**
-     * The five monetary components are 15 characters wide on the screen, and what the screen transmits
-     * is the raw lexeme rather than a decoded number.
+     * The five monetary components are 15 characters wide on the screen, and what the screen
+     * transmits is the raw lexeme rather than a decoded number.
      *
-     * <p>Paragraph {@code 1250-EDIT-SIGNED-9V2} - invoked once per component at lines 1486, 1499, 1511,
-     * 1518 and 1525 - reaches one of <strong>three</strong> states, not two: the field was not supplied,
-     * what was supplied is not a number, or the value is usable. Two of those states carry different
-     * operator messages, and a decoded numeric component cannot represent the middle one at all: an
-     * unparseable lexeme would fail body binding before any component was populated, replacing one
-     * ordered summary message plus N decorated fields with a single opaque body-read rejection.
+     * <p>The signed-amount edit stage, invoked once per component, reaches one of three states rather
+     * than two: the field was not supplied, what was supplied is not a number, or the value is
+     * usable. Two of those states carry different operator messages, and a decoded numeric component
+     * cannot represent the middle one at all - an unparseable lexeme would fail body binding before
+     * any component was populated, replacing one ordered summary message plus N decorated fields with
+     * a single opaque body-read rejection.
      *
      * <p>So the lexeme travels, exactly as the map declares it and exactly as the legacy work field
-     * {@code WS-EDIT-SIGNED-NUMBER-9V2-X} stages it, and the three-state edit runs in the service using
-     * {@code CobolStringUtils} and {@code ZonedDecimalCodec}. Nothing here parses, scales, rounds,
-     * re-signs, trims or reformats, and the tests below prove it by handing over blank, marked,
-     * malformed, oversized and well-formed input and getting the identical characters back.
+     * stages it, and the three-state edit runs in the service using {@code CobolStringUtils} and
+     * {@code ZonedDecimalCodec}. Nothing here parses, scales, rounds, re-signs, trims or reformats,
+     * and the tests below establish it by handing over blank, marked, malformed, oversized and
+     * well-formed input and getting the identical characters back.
      */
     @Nested
     @DisplayName("Monetary components are raw screen lexemes carried unaltered")
@@ -1492,12 +1457,10 @@ class AccountUpdateRequestTest {
         }
 
         /**
-         * Eleven of the 54 map families are non-editable screen furniture: the transaction name,
-         * both title lines, the current date, the program name, the current time, the information
-         * message, the error message and the three function-key legends. The metadata and message
-         * items belong on the response; the legends are pure 3270 decoration and belong nowhere.
-         * The exact-43 assertion above already excludes them arithmetically, and this states the
-         * conclusion in the form a reviewer will look for.
+         * Eleven of the 54 map families are non-editable screen furniture: the transaction name, both
+         * title lines, the current date, the program name, the current time, the information message,
+         * the error message and the three function-key legends. The metadata and message items belong
+         * on the response; the legends are pure 3270 decoration and belong nowhere.
          */
         @Test
         @DisplayName("no screen furniture appears on the request")
@@ -1600,12 +1563,10 @@ class AccountUpdateRequestTest {
         }
 
         /**
-         * Immutability is demonstrated by construction, never by inspecting the type at run time.
-         * The contract is a record, so the canonical constructor is the only way to produce one and
-         * there is no mutator to call: every test in this class had to build a fresh instance to
-         * change anything, which is the demonstration. What remains to prove is that construction
-         * itself does not copy or normalise, so the service receives the identical object the
-         * client's decoder produced.
+         * Immutability is demonstrated by construction, never by inspecting the type at run time. The
+         * contract is a record, so the canonical constructor is the only way to produce one and there
+         * is no mutator to call. What remains to establish is that construction itself does not copy
+         * or normalise, so the service receives the identical object the client's decoder produced.
          */
         @Test
         @DisplayName("construction neither copies nor normalises the values handed to it")
@@ -1625,14 +1586,13 @@ class AccountUpdateRequestTest {
         }
 
         /**
-         * The textual form is a redaction, and this is asserted negatively on purpose.
-         *
-         * <p>Every one of the forty-three components is either regulated personal data, a regulated
-         * financial value, or a key that joins straight to both, so the rendering discloses none of
-         * them. The assertion walks the realistic draft's whole component set and requires that no
-         * value appears anywhere in the rendered text, rather than spot-checking a handful: a
-         * spot-check would pass while a newly added component leaked, and the point of the
-         * override is that the type has no safe component to print.</p>
+         * The textual form is a redaction, asserted negatively on purpose. Every one of the
+         * forty-three components is either regulated personal data, a regulated financial value, or a
+         * key that joins straight to both, so the rendering discloses none of them. The assertion
+         * walks the realistic draft's whole component set and requires that no value appears anywhere
+         * in the rendered text, rather than spot-checking a handful: a spot-check would pass while a
+         * newly added component leaked, and the point of the override is that the type has no safe
+         * component to print.
          */
         @Test
         @DisplayName("the textual form names the type and discloses no component value at all")
@@ -1706,22 +1666,17 @@ class AccountUpdateRequestTest {
         }
     }
 
-    /* =================================================================================
-     * The 38 bounded string components.
-     *
-     * Declaration order follows the symbolic map. Every declared width in this table was
-     * read from the symbolic map and is therefore an INDEPENDENT ORACLE: none of these
-     * numbers was taken from the request under test, so a width edited on the request
-     * alone will fail here rather than agree with itself.
-     *
-     * Each constant carries the legacy map field name (for readable diagnostics), the
-     * declared screen width, the JSON property name, an accessor and a writer. The
-     * accessor is an ordinary method reference and the writer an ordinary assignment
-     * lambda; nothing is resolved by name at run time.
-     * ================================================================================= */
+    /*
+     * The 38 bounded string components, in the symbolic map's declaration order. Every declared
+     * width in this table was read from the map and is therefore an independent oracle: none of
+     * these numbers was taken from the request under test, so a width edited on the request alone
+     * fails here rather than agreeing with itself. Each constant carries the legacy map field name
+     * for readable diagnostics, the declared screen width, the JSON property name, an accessor and a
+     * writer; the accessor is an ordinary method reference and the writer an ordinary assignment
+     * lambda, so nothing is resolved by name at run time.
+     */
     enum StringComponent {
 
-        /* ----- account key, status and the split open date ----- */
         ACCOUNT_ID("ACCTSID", 11, "accountId",
                 (d, v) -> d.accountId = v, AccountUpdateRequest::accountId),
         ACCOUNT_STATUS("ACSTTUS", 1, "accountStatus",
@@ -1733,7 +1688,6 @@ class AccountUpdateRequestTest {
         OPEN_DAY("OPNDAY", 2, "openDay",
                 (d, v) -> d.openDay = v, AccountUpdateRequest::openDay),
 
-        /* ----- the split expiry date ----- */
         EXPIRY_YEAR("EXPYEAR", 4, "expiryYear",
                 (d, v) -> d.expiryYear = v, AccountUpdateRequest::expiryYear),
         EXPIRY_MONTH("EXPMON", 2, "expiryMonth",
@@ -1749,15 +1703,12 @@ class AccountUpdateRequestTest {
         REISSUE_DAY("RISDAY", 2, "reissueDay",
                 (d, v) -> d.reissueDay = v, AccountUpdateRequest::reissueDay),
 
-        /* ----- account group id: editable, never decorated ----- */
         ACCOUNT_GROUP_ID("AADDGRP", 10, "accountGroupId",
                 (d, v) -> d.accountGroupId = v, AccountUpdateRequest::accountGroupId),
 
-        /* ----- customer key: editable, never decorated ----- */
         CUSTOMER_ID("ACSTNUM", 9, "customerId",
                 (d, v) -> d.customerId = v, AccountUpdateRequest::customerId),
 
-        /* ----- the split social-security number, widths 3 / 2 / 4 ----- */
         SSN_PART_1("ACTSSN1", 3, "ssnPart1",
                 (d, v) -> d.ssnPart1 = v, AccountUpdateRequest::ssnPart1),
         SSN_PART_2("ACTSSN2", 2, "ssnPart2",
@@ -1773,11 +1724,9 @@ class AccountUpdateRequestTest {
         DATE_OF_BIRTH_DAY("DOBDAY", 2, "dateOfBirthDay",
                 (d, v) -> d.dateOfBirthDay = v, AccountUpdateRequest::dateOfBirthDay),
 
-        /* ----- credit score: window 300-850 delegated, never annotated ----- */
         FICO_SCORE("ACSTFCO", 3, "ficoScore",
                 (d, v) -> d.ficoScore = v, AccountUpdateRequest::ficoScore),
 
-        /* ----- customer names and address ----- */
         FIRST_NAME("ACSFNAM", 25, "firstName",
                 (d, v) -> d.firstName = v, AccountUpdateRequest::firstName),
         /** Carries no constraint at all. Its declared width is recorded but never enforced. */
@@ -1799,7 +1748,6 @@ class AccountUpdateRequestTest {
         COUNTRY_CODE("ACSCTRY", 3, "countryCode",
                 (d, v) -> d.countryCode = v, AccountUpdateRequest::countryCode),
 
-        /* ----- first telephone number, split 3 / 3 / 4 ----- */
         PHONE_1_AREA_CODE("ACSPH1A", 3, "phone1AreaCode",
                 (d, v) -> d.phone1AreaCode = v, AccountUpdateRequest::phone1AreaCode),
         PHONE_1_PREFIX("ACSPH1B", 3, "phone1Prefix",
@@ -1811,7 +1759,6 @@ class AccountUpdateRequestTest {
         GOVERNMENT_ISSUED_ID("ACSGOVT", 20, "governmentIssuedId",
                 (d, v) -> d.governmentIssuedId = v, AccountUpdateRequest::governmentIssuedId),
 
-        /* ----- second telephone number, split 3 / 3 / 4 ----- */
         PHONE_2_AREA_CODE("ACSPH2A", 3, "phone2AreaCode",
                 (d, v) -> d.phone2AreaCode = v, AccountUpdateRequest::phone2AreaCode),
         PHONE_2_PREFIX("ACSPH2B", 3, "phone2Prefix",
@@ -1819,7 +1766,6 @@ class AccountUpdateRequestTest {
         PHONE_2_LINE_NUMBER("ACSPH2C", 4, "phone2LineNumber",
                 (d, v) -> d.phone2LineNumber = v, AccountUpdateRequest::phone2LineNumber),
 
-        /* ----- transfer account id and primary-holder indicator ----- */
         EFT_ACCOUNT_ID("ACSEFTC", 10, "eftAccountId",
                 (d, v) -> d.eftAccountId = v, AccountUpdateRequest::eftAccountId),
         PRIMARY_CARD_HOLDER_INDICATOR("ACSPFLG", 1, "primaryCardHolderIndicator",
@@ -1835,7 +1781,7 @@ class AccountUpdateRequestTest {
 
         /**
          * The four components that are editable on the mapset but are not among the 39 decoration
-         * targets: 43 unprotected fields minus 39 decoration sites.
+         * targets.
          */
         static final Set<StringComponent> UNDECORATED =
                 Set.of(ACCOUNT_ID, ACCOUNT_GROUP_ID, CUSTOMER_ID, GOVERNMENT_ISSUED_ID);
@@ -1876,7 +1822,6 @@ class AccountUpdateRequestTest {
             return reader.apply(request);
         }
 
-        /** A value occupying the field exactly, with no leading or trailing space. */
         String exactWidthValue() {
             return "X".repeat(declaredWidth);
         }
@@ -1896,23 +1841,19 @@ class AccountUpdateRequestTest {
             return "X".repeat(declaredWidth + 1);
         }
 
-        /** Readable diagnostic prefix naming the legacy field and its declared width. */
         String described() {
             return name() + " (map field " + mapField + ", declared width " + declaredWidth + ")";
         }
     }
 
-    /* =================================================================================
-     * The 5 signed-amount components.
-     *
-     * All five are 15 characters wide on the screen and land in a signed zoned decimal
-     * with ten integer digits and two decimal places in the account record, which maps
-     * to a numeric column of precision 12 and scale 2. What the screen transmits is the
-     * lexeme, not the number: paragraph 1250-EDIT-SIGNED-9V2 classifies it as blank, as
-     * malformed, or as valid, and only the valid case is decoded. Scale 2 is therefore a
-     * property of the DECODED value, applied once by the codec, and never a property of
-     * anything this contract carries.
-     * ================================================================================= */
+    /*
+     * The 5 signed-amount components. All five are 15 characters wide on the screen and land in a
+     * signed zoned decimal with ten integer digits and two decimal places in the account record,
+     * which maps to a numeric column of precision 12 and scale 2. What the screen transmits is the
+     * lexeme, not the number: the edit stage classifies it as blank, as malformed, or as valid, and
+     * only the valid case is decoded. Scale 2 is therefore a property of the decoded value, applied
+     * once by the codec, and never a property of anything this contract carries.
+     */
     enum MoneyComponent {
 
         CREDIT_LIMIT("ACRDLIM", "creditLimit",
@@ -1926,10 +1867,8 @@ class AccountUpdateRequestTest {
         CURRENT_CYCLE_DEBIT("ACRCYDB", "currentCycleDebit",
                 (d, v) -> d.currentCycleDebit = v, AccountUpdateRequest::currentCycleDebit);
 
-        /** Every monetary field is 15 characters wide on this screen. */
         static final int SCREEN_WIDTH = 15;
 
-        /** The record field's decimal places, applied by the codec once the lexeme is decoded. */
         static final int CONTRACT_SCALE = 2;
 
         private final String mapField;

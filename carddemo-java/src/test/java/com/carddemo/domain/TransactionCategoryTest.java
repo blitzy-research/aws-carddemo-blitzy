@@ -84,9 +84,13 @@ import org.junit.jupiter.api.Test;
  *
  * <p><strong>Scope.</strong> A pure unit test. It starts no application context, opens no database or
  * network connection, reads no file, and uses no container, no mocking and no reflection. Column names,
- * declared lengths and nullability are deliberately not verified here: that mapping layer is verified in
- * the integration tier against a real database by schema validation at startup, which also proves the
- * identifier-class-to-entity field name and type correspondence.
+ * declared lengths and nullability are deliberately not verified here: that mapping layer is asserted by
+ * {@code EntityPersistenceMappingTest}, which compares the mapping the provider computes - this entity's
+ * two-column composite key included - against the shipped migration {@code V1__create_schema.sql} and
+ * against an independent copybook-width oracle. Schema validation at start-up against a real database
+ * additionally enforces it in a deployed environment and also resolves the identifier-class-to-entity
+ * field name and type correspondence, though that is a property of a deployment rather than a check this
+ * build performs.
  *
  * @see TransactionCategory
  * @see TransactionCategoryId
@@ -561,9 +565,8 @@ class TransactionCategoryTest {
         @DisplayName("no surrogate identifier exists: identity is the legacy business key itself, so "
                 + "two independently constructed rows carrying the same key are the same row")
         void noSurrogateIdentifierExists() {
-            // Documenting test. The absence of a surrogate is proved by COMPILE-TIME ABSENCE: this file
-            // never references a generated-identifier accessor of any kind, because none is declared -
-            // such a call would not compile. No reflection is used to look for one.
+            // Documenting test. The entity declares no generated identifier of any kind, so what is
+            // asserted here is the positive consequence rather than the absence itself.
             //
             // Behaviourally, a machine-assigned identifier participating in identity would make two
             // separately constructed rows unequal even when their business key matched. They are equal,

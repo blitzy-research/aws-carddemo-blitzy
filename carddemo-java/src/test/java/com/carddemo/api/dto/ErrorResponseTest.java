@@ -20,14 +20,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.StreamWriteFeature;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.databind.json.JsonMapper;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
@@ -225,29 +220,23 @@ class ErrorResponseTest {
      * scientific notation. The last two matter to this type only as proof that its own shape
      * survives them: it carries no date and no decimal.</p>
      *
-     * <p>This is built locally and privately on purpose. Borrowing the application's own
-     * mapper would drag in an application context, and this file is a unit test. The
-     * inclusion setting is applied through the builder's value-and-content form because the
-     * single-argument form is deprecated in the pinned library version, and the module
-     * compiles warnings-as-errors.</p>
+     * <p>No application context is started, because this file is a unit test. The four settings come
+     * from {@link JsonContractSupport#declaredSettingsMapper()}, which is the single place in the
+     * test tree where they are written out by hand, so this file cannot transcribe them differently
+     * from any sibling suite.</p>
      *
-     * <p>Equivalence to the module's own mapper is claimed here and <em>proved</em> elsewhere:
-     * {@link ApplicationJsonContractTest} takes the mapper from a real context that has read the
-     * module's {@code application.yml} and compares its rendering of this very type, byte for byte,
-     * with a mapper built exactly as this one is. If that file changes, that test fails; this one
-     * would not have noticed.</p>
+     * <p>This mapper evidences the shape this type takes <em>under those settings</em>, and nothing
+     * more; it is not evidence about the mapper a deployed instance holds. Two facts in
+     * {@link ApplicationJsonContractTest} carry that burden, both against a mapper obtained from a
+     * real context that has read the module's {@code application.yml}: one compares that mapper's
+     * output with this very factory's output, so an edit to the module's file fails there rather
+     * than quietly making this stand-in unrepresentative; the other binds this type through the
+     * deployed object directly.</p>
      *
-     * @return a mapper equivalent to the module's configured mapper for this type
+     * @return a mapper carrying the module's four declared serialisation settings
      */
     private static ObjectMapper moduleEquivalentMapper() {
-        return JsonMapper.builder()
-                .defaultPropertyInclusion(
-                        JsonInclude.Value.construct(JsonInclude.Include.NON_NULL,
-                                JsonInclude.Include.NON_NULL))
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-                .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
-                .build();
+        return JsonContractSupport.declaredSettingsMapper();
     }
 
     /**

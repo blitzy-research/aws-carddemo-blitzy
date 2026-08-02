@@ -24,14 +24,9 @@ import java.util.Map;
 
 import com.carddemo.domain.enums.KeyAction;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.StreamWriteFeature;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.databind.json.JsonMapper;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -122,22 +117,22 @@ class ScreenWorkAreaTest {
             List.of("lastProgram", "returnToProgram", "returnFlag", "function");
 
     /**
-     * The mapper the module is configured with, expressed as the four settings it declares.
+     * A mapper carrying the four settings the module declares, not the mapper the module itself
+     * holds.
      *
-     * <p>Built locally and held per suite rather than injected, because this is a unit test and an
-     * application context would prove something else. The settings mirror
-     * {@code src/main/resources/application.yml}: absent properties are omitted rather than emitted
-     * as nulls, dates are written as text rather than as epoch numbers, an unrecognised property is
-     * tolerated rather than fatal, and a plain decimal is written without an exponent.</p>
+     * <p>No application context is started, because this is a unit test and a context would prove
+     * something else. The settings come from {@link JsonContractSupport#declaredSettingsMapper()},
+     * which is the single place in the test tree where {@code src/main/resources/application.yml} is
+     * transcribed: absent properties are omitted rather than emitted as nulls, dates are written as
+     * text rather than as epoch numbers, an unrecognised property is tolerated rather than fatal, and
+     * a plain decimal is written without an exponent.</p>
+     *
+     * <p>What it evidences is the shape this type takes under those settings, and nothing more.
+     * {@link ApplicationJsonContractTest} compares a mapper obtained from a real context against this
+     * very factory, so an edit to the module's file fails there rather than silently making this
+     * stand-in unrepresentative.</p>
      */
-    private static final ObjectMapper WIRE_MAPPER = JsonMapper.builder()
-            .defaultPropertyInclusion(
-                    JsonInclude.Value.construct(
-                            JsonInclude.Include.NON_NULL, JsonInclude.Include.NON_NULL))
-            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-            .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-            .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
-            .build();
+    private static final ObjectMapper WIRE_MAPPER = JsonContractSupport.declaredSettingsMapper();
 
     /** The shape a serialized work area is read back into when property names are the subject. */
     private static final TypeReference<LinkedHashMap<String, Object>> WIRE_SHAPE =

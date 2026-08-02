@@ -23,125 +23,66 @@ import com.carddemo.domain.DisclosureGroup;
 import com.carddemo.domain.id.DisclosureGroupId;
 
 /**
- * Maps between the legacy 50-byte disclosure-group record image and {@link DisclosureGroup}, in both
- * directions, by explicit byte offset and with no reflection of any kind.
+ * Sole holder of the 50-byte disclosure-group record layout and of the exact two-way mapping between
+ * that record image and the {@link DisclosureGroup} entity.
  *
- * <p><strong>Legacy antecedent.</strong> The layout is declared as {@code DIS-GROUP-RECORD} in
- * {@code [app/cpy/CVTRA02Y.cpy]}, whose header states a record length of 50, with the three key
- * components gathered into a nested {@code DIS-GROUP-KEY} group. The cluster definition in
- * {@code [app/jcl/DISCGRP.jcl]} corroborates both figures independently: it declares
- * {@code KEYS(16 0)}, a 16-byte key at offset zero, and {@code RECORDSIZE(50 50)}, a fixed 50-byte
- * record. The 50 and the 16 are therefore each attested twice, from a copybook and from a job
- * stream that were written independently of one another.</p>
+ * <p>Layout authority is {@code app/cpy/CVTRA02Y.cpy}: a three-part composite key - a ten-character
+ * account group identifier, a two-character transaction type and a four-character transaction
+ * category - followed by the interest rate and a trailing filler run. Offsets are zero-based byte
+ * positions in the record image and lengths are encoded byte counts, never character counts, and
+ * every offset is a named constant so a reviewer can audit it against the copybook without reading a
+ * method body. The key width is derived from its three components rather than written as a literal,
+ * and the cluster that provisions the dataset attests the same figure independently. It is
+ * deliberately <em>not</em> the width of the transaction-category-balance key, which is one byte
+ * longer, and no constant is shared between the two layouts.
  *
- * <table>
- * <caption>The authoritative 50-byte layout, zero-based</caption>
- * <tr><th scope="col">#</th><th scope="col">COBOL field</th><th scope="col">Picture</th>
- *     <th scope="col">Offset</th><th scope="col">Length</th><th scope="col">Java property</th></tr>
- * <tr><td>&mdash;</td><td>{@code DIS-GROUP-KEY} (group)</td><td>&mdash;</td>
- *     <td>0</td><td>16</td><td>the {@code @IdClass} composite, {@link DisclosureGroupId}</td></tr>
- * <tr><td>1</td><td>{@code DIS-ACCT-GROUP-ID}</td><td>{@code X(10)}</td>
- *     <td>0</td><td>10</td><td>{@code disAcctGroupId} ({@link String}, key part 1)</td></tr>
- * <tr><td>2</td><td>{@code DIS-TRAN-TYPE-CD}</td><td>{@code X(02)}</td>
- *     <td>10</td><td>2</td><td>{@code disTranTypeCd} ({@link String}, key part 2)</td></tr>
- * <tr><td>3</td><td>{@code DIS-TRAN-CAT-CD}</td><td>{@code 9(04)}</td>
- *     <td>12</td><td>4</td><td>{@code disTranCatCd} ({@link String}, key part 3)</td></tr>
- * <tr><td>4</td><td>{@code DIS-INT-RATE}</td><td><strong>{@code S9(04)V99}</strong></td>
- *     <td>16</td><td><strong>6</strong></td>
- *     <td>{@code disIntRate} ({@link BigDecimal}, precision 6, scale 2)</td></tr>
- * <tr><td>&mdash;</td><td>{@code FILLER}</td><td>{@code X(28)}</td>
- *     <td>22</td><td>28</td><td><em>not mapped, not persisted</em></td></tr>
- * </table>
+ * <p><strong>The rate is six encoded bytes, not eleven, and that is the single easiest mistake to
+ * make in this layout.</strong> It is the only field of its shape anywhere in the estate:
+ * deliberately neither the eleven bytes of the transaction amount, the daily-transaction amount and
+ * the category balance, nor the twelve of the account monetary fields. An implementation that
+ * assumes the common monetary width misreads every byte from the rate onward while still producing a
+ * plausible object.
  *
- * <p><strong>Width arithmetic.</strong> The key is 10 + 2 + 4 = 16 bytes, which is exactly the
- * {@code KEYS(16 0)} figure; the 6-byte rate follows it, so 16 + 6 = 22 bytes are mapped; and
- * 22 + 28 filler bytes = 50, the stated record length. Those three sums are the whole geometry of
- * this layout and every constant below is derived from them rather than restated, so a wrong figure
- * cannot leave the offsets looking self-consistent.</p>
- *
- * <h2>The rate is six bytes, not eleven</h2>
- *
- * <p>{@code DIS-INT-RATE} is {@code PIC S9(04)V99}: four integer digits plus two implied decimal
- * digits, and therefore <strong>six</strong> encoded bytes. A census of the copybook and program
- * trees finds {@code S9(04)V99} exactly <strong>once</strong> in the entire estate, at this field,
- * so this is the only field of this shape anywhere. Every other signed decimal is
- * {@code S9(09)V99} at 11 bytes &mdash; the transaction amount, the daily-transaction amount and the
- * category balance &mdash; or {@code S9(10)V99} at 12 bytes, being the five account money fields.
- * The consequence reaches the schema: {@code dis_int_rate} is the only precision-6 column in the
- * database, and every other monetary column is precision 11 or 12.</p>
- *
- * <p>This asymmetry is the single most dangerous thing about this layout, because the failure mode is
- * silent. Copying an 11-byte slice from a sibling mapper would read the rate's six bytes plus the
- * first four bytes of filler, shift no subsequent field, and still parse &mdash; the fixture's filler
- * is ASCII zeros, so an 11-byte slice of row 0 yields digits that decode without complaint to a
- * value four decimal orders away from the truth. {@link #DIS_INT_RATE_LENGTH} is therefore declared
- * as the literal 6, is documented here as deliberately neither 11 nor 12, and must not be
- * "harmonised" with its siblings by a reviewer who has seen ten mappers use 11 or 12.</p>
- *
- * <h2>Decimal representation</h2>
- *
- * <p>The value is zoned decimal under {@code USAGE DISPLAY}: one ASCII byte per digit with the sign
- * overpunched into the final digit byte, so there is no separate sign byte and no byte is spent on
- * the implied decimal point. Positive digits 0 through 9 are carried as <code>&#123;</code> and
- * {@code A} through {@code I}; negative digits 0 through 9 as <code>&#125;</code> and {@code J}
- * through {@code R}.</p>
- *
- * <p>Every conversion in both directions goes through {@link ZonedDecimalCodec}, which is the
- * module's single point of decimal truth. This class never calls {@code setScale}, never names a
- * rounding mode and never performs arithmetic, so it cannot introduce a second rounding policy. The
- * codec applies scale 2 and {@link java.math.RoundingMode#DOWN}, which is mandatory here and is not
- * a stylistic preference: a search for the {@code ROUNDED} keyword across every program and copybook
- * in the estate returns <strong>zero</strong> occurrences, and a COBOL arithmetic store without
- * {@code ROUNDED} truncates toward zero. {@code HALF_EVEN} &mdash; the conventional Java choice
- * &mdash; and {@code HALF_UP} are both forbidden, because either would differ by one cent on roughly
- * half of all interest computations, a byte-parity failure completely invisible to a test suite
- * written under the same wrong assumption. {@code COMP-3} occurs <strong>zero</strong> times in the
- * copybook tree, so no packed-decimal path is needed or provided, and no {@code double},
- * {@code float}, {@code Double} or {@code Float} appears anywhere in this class.</p>
- *
- * <p><strong>One representational limit, stated rather than hidden.</strong> The codec offers a
- * signed decode that carries a negative-zero bit alongside the value, because the legacy image
- * distinguishes a negative zero from a positive zero while {@link BigDecimal} does not. This mapper
- * uses the plain decode instead, because {@link DisclosureGroup} models the rate as a
- * {@link BigDecimal} and so has nowhere to keep that bit. The consequence is exact and narrow: every
- * image whose digits are not all zero round-trips byte for byte on either path, including a negative
- * rate, and only a true negative zero &mdash; an all-zero image whose sign byte is
- * <code>&#125;</code> &mdash; would be re-emitted with <code>&#123;</code>. No such image exists in
- * the reference data: a census of the final rate byte across all 51 rows of
- * {@code [app/data/ASCII/discgrp.txt]} finds <code>&#123;</code> every time, so no seeded row is
- * affected. A caller that must preserve that one bit has to carry it outside the entity; this class
- * will not silently invent a place for it.</p>
+ * <p>The rate is zoned decimal - one ASCII byte per digit, sign overpunched into the final digit
+ * byte, no separate sign byte and no packed representation - and all conversion in both directions
+ * goes through {@link ZonedDecimalCodec}, which applies scale 2 with truncation toward zero because
+ * no arithmetic statement anywhere in the estate specifies rounding. This class never calls
+ * {@code setScale} and never names a rounding mode, and no binary floating-point type appears here.
+ * One representational limit is stated rather than hidden: a {@link BigDecimal} cannot carry a
+ * negative zero, so a negatively-signed all-zero image decodes to zero and re-emits positive, and a
+ * caller needing byte-exact preservation reads the field through the codec's signed entry points.
  *
  * <p><strong>This rate is the interest computation's multiplicand, and the computation is not
- * here.</strong> The accrual in {@code [app/cbl/CBACT04C.cbl]} computes the monthly interest as the
- * category balance multiplied by this rate <em>first</em> and divided by 1200 <em>second</em>, into a
- * {@code PIC S9(09)V99} working field. Dividing the rate by 1200 first is algebraically identical in
- * exact arithmetic but moves the truncation point and changes the stored cent, so the expression must
- * never be rearranged. That obligation belongs to the interest-calculation service; this class
- * decodes the operand faithfully and stops. No arithmetic of any kind is performed below: no
- * multiplication, no division, no accumulation, no rescaling of a decoded rate, and no numeric
- * literal from that expression &mdash; the divisor is named here in prose and appears nowhere in
- * code.</p>
+ * here.</strong> The accrual service multiplies a category balance by this rate and only then
+ * divides; because every store truncates, that arithmetic is not associative, so re-ordering the
+ * expression would move the truncation point and change the cent. Keeping this class free of
+ * arithmetic is what guarantees it cannot contribute such a defect.
  *
- * <h2>The ten-character group key is never trimmed</h2>
+ * <p><strong>The ten-character group identifier is never trimmed.</strong> Reference rows carry
+ * trailing spaces, and those spaces are never trimmed, stripped, case folded or normalised: a padded
+ * key is a different key from a trimmed one everywhere in this module. The default-group fallback the
+ * interest program performs depends on the padded form matching, so trimming here would silently
+ * break a lookup rather than fail visibly.
  *
- * <p>{@code DIS-ACCT-GROUP-ID} is {@code PIC X(10)} and the reference data uses all ten bytes:
- * {@code A000000000} fills the field exactly, while {@code DEFAULT} and {@code ZEROAPR} are seven
- * characters each followed by <strong>three trailing spaces</strong>. Those spaces are never
- * trimmed, stripped, right-trimmed, case-folded or normalised, in either direction.</p>
+ * <p>The filler run is emitted as spaces. Filler with no initialising clause is uninitialised, so no
+ * byte value is canonical, and the shipped fixture for this layout uses ASCII zero where this mapper
+ * writes space. <strong>A whole-record round-trip comparison against that fixture will therefore
+ * fail</strong> - not because the mapping is wrong, but because the filler bytes were never
+ * specified. Every fixture assertion for this layout compares only the mapped data prefix, from zero
+ * up to but excluding {@value #MAPPED_PREFIX_LENGTH}.
  *
- * <p>The reason is behavioural rather than cosmetic. When the direct group lookup fails with file
- * status {@code '23'}, the accrual program in {@code [app/cbl/CBACT04C.cbl]} recovers by moving the
- * {@code DEFAULT} literal into a {@code PIC X(10)} key field &mdash; which space-pads it to ten
- * characters &mdash; and reading again. If a stored key had been trimmed to seven characters, the
- * padded probe would no longer match it, the fallback would never fire, and the set of accounts that
- * accrue interest would change silently. The account record's own {@code ACCT-GROUP-ID} is likewise
- * {@code X(10)} and is ten spaces on all 50 seeded account rows, so the join is between two padded
- * ten-byte fields and neither side may be normalised. The fallback itself is a service concern and is
- * not implemented here; this class's entire obligation is to carry the ten bytes through verbatim,
- * which is what makes the fallback possible.</p>
+ * <p>The identifiers stay {@link String}s even where they look numeric, because leading zeros are
+ * significant and an identifier is not a number. The entity declares no optimistic-locking counter,
+ * a disclosure group being reference data rather than a concurrently updated row, so no such token is
+ * read from or written to the record image. This class bakes in no referential assumption of any
+ * kind: it resolves no association and reads no other table.
  *
- * <h2>Verified fixture evidence</h2>
+ * <p>An image whose encoded length is not exactly {@value #RECORD_LENGTH} raises
+ * {@link IllegalArgumentException} naming the artefact, the expected width and the actual length;
+ * {@code null} arguments raise {@link NullPointerException}. Input is never silently padded,
+ * truncated, partially mapped or returned as {@code null}. No type from this module's own exception
+ * package is used: none of them models a caller supplying the wrong number of bytes, which has no
+ * legacy antecedent because the legacy records are fixed length by construction.
  *
  * <p>{@code [app/data/ASCII/discgrp.txt]} is 2,601 bytes, which factors exactly as 51 rows on a
  * 51-byte stride: 50 record bytes plus one {@code 0x0A}. The line feed is a record
@@ -172,11 +113,15 @@ import com.carddemo.domain.id.DisclosureGroupId;
  * constructed rather than sampled.</p>
  *
  * <p>The three seventeen-row groups are keyed {@code A000000000}, {@code DEFAULT} plus three spaces
- * and {@code ZEROAPR} plus three spaces. That composition matters beyond this class: it makes both
- * the {@code '23'}-status default-group fallback and the zero-rate skip in the accrual program
- * reachable from seeded data alone, with no synthetic fixture required. The zero-rate skip is service
- * logic; here a {@code 0.00} rate is simply decoded faithfully and is never treated as absent,
- * missing, {@code null} or invalid.</p>
+ * and {@code ZEROAPR} plus three spaces. That composition matters beyond this class, and it is worth
+ * being precise about what it does and does not reach. It makes the {@code '23'}-status default-group
+ * fallback reachable from seeded data alone: no seeded account carries any of these three keys - all
+ * fifty hold ten spaces - so every seeded account misses its first probe and re-probes as
+ * {@code DEFAULT} plus three spaces. It does <em>not</em> make the zero-rate skip reachable from the
+ * seed, because that re-probe finds a rate of 15.00; reaching the skip needs an account constructed
+ * with the zero-rate key plus a category balance on the matching type and category. Either way the
+ * skip is service logic; here a {@code 0.00} rate is simply decoded faithfully and is never treated as
+ * absent, missing, {@code null} or invalid.</p>
  *
  * <h2>Filler bytes and the exact comparison bound</h2>
  *
@@ -303,9 +248,11 @@ import com.carddemo.domain.id.DisclosureGroupId;
  *     spaces on every seeded row, so the join is between two padded ten-byte fields.</li>
  * <li>A rate of {@code 0.00} is a legitimate decoded value and is never treated as absent, null,
  *     missing or invalid. The zero-rate skip is a service concern, not a mapping concern.</li>
- * <li>The fixture carries three consecutive seventeen-row groups, which makes both the fallback
- *     branch and the zero-rate branch of the interest program reachable from seeded data alone, with
- *     no synthetic fixture required.</li>
+ * <li>The fixture carries three consecutive seventeen-row groups, which makes the fallback branch of
+ *     the interest program reachable from seeded data alone. The zero-rate branch is not reachable
+ *     that way: the fallback re-probe finds a rate of 15.00, so exercising the skip needs an account
+ *     constructed with the zero-rate key. The zero rates themselves are genuinely seeded; it is the
+ *     branch that needs the fixture, not the data.</li>
  * <li>Filler bytes are not uniform across the estate's fixtures: this layout's fixture carries ASCII
  *     zero whereas {@link #toRecord(DisclosureGroup)} emits spaces, an uninitialised-{@code FILLER}
  *     anomaly. Round-trip assertions therefore compare only the mapped prefix, and a whole-record
@@ -320,156 +267,78 @@ import com.carddemo.domain.id.DisclosureGroupId;
  * transcribed: no COBOL, copybook or job-stream statement appears in this file.</p>
  *
  * @see DisclosureGroup
- * @see DisclosureGroupId
- * @see FixedWidthFieldReader
  * @see ZonedDecimalCodec
+ * @see FixedWidthFieldReader
  */
 public final class DisclosureGroupRecordMapper {
 
-    /**
-     * Layout name used in every diagnostic this class produces, naming both the COBOL group and the
-     * copybook that declares it so that a rejected image identifies its own contract.
-     */
+    /** Layout name carried into every diagnostic; it names both the record group and the copybook. */
     public static final String ARTEFACT = "DIS-GROUP-RECORD (CVTRA02Y)";
 
-    /** Legacy field name of key part 1, used in diagnostics. */
     private static final String FIELD_ACCT_GROUP_ID = "DIS-ACCT-GROUP-ID";
 
-    /** Legacy field name of key part 2, used in diagnostics. */
     private static final String FIELD_TRAN_TYPE_CD = "DIS-TRAN-TYPE-CD";
 
-    /** Legacy field name of key part 3, used in diagnostics. */
     private static final String FIELD_TRAN_CAT_CD = "DIS-TRAN-CAT-CD";
 
-    /** Legacy field name of the interest rate, used in diagnostics. */
     private static final String FIELD_INT_RATE = "DIS-INT-RATE";
 
-    /**
-     * Encoded byte width of the whole record, {@value #RECORD_LENGTH}.
-     *
-     * <p>Attested twice and independently: the copybook header states a record length of 50
-     * {@code [app/cpy/CVTRA02Y.cpy]} and the cluster is defined with {@code RECORDSIZE(50 50)}
-     * {@code [app/jcl/DISCGRP.jcl]}. The fixture confirms it a third time, since 2,601 bytes factors
-     * exactly as 51 rows of 50 plus one terminator each.</p>
-     */
+    /** Full record width: the mapped data prefix plus the trailing filler run. */
     public static final int RECORD_LENGTH = 50;
 
-    /**
-     * Zero-based offset of {@code DIS-ACCT-GROUP-ID}, {@value #DIS_ACCT_GROUP_ID_OFFSET}. It is the
-     * first field of the record, so the record and its key both begin here.
-     */
     public static final int DIS_ACCT_GROUP_ID_OFFSET = 0;
 
-    /**
-     * Encoded byte length of {@code DIS-ACCT-GROUP-ID}, {@value #DIS_ACCT_GROUP_ID_LENGTH}, from
-     * {@code PIC X(10)}. All ten bytes are significant: {@code DEFAULT} and {@code ZEROAPR} occupy
-     * seven of them and are followed by three contractual spaces.
-     */
+    /** Width of the group identifier, whose contractual trailing spaces are never trimmed. */
     public static final int DIS_ACCT_GROUP_ID_LENGTH = 10;
 
-    /**
-     * Zero-based offset of {@code DIS-TRAN-TYPE-CD}, {@value #DIS_TRAN_TYPE_CD_OFFSET}. Derived by
-     * addition rather than restated, so it cannot disagree with the field that precedes it.
-     */
     public static final int DIS_TRAN_TYPE_CD_OFFSET =
             DIS_ACCT_GROUP_ID_OFFSET + DIS_ACCT_GROUP_ID_LENGTH;
 
-    /**
-     * Encoded byte length of {@code DIS-TRAN-TYPE-CD}, {@value #DIS_TRAN_TYPE_CD_LENGTH}, from
-     * {@code PIC X(02)}.
-     */
     public static final int DIS_TRAN_TYPE_CD_LENGTH = 2;
 
-    /**
-     * Zero-based offset of {@code DIS-TRAN-CAT-CD}, {@value #DIS_TRAN_CAT_CD_OFFSET}, derived from
-     * the field that precedes it.
-     */
     public static final int DIS_TRAN_CAT_CD_OFFSET =
             DIS_TRAN_TYPE_CD_OFFSET + DIS_TRAN_TYPE_CD_LENGTH;
 
-    /**
-     * Encoded byte length of {@code DIS-TRAN-CAT-CD}, {@value #DIS_TRAN_CAT_CD_LENGTH}, from
-     * {@code PIC 9(04)}. The leading zeros are significant, so the value is carried as a
-     * {@link String} of exactly this width and never as an integral type.
-     */
     public static final int DIS_TRAN_CAT_CD_LENGTH = 4;
 
     /**
-     * Encoded byte length of the three-part composite key, {@value #KEY_LENGTH}.
-     *
-     * <p>Derived as 10 + 2 + 4 from the three key components, and equal to the {@code KEYS(16 0)}
-     * figure declared by the cluster definition {@code [app/jcl/DISCGRP.jcl]}, which is an
-     * independent attestation of the same number. It is deliberately <em>not</em> 17: the
-     * transaction-category-balance layout has a 17-byte key, and no constant is shared with it.</p>
+     * Composite key width, derived from its three components rather than written as a literal. It is
+     * deliberately not the width of the transaction-category-balance key, which is one byte longer.
      */
     public static final int KEY_LENGTH =
             DIS_ACCT_GROUP_ID_LENGTH + DIS_TRAN_TYPE_CD_LENGTH + DIS_TRAN_CAT_CD_LENGTH;
 
-    /**
-     * Zero-based offset of {@code DIS-INT-RATE}, {@value #DIS_INT_RATE_OFFSET}, derived from the last
-     * key component. It coincides with {@link #KEY_LENGTH} because the key occupies the leading
-     * portion of the record, which is what {@code KEYS(16 0)} asserts.
-     */
     public static final int DIS_INT_RATE_OFFSET =
             DIS_TRAN_CAT_CD_OFFSET + DIS_TRAN_CAT_CD_LENGTH;
 
     /**
-     * Encoded byte length of {@code DIS-INT-RATE}, {@value #DIS_INT_RATE_LENGTH}.
-     *
-     * <p>{@code PIC S9(04)V99} is four integer digits plus two implied decimal digits, so the image
-     * is six bytes with the sign overpunched into the last of them. This is the estate's only
-     * {@code S9(04)V99} field and the schema's only precision-6 column, and the figure is
-     * deliberately neither 11 &mdash; the {@code S9(09)V99} width of the transaction amount, the
-     * daily-transaction amount and the category balance &mdash; nor 12, the {@code S9(10)V99} width
-     * of the five account money fields. It equals {@link ZonedDecimalCodec#INTEREST_RATE_WIDTH},
-     * which the codec publishes for this same field; the two are asserted equal by test rather than
-     * aliased, so that neither can be widened by editing the other.</p>
+     * Encoded width of the interest rate: <strong>six bytes</strong>, the only field of this shape in
+     * the estate. Deliberately neither the eleven bytes of the transaction, daily-transaction and
+     * category-balance amounts nor the twelve of the account monetary fields, so an implementation that
+     * assumes the common monetary width misreads every byte from here onward.
      */
     public static final int DIS_INT_RATE_LENGTH = 6;
 
     /**
-     * Encoded byte length of the mapped prefix of the record, {@value #MAPPED_PREFIX_LENGTH}, being
-     * the key plus the rate, and equivalently the exclusive upper bound of the byte range that
-     * carries mapped data.
-     *
-     * <p>This is the comparison bound for a fixture round trip. Bytes 0 through 21 inclusive are
-     * mapped; bytes 22 through 49 are uninitialised filler whose value differs between this class and
-     * the shipped fixture, so a whole-record comparison against the fixture will fail on the filler
-     * alone. Compare {@code [0, }{@value #MAPPED_PREFIX_LENGTH}{@code )}.</p>
+     * Width of the mapped data prefix, and the exact bound for a fixture round-trip comparison: compare
+     * from zero up to but excluding this value and nothing beyond it.
      */
     public static final int MAPPED_PREFIX_LENGTH = DIS_INT_RATE_OFFSET + DIS_INT_RATE_LENGTH;
 
-    /**
-     * Zero-based offset of the trailing {@code FILLER}, {@value #FILLER_OFFSET}, which begins exactly
-     * where the mapped data ends.
-     */
     public static final int FILLER_OFFSET = MAPPED_PREFIX_LENGTH;
 
-    /**
-     * Encoded byte length of the trailing {@code FILLER}, {@value #FILLER_LENGTH}, from
-     * {@code PIC X(28)}.
-     *
-     * <p>Derived as the remainder of the attested record length rather than restated, so the mapped
-     * fields and the filler are guaranteed to sum to {@link #RECORD_LENGTH} by construction.</p>
-     */
+    /** Width of the unmapped trailing filler run. */
     public static final int FILLER_LENGTH = RECORD_LENGTH - MAPPED_PREFIX_LENGTH;
 
     /**
-     * The byte this class writes across the trailing filler run on the encode path, a space.
-     *
-     * <p>COBOL {@code FILLER X(28)} carries no {@code VALUE} clause and is therefore uninitialised,
-     * so no byte value is canonical. Space is the module-wide default. The shipped fixture
-     * {@code [app/data/ASCII/discgrp.txt]} disagrees: all 1,428 of its filler bytes are ASCII
-     * {@code '0'}, in common with the other three reference-table files and unlike the four master
-     * files. The divergence is a recorded source anomaly and is neither propagated nor silently
-     * corrected, which is exactly why a fixture round trip compares only
-     * {@code [0, }{@value #MAPPED_PREFIX_LENGTH}{@code )}.</p>
+     * Byte this mapper writes across the filler run. Filler with no initialising clause is
+     * uninitialised, so no value is canonical; space is the module-wide default, and the shipped fixture
+     * uses ASCII zero instead - which is why a whole-record comparison against it fails.
      */
     public static final char FILLER_CHARACTER = ' ';
 
-    /** Not instantiable: this is a stateless collection of pure mapping functions. */
+    /** Not instantiable: a stateless mapper exposing only static members. */
     private DisclosureGroupRecordMapper() {
-        // No instance state exists, so no instance is ever required.
     }
 
     /**
@@ -544,19 +413,17 @@ public final class DisclosureGroupRecordMapper {
      * Extracts just the three-part composite key from a complete record image, without materialising
      * a row.
      *
-     * <p>Offered for a caller that only needs to address or probe a row, for instance to look one up
-     * before deciding whether to decode it. The three components are sliced at the same offsets and
-     * copied just as verbatim as {@link #fromRecord(String)} copies them, so a padded group
-     * identifier such as {@code DEFAULT} followed by three spaces yields a key that matches the
-     * stored row exactly. The whole image is still required and still validated, because the key is
-     * only meaningful as part of a well-formed record.</p>
+     * <p>For a caller that only needs to address or probe a row. The components are sliced at the
+     * same offsets and copied just as verbatim as {@link #fromRecord(String)} copies them, so a
+     * padded group identifier yields a key that matches the stored row exactly. The whole image is
+     * still required and still validated, because the key is only meaningful as part of a well-formed
+     * record.
      *
-     * @param  recordImage the complete record image, excluding any line terminator; must not be
-     *                     {@code null}
-     * @return the composite key, never {@code null}
+     * @param  recordImage the complete record image, excluding any line terminator
+     * @return the composite key
      * @throws NullPointerException     if {@code recordImage} is {@code null}
      * @throws IllegalArgumentException if the image is not exactly {@value #RECORD_LENGTH} encoded
-     *                                 bytes, or if it contains a character US-ASCII cannot represent
+     *                                  bytes, or contains a character US-ASCII cannot represent
      */
     public static DisclosureGroupId keyFromRecord(String recordImage) {
         Objects.requireNonNull(recordImage, "recordImage must not be null");
@@ -570,25 +437,21 @@ public final class DisclosureGroupRecordMapper {
     /**
      * Encodes an entity into a complete {@value #RECORD_LENGTH}-byte record image.
      *
-     * <p>The two alphanumeric fields are placed left-justified, matching {@code PIC X(n)}, so a value
-     * already at its full declared width passes through byte for byte and nothing is ever trimmed;
-     * the unsigned numeric field is placed right-justified and zero-filled, matching {@code PIC 9(n)},
-     * so its leading zeros survive. The rate is encoded by {@link ZonedDecimalCodec} into its
-     * six-byte overpunched image, which is placed flush against the field's trailing edge so the sign
-     * byte stays last. The trailing {@value #FILLER_LENGTH}-byte filler is written as
-     * {@link #FILLER_CHARACTER}.</p>
+     * <p>Padding is part of the contract: the alphanumeric fields are placed left-justified, so a
+     * value already at its full declared width passes through byte for byte and nothing is ever
+     * trimmed, and the unsigned numeric field is placed right-justified and zero-filled so its
+     * leading zeros survive. The rate is encoded by {@link ZonedDecimalCodec} and placed flush
+     * against the field's trailing edge so the overpunched sign byte stays last. The trailing filler
+     * is written as {@link #FILLER_CHARACTER}.
      *
-     * <p><strong>Comparison bound.</strong> Because the filler byte is uninitialised in COBOL and the
-     * shipped fixture uses ASCII {@code '0'} where this method writes a space, a round trip against
-     * {@code [app/data/ASCII/discgrp.txt]} must compare only
-     * {@code [0, }{@value #MAPPED_PREFIX_LENGTH}{@code )}. A whole-record comparison will fail on the
-     * filler alone.</p>
+     * <p><strong>Comparison bound.</strong> Because the filler is uninitialised in the source and the
+     * shipped fixture uses ASCII zero where this method writes a space, a round trip against that
+     * fixture must compare only the mapped prefix; a whole-record comparison will fail on the filler
+     * alone.
      *
-     * @param  group the entity to encode; must not be {@code null}, and every mapped property must be
-     *               populated
-     * @return the record image, never {@code null}, of exactly {@value #RECORD_LENGTH} US-ASCII bytes
-     * @throws NullPointerException     if {@code group} is {@code null} or any mapped property of it
-     *                                  is {@code null}
+     * @param  group the entity to encode; every mapped property must be populated
+     * @return the record image, exactly {@value #RECORD_LENGTH} US-ASCII bytes
+     * @throws NullPointerException     if {@code group} or any mapped property is {@code null}
      * @throws IllegalArgumentException if any value is wider than its field, contains a character
      *                                  US-ASCII cannot represent, or does not fit the rate field
      */
@@ -667,24 +530,24 @@ public final class DisclosureGroupRecordMapper {
         BigDecimal intRate = Objects.requireNonNull(group.getDisIntRate(),
                 () -> nullFieldMessage(FIELD_INT_RATE));
         return FixedWidthFieldReader.builder(ARTEFACT, RECORD_LENGTH)
-                // PIC X(10) and PIC X(02) are alphanumeric, so they are left-justified and
-                // space-padded. A value already ten bytes wide is placed unchanged, which is what
-                // carries the contractual trailing spaces of the padded group identifiers through.
+                // Alphanumeric fields are left-justified and space-padded. A value already at full width is
+                // placed unchanged, which is what carries the contractual trailing spaces of the
+                // padded group identifiers through.
                 .putAlphanumeric(FIELD_ACCT_GROUP_ID, DIS_ACCT_GROUP_ID_OFFSET,
                         DIS_ACCT_GROUP_ID_LENGTH, acctGroupId)
                 .putAlphanumeric(FIELD_TRAN_TYPE_CD, DIS_TRAN_TYPE_CD_OFFSET,
                         DIS_TRAN_TYPE_CD_LENGTH, tranTypeCd)
-                // PIC 9(04) is right-justified and zero-filled, which is what preserves the
+                // Numeric fields are right-justified and zero-filled, which is what preserves the
                 // significant leading zeros of the category code.
                 .putNumeric(FIELD_TRAN_CAT_CD, DIS_TRAN_CAT_CD_OFFSET, DIS_TRAN_CAT_CD_LENGTH,
                         tranCatCd)
-                // The codec returns exactly six bytes, so this placement is positional only; it is
-                // right-justified so that an overpunched sign byte stays in the final position.
+                // The codec returns exactly the declared width, so this placement is positional only; it is
+                // right-justified so an overpunched sign byte stays in the final position.
                 .putNumeric(FIELD_INT_RATE, DIS_INT_RATE_OFFSET, DIS_INT_RATE_LENGTH,
                         ZonedDecimalCodec.encodeMonetary(intRate, DIS_INT_RATE_LENGTH,
                                 FIELD_INT_RATE))
-                // Stated explicitly rather than inherited from the buffer's default, so that the
-                // deliberate choice of space over the fixture's ASCII zero is visible right here.
+                // Stated explicitly rather than inherited from the buffer's default, so the deliberate
+                // choice of space over the fixture's ASCII zero is visible right here.
                 .putFiller(FILLER_OFFSET, FILLER_LENGTH, FILLER_CHARACTER)
                 .build();
     }
@@ -701,12 +564,7 @@ public final class DisclosureGroupRecordMapper {
         return Objects.requireNonNull(value, () -> nullFieldMessage(fieldName));
     }
 
-    /**
-     * Builds the diagnostic for an absent mapped field.
-     *
-     * @param  fieldName legacy field name of the absent field
-     * @return the message, naming the artefact and the field
-     */
+    /** Builds the diagnostic for an absent mapped field, naming the artefact and the field. */
     private static String nullFieldMessage(String fieldName) {
         return ARTEFACT + " cannot be encoded because " + fieldName
                 + " is null; every mapped field of a fixed-width record must be present";

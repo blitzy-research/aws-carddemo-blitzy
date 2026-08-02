@@ -17,6 +17,8 @@
 package com.carddemo.api.dto;
 
 import com.carddemo.domain.enums.KeyAction;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
 import java.util.List;
 
@@ -113,24 +115,50 @@ import java.util.List;
  * loop bound at line 290, the row index reset to one at line 295, and the filling loop at lines 297
  * to 303 that stops once the index passes the last row, the whole passage running from line 290 to
  * line 303 with the pre-read guard on the attention key just above it at lines 285 to 287. Because
- * there is no declaration to translate, there is no constant to declare here either: the row count
- * reaches the service as data inside {@link PageMetadata}, whose own documentation proves each of
- * the three screen counts from its own source member. This record declares no row-count value, and
- * it does not borrow the administrative user list's count even though the two happen to agree - the
- * two screens are independent and were established by different mechanisms.</p>
+ * there is no declaration to translate, there is no <em>page</em> row count declared here either: the
+ * row count reaches the service as data inside {@link PageMetadata}, whose own documentation proves
+ * each of the three screen counts from its own source member. Nothing in this record tells the service
+ * how many rows a page carries, and nothing here borrows the administrative user list's figure even
+ * though the two screens happen to agree - they are independent and were established by different
+ * mechanisms.</p>
+ *
+ * <p>{@link #ROW_SELECTOR_COUNT} is a different quantity and is genuinely declared here: it is the
+ * number of selector <em>items the map declares</em>, which the map does declare explicitly, one item
+ * at a time. It bounds how many selectors a submission may carry and tells no one how many rows to
+ * read, present or fetch. The two figures coincide at ten for this screen because a map declares one
+ * selector per row, and they remain separate declarations for separate purposes.</p>
  *
  * <p>That count is <strong>screen shape</strong>: the number of lines the operator sees. It is not a
  * tuning figure of any kind, and no tuning figure of any kind appears anywhere in this file.
  * Decision log entry DL-073 records that the module asserts no performance target at all.</p>
  *
- * <p>Navigation state travels as the cursor pair inside {@link PageMetadata} - the boundary keys the
- * program retains as its first and last identifier of the displayed page. There is no row offset and
- * no page arithmetic here, because the legacy browse has neither: it repositions on a retained key
- * and walks. The page indicator is a display value that round-trips: the program computes it and
- * writes it into the inbound item at line 324, so it comes back on the next submission, which is why
- * it is request state despite being server-produced. It is carried as text of width 8, matching the
- * map, and is never parsed into a number here; the card-list screen's indicator is a differently
- * named item of width 3, and the two are deliberately not unified.</p>
+ * <p>Navigation state travels as the cursor pair inside {@link PageMetadata.PageCursorRequest} - the
+ * boundary keys the program retains as its first and last identifier of the displayed page. There is
+ * no row offset and no page arithmetic here, because the legacy browse has neither: it repositions on
+ * a retained key and walks.</p>
+ *
+ * <p><strong>The inbound paging shape is narrower than the outbound one, and deliberately so.</strong>
+ * A submission chooses only where to resume and in which direction. The page depth is the number of
+ * lines the screen has, and whether a further page exists is something the browse discovers by
+ * attempting one more access - so neither is a value a client is in a position to state. Accepting
+ * them inbound would let a submission name a page depth the screen does not have, or assert the
+ * availability of a page the browse never found. {@link PageMetadata.PageCursorRequest} therefore
+ * carries the two boundary keys and the direction and nothing else, while the full
+ * {@link PageMetadata} remains the outbound shape on the response contract.</p>
+ *
+ * <p><strong>The page indicator is echoed, not accepted.</strong> The item physically returns on the
+ * next submission because a fixed-width screen transmits every field it displays, but the program
+ * never reads the returned value: {@code PAGENUMI} appears at exactly two sites in
+ * {@code app/cbl/COTRN00C.cbl}, lines 324 and 373, and both are writes of
+ * {@code CDEMO-CT00-PAGE-NUM} into the item. The authoritative page number lives in the
+ * communication area the program carries across turns, and the displayed item is a rendering of it.
+ * The component is therefore kept - it is part of the layout this contract mirrors, and it is
+ * serialised outbound - but it is marked non-bindable, so a submission cannot substitute a page
+ * number the server did not compute. That is not a restriction added on top of the legacy behaviour;
+ * it is the legacy behaviour, which read the value from its own state and not from the terminal. It
+ * is carried as text of width 8, matching the map, and is never parsed into a number here; the
+ * card-list screen's indicator is a differently named item of width 3, and the two are deliberately
+ * not unified.</p>
  *
  * <p><strong>Backward paging inverts the fill order, and this record does not participate.</strong>
  * The backward paragraph begins at line 333, seeds the row index to the last row at line 349, and
@@ -167,10 +195,20 @@ import java.util.List;
  *
  * <h2>Validation policy: bounds only, and they measure rather than change</h2>
  *
- * <p>The only declarative constraints are width bounds - 16 characters on the filter, 8 on the page
- * indicator and 1 on each selector entry - each taken from the map item it mirrors. A bound reports
- * an over-long value and nothing else: it never shortens, pads, folds case or normalises, so a value
- * crosses this boundary byte for byte with every leading and trailing space intact.</p>
+ * <p>The declarative constraints on values are width bounds - 16 characters on the filter, 8 on the
+ * page indicator and 1 on each selector entry - each taken from the map item it mirrors. A bound
+ * reports an over-long value and nothing else: it never shortens, pads, folds case or normalises, so a
+ * value crosses this boundary byte for byte with every leading and trailing space intact.</p>
+ *
+ * <p><strong>Three structural bounds sit beside them and none is a field edit.</strong> The selector
+ * sequence is bounded at the map's ten items, and the navigation and paging components each carry a
+ * cascade so that the widths <em>they</em> declare are actually evaluated - a nested constraint fires
+ * only when the enclosing component asks for it, so without the cascade those widths are stated and
+ * unenforced, and an arbitrarily wide echoed identifier or browse cursor crosses this boundary
+ * unmeasured on its way to a query. None of the three constrains a value this record declares, none
+ * alters anything, and none can pre-empt a service cascade: a sequence longer than the screen and an
+ * over-wide nested value are states no 3270 submission could produce, so the estate has no ordered
+ * check and no message for either. What they prevent is unbounded work rather than a bad value.</p>
  *
  * <p>No presence constraint, character-class constraint, numeric constraint or bound-check constraint
  * appears, and their absence is deliberate rather than an omission. The filter is legitimately blank
@@ -185,6 +223,21 @@ import java.util.List;
  * records how the declarative failures that <em>do</em> occur are answered in the legacy two-state
  * field vocabulary. No message text is declared in this file - the texts belong to the response
  * contract.</p>
+ *
+ * <h2>Regulated values are carried verbatim and disclosed nowhere</h2>
+ *
+ * <p>Two components carry regulated content. The filter is a transaction identifier, which names one
+ * specific movement of money on one specific card, and the paging component's retained browse keys are
+ * transaction identifiers of the same kind. Both are transported exactly as received - never masked,
+ * truncated, partially obscured or transformed - because the browse compares the filter to a retrieved
+ * key character for character and repositions on the cursors verbatim, so any alteration would change
+ * which rows the screen lists.
+ *
+ * <p>Disclosure is prevented on the rendering path instead: {@link #toString()} substitutes a fixed
+ * placeholder for the filter and for the paging component, while {@link NavigationContext} redacts its
+ * own identifying values and is therefore printed by delegation. The reasoning behind each choice, and
+ * why the paging component is withheld whole rather than by delegation, is on that method. This file
+ * holds no logger and emits nothing on its own.
  *
  * <h2>Provenance</h2>
  *
@@ -201,12 +254,14 @@ import java.util.List;
  *     the branch {@code app/cbl/COTRN00C.cbl} takes at line 206. Bounded to 16 characters, carried
  *     unaltered, and never defaulted or substituted. The non-numeric rejection at line 214 is a
  *     message-bearing service check over this text, not a type change.
- * @param pageIndicator the page indicator the screen displays, mirroring inbound map item
+ * @param displayedPageNumber the page indicator the screen displays, mirroring inbound map item
  *     {@code PAGENUM} of width 8 at {@code app/cpy-bms/COTRN00.CPY} line 60 and the protected screen
- *     item at {@code app/bms/COTRN00.bms} line 85. It is server-produced but request-echoed: the
- *     program writes it into the inbound item at {@code app/cbl/COTRN00C.cbl} line 324, so it returns
- *     on the following submission. Alphanumeric on the map and therefore text here, never a number,
- *     and bounded to 8 characters. Display value only - {@link PageMetadata} carries the
+ *     item at {@code app/bms/COTRN00.bms} line 85. Server-owned and <strong>non-bindable</strong>:
+ *     the program writes it at {@code app/cbl/COTRN00C.cbl} lines 324 and 373 and reads it at neither,
+ *     taking the authoritative figure from the communication area instead, so a submitted value is
+ *     discarded rather than trusted. Still serialised outbound, so the echo the layout expects is
+ *     preserved. Alphanumeric on the map and therefore text here, never a number, and bounded to 8
+ *     characters. Display value only - {@link PageMetadata.PageCursorRequest} carries the
  *     authoritative cursor state. May be {@code null} when the client has none to echo.
  * @param rowSelectors the row selectors, one entry per displayed row in row order, mirroring inbound
  *     map items {@code SEL0001} through {@code SEL0010} of width 1 each at
@@ -217,7 +272,8 @@ import java.util.List;
  *     row - and a supplied sequence is copied defensively. Never de-duplicated, keyed, compacted,
  *     re-ordered or interpreted here; the first-non-blank resolution at
  *     {@code app/cbl/COTRN00C.cbl} lines 148 to 182 and the accepted-letter check at line 199 both
- *     belong to the service.
+ *     belong to the service. Bounded in count as well as in entry width: the screen declares ten row
+ *     families, so a sequence longer than ten describes a screen that does not exist and is rejected.
  * @param keyAction the operator's attention key, or {@code null} when the submitted key maps to none
  *     of the sixteen declared actions. Never defaulted: the legacy mapping has no catch-all branch,
  *     so an unrecognised key leaves the previously held action in place. The forward path is guarded
@@ -226,19 +282,39 @@ import java.util.List;
  *     decoration.
  * @param navigationContext the client-echoed cross-turn navigation state, or {@code null} when the
  *     client echoes none. Carried verbatim and never interpreted, defaulted or replaced by a
- *     synthesised empty context.
+ *     synthesised empty context. Validated transitively, so the widths that contract declares are
+ *     actually evaluated when it arrives as part of this request.
  * @param pageMetadata the cursor-and-direction paging state, or {@code null} on an entry submission
- *     that starts a fresh browse rather than continuing one. It carries the row count as data, which
- *     is why no row-count value is declared in this record, and its boundary keys - not any offset or
- *     page arithmetic - are what reposition the browse.
+ *     that starts a fresh browse rather than continuing one. Its boundary keys - not any offset or
+ *     page arithmetic - are what reposition the browse. The inbound shape carries the two keys and the
+ *     direction only: the row count is screen shape rather than a submitted value, which is why no
+ *     row-count value is declared in this record either, and page availability is something the browse
+ *     discovers rather than something a client asserts. Validated transitively for the same reason as
+ *     the navigation state.
  */
 public record TransactionListRequest(
         @Size(max = TransactionListRequest.TRANSACTION_ID_FILTER_LENGTH) String transactionIdFilter,
-        @Size(max = TransactionListRequest.PAGE_INDICATOR_LENGTH) String pageIndicator,
-        List<@Size(max = TransactionListRequest.ROW_SELECTOR_LENGTH) String> rowSelectors,
+        @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+        @Size(max = TransactionListRequest.DISPLAYED_PAGE_NUMBER_LENGTH) String displayedPageNumber,
+        @Size(max = TransactionListRequest.ROW_SELECTOR_COUNT)
+                List<@Size(max = TransactionListRequest.ROW_SELECTOR_LENGTH) String> rowSelectors,
         KeyAction keyAction,
-        NavigationContext navigationContext,
-        PageMetadata pageMetadata) {
+        @Valid NavigationContext navigationContext,
+        @Valid PageMetadata.PageCursorRequest pageMetadata) {
+
+    /**
+     * Fixed stand-in emitted by {@link #toString()} in place of each regulated component.
+     *
+     * <p>A constant rather than any transformation of the value, so nothing about a withheld component
+     * - not its length, not a prefix or suffix, not a digest, not a partial mask - can be recovered
+     * from a stringified instance. A partial rendering was rejected deliberately: a fragment of a
+     * transaction identifier still names the transaction it belongs to once it is read beside the
+     * account the same log line already identifies.
+     *
+     * <p>Private because it is a rendering detail and not part of the request contract. It stands in
+     * only on the rendering path: every accessor returns its component untouched.
+     */
+    private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
 
     /**
      * Width in characters of the transaction-identifier filter: 16.
@@ -260,7 +336,24 @@ public record TransactionListRequest(
      * card-list screen's indicator is a differently named item of width 3, so the two widths are
      * deliberately independent. The bound only reports an over-long value.</p>
      */
-    public static final int PAGE_INDICATOR_LENGTH = 8;
+    public static final int DISPLAYED_PAGE_NUMBER_LENGTH = 8;
+
+    /**
+     * The number of row families the transaction-list screen declares: 10.
+     *
+     * <p>Screen shape rather than a tuning figure. The map declares ten selector items,
+     * {@code SEL0001} through {@code SEL0010}, at {@code app/cpy-bms/COTRN00.CPY} lines 72, 102, 132,
+     * 162, 192, 222, 252, 282, 312 and 342, and the program's own loops are bounded by the same
+     * figure - the forward fill runs while the index is not greater than ten at
+     * {@code app/cbl/COTRN00C.cbl} line 290 and the row walk stops at eleven at line 297. It is the
+     * number of lines the operator sees, and it is stated here because a submission carrying more
+     * selectors than there are rows describes a screen that does not exist.</p>
+     *
+     * <p>It bounds the selector <em>count</em> only. It is not a page size a client may choose, it is
+     * not a limit on anything the response carries, and it is not a performance guard; decision log
+     * entry DL-073 records that the module asserts no performance target at all.</p>
+     */
+    public static final int ROW_COUNT = 10;
 
     /**
      * Width in characters of one row selector: 1.
@@ -273,6 +366,32 @@ public record TransactionListRequest(
      * is message-bearing and belongs to the service.</p>
      */
     public static final int ROW_SELECTOR_LENGTH = 1;
+
+    /**
+     * Number of selector items the map declares, and therefore the longest sequence
+     * {@link #rowSelectors()} can legitimately carry: 10.
+     *
+     * <p>A legacy item count rather than a limit invented here. Inbound map items {@code SEL0001}
+     * through {@code SEL0010} are declared at {@code app/cpy-bms/COTRN00.CPY} lines 72, 102, 132,
+     * 162, 192, 222, 252, 282, 312 and 342 - ten items and no eleventh - and the program fills
+     * exactly ten rows, its clearing loop bounded at ten at {@code app/cbl/COTRN00C.cbl} line 290 and
+     * its filling loop stopping once the index reaches eleven at line 297.</p>
+     *
+     * <p><strong>Why a cardinality bound belongs here when no format or presence rule does.</strong>
+     * The sequence is index-aligned: entry <em>n</em> is the selector typed against displayed row
+     * <em>n</em>, so an eleventh entry corresponds to no displayed row and no submission of this
+     * screen could produce one. There is consequently no ordered legacy check to defer to and no
+     * message to preserve, which is the reason every other rule in this file is a service concern.
+     * What the bound does prevent is unbounded work: the canonical constructor copies the sequence
+     * faithfully, so without a cardinality bound an arbitrarily long one is retained in full and
+     * carried into whatever iterates it. The bound reports and never truncates, so no selector is
+     * silently discarded and index alignment is never quietly altered.</p>
+     *
+     * <p>Declared independently of the row figure the paging contract names for this screen. The two
+     * are equal and are not the same quantity: this counts items the map declares, that counts rows a
+     * page presents.</p>
+     */
+    public static final int ROW_SELECTOR_COUNT = 10;
 
     /**
      * Canonical constructor. Detaches the selector sequence from the caller and leaves every other
@@ -293,8 +412,71 @@ public record TransactionListRequest(
      * including {@code null} and including every leading and trailing space, because the items they
      * mirror are fixed-width and space-significant. No component is defaulted, and in particular
      * neither the attention key nor the paging state acquires a stand-in value here.</p>
+     *
+     * <p><strong>One count is checked.</strong> The selector sequence is positional and index-aligned
+     * with the ten row families the screen declares, so a sequence longer than {@link #ROW_COUNT}
+     * cannot be interpreted: its surplus entries would refer to rows the screen does not have. It is
+     * rejected rather than truncated, because truncating would silently discard a selection the
+     * operator believes was made. A <em>shorter</em> sequence is accepted exactly as supplied - a
+     * submission that marks an early row need not pad the sequence out, and a final short page
+     * legitimately displays fewer rows - so this is an upper bound and not a fixed length.</p>
+     *
+     * @throws IllegalArgumentException if the selector sequence holds more entries than the screen has
+     *     row families
      */
     public TransactionListRequest {
         rowSelectors = (rowSelectors == null) ? List.of() : List.copyOf(rowSelectors);
+        if (rowSelectors.size() > ROW_COUNT) {
+            throw new IllegalArgumentException("rowSelectors may hold at most " + ROW_COUNT
+                    + " entries, because that is how many row families the transaction-list screen"
+                    + " declares, but it holds " + rowSelectors.size());
+        }
+    }
+
+    /**
+     * Returns a diagnostic representation that mirrors the request layout and discloses no regulated
+     * value.
+     *
+     * <p><strong>Why the implicit record rendering could not stand.</strong> A record's generated
+     * {@code toString()} prints every component. Two of these are regulated: the filter is a
+     * transaction identifier, which names one specific movement of money on one specific card, and the
+     * paging component's retained browse keys are transaction identifiers of the same kind - the first
+     * and last of the page just displayed. A structured logger, framework diagnostic, failed
+     * assertion, exception message or bare string interpolation touching an instance would otherwise
+     * have emitted all three values, and the pair of browse keys additionally discloses the bounds of
+     * what the operator was looking at.
+     *
+     * <p>The paging component is withheld whole rather than by delegation. Its own rendering does
+     * withhold both cursors, but depending on that would make this type's safety a property of another
+     * type's rendering: a change there would silently open a disclosure path here, and a diagnostic
+     * gains nothing from the difference.
+     *
+     * <p><strong>Why the remainder is retained.</strong> The page indicator is a display label, the
+     * selectors are positional keystrokes that identify a row on a screen rather than a value, and the
+     * attention key is the operator's navigation choice. That set is exactly what a diagnostic on this
+     * browse needs - which page, which row was marked, which direction was asked for - and none of it
+     * identifies a person, an account or an amount. The navigation context is printed by delegation
+     * because it redacts its own identifying values, and unlike the paging component it carries
+     * screen-flow state a diagnostic genuinely reads.
+     *
+     * <p><strong>Withholding is confined to this method.</strong> Every accessor returns its component
+     * exactly as supplied. The filter is compared to a retrieved key character for character and the
+     * browse repositions on the cursors verbatim, so nothing here masks, truncates or transforms a
+     * value; {@code equals} and {@code hashCode} are left exactly as the record contract generates
+     * them, comparing every component by value, because an in-memory comparison emits nothing.
+     *
+     * @return the request layout with the filter and the paging component replaced by a fixed
+     *     placeholder
+     */
+    @Override
+    public String toString() {
+        return "TransactionListRequest["
+                + "transactionIdFilter=" + REDACTION_PLACEHOLDER
+                + ", displayedPageNumber=" + displayedPageNumber
+                + ", rowSelectors=" + rowSelectors
+                + ", keyAction=" + keyAction
+                + ", navigationContext=" + navigationContext
+                + ", pageMetadata=" + REDACTION_PLACEHOLDER
+                + "]";
     }
 }

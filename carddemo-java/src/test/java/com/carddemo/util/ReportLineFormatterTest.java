@@ -30,91 +30,68 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit test for {@link ReportLineFormatter}, the sole holder of the <strong>133-byte</strong>
- * Daily Transaction Report record layout and of the two fifteen-character numeric-edited amount
- * masks that the legacy report emits.
+ * Unit test for {@link ReportLineFormatter}, the sole holder of the 133-byte Daily Transaction
+ * Report record layout and of the two fifteen-character numeric-edited amount masks that the legacy
+ * report emits.
  *
- * <p><strong>Why this test exists: byte parity.</strong> The report file is compared <em>byte for
- * byte</em> against a golden fixture written at {@code LRECL=133 RECFM=FB}. Nothing in this record
- * is cosmetic. Trailing spaces, interior padding, dot fills, the two literal hyphen separators and
- * the sign position of each mask are all contractual content, so this test never trims, strips,
- * normalises or collapses anything. Every width is measured in <em>US-ASCII encoded bytes</em> and
- * every content comparison is a {@code byte[]} comparison.
+ * <p>The report file is compared byte for byte against a golden fixture written as fixed-block
+ * records of exactly 133 bytes, and nothing in the record is cosmetic: trailing spaces, interior
+ * padding, dot fills, the two literal hyphen separators and the sign position of each mask are all
+ * contractual content. This test therefore never trims, strips, normalises or collapses anything, it
+ * measures every width in US-ASCII encoded bytes, and every content comparison is a {@code byte[]}
+ * comparison.</p>
  *
- * <p><strong>The independent oracle.</strong> Every expectation is hand-written from layout facts
- * read directly from the estate: the report-formatting copybook declares all seven groups and the
- * arithmetic of each was summed by hand from its component pictures; the report driver declares the
- * record as a single 133-byte alphanumeric item, the blank line as 133 spaces, the page size as
- * twenty and the date-parameter structure as 10 + 1 + 10; the consuming procedure declares the
- * output dataset at {@code LRECL=133 RECFM=FB}; and the two description source fields are each
- * fifty bytes wide while the transaction amount and the three total accumulators are each
- * {@code PIC S9(09)V99}. No assertion calls a constant or a method of the class under test in order
- * to produce its own expected value, nothing is snapshotted from a previous run, and no assertion
- * has the shape {@code f(x) == f(x)}. Where a published constant is checked it is checked against a
- * hand-written number, which is the whole point of checking it.
+ * <p>Every expectation is hand-written from layout facts read directly from the estate: the
+ * report-formatting copybook declares all seven groups and the arithmetic of each was summed by hand
+ * from its component pictures; the report driver declares the record as a single 133-byte
+ * alphanumeric item, the blank line as 133 spaces, the page size as twenty and the date-parameter
+ * structure as 10 + 1 + 10; the consuming procedure declares the output dataset at that same
+ * fixed-block 133-byte format; and the two description source fields are each fifty bytes wide while
+ * the transaction amount and the three total accumulators each carry nine integer and two decimal
+ * digits. No assertion calls a constant or a method of the class under test in order to produce its
+ * own expected value, nothing is snapshotted from a previous run, and no assertion has the shape
+ * {@code f(x) == f(x)}. Where a published constant is checked it is checked against a hand-written
+ * number, which is the whole point of checking it.</p>
  *
- * <p><strong>The seven groups share one record width and nothing else.</strong>
- * <pre>
- * #  group            component widths                 native  right pad  total
- * -  ---------------  -------------------------------  ------  ---------  -----
- * 1  name header      38 + 41 + 12 + 10 + 4 + 10          115         18    133
- * 2  detail line      sixteen items, see below            114         19    133
- * 3  column header    17 + 12 + 19 + 35 + 14 + 1 + 16     114         19    133
- * 4  rule line        one field of 133 hyphens            133          0    133
- * 5  page totals      11 + 86 + 15                        112         21    133
- * 6  account totals   13 + 84 + 15                        112         21    133
- * 7  grand totals     11 + 86 + 15                        112         21    133
- * </pre>
+ * <p>The seven groups share one record width and nothing else. The rule line is one field of 133
+ * hyphens and is the only natively-133 group; the other six are shorter and are right-padded.</p>
  *
- * <p>Group 4 is the only natively-133 group. The other six are shorter and are right-padded.
+ * <p>Five traps are pinned. Both hyphen separators always survive: the driver initialises the detail
+ * group before moving values into it and an initialise does not touch a filler item carrying a
+ * literal value, so the hyphens at offsets 31 and 52 are present in every detail line - including
+ * one where every caller-supplied value is empty. Two truncations at two different widths happen in
+ * one line: the type description goes from fifty bytes into fifteen and the category description
+ * from fifty into twenty-nine, both silent right truncations, and one seeded category description is
+ * exactly twenty-nine characters and therefore sits on the boundary. Three dot-fill widths are each
+ * hardcoded - 86, 84 and 86 against label fields of 11, 13 and 11 bytes - compensating so that all
+ * three amounts begin at offset 97 and end at offset 111; that arithmetic coincidence must never
+ * become a formula, so each fill count is asserted on its own and never derived from another. The
+ * two masks have opposite non-negative behaviour: both place the sign in a fixed insertion position
+ * at the far left and the sign never shifts rightward to sit against the first digit, but the detail
+ * mask emits a space for a non-negative value and never a plus, while the totals mask always emits a
+ * sign. And a value of exactly zero blanks the whole fifteen-byte field in both masks, which is the
+ * opposite of the statement text mask where the two decimal places always print, so that rule must
+ * not be carried across.</p>
  *
- * <p><strong>The five traps this test is built to catch.</strong>
- * <ol>
- *   <li><strong>Both hyphen separators always survive.</strong> The driver initialises the detail
- *       group before moving values into it, and an initialise does not touch a filler item
- *       carrying a literal value, so the hyphens at offsets 31 and 52 are present in every detail
- *       line - including one where every caller-supplied value is empty.</li>
- *   <li><strong>Two truncations at two different widths in one line.</strong> The type
- *       description goes from fifty bytes into fifteen and the category description from fifty
- *       into twenty-nine. Both are silent right truncations. One seeded category description is
- *       exactly twenty-nine characters and therefore sits on the boundary.</li>
- *   <li><strong>Three dot-fill widths, each hardcoded.</strong> 86, 84 and 86. The three label
- *       fields are 11, 13 and 11 bytes wide and the fills compensate so that all three amounts
- *       begin at offset 97 and end at offset 111. The arithmetic coincidence must never become a
- *       formula, so this test asserts each fill count on its own and never derives one from
- *       another.</li>
- *   <li><strong>The two masks have opposite non-negative behaviour.</strong> Both place the sign
- *       in a fixed insertion position at the far left, and the sign never shifts rightward to sit
- *       against the first digit. The detail mask emits a space for a non-negative value and never
- *       a plus; the totals mask always emits a sign.</li>
- *   <li><strong>A value of exactly zero blanks the whole fifteen-byte field in both masks.</strong>
- *       This is the opposite of the statement text mask, where the two decimal places always
- *       print, and the rule must not be carried across.</li>
- * </ol>
- *
- * <p><strong>Scope: this class formats, it does not compute and it does not paginate.</strong> The
- * consuming report driver contains <strong>zero</strong> arithmetic-compute statements - only
- * integer additions to the line counter and two integer subtractions of status values - so the
- * report path introduces no arithmetic and neither does the formatter. This test invents none: no
- * expectation below is arrived at by calculation on an amount, and where rounding happens at all it
- * is the codec's business and is always toward zero (decision D-02). Pagination is likewise not
- * owned here - the line counter, the accumulation and the break decisions all live in the
- * transaction report service - so the only pagination fact this test asserts is that the published
- * page-size constant is twenty.
+ * <p>This class formats; it does not compute and it does not paginate. The consuming report driver
+ * performs only integer additions to the line counter and two integer subtractions of status values,
+ * so the report path introduces no arithmetic and neither does the formatter. No expectation below
+ * is arrived at by calculation on an amount, and where rounding happens at all it is the codec's
+ * business and is always toward zero (decision D-02). The line counter, the accumulation and the
+ * break decisions all live in the transaction report service, so the only pagination fact this test
+ * asserts is that the published page-size constant is twenty.</p>
  *
  * <p>This is a pure unit test. It starts no container, no application context, no database and no
- * server, opens no socket and touches no file.
+ * server, opens no socket and touches no file.</p>
  */
 @DisplayName("ReportLineFormatter :: 133-byte daily transaction report line")
 class ReportLineFormatterTest {
 
-    // Hand-written oracle. Every literal, width and offset below was transcribed by hand from the
-    // layout facts in the class documentation. Nothing here reads the class under test.
+    // Hand-written oracle: every literal, width and offset below was derived by hand from the layout
+    // facts in the class documentation. Nothing here reads the class under test.
 
-    /** A ten-byte start date, carried through the report verbatim as characters. */
     private static final String START_DATE = "2022-01-01";
 
-    /** A ten-byte end date, carried through the report verbatim as characters. */
     private static final String END_DATE = "2022-12-31";
 
     /**
@@ -146,10 +123,9 @@ class ReportLineFormatterTest {
             + spaces(8) + "Amount" + spaces(2)
             + spaces(19);
 
-    /** Group 4 expected image: one field of 133 hyphens, the only group needing no pad. */
     private static final String EXPECTED_RULE_LINE = hyphens(133);
 
-    /** The blank report record: 133 spaces. A real emitted record, not padding. */
+    /** The blank report record: a real emitted record in its own right, not padding. */
     private static final String EXPECTED_BLANK_LINE = spaces(133);
 
     /**
@@ -185,134 +161,99 @@ class ReportLineFormatterTest {
     private static final String EXPECTED_DETAIL_LINE_ALL_EMPTY =
             spaces(31) + "-" + spaces(16) + "0000" + "-" + spaces(80);
 
-    /** Group 5 expected image for a page total of one million two hundred thirty-four thousand. */
     private static final String EXPECTED_PAGE_TOTAL_LINE =
             "Page Total" + spaces(1)
             + dots(86)
             + "+" + spaces(2) + "1,234,567.89"
             + spaces(21);
 
-    /** Group 6 expected image for a negative account total. The 13-byte label needs no pad. */
     private static final String EXPECTED_ACCOUNT_TOTAL_LINE =
             "Account Total"
             + dots(84)
             + "-" + spaces(8) + "603.22"
             + spaces(21);
 
-    /** Group 7 expected image for a zero grand total, where the amount field blanks entirely. */
     private static final String EXPECTED_GRAND_TOTAL_LINE =
             "Grand Total"
             + dots(86)
             + spaces(15)
             + spaces(21);
 
-    // Expected mask renderings, written out in full at fifteen characters each.
-    //
-    // Geometry, hand-derived from the picture: position 0 is the fixed sign, positions 1 to 3 and
-    // 5 to 7 and 9 to 11 are the nine zero-suppressed integer digits, positions 4 and 8 are the
-    // two group separators, position 12 is the decimal point and positions 13 and 14 are the two
-    // decimal digits. 1 + 3 + 1 + 3 + 1 + 3 + 1 + 2 = 15.
+    // Expected mask renderings, written out in full at fifteen characters each. Geometry, hand-derived
+    // from the picture: position 0 is the fixed sign, positions 1 to 3 and 5 to 7 and 9 to 11 are the
+    // nine zero-suppressed integer digits, positions 4 and 8 are the two group separators, position 12
+    // is the decimal point and positions 13 and 14 are the two decimal digits. 1+3+1+3+1+3+1+2 = 15.
 
-    /** Detail mask, positive 500.47: nine spaces then the digits. The sign position is a space. */
     private static final String EXPECTED_DETAIL_MASK_POSITIVE = "         500.47";
 
     /**
-     * Detail mask, negative 603.22: a minus in position one, then <em>eight</em> spaces, then the
-     * digits. The suppression happens between the sign and the digits, so a rendering that puts
-     * the minus immediately in front of the first digit is wrong.
+     * Detail mask, negative 603.22: a minus in position one, then eight spaces, then the digits. The
+     * suppression happens between the sign and the digits, so a rendering that puts the minus
+     * immediately in front of the first digit is wrong.
      */
     private static final String EXPECTED_DETAIL_MASK_NEGATIVE = "-        603.22";
 
-    /** Totals mask, positive 500.47: a plus in position one, then eight spaces, then the digits. */
     private static final String EXPECTED_TOTAL_MASK_POSITIVE = "+        500.47";
 
-    /** Totals mask, negative 603.22: a minus in position one, identical in shape to the detail. */
     private static final String EXPECTED_TOTAL_MASK_NEGATIVE = "-        603.22";
 
-    /** Either mask for a value of exactly zero: fifteen spaces, editing characters included. */
     private static final String EXPECTED_MASK_ZERO = "               ";
 
-    /** Detail mask at full width, showing both group separators printed. */
     private static final String EXPECTED_DETAIL_MASK_FULL_WIDTH = " 999,999,999.99";
 
-    /** Totals mask at full width, showing the sign hard against the leading digit. */
     private static final String EXPECTED_TOTAL_MASK_FULL_WIDTH = "+999,999,999.99";
 
-    /** Detail mask where the integer part is entirely zero: twelve spaces, a point, two digits. */
     private static final String EXPECTED_DETAIL_MASK_ZERO_INTEGER_PART = "            .47";
 
-    /** Totals mask where the integer part is entirely zero: a plus, eleven spaces, point, digits. */
     private static final String EXPECTED_TOTAL_MASK_ZERO_INTEGER_PART = "+           .47";
 
-    /** Detail mask where only the first group separator prints. */
     private static final String EXPECTED_DETAIL_MASK_ONE_SEPARATOR = "       1,000.00";
 
-    /** Detail mask where both separators print but the leading digit positions are suppressed. */
     private static final String EXPECTED_DETAIL_MASK_TWO_SEPARATORS = "   1,000,000.00";
 
     // Date-parameter card oracle. 10 + 1 + 10 = 21 structured bytes; the full card is 80 bytes.
 
-    /** The 21-byte structured record: start date, one space, end date. */
     private static final String EXPECTED_DATE_PARAMETER_RECORD = "2022-01-01 2022-12-31";
 
-    /** The full 80-byte card: the same 21 structured bytes then 59 trailing spaces. */
     private static final String EXPECTED_DATE_PARAMETER_CARD =
             "2022-01-01 2022-12-31" + spaces(59);
 
     // Characters used to probe the charset guard. Written as explicit code points so that no
     // escape sequence appears in this file and no line terminator can be introduced by accident.
 
-    /** A control character below the printable range, which the layout must reject. */
     private static final char BELOW_PRINTABLE_ASCII = (char) 7;
 
-    /** A control character above the printable range, which the layout must reject. */
     private static final char ABOVE_PRINTABLE_ASCII = (char) 127;
 
     // Measurement helpers. Width is always the encoded byte count in US-ASCII, never a character
     // count, and content is always compared as bytes.
 
     /**
-     * Encodes a value to US-ASCII bytes. The charset is named explicitly at every boundary so that
-     * no platform default can influence either a width or a comparison.
-     *
-     * @param value the value to encode
-     * @return the encoded bytes
+     * Encodes to US-ASCII, named explicitly at every boundary so that no platform default can
+     * influence either a width or a comparison.
      */
     private static byte[] ascii(String value) {
         return value.getBytes(StandardCharsets.US_ASCII);
     }
 
     /**
-     * Measures a value in US-ASCII encoded bytes.
-     *
-     * @param value the value to measure
-     * @return the encoded byte count
+     * Measures a value in US-ASCII encoded bytes rather than in characters.
      */
     private static int asciiWidth(String value) {
         return value.getBytes(StandardCharsets.US_ASCII).length;
     }
 
     /**
-     * Slices a field window out of a produced record without altering it in any way. No trimming,
-     * no normalising and no case change is applied, because the padding inside a window is part of
-     * the contract being asserted.
-     *
-     * @param record the produced record
-     * @param offset the field's zero-based offset
-     * @param width  the field's declared width
-     * @return the field's exact content
+     * Slices a field window out of a produced record without altering it: no trimming, no normalising
+     * and no case change, because the padding inside a window is part of the contract being asserted.
      */
     private static String window(String record, int offset, int width) {
         return record.substring(offset, offset + width);
     }
 
     /**
-     * Counts occurrences of one byte in a produced record. Used to assert the three dot-fill
-     * counts independently of one another.
-     *
-     * @param record the produced record
-     * @param target the byte to count
-     * @return the number of occurrences
+     * Counts occurrences of one byte in a produced record, which is how the three dot-fill counts are
+     * asserted independently of one another.
      */
     private static int countBytes(String record, char target) {
         int count = 0;
@@ -325,10 +266,7 @@ class ReportLineFormatterTest {
     }
 
     /**
-     * A run of spaces. The count is always a hand-written number taken from the layout tables.
-     *
-     * @param count how many spaces
-     * @return the run
+     * A run of spaces, always of a hand-written count taken from the layout tables.
      */
     private static String spaces(int count) {
         return " ".repeat(count);
@@ -336,9 +274,6 @@ class ReportLineFormatterTest {
 
     /**
      * A run of hyphens, the rule-line fill.
-     *
-     * @param count how many hyphens
-     * @return the run
      */
     private static String hyphens(int count) {
         return "-".repeat(count);
@@ -346,19 +281,14 @@ class ReportLineFormatterTest {
 
     /**
      * A run of full stops, the total-line dot fill.
-     *
-     * @param count how many full stops
-     * @return the run
      */
     private static String dots(int count) {
         return ".".repeat(count);
     }
 
     /**
-     * Builds a fully populated detail line from the canonical sample values, so that a test
-     * focusing on one field does not have to restate the other seven.
-     *
-     * @return the produced 133-byte detail record
+     * Builds a fully populated detail line from the canonical sample values, so a test focusing on one
+     * field does not have to restate the other seven.
      */
     private static String sampleDetailLine() {
         return ReportLineFormatter.buildTransactionDetailLine(
@@ -367,11 +297,8 @@ class ReportLineFormatterTest {
     }
 
     /**
-     * Builds a detail line whose type description is the supplied value and whose other fields are
-     * blank, isolating the fifteen-byte truncation.
-     *
-     * @param typeDescription the type description under test
-     * @return the produced 133-byte detail record
+     * Builds a detail line carrying only the supplied type description, isolating the fifteen-byte
+     * truncation.
      */
     private static String detailLineWithTypeDescription(String typeDescription) {
         return ReportLineFormatter.buildTransactionDetailLine(
@@ -379,11 +306,8 @@ class ReportLineFormatterTest {
     }
 
     /**
-     * Builds a detail line whose category description is the supplied value and whose other fields
-     * are blank, isolating the twenty-nine-byte truncation.
-     *
-     * @param categoryDescription the category description under test
-     * @return the produced 133-byte detail record
+     * Builds a detail line carrying only the supplied category description, isolating the
+     * twenty-nine-byte truncation.
      */
     private static String detailLineWithCategoryDescription(String categoryDescription) {
         return ReportLineFormatter.buildTransactionDetailLine(
@@ -391,18 +315,13 @@ class ReportLineFormatterTest {
     }
 
     /**
-     * Builds a detail line whose category code is the supplied value and whose other fields are
-     * blank, isolating the left zero-fill of the only numeric-display field in the layout.
-     *
-     * @param categoryCode the category code under test
-     * @return the produced 133-byte detail record
+     * Builds a detail line carrying only the supplied category code, isolating its four-digit
+     * zero-filled rendering.
      */
     private static String detailLineWithCategoryCode(int categoryCode) {
         return ReportLineFormatter.buildTransactionDetailLine(
                 "", "", "", "", categoryCode, "", "", new BigDecimal("0.00"));
     }
-
-    // The published widths.
 
     @Nested
     @DisplayName("Record and group width constants")
@@ -470,8 +389,6 @@ class ReportLineFormatterTest {
         }
     }
 
-    // Every builder produces exactly the record width.
-
     @Nested
     @DisplayName("Every builder produces exactly 133 encoded bytes")
     class EveryBuilderProducesTheRecordWidth {
@@ -531,8 +448,6 @@ class ReportLineFormatterTest {
             assertThat(asciiWidth(ReportLineFormatter.buildBlankLine())).isEqualTo(133);
         }
     }
-
-    // The report name header, group 1 of the layout.
 
     @Nested
     @DisplayName("Report name header, native width 115 with an 18-space right pad")
@@ -619,9 +534,6 @@ class ReportLineFormatterTest {
             assertThat(asciiWidth(longDates)).isEqualTo(133);
         }
     }
-
-
-    // The column header, group 3 of the layout.
 
     @Nested
     @DisplayName("Column header line, native width 114 with a 19-space right pad")
@@ -713,8 +625,6 @@ class ReportLineFormatterTest {
         }
     }
 
-    // The rule line, group 4 of the layout.
-
     @Nested
     @DisplayName("Rule line, the only natively-133 group")
     class RuleLineGroup {
@@ -748,8 +658,6 @@ class ReportLineFormatterTest {
             assertThat(asciiWidth(ReportLineFormatter.RULE_LINE)).isNotEqualTo(100);
         }
     }
-
-    // The blank line, a real emitted record.
 
     @Nested
     @DisplayName("Blank line, 133 space bytes and a real emitted record")
@@ -998,7 +906,6 @@ class ReportLineFormatterTest {
         }
     }
 
-
     // The three total lines, groups 5, 6 and 7 of the layout, and the trap they carry - three
     // dot-fill widths whose arithmetic coincidence must not become a rule.
 
@@ -1179,8 +1086,6 @@ class ReportLineFormatterTest {
         }
     }
 
-    // The detail mask. Fifteen characters, a fixed sign position and no plus, ever.
-
     @Nested
     @DisplayName("Detail amount mask, fifteen characters, non-negative renders a space")
     class DetailAmountMask {
@@ -1295,8 +1200,6 @@ class ReportLineFormatterTest {
         }
     }
 
-    // The totals mask. Fifteen characters and ALWAYS signed.
-
     @Nested
     @DisplayName("Total amount mask, fifteen characters, always signed")
     class TotalAmountMask {
@@ -1368,10 +1271,8 @@ class ReportLineFormatterTest {
         }
     }
 
-
-    // What the two masks share, what they must never share, and the two value rejections. The two
-    // renderers are always called by their own distinct names here; nothing in this file selects
-    // between them with a flag, a parameter or a switch.
+    // What the two masks share, what they must never share, and the two value rejections. Each renderer
+    // is called by its own distinct name here; nothing selects between them with a flag or a switch.
 
     @Nested
     @DisplayName("Shared mask contract: fifteen bytes, two distinct renderers, two rejections")
@@ -1463,7 +1364,6 @@ class ReportLineFormatterTest {
                     .withMessageContaining("scaled to 2 decimal places")
                     .withMessageContaining("scale 0");
 
-            // Scale one.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> ReportLineFormatter.renderDetailAmount(new BigDecimal("5.0")))
                     .withMessageContaining("scale 1");
@@ -1471,7 +1371,6 @@ class ReportLineFormatterTest {
                     .isThrownBy(() -> ReportLineFormatter.renderTotalAmount(new BigDecimal("5.0")))
                     .withMessageContaining("scale 1");
 
-            // Scale three.
             assertThatIllegalArgumentException()
                     .isThrownBy(
                             () -> ReportLineFormatter.renderDetailAmount(new BigDecimal("5.000")))
@@ -1538,8 +1437,6 @@ class ReportLineFormatterTest {
         }
     }
 
-    // The header block accessor. Four records, one order, unmodifiable.
-
     @Nested
     @DisplayName("Header block accessor: four records in one order, unmodifiable")
     class HeaderBlockAccessor {
@@ -1605,8 +1502,6 @@ class ReportLineFormatterTest {
             assertThat(ascii(window(block.get(0), 105, 10))).isEqualTo(ascii("2001-02-28"));
         }
     }
-
-    // The 21-byte date-parameter record and its tolerant reader.
 
     @Nested
     @DisplayName("Date-parameter record: 10 + 1 + 10 written, 21 or 80 read")
@@ -1751,23 +1646,9 @@ class ReportLineFormatterTest {
         }
     }
 
-    // Page-break support: the page-size constant only.
-    //
-    // This formatter holds no state and implements no pagination. The line counter, the running
-    // accumulations and every break decision live in the report service, so the only pagination
-    // fact asserted here is the published page-size constant. No break position, no page count and
-    // no row count is asserted anywhere in this file. The legacy counter arithmetic and the page
-    // break it can skip are recorded as row 31 of the source anomaly register, which is where the
-    // report service takes them from; nothing about them is reachable from this class.
-    //
-    // The consuming driver contains ZERO COMPUTE statements: it performs integer additions to the
-    // line counter and two integer subtractions of status values, and nothing else. This formatter
-    // therefore introduces no arithmetic of any kind. It measures, slices, pads and edits; it never
-    // adds, scales or rounds. Rounding, where it happens at all, is the codec's business and is
-    // always toward zero because the estate declares no ROUNDED clause anywhere.
-    //
-    // The driver's repeated paragraph-number prefixes are row 23 of the same register and have no
-    // bearing on this class, so nothing about them is asserted either.
+    // Page-break support: the page-size constant only. This formatter holds no state and implements no
+    // pagination, so no break position, no page count and no row count is asserted anywhere here; the
+    // counter arithmetic of anomaly-register row 31 belongs to the report service, not to this class.
     @Nested
     @DisplayName("Page-break support: the page-size constant only, because this formatter holds "
             + "no state and implements no pagination")
@@ -1781,9 +1662,8 @@ class ReportLineFormatterTest {
         }
     }
 
-    // Every caller-supplied reference is rejected independently when it is null, so that a missing
-    // value can never reach a fixed-width field as the four characters that spell the absent
-    // reference.
+    // Every caller-supplied reference is rejected independently when it is null, so a missing value can
+    // never reach a fixed-width field as the four characters that spell the absent reference.
 
     @Nested
     @DisplayName("Absent references are rejected independently, one parameter at a time")
@@ -2038,6 +1918,5 @@ class ReportLineFormatterTest {
                     .withMessageContaining("dateParameterCard");
         }
     }
-
 
 }

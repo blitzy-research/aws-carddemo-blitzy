@@ -282,12 +282,13 @@ class CustomerSecurityTest {
         }
 
         @Test
-        @DisplayName("an absent value is refused, because the column is not nullable")
-        void anAbsentValueIsRefused() {
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> withGovtId(null))
-                    .withMessageContaining("govtIssuedId")
-                    .withMessageContaining("must not be null");
+        @DisplayName("an absent value is accepted, exactly as it is for the national identifier")
+        void anAbsentValueIsAccepted() {
+            assertThat(withGovtId(null).getGovtIssuedId())
+                    .as("absence must be representable: static SQL cannot produce an envelope without"
+                            + " committing key material, so a mandatory column would only invite"
+                            + " cleartext")
+                    .isNull();
         }
 
         @Test
@@ -363,13 +364,15 @@ class CustomerSecurityTest {
         }
 
         @Test
-        @DisplayName("the government-issued identifier cannot be cleared through the mutator")
-        void theGovernmentIdentifierCannotBeCleared() {
+        @DisplayName("the government-issued identifier can be cleared through the mutator")
+        void theGovernmentIdentifierCanBeCleared() {
             Customer customer = populated();
 
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> customer.setGovtIssuedId(null))
-                    .withMessageContaining("must not be null");
+            customer.setGovtIssuedId(null);
+
+            assertThat(customer.getGovtIssuedId())
+                    .as("both regulated attributes clear identically; only cleartext is refused")
+                    .isNull();
         }
     }
 

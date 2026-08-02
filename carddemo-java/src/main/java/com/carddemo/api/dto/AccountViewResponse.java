@@ -17,41 +17,44 @@
 package com.carddemo.api.dto;
 
 import com.carddemo.domain.enums.AccountStatus;
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 import java.util.Optional;
 
 /**
- * Immutable, display-only account view response for legacy CICS transaction {@code CAVW}, derived
- * from symbolic map {@code app/cpy-bms/COACTVW.CPY}, mapset {@code app/bms/COACTVW.bms} and program
- * {@code app/cbl/COACTVWC.cbl} (941 lines).
+ * Immutable, display-only account view response for legacy transaction {@code CAVW}: the thirty-seven
+ * value items of the symbolic map {@code app/cpy-bms/COACTVW.CPY} in map order, plus four response-only
+ * components - the rejection flag, the field to focus, the next route and the echoed navigation state.
  *
- * <p>Provenance: repository checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, which appears in the trailer
- * comment of every legacy member including {@code app/cpy/CVACT01Y.cpy} line 19 and
- * {@code app/cpy/CVCUS01Y.cpy} line 25. No COBOL source text is reproduced here; every citation
- * names a member, a field, a width or a line number.
+ * <p><strong>Display-only, so it validates nothing.</strong> The mapset declares a single unprotected
+ * input field and the transaction only reads, so the only constraint used here is a width bound taken
+ * from the map - the map width being the externally observable contract even where the program's own
+ * working field is narrower. The credit score is the decisive case: it carries no range constraint,
+ * because twenty-one of the fifty seeded customers score below the screen's documented range and a
+ * constraint would reject the reference data itself.
  *
- * <h2>The thirty-seven value items, and nothing else from the map</h2>
+ * <p><strong>Nothing is altered on the way out.</strong> Values arrive as the service layer projected
+ * them and are transported verbatim, padding and formatting included. Monetary components are exact
+ * decimals of scale two, and no scaling, rounding or sign styling happens here; the legacy screen's sign
+ * glyph is 3270 presentation and is deliberately not reproduced. Dates and identifiers stay text so that
+ * leading zeros and external widths survive. Items whose width or source differs from the stored field
+ * are marked on their own component below.
  *
- * <p>The symbolic map declares an input group {@code CACTVWAI} at line 17 and an output group
- * {@code CACTVWAO} that redefines it at line 241. The first thirty-seven components below are the
- * complete set of <em>value</em> items of that output group, in the order the group declares them,
- * each at the width the group declares. Six carry screen furniture, eleven carry the account,
- * eighteen carry the customer, and two carry the message lines.
+ * <p>The transaction joins the card cross-reference, the account and the customer to fill one screen;
+ * this record is the flattened result and performs no lookup, join, formatting or navigation. The route is
+ * an opaque value - naming and resolving routes belongs to the service layer.
  *
- * <p>Everything else the generated map declares is 3270 plumbing and is deliberately absent: the
- * twelve-byte terminal-buffer filler at line 242, the three-byte filler that precedes every output
- * field group, and the per-field colour, programmed-symbol, highlight and validation control bytes
- * that follow it. Their input-side counterparts - the halfword length item, the flag item and its
- * attribute redefinition - are equally absent. Those bytes exist so a terminal can be driven; a JSON
- * response has no terminal, so carrying them would put device state in an interface contract. For
- * the same reason there is no protected or unprotected indicator, no map coordinate, no cursor
- * position, no colour constant and no marker byte anywhere on this record, even though the program
- * sets all of them: {@code 1300-SETUP-SCREEN-ATTRS} at lines 541 to 572 writes a colour into the
- * account-id control byte, and writes a marker character into the account-id value item when the
- * filter was left empty on a resubmission. The two error states that behaviour distinguishes are
- * exposed as field states by {@link ErrorResponse} and {@link FieldErrorDecorator}, not here.
+ * <p><strong>Regulated values are transported, never altered.</strong> The response carries the displayed
+ * national identifier and the government-issued identifier because the legacy screen displays both;
+ * decryption happens in the service layer before a value reaches here, and nothing here masks, shortens
+ * or substitutes anything, since that would change what the screen shows. An instance therefore holds
+ * regulated response data and its generated {@code toString()} renders every component: an instance must
+ * not be written to unrestricted diagnostics, echoed into an error payload or attached to a monitoring
+ * event, and a caller needing to log this exchange logs it through a surface that redacts identifiers.
+ * The record carries no credential, no card number and no verification code, and none may be added; the
+ * legacy design protects neither a card number nor a verification code at field level anywhere, which is
+ * recorded in {@code docs/decision-log.md} rather than closed by unrequested work.
  *
  * <h2>Display-only, and therefore validating nothing</h2>
  *
@@ -151,14 +154,32 @@ import java.util.Optional;
  * numeric type would violate the mapping table's requirement of identical decimal precision, and a
  * pre-formatted string would smuggle the screen edit back into the contract.
  *
- * <p><strong>Scale two is a contract this record carries, never one it applies.</strong> No scaling,
- * rounding, negation, absolute value, group separation, sign formatting or arithmetic of any kind
- * happens here or anywhere in this package. Conversion between the legacy zoned representation and a
- * decimal value is the single responsibility of the codec in the utility layer, reached through the
- * service layer, and it truncates toward zero because the estate contains no rounding clause
- * anywhere - so every legacy store into a two-decimal field discards the excess rather than rounding
- * it. Applying a scale here would duplicate that policy at a second site and invite the two to
- * diverge.
+ * <p><strong>Scale two is a contract this record states and checks, never one it applies.</strong>
+ * No scaling, rounding, negation, absolute value, group separation, sign formatting or arithmetic of
+ * any kind happens here or anywhere in this package. Conversion between the legacy zoned
+ * representation and a decimal value is the single responsibility of the codec in the utility layer,
+ * reached through the service layer, and it truncates toward zero because the estate contains no
+ * rounding clause anywhere - so every legacy store into a two-decimal field discards the excess
+ * rather than rounding it. Applying a scale here would duplicate that policy at a second site and
+ * invite the two to diverge.
+ *
+ * <p>Stating it and checking it are a different matter, and both are needed. A decimal type is
+ * unbounded, so the declaration alone tells a reader nothing: a value of any scale and any magnitude
+ * satisfies it while breaking the contract, and precision twelve with scale two is the whole of the
+ * numeric agreement. Each of the five therefore carries schema documentation naming its record
+ * field, its total precision and its scale, which is what reaches the published interface
+ * description a client can actually read, and the canonical constructor refuses a value whose scale
+ * is not two or whose integer part needs more than ten digits.
+ *
+ * <p>Refusal is the only available response, not a preference. The alternative to refusing a
+ * wrongly-shaped value is re-scaling it, and re-scaling is precisely the rounding decision the
+ * preceding paragraph concentrates in one place; a display-only response quietly altering a monetary
+ * figure would be the worst site in the module for it. A value that does not describe its record
+ * field is a fault in the caller and is reported as one, and the check reads only the value's own
+ * scale and precision without performing arithmetic on it. A declarative digit-count annotation was
+ * considered instead and rejected twice over: nothing validates an outbound response, so it would
+ * enforce nothing, and the schema generator does not map that annotation, so it would publish
+ * nothing either.
  *
  * <p>Serialization needs no help. The module configuration already renders decimals plainly rather
  * than in scientific notation, already omits absent properties rather than emitting nulls, and
@@ -260,9 +281,10 @@ import java.util.Optional;
  * @param transactionName the transaction identifier shown top-left, from {@code TRNNAMEO}
  *     (four characters, map line 248). Populated from the program's own
  *     transaction-identifier literal at {@code app/cbl/COACTVWC.cbl} line 438. May be {@code null}.
- * @param screenTitle1 the first title line, from {@code TITLE01O} (forty
+ * @param title01 the first title line, from {@code TITLE01O} (forty
  *     characters, map line 254). Populated from the shared title copybook at
- *     {@code app/cbl/COACTVWC.cbl} line 436. May be {@code null}.
+ *     {@code app/cbl/COACTVWC.cbl} line 436. Named for the map item it carries, which is the
+ *     spelling every screen contract in this package uses. May be {@code null}.
  * @param currentDate the current date as shown, from {@code CURDATEO} (eight
  *     characters, map line 260). The program assembles a two-digit month, day and year into exactly
  *     eight characters at {@code app/cbl/COACTVWC.cbl} line 447. Carried as text: it is screen
@@ -270,9 +292,10 @@ import java.util.Optional;
  * @param programName the program identifier shown top-left, from {@code PGMNAMEO}
  *     (eight characters, map line 266). Populated from the program's own name
  *     literal at {@code app/cbl/COACTVWC.cbl} line 439. May be {@code null}.
- * @param screenTitle2 the second title line, from {@code TITLE02O} (forty
+ * @param title02 the second title line, from {@code TITLE02O} (forty
  *     characters, map line 272). Populated from the shared title copybook at
- *     {@code app/cbl/COACTVWC.cbl} line 437. May be {@code null}.
+ *     {@code app/cbl/COACTVWC.cbl} line 437. Named for the map item it carries, matching
+ *     {@code title01}. May be {@code null}.
  * @param currentTime the current time as shown, from {@code CURTIMEO} (<strong>eight</strong>
  *     characters, map line 278). Eight is measured, not assumed: the
  *     sign-on map declares its own time item one character wider, uniquely in the estate, so this
@@ -416,14 +439,17 @@ import java.util.Optional;
  *     boxed value, so the contract has two states and not three: the legacy third state means the
  *     edit has not run, which cannot be true of a response that has already been produced.
  * @param focusScreenFieldId the legacy screen field identifier that should receive input focus, or
- *     {@code null} when the response nominates none. Bounded at eight characters because generated
- *     map field names are at most seven, the generator reserving the eighth position for the suffix
- *     it appends when deriving the control items; the bound therefore cannot reject a legitimate
- *     identifier. On this screen the program positions the cursor on the account-number field in
- *     every branch of its evaluation at {@code app/cbl/COACTVWC.cbl} lines 549 and 551, so that is
- *     the only value it ever nominates. Named to match the equivalent hint on
- *     {@link ErrorResponse}. Carried as the legacy identifier rather than as a coordinate: no cursor
- *     position, row or column appears on this record.
+ *     {@code null} when the response nominates none. Bounded at <strong>seven</strong> characters,
+ *     which is the widest map field name that exists: the map generator reserves the eighth position
+ *     of a symbolic name for the suffix it appends when deriving the control items, so a declared
+ *     field name can never occupy it, and no field name in any of the estate's seventeen mapsets
+ *     does - the longest in this one are exactly seven. The bound is therefore the exact width of
+ *     the vocabulary rather than a margin above it, which is what makes it the same bound every
+ *     other screen contract in this package carries. On this screen the program positions the cursor
+ *     on the account-number field in every branch of its evaluation at
+ *     {@code app/cbl/COACTVWC.cbl} lines 549 and 551, so that is the only value it ever nominates.
+ *     Named to match the equivalent hint on {@link ErrorResponse}. Carried as the legacy identifier
+ *     rather than as a coordinate: no cursor position, row or column appears on this record.
  * @param nextRoute the declarative route the client should call next, or {@code null} when the
  *     response nominates none. An opaque string deliberately: the service layer owns the route
  *     vocabulary, no route table or enumeration exists here, and no forwarding occurs on the server.
@@ -436,212 +462,345 @@ import java.util.Optional;
  */
 public record AccountViewResponse(
 
-        /* ------------------------------------------------------------------
-         * Screen furniture: items 1-6 of the output group. Populated by
-         * 1100-SCREEN-INIT at app/cbl/COACTVWC.cbl lines 431-455.
-         * ------------------------------------------------------------------ */
-
-        /* 1. TRNNAMEO, width 4, COACTVW.CPY line 248. */
         @Size(max = 4) String transactionName,
 
-        /* 2. TITLE01O, width 40, COACTVW.CPY line 254. */
-        @Size(max = 40) String screenTitle1,
+        /* 2. TITLE01O, width 40, COACTVW.CPY line 254. Named for the map item, which is the one
+         * spelling every screen contract in this package shares. */
+        @Size(max = 40) String title01,
 
-        /* 3. CURDATEO, width 8, COACTVW.CPY line 260. */
         @Size(max = 8) String currentDate,
 
-        /* 4. PGMNAMEO, width 8, COACTVW.CPY line 266. */
         @Size(max = 8) String programName,
 
         /* 5. TITLE02O, width 40, COACTVW.CPY line 272. */
-        @Size(max = 40) String screenTitle2,
+        @Size(max = 40) String title02,
 
-        /* 6. CURTIMEO, width 8, COACTVW.CPY line 278 - EIGHT, measured. The sign-on map declares
-         * its own time item one character wider; that width belongs to that map alone. */
+        /* Eight characters, measured on the map; the sign-on map declares its own time item at another width. */
         @Size(max = 8) String currentTime,
 
-        /* ------------------------------------------------------------------
-         * Account: items 7-17. Populated by 1200-SETUP-SCREEN-VARS at
-         * app/cbl/COACTVWC.cbl lines 466-490.
-         * ------------------------------------------------------------------ */
-
-        /* 7. ACCTSIDO, width 11, COACTVW.CPY line 284 - the OUTPUT twin. Text, never numeric: the
-         * input twin at line 60 is the estate's only non-character input item, and this is not it. */
         @Size(max = 11) String accountId,
 
-        /* 8. ACSTTUSO, width 1, COACTVW.CPY line 290. Raw character so an undeclared code
-         * round-trips; see resolvedAccountStatus() below. */
+        /* Raw character, so an undeclared code round-trips; see {@code resolvedAccountStatus()}. */
         @Size(max = 1) String accountStatus,
 
-        /* 9. ADTOPENO, width 10, COACTVW.CPY line 296. Text, never a date type. */
         @Size(max = 10) String openDate,
 
         /* 10. ACRDLIMO, COACTVW.CPY line 302. Exact decimal, scale 2; the screen edit is absent by
-         * design and no scaling happens on this record. */
+         * design and no scaling happens on this record. Record counterpart ACCT-CREDIT-LIMIT at
+         * CVACT01Y.cpy line 8. */
+        @Schema(description = "Account credit limit. Record field ACCT-CREDIT-LIMIT of "
+                + "CVACT01Y.cpy line 8: a signed zoned decimal with ten integer digits and two "
+                + "decimal places, so total precision 12 and scale exactly 2. The map's "
+                + "numeric-edited screen picture is deliberately not reproduced.")
         BigDecimal creditLimit,
 
-        /* 11. AEXPDTO, width 10, COACTVW.CPY line 308. Stored field name is misspelled in
-         * CVACT01Y.cpy line 11; this identifier is spelled correctly. */
+        /* The stored field name is misspelled in the copybook; this component is spelled correctly. */
         @Size(max = 10) String expirationDate,
 
-        /* 12. ACSHLIMO, COACTVW.CPY line 314. Exact decimal, scale 2. */
+        /* 12. ACSHLIMO, COACTVW.CPY line 314. Exact decimal, scale 2. Record counterpart
+         * ACCT-CASH-CREDIT-LIMIT at CVACT01Y.cpy line 9. */
+        @Schema(description = "Account cash credit limit. Record field ACCT-CASH-CREDIT-LIMIT of "
+                + "CVACT01Y.cpy line 9: a signed zoned decimal with ten integer digits and two "
+                + "decimal places, so total precision 12 and scale exactly 2.")
         BigDecimal cashCreditLimit,
 
-        /* 13. AREISDTO, width 10, COACTVW.CPY line 320. Text, never a date type. */
         @Size(max = 10) String reissueDate,
 
-        /* 14. ACURBALO, COACTVW.CPY line 326. Exact decimal, scale 2; legitimately negative. */
+        /* 14. ACURBALO, COACTVW.CPY line 326. Exact decimal, scale 2; legitimately negative. Record
+         * counterpart ACCT-CURR-BAL at CVACT01Y.cpy line 7. */
+        @Schema(description = "Account current balance. Record field ACCT-CURR-BAL of "
+                + "CVACT01Y.cpy line 7: a signed zoned decimal with ten integer digits and two "
+                + "decimal places, so total precision 12 and scale exactly 2. Legitimately "
+                + "negative.")
         BigDecimal currentBalance,
 
-        /* 15. ACRCYCRO, COACTVW.CPY line 332. Exact decimal, scale 2. */
+        /* 15. ACRCYCRO, COACTVW.CPY line 332. Exact decimal, scale 2. Record counterpart
+         * ACCT-CURR-CYC-CREDIT at CVACT01Y.cpy line 13. */
+        @Schema(description = "Current cycle credit. Record field ACCT-CURR-CYC-CREDIT of "
+                + "CVACT01Y.cpy line 13: a signed zoned decimal with ten integer digits and two "
+                + "decimal places, so total precision 12 and scale exactly 2.")
         BigDecimal currentCycleCredit,
 
-        /* 16. AADDGRPO, width 10, COACTVW.CPY line 338. ten spaces in all 50 seeded rows and those
-         * spaces are the value - the padding is never removed and blank is never read as absent. */
+        /* Ten spaces in every seeded row, and those spaces are the value. */
         @Size(max = 10) String accountGroupId,
 
-        /* 17. ACRCYDBO, COACTVW.CPY line 344. Exact decimal, scale 2. */
+        /* 17. ACRCYDBO, COACTVW.CPY line 344. Exact decimal, scale 2. Record counterpart
+         * ACCT-CURR-CYC-DEBIT at CVACT01Y.cpy line 14. */
+        @Schema(description = "Current cycle debit. Record field ACCT-CURR-CYC-DEBIT of "
+                + "CVACT01Y.cpy line 14: a signed zoned decimal with ten integer digits and two "
+                + "decimal places, so total precision 12 and scale exactly 2.")
         BigDecimal currentCycleDebit,
 
-        /* ------------------------------------------------------------------
-         * Customer: items 18-35. Populated by 1200-SETUP-SCREEN-VARS at
-         * app/cbl/COACTVWC.cbl lines 494-522.
-         * ------------------------------------------------------------------ */
-
-        /* 18. ACSTNUMO, width 9, COACTVW.CPY line 350. Text, never numeric. */
         @Size(max = 9) String customerId,
 
-        /* 19. ACSTSSNO, width 12, COACTVW.CPY line 356 - the DISPLAYED hyphenated form the program
-         * assembles at COACTVWC.cbl 496-504 from nine stored digits. Nullable in the schema and
-         * unset by the reference seed, so null and blank are both normal here. */
+        /* The displayed hyphenated form the program assembles; regulated data, carried verbatim. */
         @Size(max = 12) String ssn,
 
-        /* 20. ACSTDOBO, width 10, COACTVW.CPY line 362. Text, never a date type. */
         @Size(max = 10) String dateOfBirth,
 
-        /* 21. ACSTFCOO, width 3, COACTVW.CPY line 368. NO RANGE CONSTRAINT - DO NOT ADD ONE. The
-         * column has no check constraint and 21 of the 50 seeded values are below 300, the lowest
-         * being 001; the 300-850 rule belongs to AccountUpdateRequest alone. */
+        /* No range constraint - see the class documentation. */
         @Size(max = 3) String ficoScore,
 
-        /* 22. ACSFNAMO, width 25, COACTVW.CPY line 374. */
         @Size(max = 25) String firstName,
 
-        /* 23. ACSMNAMO, width 25, COACTVW.CPY line 380. */
         @Size(max = 25) String middleName,
 
-        /* 24. ACSLNAMO, width 25, COACTVW.CPY line 386. */
         @Size(max = 25) String lastName,
 
-        /* 25. ACSADL1O, width 50, COACTVW.CPY line 392. */
         @Size(max = 50) String addressLine1,
 
-        /* 26. ACSSTTEO, width 2, COACTVW.CPY line 398 - declared between the two address lines;
-         * map order is followed rather than postal order. */
+        /* Declared between the two address lines; map order is followed rather than regrouped. */
         @Size(max = 2) String stateCode,
 
-        /* 27. ACSADL2O, width 50, COACTVW.CPY line 404. */
         @Size(max = 50) String addressLine2,
 
-        /* 28. ACSZIPCO, width 5, COACTVW.CPY line 410 - fed from the ten-character stored postal
-         * code at COACTVWC.cbl 515; the narrowing happens there, never here. */
+        /* Five characters, fed from the wider stored postal code; the narrowing happens upstream. */
         @Size(max = 5) String zipCode,
 
-        /* 29. ACSCITYO, width 50, COACTVW.CPY line 416 - fed from the THIRD address line at
-         * COACTVWC.cbl 513. The customer layout declares no city field. */
+        /* Fed from the third address line - the customer record has no city field. */
         @Size(max = 50) String city,
 
-        /* 30. ACSCTRYO, width 3, COACTVW.CPY line 422. */
         @Size(max = 3) String countryCode,
 
-        /* 31. ACSPHN1O, width 13, COACTVW.CPY line 428 - already-formatted text carried verbatim;
-         * never parsed, split or re-formatted. */
+        /* Already-formatted text, carried verbatim; never parsed or reassembled. */
         @Size(max = 13) String phoneNumber1,
 
-        /* 32. ACSGOVTO, width 20, COACTVW.CPY line 434. Transported exactly as supplied. */
         @Size(max = 20) String governmentIssuedId,
 
-        /* 33. ACSPHN2O, width 13, COACTVW.CPY line 440 - as the primary number. */
         @Size(max = 13) String phoneNumber2,
 
-        /* 34. ACSEFTCO, width 10, COACTVW.CPY line 446. Text, never numeric. */
         @Size(max = 10) String eftAccountId,
 
-        /* 35. ACSPFLGO, width 1, COACTVW.CPY line 452. Raw character: the layout attaches no
-         * condition name and no program compares it against a literal. */
         @Size(max = 1) String primaryCardHolderIndicator,
 
-        /* ------------------------------------------------------------------
-         * Message lines: items 36-37. Widths follow the MAP, not the program's
-         * narrower working fields. Moved at app/cbl/COACTVWC.cbl 534 and 532.
-         * ------------------------------------------------------------------ */
-
-        /* 36. INFOMSGO, width 45, COACTVW.CPY line 458. Text reproduced verbatim. */
         @Size(max = 45) String infoMessage,
 
-        /* 37. ERRMSGO, width 78, COACTVW.CPY line 464. Text reproduced verbatim. Presence does NOT
-         * imply inputError; the flag below is the authority. */
+        /* Presence does not imply a rejection; the flag below is independent of this text. */
         @Size(max = 78) String errorMessage,
 
-        /* ------------------------------------------------------------------
-         * Response content beyond the map. Not map items, so no map width
-         * applies to any of them.
-         * ------------------------------------------------------------------ */
-
-        /* 38. Explicit rejection flag, never inferred from message presence. Legacy authority is
-         * the one-character working flag at app/cbl/COACTVWC.cbl 50 and its condition names at
-         * 51-53. A primitive: two states, not three. */
+        /* Stated explicitly, never inferred from the presence of message text. */
         boolean inputError,
 
-        /* 39. Legacy screen field identifier to focus, bounded at 8 because generated map field
-         * names are at most 7 characters. On this screen the program always nominates the
-         * account-number field (COACTVWC.cbl 549 and 551). No coordinate, no cursor position. */
-        @Size(max = 8) String focusScreenFieldId,
+        /* 39. Legacy screen field identifier to focus, bounded at 7 - the widest map field name
+         * there is. Seven is measured rather than assumed: across all 17 mapsets in the estate no
+         * DFHMDF field name exceeds seven characters, because the map generator appends a
+         * one-character suffix to build the eight-character symbolic names, and this mapset's own
+         * longest names are exactly seven. An eighth character could therefore never name a field
+         * on any screen, so admitting one admitted only values that cannot be honoured. On this
+         * screen the program always nominates the account-number field (COACTVWC.cbl 549 and 551).
+         * No coordinate, no cursor position. */
+        @Size(max = 7) String focusScreenFieldId,
 
-        /* 40. Opaque declarative route. No route table, constant, enumeration or dispatch here;
-         * unbounded because a route has no legacy width to bound it by. */
+        /* Opaque route value; no route table, constant or dispatch lives here. */
         String nextRoute,
 
-        /* 41. Client-echoed conversation state; no server-side session stands behind it. */
         NavigationContext navigationContext) {
+
+    /**
+     * The number of decimal places every monetary component carries, from the two decimal places of
+     * the five signed zoned decimals at {@code app/cpy/CVACT01Y.cpy} lines 7, 8, 9, 13 and 14.
+     *
+     * <p>Public because it is part of the numeric contract rather than an implementation choice: the
+     * service that builds a response, and the tests that check one, need a single authority for the
+     * figure instead of each restating it.
+     */
+    public static final int MONEY_SCALE = 2;
+
+    /**
+     * The number of integer digits every monetary component may carry, from the ten integer digits of
+     * the same five record fields. With {@link #MONEY_SCALE} this gives the total precision of twelve
+     * that the relational columns declare.
+     */
+    public static final int MONEY_INTEGER_DIGITS = 10;
+
+    /**
+     * Fixed stand-in emitted by {@link #toString()} in place of every carried value.
+     *
+     * <p>A constant rather than any transformation of the values, so nothing about them - not a
+     * length, not a prefix, not a digest, not a partial obscuring - can be recovered from a
+     * stringified instance.
+     *
+     * <p>Private because it is a rendering detail and not part of the response contract.
+     */
+    private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
+
+    /**
+     * Confirms that each monetary component has the decimal shape of the record field it represents.
+     *
+     * <p>Nothing else is normalized or checked, and that is deliberate. Every other component is
+     * stored exactly as supplied, including {@code null} and including every leading and trailing
+     * space, because the map items they derive from are fixed-width and space-significant: the
+     * account group id is ten spaces in all fifty seeded rows and those spaces are the value, so a
+     * component that came back shortened would be a parity defect. No value is trimmed, padded,
+     * re-cased, truncated, scaled, rounded or reformatted here, and no value is obscured - the
+     * national identifier and the government-issued identifier are carried exactly as the legacy
+     * screen displayed them.
+     *
+     * @throws IllegalArgumentException if any monetary component carries a scale other than
+     *     {@link #MONEY_SCALE} or needs more than {@link #MONEY_INTEGER_DIGITS} integer digits
+     */
+    public AccountViewResponse {
+        requireRecordShape("creditLimit", creditLimit);
+        requireRecordShape("cashCreditLimit", cashCreditLimit);
+        requireRecordShape("currentBalance", currentBalance);
+        requireRecordShape("currentCycleCredit", currentCycleCredit);
+        requireRecordShape("currentCycleDebit", currentCycleDebit);
+    }
+
+    /**
+     * Confirms that an amount has the decimal shape of the record field it represents.
+     *
+     * <p>Reads only the amount's own scale and precision; it performs no arithmetic on the value,
+     * does not re-scale it, does not round it and does not format it. The failure text names the
+     * component and the offending scale or digit count and never the amount itself, so a rejected
+     * value cannot reach a log through the diagnostic that reports it.
+     *
+     * @param component the component name, for the failure text
+     * @param amount the amount to check, or {@code null} for a field the screen leaves blank
+     * @throws IllegalArgumentException if the amount does not fit the record field
+     */
+    private static void requireRecordShape(final String component, final BigDecimal amount) {
+        if (amount == null) {
+            return;
+        }
+        if (amount.scale() != MONEY_SCALE) {
+            throw new IllegalArgumentException(component + " must carry scale " + MONEY_SCALE
+                    + ", because its record field stores two decimal places, but its scale is "
+                    + amount.scale());
+        }
+        final int integerDigits = amount.precision() - amount.scale();
+        if (integerDigits > MONEY_INTEGER_DIGITS) {
+            throw new IllegalArgumentException(component + " must fit " + MONEY_INTEGER_DIGITS
+                    + " integer digits, because that is the width of its record field, but it "
+                    + "needs " + integerDigits);
+        }
+    }
 
     /**
      * Interprets the raw status character without throwing.
      *
-     * <p>The raw character is what this record carries and what a client echoes; this is a derived
-     * projection over it, exactly as {@link NavigationContext#resolvedUserType()} is over the raw
-     * user-type character. Resolution is delegated to
-     * {@link AccountStatus#fromCode(String)}, which tolerates an absent, empty, over-wide or
-     * undeclared value by returning an empty result and applies no case folding, because the legacy
-     * editor tests the raw character. An empty result is therefore a normal answer and not an error:
-     * the status column carries no check constraint, only the account-update program validates the
-     * field, and every batch reader takes the value straight from the record, so a value outside the
-     * declared vocabulary genuinely reaches this screen in the legacy system.
-     *
-     * <p>Nothing is validated, defaulted or substituted: this method reports and never alters, and
-     * {@link #accountStatus()} keeps returning the unmodified character regardless of what this
-     * returns.
-     *
-     * @return the matching constant, or an empty {@link Optional} when the carried character is
-     *     absent or outside the declared vocabulary
+     * @return the matching constant, or an empty {@link Optional}
      */
     public Optional<AccountStatus> resolvedAccountStatus() {
         return AccountStatus.fromCode(this.accountStatus);
     }
 
     /**
-     * Reports whether the carried status character is the active code.
-     *
-     * <p>The screen labels this field as an active yes-or-no indicator at
-     * {@code app/bms/COACTVW.bms} line 96, so the predicate is the field's own documented meaning
-     * rather than an interpretation added here. Delegates to
-     * {@link AccountStatus#isActiveCode(String)}, which never throws and answers {@code false} for
-     * an absent or undeclared value rather than raising - an unresolvable status is reported as not
-     * active, never as a failure.
+     * Reports whether the carried status character is the active code - the field's own documented meaning
+     * on the mapset rather than an interpretation added here. An unresolvable status answers {@code false}
+     * rather than raising.
      *
      * @return {@code true} only when the carried character is the active code
      */
     public boolean active() {
         return AccountStatus.isActiveCode(this.accountStatus);
+    }
+
+    /**
+     * Renders this response for diagnostics with every regulated component withheld.
+     *
+     * <p>This is the widest response in the module and the one carrying the most regulated data:
+     * twenty-five of its forty-one components are replaced by a fixed stand-in. They divide into five
+     * groups. The account and customer identifiers and the external funds-transfer account identifier
+     * are durable keys to stored records. The five monetary components and the credit score are
+     * financial data about a named person. The government-issued identifier, the tax identifier, the
+     * date of birth, the three name parts, the two address lines, the city, the postal code, the state
+     * and country codes and the two telephone numbers are personal data outright. The two message
+     * lines are withheld for the reason given below. Nothing in that list is needed to diagnose a
+     * response.
+     *
+     * <p>The two coarse geography codes are withheld even though a two-character state and a
+     * three-character country identify nobody on their own. That is deliberate fail-closed
+     * conservatism: the review that required this rendering names addresses as regulated without
+     * carving out their coarser components, the diagnostic value of a state code is close to nil, and
+     * withholding it costs nothing that retaining it would buy.
+     *
+     * <p><strong>Why both message lines are withheld as well.</strong> This is where this response
+     * differs from the account-update response, which does render its summary line. That one is
+     * composed onto a field <em>label</em>, so it names which box is wrong without saying what was
+     * typed. This program's texts are not: the not-found text it builds at
+     * {@code app/cbl/COACTVWC.cbl} lines 747 to 757 concatenates the account identifier itself into
+     * the message, and the two sibling texts at 796 to 806 and 846 to 856 are built the same way. A
+     * message line on this response can therefore contain a business key, so rendering it would
+     * reintroduce through the message exactly what withholding the identifiers removed.
+     *
+     * <p>Sixteen components are shown as-is, and the retained set was chosen because it is sufficient
+     * to diagnose a response rather than because the remainder looked harmless. The header items, the
+     * account status code, the three account calendar dates, the account group code, the
+     * primary-cardholder flag, the error flag, the focus field and the route describe the shape and
+     * outcome of a response without describing a person. The three dates are retained on the same
+     * footing as the sibling transaction contracts retain theirs: a calendar date is not identifying,
+     * and it is what makes an expiry or reissue defect diagnosable. The navigation state renders
+     * itself, which is safe rather than merely conventional, because
+     * {@link NavigationContext#toString()} withholds its own six identifying values.
+     *
+     * <p>Every component is named in the rendering, each either as its own value or as the stand-in,
+     * rather than collapsed into a single summary entry as {@link AccountUpdateResponse#toString()}
+     * does. Both styles are fail-closed, and the difference matters for a different reason: naming
+     * each component keeps the rendering structurally parallel to the declaration, so completeness can
+     * be checked component by component instead of taken on trust. On a record this wide that check is
+     * the only practical way to know a regulated component has not been quietly printed, and the
+     * sixteen retained values are genuinely useful on a read-only view screen in a way that an update
+     * response's echoed input is not.
+     *
+     * <p>This override changes only the stringified form. The component accessors and the serialized
+     * payload are unaffected and continue to carry the full untouched values, which is the contract
+     * the legacy screen established, and which this type is under standing instruction not to alter:
+     * nothing is obscured, shortened or transformed anywhere except on this one diagnostic path.
+     * Protection at rest for the government identifier remains a separate concern handled in the
+     * service and persistence layers.
+     *
+     * <p>{@code equals} and {@code hashCode} are deliberately left as the record contract generates
+     * them. They compare every component by value, which is what a wire contract requires, and neither
+     * emits anything: an in-memory comparison is not a disclosure surface. Withholding belongs on the
+     * rendering path alone.
+     *
+     * @return a diagnostic rendering in which no regulated component appears in whole or in part
+     */
+    @Override
+    public String toString() {
+        return "AccountViewResponse["
+                + "transactionName=" + transactionName
+                + ", title01=" + title01
+                + ", currentDate=" + currentDate
+                + ", programName=" + programName
+                + ", title02=" + title02
+                + ", currentTime=" + currentTime
+                + ", accountId=" + REDACTION_PLACEHOLDER
+                + ", accountStatus=" + accountStatus
+                + ", openDate=" + openDate
+                + ", creditLimit=" + REDACTION_PLACEHOLDER
+                + ", expirationDate=" + expirationDate
+                + ", cashCreditLimit=" + REDACTION_PLACEHOLDER
+                + ", reissueDate=" + reissueDate
+                + ", currentBalance=" + REDACTION_PLACEHOLDER
+                + ", currentCycleCredit=" + REDACTION_PLACEHOLDER
+                + ", accountGroupId=" + accountGroupId
+                + ", currentCycleDebit=" + REDACTION_PLACEHOLDER
+                + ", customerId=" + REDACTION_PLACEHOLDER
+                + ", ssn=" + REDACTION_PLACEHOLDER
+                + ", dateOfBirth=" + REDACTION_PLACEHOLDER
+                + ", ficoScore=" + REDACTION_PLACEHOLDER
+                + ", firstName=" + REDACTION_PLACEHOLDER
+                + ", middleName=" + REDACTION_PLACEHOLDER
+                + ", lastName=" + REDACTION_PLACEHOLDER
+                + ", addressLine1=" + REDACTION_PLACEHOLDER
+                + ", stateCode=" + REDACTION_PLACEHOLDER
+                + ", addressLine2=" + REDACTION_PLACEHOLDER
+                + ", zipCode=" + REDACTION_PLACEHOLDER
+                + ", city=" + REDACTION_PLACEHOLDER
+                + ", countryCode=" + REDACTION_PLACEHOLDER
+                + ", phoneNumber1=" + REDACTION_PLACEHOLDER
+                + ", governmentIssuedId=" + REDACTION_PLACEHOLDER
+                + ", phoneNumber2=" + REDACTION_PLACEHOLDER
+                + ", eftAccountId=" + REDACTION_PLACEHOLDER
+                + ", primaryCardHolderIndicator=" + primaryCardHolderIndicator
+                + ", infoMessage=" + REDACTION_PLACEHOLDER
+                + ", errorMessage=" + REDACTION_PLACEHOLDER
+                + ", inputError=" + inputError
+                + ", focusScreenFieldId=" + focusScreenFieldId
+                + ", nextRoute=" + nextRoute
+                + ", navigationContext=" + navigationContext
+                + "]";
     }
 }

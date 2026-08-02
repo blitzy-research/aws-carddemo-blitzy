@@ -22,532 +22,219 @@ import java.math.BigDecimal;
 import java.util.Objects;
 
 /**
- * Converts between the legacy 350-byte daily-transaction record image and
- * {@link DailyTransaction}, by explicit byte offset and nothing else.
+ * Sole holder of the 350-byte daily-transaction record layout and of the exact two-way mapping
+ * between that record image and the {@link DailyTransaction} entity.
  *
- * <p><strong>Why this class matters more than the other ten mappers.</strong> The daily-transaction
- * dataset is the <em>primary input to the whole batch estate</em>: the sample file
- * {@code [app/data/ASCII/dailytran.txt]} is what the posting pipeline consumes from end to end, so
- * this mapper sits on the critical path of the end-to-end byte-equivalence gate and of the
- * named-real-world-artefact gate. A single mis-declared offset here does not fail loudly; it
- * produces a 350-byte record of exactly the right width carrying the wrong content, which is the one
- * defect a downstream width check can never catch. Every offset below was therefore read from the
- * copybook and then re-verified against the sample file byte by byte.</p>
+ * <p>This layout matters more than its ten siblings because the daily-transaction dataset is the
+ * <em>primary</em> production-representative input to the batch pipeline: the posting run reads it,
+ * and the end-to-end byte-parity gate is driven by it. A defect here is not contained - it
+ * propagates into posted transactions, account balances, rejects and statements alike. Layout
+ * authority is {@code app/cpy/CVTRA06Y.cpy}: thirteen data items totalling 330 bytes followed by a
+ * twenty-byte filler run. Offsets are zero-based byte positions in the record image and lengths are
+ * encoded byte counts, never character counts, and every offset is a named constant so a reviewer
+ * can audit it against the copybook without reading a method body.
  *
- * <p><strong>The layout, from {@code [app/cpy/CVTRA06Y.cpy]}.</strong> Offsets are zero-based byte
- * positions within the record image; lengths are encoded bytes, never character counts.</p>
+ * <p><strong>This layout has no keyed-cluster definition, and that is not an omission.</strong>
+ * Alone among the estate's record layouts it is provisioned as a sequential dataset rather than as a
+ * keyed cluster, so there is no cluster-declared key offset or record size to corroborate the width
+ * against - the copybook is the only authority, and the width arithmetic is therefore derived in
+ * code: {@link #MAPPED_DATA_LENGTH} plus {@link #FILLER_LENGTH} equals {@link #RECORD_LENGTH}, and a
+ * static initialiser re-checks the field offsets for contiguity so a mis-typed offset cannot survive
+ * a single execution.
  *
- * <table>
- * <caption>{@code DALYTRAN-RECORD} - thirteen mapped fields and one unmapped filler run</caption>
- * <tr><th scope="col">#</th><th scope="col">Legacy field</th><th scope="col">Picture</th>
- *     <th scope="col">Offset</th><th scope="col">Length</th><th scope="col">Java property</th></tr>
- * <tr><td>1</td><td>{@code DALYTRAN-ID}</td><td>{@code X(16)}</td><td>0</td><td>16</td>
- *     <td>{@code dalytranId} - the {@code @Id}</td></tr>
- * <tr><td>2</td><td>{@code DALYTRAN-TYPE-CD}</td><td>{@code X(02)}</td><td>16</td><td>2</td>
- *     <td>{@code dalytranTypeCd}</td></tr>
- * <tr><td>3</td><td>{@code DALYTRAN-CAT-CD}</td><td>{@code 9(04)}</td><td>18</td><td>4</td>
- *     <td>{@code dalytranCatCd} - a {@code String}</td></tr>
- * <tr><td>4</td><td>{@code DALYTRAN-SOURCE}</td><td>{@code X(10)}</td><td>22</td><td>10</td>
- *     <td>{@code dalytranSource}</td></tr>
- * <tr><td>5</td><td>{@code DALYTRAN-DESC}</td><td>{@code X(100)}</td><td>32</td><td>100</td>
- *     <td>{@code dalytranDesc}</td></tr>
- * <tr><td>6</td><td>{@code DALYTRAN-AMT}</td><td>{@code S9(09)V99}</td><td>132</td><td>11</td>
- *     <td>{@code dalytranAmt} - {@link BigDecimal} at scale 2</td></tr>
- * <tr><td>7</td><td>{@code DALYTRAN-MERCHANT-ID}</td><td>{@code 9(09)}</td><td>143</td><td>9</td>
- *     <td>{@code dalytranMerchantId} - a {@code String}</td></tr>
- * <tr><td>8</td><td>{@code DALYTRAN-MERCHANT-NAME}</td><td>{@code X(50)}</td><td>152</td><td>50</td>
- *     <td>{@code dalytranMerchantName}</td></tr>
- * <tr><td>9</td><td>{@code DALYTRAN-MERCHANT-CITY}</td><td>{@code X(50)}</td><td>202</td><td>50</td>
- *     <td>{@code dalytranMerchantCity}</td></tr>
- * <tr><td>10</td><td>{@code DALYTRAN-MERCHANT-ZIP}</td><td>{@code X(10)}</td><td>252</td><td>10</td>
- *     <td>{@code dalytranMerchantZip}</td></tr>
- * <tr><td>11</td><td>{@code DALYTRAN-CARD-NUM}</td><td>{@code X(16)}</td><td>262</td><td>16</td>
- *     <td>{@code dalytranCardNum}</td></tr>
- * <tr><td>12</td><td>{@code DALYTRAN-ORIG-TS}</td><td>{@code X(26)}</td><td>278</td><td>26</td>
- *     <td>{@code dalytranOrigTs} - a {@code String}</td></tr>
- * <tr><td>13</td><td>{@code DALYTRAN-PROC-TS}</td><td>{@code X(26)}</td><td>304</td><td>26</td>
- *     <td>{@code dalytranProcTs} - a {@code String}</td></tr>
- * <tr><td>-</td><td>{@code FILLER}</td><td>{@code X(20)}</td><td>330</td><td>20</td>
- *     <td><em>not mapped, not persisted</em></td></tr>
- * </table>
+ * <p><strong>Two entities share one geometry, and there is deliberately no shared base class.</strong>
+ * This layout is field-for-field parallel to the posted-transaction layout, differing only in field
+ * name prefix. The two are nonetheless kept wholly separate: they are not merged, neither subclasses
+ * the other, and no shared abstract base is extracted. They are distinct datasets with distinct
+ * lifecycles, and a shared supertype would make it possible to hand one to the other's mapper, or to
+ * "promote" one to the other by a cast rather than by the explicit service-layer step the legacy
+ * program performs.
  *
- * <p><strong>Width arithmetic.</strong>
- * {@code 16 + 2 + 4 + 10 + 100 + 11 + 9 + 50 + 50 + 10 + 16 + 26 + 26 = 330} mapped bytes, and
- * {@code 330 + 20 = 350}. Both sums are asserted at class initialisation, so a future edit that
- * changes one constant without changing its neighbours fails immediately and loudly rather than
- * shifting every field after it. The eleventh field's offset of 262 is the same position the
- * external sort specifications address as one-based column 263, which is the independent
- * corroboration that the preceding ten widths are right.</p>
+ * <p><strong>The amount is zoned decimal in eleven encoded bytes</strong> - one ASCII byte per digit,
+ * with no separate sign byte and no packed representation - and its sign is overpunched into the
+ * final digit byte, which encodes a digit and a sign together. All decoding and encoding of that
+ * field goes through {@link ZonedDecimalCodec}, the module's single point of decimal truth.
+ * <strong>Truncation is mandatory and {@code HALF_EVEN} and {@code HALF_UP} are forbidden:</strong>
+ * the codec applies scale 2 with truncation toward zero because no arithmetic statement anywhere in
+ * the estate specifies rounding, and a COBOL store without a rounding clause truncates. This class
+ * never calls {@code setScale} and never names a rounding mode, which is what keeps the module's
+ * rounding policy single-valued; no binary floating-point type appears here either. One asymmetry
+ * follows: a {@link BigDecimal} cannot carry a negative zero, so a negatively-signed all-zero image
+ * decodes to zero and re-emits with the positive sign. It is observable only where every digit is
+ * zero, and a caller needing byte-exact preservation reads the field through the codec's signed
+ * entry points.
  *
- * <p><strong>This layout has no {@code DEFINE CLUSTER}, and that is not an omission.</strong> Alone
- * among the estate's record layouts, the daily-transaction dataset is a <em>sequential</em> dataset
- * rather than an indexed cluster: both consuming programs declare the file
- * {@code ORGANIZATION IS SEQUENTIAL} with {@code ACCESS MODE IS SEQUENTIAL}
- * {@code [app/cbl/CBTRN02C.cbl]} {@code [app/cbl/CBTRN01C.cbl]}. There is consequently no
- * {@code KEYS(length offset)} clause anywhere to corroborate the offsets against - the corroboration
- * used instead is the sort column above, plus a byte-level census of the sample file. The identifier
- * at offset zero is still the natural business key and still the {@code @Id}: no surrogate key is
- * introduced here or anywhere (decisions D-29 and DL-017).</p>
+ * <p>Four field-level contracts must survive untouched, because each looks like something to tidy
+ * up and none is. <strong>A 26-space processing timestamp is legitimate</strong>: an unposted record
+ * carries a blank processing timestamp, so the value must round-trip as 26 spaces rather than as
+ * {@code null}, an empty string or a defaulted instant. <strong>Both timestamps stay
+ * {@link String}s</strong> - neither is converted to a temporal type, because a blank value has no
+ * temporal counterpart and parsing would either fail or invent one. <strong>Numeric-looking
+ * identifiers stay {@link String}s</strong>, since leading zeros are significant and an identifier
+ * is not a number. <strong>The merchant postal code is free-form and never numeric</strong>, the
+ * reference data carrying values that are not parseable as numbers at all.
  *
- * <p><strong>Two entities, one geometry - and no shared base class.</strong> This layout is
- * field-for-field parallel to the posted-transaction layout {@code [app/cpy/CVTRA05Y.cpy]}, with
- * identical widths at identical offsets; only the field-name prefix differs. The two are nonetheless
- * modelled as separate entities with separate mappers, because they are distinct datasets with
- * distinct lifecycles: daily transactions are the unvalidated <em>input</em> to the posting job and
- * posted transactions are its <em>output</em> (decision DL-033). Duplicating a byte-exact layout is
- * the faithful choice here, and it is deliberate:</p>
- * <ul>
- * <li>the two mappers are <strong>not</strong> merged;</li>
- * <li>neither subclasses the other;</li>
- * <li>no shared abstract base is extracted.</li>
- * </ul>
- * <p>A shared hierarchy would couple two independently versioned contracts, so that a change to the
- * posted-transaction layout would silently alter how inbound work is parsed. The column names make
- * the divergence permanent and visible: every column of the daily-transaction table carries the
- * {@code dalytran_} prefix <em>including the merchant block</em>, whereas the posted-transaction
- * entity maps its merchant identifier to the unprefixed column {@code merchant_id} (decision D-39).
- * Neither entity is to be "corrected" toward the other.</p>
+ * <p>The filler run is emitted as spaces. Filler with no initialising clause is uninitialised, so no
+ * byte value is canonical, and the estate's own fixtures disagree about it. <strong>Every fixture
+ * round-trip assertion for this layout therefore compares only the mapped data prefix - from zero up
+ * to but excluding {@value #MAPPED_DATA_LENGTH} - and never the whole record</strong>, because bytes
+ * beyond that point are not this mapper's to guarantee. Note also that a fixture line is one byte
+ * shorter than the file's stride, the difference being the record separator, so a caller reading
+ * lines must exclude it: the separator is never record content.
  *
- * <p><strong>Reflection budget zero, which is why this class exists at all.</strong> The unsafe-code
- * audit commits to zero reflection, so all eleven fixed-width mappers are hand-written with explicit
- * offset arithmetic (decisions DL-034 and D-26). No annotation-driven mapper, bean-mapping library or
- * annotation processor is used here, and none may be introduced.</p>
+ * <p>The reference input's composition - point-of-sale purchases alongside operator-originated
+ * returns - is what makes both signed directions of the posting computation reachable from seeded
+ * data, and every record in it carries the same processing date, so any date-window filtering must
+ * be exercised by a separately constructed fixture rather than by this one.
  *
- * <h2>The amount field</h2>
+ * <p>Deliberately absent, and each absence is a boundary rather than an oversight: validation and
+ * reject handling of any kind, since the reject reason codes and the 430-byte reject record belong
+ * to the posting service; arithmetic of any kind, since the over-limit basis is evaluated strictly
+ * left to right in that same service and every store truncates, so re-ordering would move the
+ * truncation point and change the cent; posting, balance update and cross-reference resolution; date
+ * or timestamp parsing; enumeration translation, the transaction source staying a raw value;
+ * comparator, sort or ordering, which the job that needs it owns; any mapping between this entity
+ * and the posted-transaction entity, since promoting a daily transaction is an explicit service-layer
+ * step; the optimistic-locking counter, which this entity does not declare; logging, this package not
+ * being among the module's configured logger names; and persistence of any kind.
  *
- * <p>{@code DALYTRAN-AMT} is {@code PIC S9(09)V99} under {@code USAGE DISPLAY}: <strong>zoned
- * decimal, eleven encoded bytes</strong>, one ASCII byte per digit, with no separate sign byte and no
- * byte spent on the implied decimal point. The sign is overpunched into the final digit byte, which
- * carries both the low-order digit and the sign:</p>
+ * <p>One consumer of this layout is a complete program that no job member, procedure or resource
+ * definition invokes - recorded as an anomaly - which becomes a job that is defined and exercised by
+ * tests but excluded from the default pipeline.
  *
- * <table>
- * <caption>Overpunched sign convention in the final byte, at offset 142</caption>
- * <tr><th scope="col">Low-order digit</th><th scope="col">0</th><th scope="col">1</th>
- *     <th scope="col">2</th><th scope="col">3</th><th scope="col">4</th><th scope="col">5</th>
- *     <th scope="col">6</th><th scope="col">7</th><th scope="col">8</th><th scope="col">9</th></tr>
- * <tr><th scope="row">Positive</th><td><code>&#123;</code></td><td>{@code A}</td><td>{@code B}</td>
- *     <td>{@code C}</td><td>{@code D}</td><td>{@code E}</td><td>{@code F}</td><td>{@code G}</td>
- *     <td>{@code H}</td><td>{@code I}</td></tr>
- * <tr><th scope="row">Negative</th><td><code>&#125;</code></td><td>{@code J}</td><td>{@code K}</td>
- *     <td>{@code L}</td><td>{@code M}</td><td>{@code N}</td><td>{@code O}</td><td>{@code P}</td>
- *     <td>{@code Q}</td><td>{@code R}</td></tr>
- * </table>
- *
- * <p><strong>All decoding and encoding of that field goes through {@link ZonedDecimalCodec}, the
- * module's single point of decimal truth.</strong> This class never calls {@code setScale}, never
- * names a rounding mode, never performs arithmetic on an amount and never re-scales a decoded value.
- * Centralising the policy is what makes it impossible for one mapper to introduce a different
- * rounding behaviour than another.</p>
- *
- * <p><strong>Truncation is mandatory; {@code HALF_EVEN} and {@code HALF_UP} are forbidden.</strong>
- * The codec applies {@link java.math.RoundingMode#DOWN} at scale 2 (decisions D-02 and DL-013). The
- * evidence is a keyword census: {@code ROUNDED} occurs <strong>zero</strong> times across
- * {@code [app/cbl]} and {@code [app/cpy]}, and a COBOL arithmetic store without {@code ROUNDED}
- * truncates toward zero. {@code HALF_EVEN} - the conventional Java choice - would differ by one cent
- * on roughly half of all interest computations, a byte-parity failure entirely invisible to a test
- * suite written under the same wrong assumption. Relatedly, {@code COMP-3} occurs
- * <strong>zero</strong> times in {@code [app/cpy]}, so no packed-decimal decoder exists or is needed
- * (decision D-01).</p>
- *
- * <p>The property is a {@link BigDecimal} of precision 11 and scale 2. No {@code double},
- * {@code float}, {@code Double} or {@code Float} appears in this class, in the entity, or in the
- * codec.</p>
- *
- * <p><strong>The one asymmetry, and the measurement that shows it does not bite here.</strong> A
- * {@code BigDecimal} cannot carry a negative zero, so an all-zero image ending in
- * <code>&#125;</code> decodes to zero and re-encodes ending in <code>&#123;</code> (decision D-04).
- * The codec offers a signed path that preserves the bit, but the entity's property is a plain
- * {@code BigDecimal} and cannot hold it, so this mapper uses the monetary path. That is safe on the
- * production-representative input: a census of all 300 amount images in
- * {@code [app/data/ASCII/dailytran.txt]} finds <em>no</em> record whose amount digits are all zero,
- * so every one of the 300 records round-trips byte for byte. The asymmetry is unobservable for an
- * ordinary negative amount whose cent digit is zero - such a value ends in <code>&#125;</code> and
- * re-encodes to <code>&#125;</code>.</p>
- *
- * <h2>Verified evidence from the production-representative input</h2>
- *
- * <p>{@code [app/data/ASCII/dailytran.txt]} is <strong>105,300 bytes = 300 records at a 351-byte
- * stride</strong>: 350 record bytes followed by a single {@code 0x0A}. That line feed is a record
- * <em>terminator</em> and is never part of the record - a fixed-width image this class reads or
- * produces is exactly 350 bytes with no terminator, and record separation belongs to the writer in
- * the batch layer (decision D-30). A caller holding the whole file in one buffer therefore addresses
- * record <em>i</em> at {@code i * 351}, which is what {@link #fromRecord(byte[], int)} exists for.
- * Stride arithmetic stays with the caller because the stride is a property of the file, not of the
- * record.</p>
- *
- * <table>
- * <caption>Values observed at each offset, confirmed on records 0, 250 and 299</caption>
- * <tr><th scope="col">Offset</th><th scope="col">Observation</th></tr>
- * <tr><td>0</td><td>a 16-character transaction identifier, fully zero-padded on the left</td></tr>
- * <tr><td>16</td><td>{@code 01}</td></tr>
- * <tr><td>18</td><td>{@code 0001}</td></tr>
- * <tr><td>22</td><td><code>POS TERM&#160;&#160;</code> or <code>OPERATOR&#160;&#160;</code> - each
- *     exactly ten bytes, each with two trailing spaces</td></tr>
- * <tr><td>32</td><td>a 100-byte description, space-padded on the right</td></tr>
- * <tr><td>132</td><td>{@code 0000005047G}, {@code 0000000349I} and {@code 0000006032B}</td></tr>
- * <tr><td>143</td><td>{@code 800000000}</td></tr>
- * <tr><td>152</td><td>a 50-byte merchant name</td></tr>
- * <tr><td>202</td><td>a 50-byte merchant city</td></tr>
- * <tr><td>252</td><td>{@code 72112} plus five spaces, and {@code 53200-7529}</td></tr>
- * <tr><td>262</td><td>a real 16-digit card number - confirms one-based column 263</td></tr>
- * <tr><td>278</td><td>{@code 2022-06-10 19:27:53.000000} - 26 characters</td></tr>
- * <tr><td>304</td><td><strong>26 spaces</strong></td></tr>
- * <tr><td>330</td><td>20 spaces</td></tr>
- * </table>
- *
- * <p><strong>The three worked amounts, decoded.</strong> {@code 0000005047G} is
- * <strong>504.77</strong>: the trailing {@code G} contributes a low-order 7 and a positive sign, so
- * the unsigned digits are {@code 00000050477}, which at scale 2 is 504.77. {@code 0000000349I} is
- * <strong>34.99</strong> and {@code 0000006032B} is <strong>603.22</strong>. A figure of 500.47 has
- * circulated for the first of the three; it is a digit-transposition slip, and it is recorded here as
- * such rather than propagated, because 500.47 would require the image {@code 0000005004G}, which is
- * not what the file contains. The same correction is recorded on {@link ZonedDecimalCodec}, so the two
- * agree.</p>
- *
- * <p><strong>Source-code census over all 300 records at offset 22:</strong>
- * <code>POS TERM&#160;&#160;</code> appears <strong>250</strong> times and
- * <code>OPERATOR&#160;&#160;</code> <strong>50</strong> times - 250 point-of-sale purchases and 50
- * operator-originated returns. That composition is what makes both signed posting directions
- * reachable from seed data alone, and the correspondence is exact: the 50 negative amounts are
- * precisely the 50 operator records.</p>
- *
- * <p><strong>Overpunch census over all 300 amounts, final byte at offset 142.</strong> Every one of
- * the twenty sign characters occurs in real data, so a full-file round trip exercises the entire sign
- * table with no synthetic fixture:</p>
- *
- * <table>
- * <caption>Occurrences of each overpunch character across the 300 sample records</caption>
- * <tr><th scope="col">Sign</th><th scope="col">Positive</th><th scope="col">Count</th>
- *     <th scope="col">Negative</th><th scope="col">Count</th></tr>
- * <tr><td>0</td><td><code>&#123;</code></td><td>25</td><td><code>&#125;</code></td><td>6</td></tr>
- * <tr><td>1</td><td>{@code A}</td><td>28</td><td>{@code J}</td><td>3</td></tr>
- * <tr><td>2</td><td>{@code B}</td><td>29</td><td>{@code K}</td><td>5</td></tr>
- * <tr><td>3</td><td>{@code C}</td><td>30</td><td>{@code L}</td><td>5</td></tr>
- * <tr><td>4</td><td>{@code D}</td><td>29</td><td>{@code M}</td><td>6</td></tr>
- * <tr><td>5</td><td>{@code E}</td><td>23</td><td>{@code N}</td><td>2</td></tr>
- * <tr><td>6</td><td>{@code F}</td><td>21</td><td>{@code O}</td><td>4</td></tr>
- * <tr><td>7</td><td>{@code G}</td><td>24</td><td>{@code P}</td><td>7</td></tr>
- * <tr><td>8</td><td>{@code H}</td><td>17</td><td>{@code Q}</td><td>4</td></tr>
- * <tr><td>9</td><td>{@code I}</td><td>24</td><td>{@code R}</td><td>8</td></tr>
- * <tr><th scope="row">Total</th><td></td><td><strong>250</strong></td><td></td>
- *     <td><strong>50</strong></td></tr>
- * </table>
- *
- * <p><strong>All 300 records carry the same processing date and the same origination
- * timestamp.</strong> The consequence matters to whoever writes the tests: <em>date-window filtering
- * cannot be exercised by this input</em> and needs a separately constructed fixture. That is a
- * batch-layer and test concern, never a mapper concern - this class performs no filtering, no
- * ordering and no date comparison of any kind.</p>
- *
- * <h2>Field-level contracts this class must not tidy up</h2>
- *
- * <p><strong>A 26-space processing timestamp is legitimate and must survive untouched.</strong>
- * {@code DALYTRAN-PROC-TS} is 26 spaces on all 300 seeded records, because the input is staged before
- * the posting run has stamped it. This mapper tolerates that by construction: the field is a raw
- * 26-byte value that is not parsed, not defaulted, not rejected and never replaced by an epoch.</p>
- *
- * <p><strong>Both timestamps stay {@code String}s.</strong> Neither is converted to
- * {@code LocalDateTime}, {@code Timestamp}, {@code Instant} or any other temporal type, and this
- * class imports nothing from {@code java.time} and declares no formatter. The observed form is a
- * DB2-style timestamp with six fractional digits, but a blank value is equally legal, so any temporal
- * type would fail on the very first record of the reference input. Keeping the raw value also
- * preserves the byte image that the end-to-end gate compares. Strict calendar parsing, where it is
- * wanted at all, belongs to the service layer.</p>
- *
- * <p><strong>Numeric-looking identifiers stay {@code String}s.</strong> {@code DALYTRAN-ID} (16),
- * {@code DALYTRAN-CAT-CD} ({@code 9(04)}, observed as {@code 0001}),
- * {@code DALYTRAN-MERCHANT-ID} ({@code 9(09)}, observed as {@code 800000000}) and
- * {@code DALYTRAN-CARD-NUM} (16) carry significant leading zeros at fixed widths. None is ever parsed
- * to an {@code int} or a {@code long} and re-formatted, because a parse-and-reformat round trip loses
- * the leading zeros and silently narrows the field.</p>
- *
- * <p><strong>The merchant postal code is free-form {@code X(10)}, never numeric.</strong> The sample
- * data carries both a five-digit code padded with five spaces and a ZIP+4 form with an embedded
- * hyphen, such as {@code 53200-7529}. Every character field is copied raw: nothing is trimmed,
- * stripped, case-folded, pad-normalised, postal-normalised or validated anywhere in this class.</p>
- *
- * <p><strong>The entity carries no {@code @Version} field.</strong> Optimistic locking is applied to
- * the account and card entities, whose legacy programs compare a before-image with an after-image.
- * The daily-transaction table is an unvalidated inbound landing area that is written once and read
- * once, so it has no version column and this mapper neither reads nor writes one.</p>
- *
- * <h2>The filler run, and the exact bound for a round-trip comparison</h2>
- *
- * <p>{@link #toRecord(DailyTransaction)} emits the 20-byte filler run as <strong>spaces</strong>.
- * COBOL {@code FILLER X(20)} with no {@code VALUE} clause is uninitialised, so no byte value is
- * canonical, and the sample data disagrees with itself: the four master files carry space filler -
- * 20 bytes per daily-transaction record, measured - while the four reference-table files carry
- * ASCII-zero filler. This is anomaly 20, resolved by decision D-10 in favour of a space default.</p>
- *
- * <p><strong>Therefore every fixture round-trip assertion for this layout compares only the mapped
- * data prefix {@code [0, 330)}</strong>, published as {@link #MAPPED_DATA_LENGTH}. Comparing all 350
- * bytes would be asserting a byte the source never defined.</p>
- *
- * <h2>Boundaries - what this mapper deliberately does not do</h2>
- *
- * <ul>
- * <li><strong>No validation and no reject codes.</strong> The five reject reason codes and the
- *     430-byte reject record - a 350-byte source image followed by a 4-digit reason and a 76-character
- *     description - belong to the batch validation processor and the reject writer. This class assigns
- *     no code and builds no reject image. It is also why the landing table carries no inbound foreign
- *     key: a referential constraint here would reject a bad record at insert time and make the
- *     reject-with-reason paths unreachable (decisions DL-032 and D-38).</li>
- * <li><strong>No arithmetic.</strong> The over-limit basis is evaluated strictly left to right in the
- *     posting service and is never rearranged, because truncation makes that arithmetic
- *     non-associative (decisions D-03 and DL-014). None of it belongs here.</li>
- * <li><strong>No posting, no balance update, no cross-reference resolution.</strong></li>
- * <li><strong>No date or timestamp parsing.</strong></li>
- * <li><strong>No enumeration translation.</strong> The source code stays a raw ten-byte value; the
- *     transaction-source enumeration is a service concern.</li>
- * <li><strong>No comparator, no sort, no ordering.</strong></li>
- * <li><strong>No mapping between this entity and the posted-transaction entity.</strong> Promoting a
- *     daily transaction to a posted transaction is service and batch work; this class does not
- *     reference the posted-transaction type at all.</li>
- * <li><strong>No logging.</strong> This package is not among the configured logger names, so a logger
- *     here would be unconfigured. Diagnostics travel in exception messages instead - and never carry
- *     the value they rejected (decision D-16).</li>
- * <li><strong>No persistence.</strong> No repository, no entity manager, no transaction.</li>
- * </ul>
- *
- * <h2>Consumers of this layout in the legacy estate</h2>
- *
- * <p>Two programs read {@code DALYTRAN-RECORD}. {@code [app/cbl/CBTRN02C.cbl]} is the posting program
- * that the daily pipeline runs. {@code [app/cbl/CBTRN01C.cbl]} is a complete 491-line, 18-paragraph
- * program that <strong>no job member, procedure or resource definition invokes</strong> - anomaly 12 -
- * and it becomes a job that is defined and exercised by tests but excluded from the default pipeline
- * (decision DL-058). Both consume this mapper; nothing about either is implemented here.</p>
- *
- * <h2>Thread safety and shape</h2>
- *
- * <p>Stateless and immutable: a final class with a private constructor, only static members, no
- * mutable static state and no instance state. Every method is a pure function of its arguments -
- * there is no I/O, no clock, no environment lookup and no randomness - so this class is safe for
- * unsynchronised concurrent use by any number of batch threads. It also performs no
- * {@code String}-to-byte conversion of its own: every such boundary lives inside
- * {@link FixedWidthFieldReader} and {@link ZonedDecimalCodec}, both of which use US-ASCII explicitly
- * and never the platform default charset.</p>
- *
- * <h2>Provenance</h2>
- *
- * <p>Translated from the record layout at checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy tree is
- * read-only reference: every legacy fact above is cited by member path and no COBOL statement is
- * transcribed.</p>
+ * <p>Stateless and thread safe: final, private constructor, every member static and immutable, no
+ * mutable static state. Every slice and placement goes through {@link FixedWidthFieldReader}, so
+ * there is no {@code substring} call here, no annotation-driven mapping, no reflection and no
+ * generated code - the module's reflection budget is zero, which is why this class exists at all.
+ * Traceability is carried by citation only.
  *
  * @see DailyTransaction
- * @see FixedWidthFieldReader
  * @see ZonedDecimalCodec
+ * @see FixedWidthFieldReader
  */
 public final class DailyTransactionRecordMapper {
 
-    /**
-     * Layout name carried in every diagnostic this class or its collaborators raise.
-     *
-     * <p>It names <em>both</em> identifiers a reader might search for - the record group
-     * {@code DALYTRAN-RECORD} and the copybook member {@code CVTRA06Y} - because a failure message
-     * that names only one of them sends the reader to the wrong place. Never parsed, never
-     * interpreted, and never used to select behaviour.
-     */
+    /** Layout name carried into every diagnostic; it names both the record group and the copybook. */
     public static final String ARTEFACT = "DALYTRAN-RECORD (CVTRA06Y)";
 
-    /**
-     * Encoded byte width of the whole record image, {@value}.
-     *
-     * <p>A record image is exactly this wide with no line terminator (decision D-30). The sample
-     * file's 351-byte stride is the record width plus one separator byte, and that extra byte belongs
-     * to the file rather than to the record.
-     */
+    /** Full record width: the mapped data prefix plus the trailing filler run. */
     public static final int RECORD_LENGTH = 350;
 
     /**
-     * Encoded byte width of the mapped data prefix, {@value}, being the record width less the
-     * unmapped filler run.
-     *
-     * <p><strong>This is the exact bound for a fixture round-trip comparison:</strong> compare
-     * {@code [0, 330)} and nothing beyond it. The filler byte is not uniform across the sample data
-     * and no value for it is canonical, so a comparison that ran to 350 would be asserting a byte the
-     * source never defined (anomaly 20, decision D-10).
+     * Width of the mapped data prefix, and <strong>the exact bound for a fixture round-trip
+     * comparison</strong>: compare from zero up to but excluding this value and nothing beyond it,
+     * because the filler bytes are not uniform across the estate's fixtures.
      */
     public static final int MAPPED_DATA_LENGTH = 330;
 
-    /** Zero-based byte offset of {@code DALYTRAN-ID}, {@value}. */
     public static final int DALYTRAN_ID_OFFSET = 0;
 
-    /** Encoded byte length of {@code DALYTRAN-ID}, {@value}, from {@code PIC X(16)}. */
     public static final int DALYTRAN_ID_LENGTH = 16;
 
-    /** Zero-based byte offset of {@code DALYTRAN-TYPE-CD}, {@value}. */
     public static final int DALYTRAN_TYPE_CD_OFFSET = 16;
 
-    /** Encoded byte length of {@code DALYTRAN-TYPE-CD}, {@value}, from {@code PIC X(02)}. */
     public static final int DALYTRAN_TYPE_CD_LENGTH = 2;
 
-    /** Zero-based byte offset of {@code DALYTRAN-CAT-CD}, {@value}. */
     public static final int DALYTRAN_CAT_CD_OFFSET = 18;
 
-    /** Encoded byte length of {@code DALYTRAN-CAT-CD}, {@value}, from {@code PIC 9(04)}. */
     public static final int DALYTRAN_CAT_CD_LENGTH = 4;
 
-    /** Zero-based byte offset of {@code DALYTRAN-SOURCE}, {@value}. */
     public static final int DALYTRAN_SOURCE_OFFSET = 22;
 
-    /** Encoded byte length of {@code DALYTRAN-SOURCE}, {@value}, from {@code PIC X(10)}. */
     public static final int DALYTRAN_SOURCE_LENGTH = 10;
 
-    /** Zero-based byte offset of {@code DALYTRAN-DESC}, {@value}. */
     public static final int DALYTRAN_DESC_OFFSET = 32;
 
-    /** Encoded byte length of {@code DALYTRAN-DESC}, {@value}, from {@code PIC X(100)}. */
     public static final int DALYTRAN_DESC_LENGTH = 100;
 
-    /**
-     * Zero-based byte offset of {@code DALYTRAN-AMT}, {@value}.
-     *
-     * <p>The overpunched sign therefore sits at offset 142, the field's final byte.
-     */
+    /** Offset of the amount, the only numeric-valued field in this layout. */
     public static final int DALYTRAN_AMT_OFFSET = 132;
 
     /**
-     * Encoded byte length of {@code DALYTRAN-AMT}, {@value}, from {@code PIC S9(09)V99}.
-     *
-     * <p>Bound to {@link ZonedDecimalCodec#DAILY_TRANSACTION_AMOUNT_WIDTH} rather than restated as a
-     * literal, so the width of this field is one fact shared with the codec that decodes it instead
-     * of two facts that can drift apart. Nine integer digits plus two implied decimal digits occupy
-     * eleven bytes: there is no separate sign byte and no byte for the decimal point.
+     * Encoded width of the amount, taken from {@link ZonedDecimalCodec} rather than written as a literal
+     * so the codec and the layout cannot disagree. The final byte carries the overpunched sign.
      */
     public static final int DALYTRAN_AMT_LENGTH = ZonedDecimalCodec.DAILY_TRANSACTION_AMOUNT_WIDTH;
 
-    /** Zero-based byte offset of {@code DALYTRAN-MERCHANT-ID}, {@value}. */
     public static final int DALYTRAN_MERCHANT_ID_OFFSET = 143;
 
-    /** Encoded byte length of {@code DALYTRAN-MERCHANT-ID}, {@value}, from {@code PIC 9(09)}. */
     public static final int DALYTRAN_MERCHANT_ID_LENGTH = 9;
 
-    /** Zero-based byte offset of {@code DALYTRAN-MERCHANT-NAME}, {@value}. */
     public static final int DALYTRAN_MERCHANT_NAME_OFFSET = 152;
 
-    /** Encoded byte length of {@code DALYTRAN-MERCHANT-NAME}, {@value}, from {@code PIC X(50)}. */
     public static final int DALYTRAN_MERCHANT_NAME_LENGTH = 50;
 
-    /** Zero-based byte offset of {@code DALYTRAN-MERCHANT-CITY}, {@value}. */
     public static final int DALYTRAN_MERCHANT_CITY_OFFSET = 202;
 
-    /** Encoded byte length of {@code DALYTRAN-MERCHANT-CITY}, {@value}, from {@code PIC X(50)}. */
     public static final int DALYTRAN_MERCHANT_CITY_LENGTH = 50;
 
-    /** Zero-based byte offset of {@code DALYTRAN-MERCHANT-ZIP}, {@value}. */
     public static final int DALYTRAN_MERCHANT_ZIP_OFFSET = 252;
 
-    /**
-     * Encoded byte length of {@code DALYTRAN-MERCHANT-ZIP}, {@value}, from {@code PIC X(10)}.
-     *
-     * <p>Free-form and alphanumeric, never numeric: the sample data carries both a five-digit code
-     * padded with five spaces and a ZIP+4 form with an embedded hyphen.
-     */
+    /** Width of the merchant postal code, which is free-form and never treated as a number. */
     public static final int DALYTRAN_MERCHANT_ZIP_LENGTH = 10;
 
     /**
-     * Zero-based byte offset of {@code DALYTRAN-CARD-NUM}, {@value}.
-     *
-     * <p>The same position the external sort specifications address as one-based column 263, which is
-     * the independent corroboration that the ten preceding field widths are correct.
+     * Offset of the card number. The estate's external sort specifications address this field by
+     * position, so the offset is contractual and not merely internal.
      */
     public static final int DALYTRAN_CARD_NUM_OFFSET = 262;
 
-    /** Encoded byte length of {@code DALYTRAN-CARD-NUM}, {@value}, from {@code PIC X(16)}. */
     public static final int DALYTRAN_CARD_NUM_LENGTH = 16;
 
-    /** Zero-based byte offset of {@code DALYTRAN-ORIG-TS}, {@value}. */
     public static final int DALYTRAN_ORIG_TS_OFFSET = 278;
 
-    /** Encoded byte length of {@code DALYTRAN-ORIG-TS}, {@value}, from {@code PIC X(26)}. */
     public static final int DALYTRAN_ORIG_TS_LENGTH = 26;
 
     /**
-     * Zero-based byte offset of {@code DALYTRAN-PROC-TS}, {@value}.
-     *
-     * <p>Blank on every seeded record until the posting run stamps it. Twenty-six spaces is a
-     * legitimate value here and is carried through untouched.
+     * Offset of the processing timestamp, which the batch alternate index and a sort specification both
+     * address by position.
      */
     public static final int DALYTRAN_PROC_TS_OFFSET = 304;
 
-    /** Encoded byte length of {@code DALYTRAN-PROC-TS}, {@value}, from {@code PIC X(26)}. */
+    /** Width of the processing timestamp; an all-space value is legitimate and must survive. */
     public static final int DALYTRAN_PROC_TS_LENGTH = 26;
 
-    /**
-     * Zero-based byte offset of the unmapped {@code FILLER} run, {@value}.
-     *
-     * <p>Equal to {@link #MAPPED_DATA_LENGTH}, because the filler run begins exactly where the mapped
-     * data ends.
-     */
+    /** Offset at which the unmapped trailing filler run begins. */
     public static final int FILLER_OFFSET = 330;
 
-    /** Encoded byte length of the unmapped {@code FILLER} run, {@value}, from {@code PIC X(20)}. */
     public static final int FILLER_LENGTH = 20;
 
     /**
-     * The byte this mapper writes across the filler run, a space.
-     *
-     * <p>Stated at the point of use rather than inherited silently, because {@code FILLER X(20)} with
-     * no {@code VALUE} clause is uninitialised and the sample data is not self-consistent: this
-     * layout's own sample carries space filler, which decision D-10 adopts as the module-wide
-     * default, while the reference-table layouts carry ASCII-zero filler.
+     * Byte this mapper writes across the filler run. Filler with no initialising clause is
+     * uninitialised, so no value is canonical; space is the module-wide default.
      */
     public static final char FILLER_CHARACTER = ' ';
 
-    /** Legacy name of field 1, used as the reader's diagnostic label. */
     private static final String DALYTRAN_ID = "DALYTRAN-ID";
 
-    /** Legacy name of field 2, used as the reader's diagnostic label. */
     private static final String DALYTRAN_TYPE_CD = "DALYTRAN-TYPE-CD";
 
-    /** Legacy name of field 3, used as the reader's diagnostic label. */
     private static final String DALYTRAN_CAT_CD = "DALYTRAN-CAT-CD";
 
-    /** Legacy name of field 4, used as the reader's diagnostic label. */
     private static final String DALYTRAN_SOURCE = "DALYTRAN-SOURCE";
 
-    /** Legacy name of field 5, used as the reader's diagnostic label. */
     private static final String DALYTRAN_DESC = "DALYTRAN-DESC";
 
-    /** Legacy name of field 6, used as the reader's and the codec's diagnostic label. */
     private static final String DALYTRAN_AMT = "DALYTRAN-AMT";
 
-    /** Legacy name of field 7, used as the reader's diagnostic label. */
     private static final String DALYTRAN_MERCHANT_ID = "DALYTRAN-MERCHANT-ID";
 
-    /** Legacy name of field 8, used as the reader's diagnostic label. */
     private static final String DALYTRAN_MERCHANT_NAME = "DALYTRAN-MERCHANT-NAME";
 
-    /** Legacy name of field 9, used as the reader's diagnostic label. */
     private static final String DALYTRAN_MERCHANT_CITY = "DALYTRAN-MERCHANT-CITY";
 
-    /** Legacy name of field 10, used as the reader's diagnostic label. */
     private static final String DALYTRAN_MERCHANT_ZIP = "DALYTRAN-MERCHANT-ZIP";
 
-    /** Legacy name of field 11, used as the reader's diagnostic label. */
     private static final String DALYTRAN_CARD_NUM = "DALYTRAN-CARD-NUM";
 
-    /** Legacy name of field 12, used as the reader's diagnostic label. */
     private static final String DALYTRAN_ORIG_TS = "DALYTRAN-ORIG-TS";
 
-    /** Legacy name of field 13, used as the reader's diagnostic label. */
     private static final String DALYTRAN_PROC_TS = "DALYTRAN-PROC-TS";
 
     /**
-     * Verifies the layout's own arithmetic before this class can be used for anything.
-     *
-     * <p>Two sums are checked. The thirteen mapped field lengths must total
-     * {@link #MAPPED_DATA_LENGTH}, and the mapped prefix plus the filler run must total
-     * {@link #RECORD_LENGTH}. Each field's offset is also checked to be exactly the sum of the
-     * lengths before it, which is the property that actually matters: a layout is corrupted not by a
-     * wrong total but by one wrong width, which shifts every field after it while leaving the total
-     * intact.
-     *
-     * <p>Checking here rather than in a test means a mis-declared constant cannot reach a fixture
-     * comparison at all - the class refuses to initialise. That is the same self-enforcing posture the
-     * build takes by promoting compiler diagnostics to errors, and it is cheap: the check runs once
-     * per class load over compile-time constants.
+     * Verifies the declared geometry once, at class initialisation: that the mapped fields are
+     * contiguous from zero with no gap or overlap, and that they sum to the declared prefix width. A
+     * mis-typed offset therefore fails on first use rather than producing a plausible object.
      */
     static {
         requireContiguous(DALYTRAN_ID, DALYTRAN_ID_OFFSET, 0);
@@ -582,34 +269,26 @@ public final class DailyTransactionRecordMapper {
         requireSum("record image", RECORD_LENGTH, MAPPED_DATA_LENGTH + FILLER_LENGTH);
     }
 
-    /**
-     * Not instantiable: this is a stateless mapper exposing only static members, so an instance would
-     * carry no state and confer no capability.
-     */
+    /** Not instantiable: a stateless mapper exposing only static members. */
     private DailyTransactionRecordMapper() {
     }
 
     /**
-     * Maps a record image supplied as a string into a fully populated entity.
+     * Maps a complete record image, supplied as a string, onto a fully populated entity.
      *
-     * <p>Use this overload when the caller already holds text - a fixture line, or a record read
-     * through a character reader. The image must be exactly {@link #RECORD_LENGTH} bytes when encoded
-     * as US-ASCII, <strong>excluding any line terminator</strong>: a fixture line is 350 bytes even
-     * though the file's stride is 351, so a caller that reads lines must have consumed the
-     * {@code 0x0A} as a separator (decision D-30). An image one byte too long is very often exactly
-     * that mistake, and the diagnostic says so.</p>
+     * <p>The image must be exactly {@value #RECORD_LENGTH} encoded bytes and must exclude any line
+     * terminator: a fixture line is one byte shorter than the file's stride, so a caller reading
+     * lines must drop the separator, which is never record content. The encoded width is checked
+     * before a single field is sliced. Character fields are copied verbatim - untrimmed, not case
+     * folded, not normalised.
      *
-     * <p>Every character field is carried across raw: untrimmed, unstripped, not case-folded and not
-     * normalised. A 26-space processing timestamp arrives as 26 spaces, a ten-byte source code keeps
-     * its two trailing spaces, and a 16-digit identifier keeps its leading zeros.</p>
-     *
-     * @param recordImage the complete 350-byte record image, without any line terminator; must not be
-     *                    {@code null}
-     * @return a fully populated entity, never {@code null} and never partially populated
+     * @param  recordImage the whole record image, excluding any line terminator
+     * @return a fully populated entity, never partially mapped
      * @throws NullPointerException     if {@code recordImage} is {@code null}
-     * @throws IllegalArgumentException if the image is not exactly {@link #RECORD_LENGTH} encoded
-     *                                  bytes, if it contains a character US-ASCII cannot represent,
-     *                                  or if the amount field is not a well-formed zoned-decimal image
+     * @throws IllegalArgumentException if the encoded width is not exactly
+     *                                  {@value #RECORD_LENGTH}, if a character cannot be
+     *                                  represented in US-ASCII, or if the amount is not a valid
+     *                                  zoned-decimal image
      */
     public static DailyTransaction fromRecord(String recordImage) {
         Objects.requireNonNull(recordImage, ARTEFACT + " record image must not be null");
@@ -622,19 +301,17 @@ public final class DailyTransactionRecordMapper {
     }
 
     /**
-     * Maps a record image supplied as bytes into a fully populated entity.
+     * Maps a complete record image, supplied as bytes, onto a fully populated entity.
      *
-     * <p>Preferred over {@link #fromRecord(String)} when the caller already holds raw bytes, because
-     * it removes any need for the caller to choose a charset. The array's length <em>is</em> the
-     * encoded byte length, so the width check needs no measurement step.</p>
+     * <p>Preferred when the caller already holds raw bytes, because it removes any need to choose a
+     * charset. The array is only read: neither retained nor modified.
      *
-     * @param recordImage the complete 350-byte record image, without any line terminator; must not be
-     *                    {@code null}. Not retained: the reader takes a private copy
-     * @return a fully populated entity, never {@code null} and never partially populated
+     * @param  recordImage the whole record image as bytes, excluding any line terminator
+     * @return a fully populated entity, never partially mapped
      * @throws NullPointerException     if {@code recordImage} is {@code null}
-     * @throws IllegalArgumentException if the array is not exactly {@link #RECORD_LENGTH} bytes, if
-     *                                  any byte is not 7-bit ASCII, or if the amount field is not a
-     *                                  well-formed zoned-decimal image
+     * @throws IllegalArgumentException if the length is not exactly {@value #RECORD_LENGTH}, if any
+     *                                  byte is not 7-bit ASCII, or if the amount is not a valid
+     *                                  zoned-decimal image
      */
     public static DailyTransaction fromRecord(byte[] recordImage) {
         Objects.requireNonNull(recordImage, ARTEFACT + " record image must not be null");
@@ -643,25 +320,22 @@ public final class DailyTransactionRecordMapper {
     }
 
     /**
-     * Maps one record held inside a larger byte buffer into a fully populated entity.
+     * Maps one record held inside a larger byte buffer onto a fully populated entity.
      *
-     * <p>This is the seam for a batch reader that has loaded a whole newline-terminated fixed-width
-     * file into a single buffer. Because such a file's stride is the record width plus one separator
-     * byte, record <em>i</em> of {@code [app/data/ASCII/dailytran.txt]} is addressed as
-     * {@code fromRecord(buffer, i * 351)}, which selects the 350 record bytes and leaves the
-     * {@code 0x0A} behind. Stride arithmetic stays with the caller on purpose: the stride is a
-     * property of the file, whereas the record width is a property of the layout, and conflating the
-     * two is how a terminator ends up inside a field.</p>
+     * <p>The seam for a batch reader holding a whole newline-terminated file in one buffer. Such a
+     * file has a stride one greater than the record width, so record <em>i</em> starts at
+     * {@code i * (RECORD_LENGTH + 1)}, which selects the record and leaves its separator behind;
+     * stride arithmetic and file access stay with the caller. The remaining geometry check - that
+     * the range lies wholly inside the buffer - is made inside {@link FixedWidthFieldReader}.
      *
-     * @param buffer the buffer holding the record, and possibly many others; must not be {@code null}.
-     *               Not retained: the reader takes a private copy of the selected range
-     * @param from   zero-based index in {@code buffer} at which the record starts
-     * @return a fully populated entity, never {@code null} and never partially populated
+     * @param  buffer the buffer containing the record, and possibly many others
+     * @param  offset zero-based index at which the record starts
+     * @return a fully populated entity, never partially mapped
      * @throws NullPointerException     if {@code buffer} is {@code null}
-     * @throws IllegalArgumentException if {@code from} is negative, if the range
-     *                                  {@code [from, from + 350)} is not wholly inside
-     *                                  {@code buffer}, if any byte in that range is not 7-bit ASCII,
-     *                                  or if the amount field is not a well-formed zoned-decimal image
+     * @throws IllegalArgumentException if {@code offset} is negative, if the record range is not
+     *                                  wholly inside {@code buffer}, if any byte in it is not
+     *                                  7-bit ASCII, or if the amount is not a valid zoned-decimal
+     *                                  image
      */
     public static DailyTransaction fromRecord(byte[] buffer, int from) {
         Objects.requireNonNull(buffer, ARTEFACT + " record buffer must not be null");
@@ -672,81 +346,50 @@ public final class DailyTransactionRecordMapper {
     }
 
     /**
-     * Renders an entity back into its 350-byte record image as a string.
+     * Renders an entity as its canonical {@value #RECORD_LENGTH}-byte record image, as a string
+     * carrying no line terminator.
      *
-     * <p>The exact inverse of {@link #fromRecord(String)} for every record of the sample input.
-     * Character fields are placed left-justified and padded on the right with spaces; the two
-     * numeric-class identifier fields are placed right-justified and padded on the left with ASCII
-     * zeros, which is what preserves their significant leading zeros; the amount is re-encoded by
-     * {@link ZonedDecimalCodec} into its overpunched eleven-byte image and placed flush against the
-     * field's trailing edge so the sign byte stays last. The 20-byte filler run is written as spaces
-     * (decision D-10).</p>
+     * <p>The exact inverse of {@link #fromRecord(String)} for the mapped fields, and the padding is
+     * part of the contract: character fields are placed left-justified and space-padded, so a value
+     * that already fills its field - including one that is all spaces - is placed unchanged; the
+     * amount is encoded with its sign overpunched into the final byte; the filler run is emitted as
+     * {@link #FILLER_CHARACTER}. <strong>Compare only the mapped prefix in a fixture assertion</strong>,
+     * since the filler byte is not uniform across the estate's fixtures.
      *
-     * <p><strong>Compare only {@code [0, }{@link #MAPPED_DATA_LENGTH}{@code )} in a fixture
-     * assertion.</strong> The filler byte is not uniform in the sample data and no value for it is
-     * canonical, so bytes 330 through 349 are not part of the contract.</p>
-     *
-     * @param record the entity to render; must not be {@code null}, and each of its thirteen mapped
-     *               properties must be present
-     * @return the complete record image, exactly {@link #RECORD_LENGTH} encoded bytes, with no line
-     *         terminator
-     * @throws NullPointerException     if {@code record} is {@code null} or if any mapped property is
-     *                                  {@code null}; the message names the absent legacy field
-     * @throws IllegalArgumentException if a value is wider than its field, contains a character
-     *                                  US-ASCII cannot represent, or is an amount that does not fit
-     *                                  eleven bytes at scale 2
+     * @param  record the entity to render; no mapped property may be {@code null}
+     * @return the record image, exactly {@value #RECORD_LENGTH} encoded bytes wide
+     * @throws NullPointerException     if {@code record} or any mapped property is {@code null}
+     * @throws IllegalArgumentException if a character value is wider than its field or cannot be
+     *                                  represented in US-ASCII, or if the amount needs more digits
+     *                                  than its field provides
      */
     public static String toRecord(DailyTransaction record) {
         return toReader(record).image();
     }
 
     /**
-     * Renders an entity back into its 350-byte record image as bytes.
+     * Renders an entity as its canonical {@value #RECORD_LENGTH}-byte record image, as bytes.
      *
-     * <p>Behaves exactly as {@link #toRecord(DailyTransaction)} and is preferred by a writer that
-     * emits bytes, because it removes any need for the caller to choose a charset. The returned array
-     * is freshly allocated and unshared, so a caller may write a separator byte into a larger buffer
-     * around it without affecting anything here.</p>
+     * <p>Byte-for-byte identical to {@link #toRecord(DailyTransaction)} and offered so a writer need
+     * not choose a charset. The array is fresh and unshared and carries no line terminator: record
+     * separation belongs to the writer.
      *
-     * @param record the entity to render; must not be {@code null}, and each of its thirteen mapped
-     *               properties must be present
-     * @return a fresh array of exactly {@link #RECORD_LENGTH} US-ASCII bytes, with no line terminator
-     * @throws NullPointerException     if {@code record} is {@code null} or if any mapped property is
-     *                                  {@code null}; the message names the absent legacy field
-     * @throws IllegalArgumentException if a value is wider than its field, contains a character
-     *                                  US-ASCII cannot represent, or is an amount that does not fit
-     *                                  eleven bytes at scale 2
+     * @param  record the entity to render; no mapped property may be {@code null}
+     * @return a new array of exactly {@value #RECORD_LENGTH} US-ASCII bytes
+     * @throws NullPointerException     if {@code record} or any mapped property is {@code null}
+     * @throws IllegalArgumentException on exactly the same conditions as
+     *                                  {@link #toRecord(DailyTransaction)}
      */
     public static byte[] toRecordBytes(DailyTransaction record) {
         return toReader(record).toByteArray();
     }
 
     /**
-     * The single implementation of the read direction: thirteen slices, in copybook order.
+     * Reads the mapped fields at their declared offsets and builds the entity.
      *
-     * <p>All three public read entry points funnel through here, so the offsets exist in exactly one
-     * place. Every slice is taken through the reader's named-field accessor rather than through
-     * {@code String.substring}, which means a mis-declared offset identifies itself by legacy field
-     * name instead of producing an anonymous index error - and it keeps the charset decision inside
-     * the reader, where it is made once.</p>
-     *
-     * <p>The entity is built through its all-arguments constructor rather than by setting thirteen
-     * properties on a blank instance. That is not a stylistic preference: the entity's no-argument
-     * constructor is {@code protected} for the persistence provider's exclusive use and is
-     * inaccessible from this package, and the entity's own documentation directs application code to
-     * the all-arguments constructor. It also means a partially populated instance cannot exist even
-     * briefly, which is what the malformed-input contract requires. The constructor's parameter order
-     * is the copybook declaration order, so the argument list below reads in the same order as the
-     * record image.</p>
-     *
-     * <p>The amount is the only field that is not carried across verbatim, and it is converted by the
-     * codec alone. This method applies no scale, names no rounding mode and performs no arithmetic. An
-     * ill-formed overpunch character is the codec's contract, not this mapper's, so the codec's
-     * failure is allowed to propagate unwrapped: its diagnostic names the offending byte and the
-     * field, and re-wrapping it here would replace that detail with something vaguer.</p>
-     *
-     * @param reader an immutable reader already validated to be exactly {@link #RECORD_LENGTH} bytes
-     * @return a fully populated entity, never {@code null}
+     * <p>Populated through the entity's all-argument constructor, whose parameter order is the
+     * record-image order, because the no-argument constructor is reserved for the persistence
+     * provider. Timestamps and identifiers are carried across as text exactly as read.
      */
     private static DailyTransaction fromReader(FixedWidthFieldReader reader) {
         return new DailyTransaction(
@@ -770,30 +413,11 @@ public final class DailyTransactionRecordMapper {
     }
 
     /**
-     * The single implementation of the write direction: thirteen placements plus the filler run.
+     * Places the mapped fields and the filler run, in declaration order, and completes the image.
      *
-     * <p>Both public write entry points funnel through here and differ only in whether they ask the
-     * completed reader for characters or for bytes, so the offsets and the justification rules exist
-     * in exactly one place.</p>
-     *
-     * <p>The placements deliberately add up to the full record width - thirteen fields totalling 330
-     * bytes and a filler run of 20 - because that is what makes a forgotten field visible during
-     * review rather than invisible behind a builder buffer that was already space-filled. Two fields
-     * use the right-justified numeric placement: the category code {@code PIC 9(04)} and the merchant
-     * identifier {@code PIC 9(09)}, whose leading zeros are significant. The eleven remaining
-     * character fields use the left-justified alphanumeric placement, which is how COBOL renders
-     * {@code PIC X(n)}. The amount also uses the numeric placement, because a zoned-decimal image is
-     * right-justified and its overpunched sign must remain in the final byte.</p>
-     *
-     * <p>Every property is required to be present, and the diagnostic names the absent legacy field.
-     * Treating an absent value as an empty one would emit a space-filled field and yield a record of
-     * exactly the right width carrying silently lost data - the one failure mode a downstream width
-     * check cannot detect - and it would also contradict the entity's schema, where all thirteen
-     * columns are non-nullable. No diagnostic here echoes the value it rejected (decision D-16).</p>
-     *
-     * @param record the entity to render
-     * @return an immutable reader over the completed 350-byte image, ready to be asked for characters
-     *         or bytes
+     * <p>The placements deliberately add up to the full record width, because that is what makes a
+     * missing field visible during review: the builder rejects any placement falling outside the
+     * record, so an offset that does not add up cannot survive a single execution.
      */
     private static FixedWidthFieldReader toReader(DailyTransaction record) {
         Objects.requireNonNull(record, ARTEFACT + " source entity must not be null");
@@ -834,19 +458,10 @@ public final class DailyTransactionRecordMapper {
     }
 
     /**
-     * Decodes the amount field, the one field of the thirteen that is not carried across verbatim.
+     * Slices the amount and decodes it at the canonical monetary scale.
      *
-     * <p>Named as its own operation so that the single point at which this layout touches decimal
-     * conversion is visible rather than buried inside a thirteen-argument constructor call. The slice
-     * is taken through the reader and the conversion is performed by the codec; this method applies no
-     * scale of its own, names no rounding mode and performs no arithmetic. The codec returns a value
-     * whose scale is exactly 2, which is the scale the {@code V99} picture clause implies.
-     *
-     * @param reader an immutable reader over a validated record image
-     * @return the decoded amount at scale 2, never {@code null}
-     * @throws IllegalArgumentException if the eleven-byte image is not a well-formed zoned decimal -
-     *                                  raised by the codec, and deliberately not re-wrapped, because
-     *                                  its diagnostic names the offending byte
+     * <p>An exception raised by the codec is deliberately not re-wrapped, because its diagnostic
+     * already names the offending byte and re-wrapping would hide it.
      */
     private static BigDecimal decodeAmount(FixedWidthFieldReader reader) {
         return ZonedDecimalCodec.decodeMonetary(
@@ -854,43 +469,18 @@ public final class DailyTransactionRecordMapper {
                 DALYTRAN_AMT_LENGTH, DALYTRAN_AMT);
     }
 
-    /**
-     * Re-encodes the amount into its overpunched eleven-byte image.
-     *
-     * <p>The mirror of {@link #decodeAmount(FixedWidthFieldReader)}, and the only place in this class
-     * that produces a numeric image. The codec brings the value to scale 2 by truncating toward zero
-     * and overpunches the sign into the final byte; this method neither re-scales the value nor
-     * inspects its sign.
-     *
-     * @param amount the amount to encode, taken straight from the entity; must be present
-     * @return the eleven-byte zoned-decimal image
-     * @throws NullPointerException     if {@code amount} is {@code null}
-     * @throws IllegalArgumentException if the value does not fit nine integer digits at scale 2 -
-     *                                  raised by the codec, which rejects rather than narrowing,
-     *                                  because a silently narrowed amount would leave the record the
-     *                                  right width and the wrong value (decision D-06)
-     */
+    /** Encodes the amount into its declared width, sign overpunched into the final byte. */
     private static String encodeAmount(BigDecimal amount) {
         return ZonedDecimalCodec.encodeMonetary(requirePresent(amount, DALYTRAN_AMT),
                 DALYTRAN_AMT_LENGTH, DALYTRAN_AMT);
     }
 
     /**
-     * Compares an encoded byte count with the layout's declared record width.
+     * Rejects an image whose encoded byte length is not exactly the declared record width.
      *
-     * <p>Stated at this class's own boundary rather than left entirely to the reader, so that the
-     * failure names both this layout's identifiers, the expected width and the actual encoded byte
-     * length - which is the whole failure contract for a malformed record.</p>
-     *
-     * <p>The condition has no legacy antecedent: sequential and indexed records alike are fixed length
-     * by construction, so a record of the wrong length cannot arise on the mainframe at all. It is a
-     * defect in the calling Java code, and {@link IllegalArgumentException} is its idiomatic signal;
-     * none of the module's six own exception types models it (decisions D-08 and D-11). Input is never
-     * silently padded, never silently truncated, never partially mapped and never returned as
-     * {@code null}.</p>
-     *
-     * @param actualEncodedLength the supplied image's length in encoded bytes, never a character count
-     * @throws IllegalArgumentException if the length is not exactly {@link #RECORD_LENGTH}
+     * <p>A Java-only defensive guard with no legacy antecedent: the legacy records are fixed length
+     * by construction, so the programs never had a wrong-length record to handle. When the overshoot
+     * is exactly one byte the message names an unstripped separator as the likely cause.
      */
     private static void requireRecordWidth(int actualEncodedLength) {
         if (actualEncodedLength == RECORD_LENGTH) {
@@ -911,20 +501,7 @@ public final class DailyTransactionRecordMapper {
         throw new IllegalArgumentException(message.toString());
     }
 
-    /**
-     * Requires a mapped property to be present, naming the legacy field if it is not.
-     *
-     * <p>Generic so that the twelve character properties and the one amount property share a single
-     * null contract, rather than the amount raising a differently typed failure from its twelve
-     * neighbours. The message names the field and never the value.</p>
-     *
-     * @param value     the property value to check
-     * @param fieldName the legacy field name to name in the diagnostic
-     * @param <T>       the property's type, {@code String} for twelve fields and {@link BigDecimal}
-     *                  for the amount
-     * @return {@code value}, once confirmed present
-     * @throws NullPointerException if {@code value} is {@code null}
-     */
+    /** Rejects an absent property on the encoding path, naming the field rather than the value. */
     private static <T> T requirePresent(T value, String fieldName) {
         return Objects.requireNonNull(value, ARTEFACT + " field '" + fieldName
                 + "' must be present: a fixed-width record has no concept of an absent field, and"
@@ -932,17 +509,7 @@ public final class DailyTransactionRecordMapper {
                 + " content");
     }
 
-    /**
-     * Verifies that a field begins exactly where the fields before it end.
-     *
-     * <p>Called only from the static initialiser, over compile-time constants.
-     *
-     * @param fieldName      the legacy field name to name in the diagnostic
-     * @param declaredOffset the offset this class declares for the field
-     * @param computedOffset the offset implied by the sum of the preceding field lengths
-     * @throws IllegalStateException if the two disagree, which means one declared width is wrong and
-     *                               every field after it is displaced
-     */
+    /** Verifies that a field begins exactly where the previous one ended, with no gap or overlap. */
     private static void requireContiguous(String fieldName, int declaredOffset, int computedOffset) {
         if (declaredOffset != computedOffset) {
             throw new IllegalStateException(ARTEFACT + " layout is inconsistent: field '" + fieldName
@@ -951,16 +518,7 @@ public final class DailyTransactionRecordMapper {
         }
     }
 
-    /**
-     * Verifies one of the layout's two published width sums.
-     *
-     * <p>Called only from the static initialiser, over compile-time constants.
-     *
-     * @param subject  the sum being checked, for the diagnostic
-     * @param declared the width this class publishes
-     * @param computed the width implied by adding up its parts
-     * @throws IllegalStateException if the two disagree
-     */
+    /** Verifies that a set of declared widths sums to the width it is required to fill. */
     private static void requireSum(String subject, int declared, int computed) {
         if (declared != computed) {
             throw new IllegalStateException(ARTEFACT + " layout is inconsistent: the " + subject

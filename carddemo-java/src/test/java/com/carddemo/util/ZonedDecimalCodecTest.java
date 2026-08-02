@@ -82,8 +82,10 @@ import org.junit.jupiter.params.provider.CsvSource;
  * to {@code 0.00} at the monetary scale and re-encodes to an all-zero image rather than to spaces.</p>
  *
  * <p><strong>Scope.</strong> This is a pure unit test. It starts no application context, opens no
- * database, touches no filesystem, reaches no network, spawns no container and uses no reflection, so
- * it cannot erode the module's zero-reflection budget. It makes no assertion about elapsed time,
+ * database, touches no filesystem, reaches no network, spawns no container and uses no reflection -
+ * the last of those because nothing here needs it, not because it is barred: the module's
+ * zero-reflection budget is scoped to production sources under {@code src/main/java} and does not
+ * reach test sources. It makes no assertion about elapsed time,
  * throughput or memory, because no such figure exists anywhere in the estate to assert against.</p>
  *
  * <p><strong>Where faithful translation beats idiomatic Java, and where that is recorded.</strong>
@@ -693,8 +695,11 @@ class ZonedDecimalCodecTest {
         void decodesEveryVerifiedSixByteRate(String image, String expected) {
             // The shipped disclosure fixture holds three complete seventeen-row groups. The first
             // row of the first group carries the fifteen percent rate; the zero-rate group carries
-            // the all-zero image, which is what makes the interest program's zero-rate branch
-            // reachable from seed data alone.
+            // the all-zero image. The fifteen percent image is the one a seed-only accrual run
+            // decodes, since every seeded account falls back to the default group and finds it at the
+            // type and category the seeded balances use; the all-zero image is what an account
+            // constructed with the zero-rate key decodes. Both must decode exactly, which is the
+            // point here - this codec is indifferent to which branch consumes the value.
             BigDecimal actual =
                     ZonedDecimalCodec.decodeMonetary(image, ZonedDecimalCodec.INTEREST_RATE_WIDTH,
                             DIS_INT_RATE);

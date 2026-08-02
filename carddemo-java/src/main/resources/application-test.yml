@@ -42,40 +42,73 @@
 #   locations and the key paths themselves. Change one of those here and change it there too.
 #
 # -------------------------------------------------------------------------------------------------
-# EVERY ENDPOINT BELOW IS A PLACEHOLDER, AND EVERY ONE IS REPLACED AT RUNTIME
+# WHERE A CONTAINER ADDRESS COMES FROM, AND WHY THE DATABASE ADDRESS IS ABSENT FROM THIS FILE
 #
 #   A container is assigned an ephemeral host port when it starts, so no address written into a file
-#   can be correct for a suite run. Each address here is written as ${VARIABLE:default} and exists
-#   for two reasons only: so that context creation has something to bind before the real value is
-#   supplied, and so that a packaged `test`-profile run has a working address.
-#
-#   The real values come from the two shared support base classes, which are the single place the
-#   container lifecycle lives:
+#   can be correct for a suite run. Two shared support base classes own the container lifecycle, and
+#   they are the single place it lives:
 #
 #     src/test/java/com/carddemo/support/AbstractPostgresIT.java     the database server
 #     src/test/java/com/carddemo/support/AbstractLocalStackIT.java   the AWS emulator
 #
-#   They publish their assigned addresses into the context - by dynamic property registration or by
-#   a service-connection factory - and a test obtains a container by EXTENDING one of them. NO TEST
-#   DECLARES ITS OWN CONTAINER. That is what keeps the tiers composable, and it is also the reason
-#   the defaults below are safe to be inert: nothing depends on them being reachable.
+#   A test obtains a container by EXTENDING one of them. Each base class declares a
+#   @DynamicPropertySource method that registers the started container's real address into the
+#   environment of any test that boots a Spring context, at a precedence above every property file,
+#   so such a test is handed the container it was given rather than anything written here. A test
+#   that works directly against the container - over raw JDBC, or a client it builds itself - takes
+#   the same values through the accessors instead. NO TEST DECLARES ITS OWN CONTAINER; that is what
+#   keeps the tiers composable. @ServiceConnection is deliberately not used, because
+#   spring-boot-testcontainers is not a dependency of this module.
 #
-#   COROLLARY, and the one real hazard in this file: a container-backed test that forgets to extend
-#   a support base class does not fail loudly - it falls through to the default address below. If a
-#   suite run ever appears to see a developer's own data, that is the cause, and the fix is to
-#   extend the base class rather than to change these defaults.
+#   That precedence is asserted rather than assumed. ContextInheritsContainerAddressesIT boots a real
+#   context under this profile and checks that the address it resolves is the running container's -
+#   and, for the AWS endpoint, that it is the container's ephemeral address rather than the fixed
+#   value declared below. See docs/decision-log.md DL-104.
+#
+#   THE DATABASE ADDRESS IS THEREFORE NOT DECLARED IN THIS FILE AT ALL. It cannot be: an ephemeral
+#   port is unknowable ahead of the run, and any value written here that is REACHABLE is worse than
+#   no value, because it lets a test that forgot to extend the support base class connect somewhere
+#   real instead of failing. An earlier revision defaulted the address and credentials to the
+#   development compose stack for the sake of always having something to bind; the effect was that
+#   such a test silently used the DEVELOPER'S OWN database. With the keys absent, data-source
+#   resolution instead fails during context refresh and names the missing property.
+#
+#   AN AWS ENDPOINT IS DIFFERENT AND IS DECLARED BELOW. The emulator answers on a FIXED container
+#   port, 4566, so an endpoint written here is meaningful; and unlike an absent database, an absent
+#   AWS endpoint does not fail closed - it falls back to the region's REAL public endpoint. The
+#   endpoints below are therefore stated explicitly, redirecting every client at the emulator, so
+#   that no client can address a real account. That redirection is the setting; it is not a
+#   placeholder.
 #
 # -------------------------------------------------------------------------------------------------
 # PROPERTY CONTRACT - the key paths bound here, and why the set is exactly this set
 #
-#   This overlay carries the SAME leaf property paths as application-local.yml - the same forty-five
-#   - and differs only in the values. That is a requirement, not tidiness: a job parameter, a
-#   resource name and a schema location must read identically whichever of the two profiles is
-#   active, so that a job exercised against containers is the same job that runs against the
-#   development stack. The paths are also written in the same order as that file, so the two diff
-#   cleanly against each other.
+#   This overlay carries the same leaf property paths as application-local.yml, in the same order, so
+#   that the two diff cleanly against each other and differ only in their values. That agreement is a
+#   requirement, not tidiness: a job parameter, a resource name and a schema location must read
+#   identically whichever of the two profiles is active, so that a job exercised against containers
+#   is the same job that runs against the development stack.
 #
-#     spring.datasource.*                       server address and credentials
+#   THE AGREEMENT IS ON THE KEY SET, AND IT IS ASSERTED RATHER THAN COUNTED. An earlier revision
+#   claimed a leaf total here; a number in a comment cannot survive an edit to either file, and that
+#   one had already stopped being true of both. ConfigurationProfileBaselineTest compares the two key
+#   sets mechanically and permits exactly the two documented divergences below, so this paragraph can
+#   no longer drift out of agreement with the files it describes.
+#
+#     DIVERGENCE 1  application-local.yml declares spring.datasource.url, .username and .password;
+#                   this overlay declares none of them. Local addresses one fixed compose stack, so
+#                   an address written there is correct; a container's port is ephemeral, so an
+#                   address written here could only be wrong or dangerous. See the section above.
+#     DIVERGENCE 2  this overlay declares springdoc.swagger-ui.enabled and local leaves it inherited.
+#                   A suite run closes the interactive surface explicitly rather than by inheritance,
+#                   because a browsable UI serves no test and its absence should be provable here.
+#     DIVERGENCE 3  this overlay declares management.otlp.tracing.export.enabled and local does not.
+#                   Local exports to the collector the compose stack runs, so it wants the shipped
+#                   default of enabled; a suite run has no collector, so export is switched off HERE
+#                   at the one key that actually switches it off. See the trace-export section below
+#                   for why the sampling probability the two files both declare cannot do that job.
+#
+#     spring.datasource.driver-class-name       engine pinned; address registered by the base class
 #     spring.jpa.*                              provider behaviour; authors no schema
 #     spring.flyway.*                           the ONLY path by which a table or a row is created
 #     spring.batch.jdbc.initialize-schema       job-metadata tables for this datasource
@@ -129,27 +162,31 @@ spring:
   # -----------------------------------------------------------------------------------------------
   # PostgreSQL 16 - a real server, supplied by AbstractPostgresIT during a suite run.
   #
-  # The three values below are OVERRIDDEN AT RUNTIME with the address the started container reports.
-  # They are written in the same ${VARIABLE:default} shape as application-local.yml and against the
-  # same variable names, so one environment export steers the development stack and this profile
-  # identically rather than through two competing schemes.
+  # NO ADDRESS, NO USER AND NO PASSWORD ARE DECLARED HERE, AND THAT ABSENCE IS THE SETTING.
   #
-  # CREDENTIALS: throwaway development values addressing a container on the developer's own machine,
-  # matching both what the compose stack provisions and what the support base class configures on the
-  # container it starts. They are acceptable HERE and nowhere else - the production overlay resolves
-  # url, user and password from the environment with NO fallback, so a missing secret aborts start-up
-  # instead of binding something that merely looks harmless.
+  # A container is assigned an ephemeral host port when it starts, so no address written into a file
+  # can be correct for a suite run. The address, the role and the password are registered into the
+  # context at run time by src/test/java/com/carddemo/support/AbstractPostgresIT.java, from the
+  # container it started, and a test obtains a database by EXTENDING that class.
   #
-  # The driver CLASS is pinned so that a sliced test cannot fall back to embedded-database detection
-  # and quietly obtain a different engine. The driver VERSION is owned by pom.xml, which pins it
-  # above the framework's managed version for security reasons; it is deliberately not restated here,
-  # where it could drift out of agreement with the build.
+  # An earlier revision declared jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/
+  # ${POSTGRES_DB:carddemo} with ${POSTGRES_USER:carddemo} and ${POSTGRES_PASSWORD:carddemo} so that
+  # context creation always had something to bind. Those defaults are exactly the address and
+  # credentials the development compose stack provisions, so a container-backed test that forgot to
+  # extend the support base class did not fail - it silently connected to the DEVELOPER'S OWN
+  # database and asserted against, or wrote into, real local data. A default that is reachable is not
+  # inert. The profile therefore FAILS CLOSED instead: with no url declared and no embedded database
+  # on the runtime class path, data-source resolution throws during context refresh and names the
+  # missing property, so the fix - extend the support base class - is stated by the failure.
+  #
+  # The driver CLASS is still pinned, and it is the only thing pinned here, so that a sliced test
+  # cannot fall back to embedded-database detection and quietly obtain a different engine. The driver
+  # VERSION is owned by pom.xml, which pins it above the framework's managed version for security
+  # reasons; it is deliberately not restated here, where it could drift out of agreement with the
+  # build.
   #
   # The pool stays at its shipped defaults: no legacy baseline exists to size it against.
   datasource:
-    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:carddemo}
-    username: ${POSTGRES_USER:carddemo}
-    password: ${POSTGRES_PASSWORD:carddemo}
     driver-class-name: org.postgresql.Driver
 
   # -----------------------------------------------------------------------------------------------
@@ -175,29 +212,32 @@ spring:
         highlight_sql: false
 
   # -----------------------------------------------------------------------------------------------
-  # SCHEMA EVOLUTION - THE LOAD-BEARING SETTING IN THIS FILE IS THE SECOND LOCATION.
+  # SCHEMA EVOLUTION - THE LOAD-BEARING SETTING IN THIS FILE IS THE LIFTED VERSION CEILING.
   #
-  # Two locations are listed, and the second is what makes this a TEST profile:
+  # One location, five scripts, and this profile applies all five:
   #
-  #   classpath:db/migration   V1__create_schema.sql          the eleven application tables
-  #                            V2__create_indexes.sql         keys and alternate-index equivalents
-  #                                                           -> every profile, production included
-  #   classpath:db/seed        V3__seed_reference_data.sql     sample rows
-  #                            V4__seed_user_security.sql      sign-on identities, hashed
-  #                                                           -> the development and test profiles
-  #                                                              ONLY
+  #   V1__create_schema.sql            the eleven application tables            schema
+  #   V1_1__create_batch_metadata.sql  the batch job-repository metadata        schema
+  #   V2__create_indexes.sql           keys and alternate-index equivalents     schema
+  #   V3__seed_reference_data.sql      sample rows                              SEED
+  #   V4__seed_user_security.sql       sign-on identities, hashed               SEED
   #
-  # The production overlay lists classpath:db/migration alone, so production migrates schema and
-  # indexes without inheriting sample rows or seeded identities. Keeping the seeds in a separate
-  # LOCATION rather than behind a flag makes that guarantee structural instead of conditional. Any
-  # seed script added must therefore stay under db/seed, out of db/migration, and must store a
+  # The shared baseline defaults spring.flyway.target to "2" and the production overlay re-asserts it,
+  # so production applies 1, 1.1 and 2 and never resolves 3 or 4 - it migrates schema and indexes
+  # without inheriting sample rows or seeded identities. This profile raises the ceiling to latest,
+  # which is exactly what admits the seeds. An earlier revision achieved the
+  # same split with a second classpath:db/seed location that production did not list; the ceiling
+  # replaced it because a version number then described what every profile applies, and because an
+  # exclusion by arithmetic cannot be defeated by moving or renaming a file. Any seed script added
+  # must therefore be numbered ABOVE 2 - not placed in a particular directory - and must store a
   # sign-on credential only as a hash.
   #
-  # DROPPING THE SECOND LOCATION DOES NOT PRODUCE AN ERROR - IT PRODUCES EMPTY RESULT SETS. Without
-  # the seeds the container-backed tiers have nothing to assert against: acceptance reads the seeded
+  # LOWERING THIS CEILING DOES NOT PRODUCE AN ERROR - IT PRODUCES EMPTY RESULT SETS. Without the
+  # seeds the container-backed tiers have nothing to assert against: acceptance reads the seeded
   # cardinalities directly, and the byte comparison compares output produced FROM the seeded state.
-  # Both would then fail on an empty query rather than on a message naming the cause. That is the one
-  # change to this file that breaks the most while looking like a simplification.
+  # Both would then fail on an empty query rather than on a message naming the cause. Copying
+  # production's `target` into this file, to "align the profiles", is the one change here that breaks
+  # the most while looking like tidying up.
   #
   # WHAT THE SEEDS BRING, at the counts measured from the sample datasets rather than estimated:
   #
@@ -217,9 +257,13 @@ spring:
   #
   #   THE 51 DISCLOSURE-GROUP ROWS are three consecutive groups of seventeen, keyed A000000000,
   #   DEFAULT and ZEROAPR - the latter two space-padded to the ten-character key width. One group
-  #   carries a zero rate. CONSEQUENCE: both the fallback to the default group and the skip taken
-  #   when a rate is zero are provably reachable from the seed, so branch coverage on the interest
-  #   path needs no synthetic fixture.
+  #   carries a zero rate; the other two carry 15.00 on the (01, 0001) type and category every seeded
+  #   balance uses. CONSEQUENCE: the fallback to the default group is provably reachable from the seed
+  #   and needs no fixture, because no seeded account carries any of the three keys - all fifty hold
+  #   ten spaces - so every account misses and re-probes as DEFAULT. THE SKIP TAKEN WHEN A RATE IS
+  #   ZERO IS NOT REACHABLE FROM THE SEED: that re-probe finds 15.00, so the run always computes.
+  #   Covering the skip, and covering the direct group hit, each needs an account constructed with a
+  #   seeded group key plus a category balance on the matching type and category.
   #
   #   THE 10 SIGN-ON IDENTITIES are five administrator records and five standard-user records, which
   #   is what makes both sides of the role split testable. They are stored as BCRYPT HASHES. The
@@ -228,12 +272,39 @@ spring:
   #   so hashing is a DELIBERATE, DOCUMENTED PARITY EXCEPTION - the one place where faithful
   #   reproduction is knowingly declined - and it is recorded as such in docs/decision-log.md.
   #
+  # TWO THINGS COM.CARDDEMO.CONFIG.FLYWAYCONFIG DOES TO THIS BLOCK, neither of which this document
+  # could do for itself:
+  #
+  #   1. It refuses `prod` activated alongside this profile, in either order, before any bean is
+  #      instantiated. Overlapping property sources resolve by activation order, so `prod,test` would
+  #      let this overlay overwrite the production overlay's data source location, signing material,
+  #      field-encryption key, service endpoints and transport rule - and re-add the seed location to
+  #      a deployment reading the production document. A profile document is selected BY the
+  #      active-profile list and cannot see it, so the refusal has to live in code.
+  #   2. It seals the seeded regulated identifiers. V3__seed_reference_data.sql writes
+  #      customer.govt_issued_id as cleartext because static SQL cannot produce a keyed envelope
+  #      without committing a key; a callback registered for this profile and `local` alone converts
+  #      every such value through the module's one encryption service on the after-migrate event of
+  #      the same migration, inside the same transaction. CONSEQUENCE FOR A TEST: a seeded customer
+  #      row read through this profile carries an ENC1 envelope in that column and NOT the fixture's
+  #      twenty digits, which is the same value the entity's own accessors would have demanded. A
+  #      test that wants the cleartext reveals it through the encryption service.
+  #
   # validate-on-migrate stays on so a locally edited script cannot diverge from what was applied.
   # clean-disabled is relaxed here and in the development profile only, so a test that needs a
   # pristine schema can drop and re-apply; the baseline and the production overlay both forbid it.
+  # `target: latest` lifts the schema-only pin the shared baseline declares, so a migration under this
+  # overlay applies V1 and V2 and then the two seeds. The baseline and the production overlay pin
+  # `target: 2`, and com.carddemo.config.FlywayConfig re-applies that pin unconditionally whenever the
+  # production profile is active, so seeded reference rows and seeded sign-on identities cannot reach
+  # a production migration however this file is edited.
   flyway:
     enabled: true
-    locations: classpath:db/migration,classpath:db/seed
+    # See docs/decision-log.md DL-102.
+    locations: classpath:db/migration
+    # The shared baseline pins target at "2". This overlay lifts the pin for itself so the reference
+    # and sign-on seeds are applied and the fixtures have rows to assert against.
+    target: latest
     baseline-on-migrate: false
     validate-on-migrate: true
     clean-disabled: false
@@ -249,10 +320,15 @@ spring:
   # Jobs are launched deliberately - from the batch test utilities or through the job-launch endpoint
   # - and never as a side effect of starting a context.
   #
-  # The job-metadata tables come from the framework's own bundled script, which is what
-  # initialize-schema requests. They are NOT part of V1__create_schema.sql and must not be added to
-  # it: they belong to the framework, they change with its version, and a migration owning them would
-  # pin them.
+  # The job-metadata tables come from V1_1__create_batch_metadata.sql, not from the framework's
+  # bundled script: initialize-schema is `never` here as it is under every other profile. They remain
+  # NOT part of V1__create_schema.sql and must not be added to it - they belong to the framework and
+  # they change with its version, so they get their own migration, whose header records the exact
+  # framework version its DDL was transcribed from and is diffed against on an upgrade.
+  #
+  # A suite run is therefore the environment that PROVES the migration works. While this profile let
+  # the framework create its own tables, a missing metadata migration was invisible here and fatal in
+  # production, which is the situation this setting exists to prevent recurring.
   #
   # THEREFORE, AND THIS IS NOT A SCHEMA DEFECT: the "eleven tables" assertion is about APPLICATION
   # tables only - account, card, customer, card_cross_reference, transaction, daily_transaction,
@@ -261,7 +337,7 @@ spring:
   # this database shows both sets. A count that includes them is counting the wrong thing.
   batch:
     jdbc:
-      initialize-schema: always
+      initialize-schema: never
 
   # -----------------------------------------------------------------------------------------------
   # AWS INTEGRATION, aimed at the LocalStack Community emulator that AbstractLocalStackIT starts.
@@ -279,9 +355,16 @@ spring:
   # subdomains; production turns it off.
   #
   # The emulator serves the object store, the queue and the topic and nothing else, which is the
-  # entire AWS surface this module uses. The twin sets no endpoint at all, because during a suite run
-  # the support base class supplies the container's assigned address and overrides whatever is bound
-  # here; these values are what a packaged `test`-profile run resolves.
+  # entire AWS surface this module uses.
+  #
+  # THE TWIN DECLARES THE SAME FOUR ENDPOINTS, at the same shape, and that agreement is deliberate.
+  # An earlier revision left them out of the twin on the reasoning that a support base class would
+  # supply the container's address during a suite run - true only for a test that extends one, and
+  # only for a client that base class built itself. A test that extended neither, or a client the
+  # framework created, had no endpoint at all and would therefore have addressed a real account. Both
+  # copies now carry the floor; AbstractLocalStackIT raises it to the running container's ephemeral
+  # address for anything that boots a context. These values are what a packaged `test`-profile run
+  # resolves. See docs/decision-log.md DL-104.
   cloud:
     aws:
       region:
@@ -325,19 +408,33 @@ spring:
 #   Instrumentation stays ON - tracing.enabled is true, so the tracer, the observation registry and
 #   context propagation are all wired and a test that asserts on an observation still works.
 #
-#   EXPORT is what is switched off, and the sampling probability is what switches it off: at 0.0 no
-#   span is ever sampled, unsampled spans are not queued for export, and the exporter is therefore
-#   never invoked. No collector is contacted, so no connection is attempted and no connection-refused
-#   noise appears on every context start. There is no collector during a suite run - it is not part
-#   of the test fixture, only of the development stack - so an exporter that did try to reach one
-#   would fail on every single context refresh and bury real output.
+#   EXPORT IS SWITCHED OFF AT THE ONE PROPERTY THAT ACTUALLY SWITCHES IT OFF:
+#   management.otlp.tracing.export.enabled. Boot resolves that key first when it decides whether to
+#   create the OTLP exporter at all; only if the key is absent does it fall back to
+#   management.tracing.enabled. Set to false, the exporter bean is never created, so there is no
+#   component that could open a connection, whatever the sampler later decides.
+#
+#   A SAMPLING PROBABILITY OF 0.0 DOES NOT DISABLE EXPORT, AND AN EARLIER REVISION OF THIS COMMENT
+#   CLAIMED IT DID. The effective sampler is PARENT-BASED over the ratio sampler - the probability
+#   configures only the ROOT decision. A request arriving with a W3C traceparent whose sampled flag
+#   is set is therefore sampled irrespective of the ratio, its spans reach the span processor, and
+#   the exporter is invoked. Probability alone leaves export reachable through any caller that
+#   propagates a sampled context, which is precisely what a contract test for an inbound endpoint
+#   does. The probability below is retained because it still suppresses ROOT spans and so keeps the
+#   recording cost off several hundred context refreshes - but it is an optimisation, not the
+#   control, and it must not be mistaken for one again.
+#
+#   WHY EXPORT MUST BE OFF AT ALL: there is no collector during a suite run. A collector belongs to
+#   the development stack, not to the test fixture, so an exporter that did try to reach one would
+#   fail on every context refresh and bury real output in connection-refused noise.
 #
 #   The endpoint below is consequently NEVER CALLED. It is retained, at the same variable and the
 #   same shape as the baseline, so that the key path stays identical across profiles and so that a
-#   deliberate diagnostic session can raise the sampling probability and immediately have somewhere
-#   to send spans. The twin goes one step further and disables tracing outright, which shaves the
-#   wiring cost off several hundred context refreshes; both files agree on the part that matters,
-#   which is that nothing is exported.
+#   deliberate diagnostic session can flip the export switch and raise the probability and
+#   immediately have somewhere to send spans. The twin sets the SAME export switch and additionally
+#   disables tracing outright, which shaves the wiring cost as well; both files agree on the part
+#   that matters, which is that nothing is exported, and both now say so at the property that
+#   decides it rather than at one that only influences it. See docs/decision-log.md DL-104.
 # =================================================================================================
 management:
   endpoints:
@@ -352,9 +449,15 @@ management:
   tracing:
     enabled: true
     sampling:
+      # An optimisation, NOT the export control. See the paragraph above: this configures the root
+      # decision of a parent-based sampler, so it cannot stop a propagated sampled context.
       probability: 0.0
   otlp:
     tracing:
+      export:
+        # THE export control. Boot consults this key before management.tracing.enabled, so declaring
+        # it here keeps export off even if a test re-enables tracing globally.
+        enabled: false
       endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
 
 # The interface description and its viewer stay exactly as the baseline closes them. Restated at the
@@ -456,14 +559,29 @@ carddemo:
       issuer: carddemo-java
       secret: ${CARDDEMO_JWT_SECRET:test-only-signing-secret-not-used-outside-tests-0123456789}
       expiration: ${CARDDEMO_JWT_EXPIRATION:PT15M}
-    # FIELD-ENCRYPTION KEY. Base64 of exactly 32 bytes, as AES-256 requires; anything else is
-    # rejected at start-up by the service that binds it, naming this property. FIXED rather than
-    # random so that a sealed fixture is reproducible from one run to the next - a random key would
-    # make a sealed value differ between runs and any comparison against it meaningless. Test-only,
-    # never deployed, worth nothing outside this suite, and identical to the twin's literal.
-    # Production declares this same key as an environment reference with NO fallback.
+    # THE ONE NON-PRODUCTION FIXTURE KEY. Base64 of exactly 32 bytes, as AES-256 requires; anything
+    # else is rejected at start-up by the service that binds it, naming this property. FIXED rather
+    # than random so that a sealed fixture is reproducible from one run to the next - a random key
+    # would make a sealed value differ between runs and any comparison against it meaningless.
+    #
+    # WHY THIS LITERAL IS SHARED RATHER THAN PER-PROFILE. The same value appears, byte for byte, here,
+    # in application-local.yml, and in the suite's own src/test/resources/application-test.yml. That
+    # agreement is load-bearing, not tidiness. V3__seed_reference_data.sql seeds fifty
+    # customer.govt_issued_id values as ENC1 envelopes; an envelope opens under exactly one key; and
+    # V3 is applied by every non-production profile. Two divergent development keys - which these
+    # files carried before - made the same seeded row readable under one non-production profile and
+    # unreadable under the other, with the failure surfacing only when something decrypted it.
+    #
+    # Test-only, never deployed, worth nothing outside this suite. Production declares this same key
+    # as an environment reference with NO fallback, and production never applies V3 at all -
+    # spring.flyway.target caps it at version 2 - so no production row is sealed under this literal.
+    #
+    # Overriding CARDDEMO_FIELD_ENCRYPTION_KEY leaves the fifty seeded envelopes unreadable, because
+    # they are sealed literals rather than values this process produced. That is what rotating a key
+    # means, not a defect; anything the application seals itself continues to work normally.
+    # See docs/decision-log.md DL-103.
     field-encryption:
-      key: ${CARDDEMO_FIELD_ENCRYPTION_KEY:Y2FyZGRlbW8tdGVzdC1vbmx5LWZpeGVkLWtleSEhISE=}
+      key: ${CARDDEMO_FIELD_ENCRYPTION_KEY:Y2FyZGRlbW8tbm9ucHJvZC1maXh0dXJlLWtleSEhISE=}
     # RELAXES A REQUIRED BASELINE, stated here so the concession is visible in the profile taking it.
     # application.yml requires transport security, because a bearer token lifted from plaintext can
     # be replayed until it expires and a field sealed at rest travels in the clear once an endpoint

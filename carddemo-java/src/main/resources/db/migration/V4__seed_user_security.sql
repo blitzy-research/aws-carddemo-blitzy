@@ -37,41 +37,60 @@
 -- predictable logins, five of them able to reach the administrative user-management surface. That
 -- is a credential incident, not untidiness, and no work factor changes it.
 --
--- HOW THE EXCLUSION IS ENFORCED - two independent controls, the first of which is structural.
+-- HOW THE EXCLUSION IS ENFORCED - TWO CONTROLS OVER ONE VERSION CEILING: the ceiling itself, declared
+-- in the profile it binds, and a refusal in code that reads the ceiling back after it is bound. The
+-- ceiling, and why it replaced a second migration location, are recorded in docs/decision-log.md
+-- DL-102.
 --
---   1. LOCATION (the delivered control). This file sits in db/seed, which is a separate migration
---      location from the db/migration location that carries V1 and V2:
+--   All five migrations are FLAT in classpath:db/migration, the single location every profile lists,
+--   and this file is separated from the schema by its VERSION:
 --
---        classpath:db/migration   V1__create_schema.sql    V2__create_indexes.sql
---                                 -> listed by EVERY profile, production included
---        classpath:db/seed        V3__seed_reference_data.sql   this file
---                                 -> listed by the local and test profiles ONLY
+--        V1__create_schema.sql              \
+--        V1_1__create_batch_metadata.sql     >  at or below the ceiling -> EVERY profile
+--        V2__create_indexes.sql             /
+--        ---------------------------------------- spring.flyway.target: 2 (application-prod.yml)
+--        V3__seed_reference_data.sql        \
+--        V4__seed_user_security.sql (this)   >  above the ceiling       -> local and test only
 --
---      application.yml and application-prod.yml list classpath:db/migration ALONE, so production
---      never resolves this file at all: a migration ends at V2 there and at V4 under the local and
---      test overlays, which add classpath:db/seed for themselves. The seeds are excluded by not
---      being listed rather than by being switched off, which is what makes the exclusion survive an
---      overlay that copies the block and edits one line of it. There is no switch to leave in the
---      wrong position.
+--   application-prod.yml sets spring.flyway.target: 2, so a production migration resolves versions 1,
+--   1.1 and 2 and does not resolve this file at all. The local and test overlays raise the ceiling to
+--   latest, so a migration there ends at V4. Verified against Flyway 11.7.2: with target 2 the applied set is
+--   exactly {1, 1.1, 2} and version 3 is never resolved. Setting a target does not weaken validation -
+--   an unapplied script above the ceiling is not a validation failure; only a CHANGED already-applied
+--   script is.
 --
---      This placement is deliberate and is why the file is here rather than beside V1 and V2. The
---      migration plan's directory sketch drew all four migrations flat in one directory; the
---      delivered module separates them, because with a single flat directory every deployment that
---      scanned it would resolve this file and the exclusion would rest entirely on control 2 below.
---      A seed script added to the schema location would reach a production migration.
+--   WHY THIS REPLACED A SEPARATE db/seed DIRECTORY. An earlier revision of this file sat in db/seed
+--   and argued that a separate location was the stronger control because it needed no setting to be
+--   in the right position. That argument does not survive inspection. A location list is itself a
+--   setting - four of them, one per profile - and the guarantee held only while all four stayed
+--   different from each other in the right direction, a condition no single file stated. It also
+--   detached the version numbers from what any profile would apply, so renumbering a seed or adding
+--   one entry to one list could change production's contents without either edit looking like a
+--   change to production. And it required every future author to know the convention: a seed dropped
+--   into the schema directory would have been inherited by production, silently. The ceiling has none
+--   of those properties. It is one reviewable line, stated in the profile whose posture it governs,
+--   and no move, rename or renumber can make version 4 fall below 2. It is also what the frozen
+--   migration plan specifies: its four scripts flat in db/migration, with production excluded by
+--   target. Five ship rather than four because V1_1__create_batch_metadata.sql was added below the
+--   ceiling to own the framework's own job-repository tables; that raises the count and leaves the
+--   arrangement exactly as the plan states it.
 --
---   2. VERSION PIN (defence in depth, for any deployment whose location list could ever reach this
---      file - a merged list, a wildcard location, a filesystem: location, or an operator running
---      the migration tool directly against the packaged artefact). Pin the target as well:
+--   THE RULE FOR A NEW SEED, and it is the whole rule: number it ABOVE 2. Raise the ceiling only in
+--   the same commit that adds a production-required script above it, and never to admit a seed.
 --
---        spring.flyway.target=2         (preferred - applies V1 and V2, stops before the seeds)
+--   CONTROL 2 - THE REFUSAL IN CODE, which covers a deployment whose configuration was edited, merged
+--   or overridden on the command line, and an operator running the migration tool directly against the
+--   packaged artefact. com.carddemo.config.FlywayConfig inspects the BOUND ceiling and the BOUND
+--   location list and, under the production profile, refuses to start when the ceiling reaches version
+--   3 or beyond or when a location outside classpath:db/migration is present. An absent, predefined or
+--   unreadable ceiling is refused on the same ground, since the migration tool migrates to the latest
+--   version when none is set. Neither control is relied on alone: control 1 is explicit and reviewable
+--   but is a property of configuration, and control 2 is unconditional in code but appears in no
+--   configuration file. A refusal rather than a silent correction is deliberate - a deployment whose
+--   declared migration scope and actual migration scope differ should stop, not proceed quietly.
 --
---      An equivalent version-aware or filename-aware filter is acceptable. What is NOT acceptable
---      is relying on either control alone where both are available: control 1 is structural but is
---      a property of the location list, and control 2 is explicit but is a property of one setting.
---
--- A row in user_security in a production database means one of these controls was defeated. Treat
--- it as an incident, not as drift.
+-- A row in user_security in a production database means the ceiling was raised or removed. Treat it
+-- as an incident, not as drift.
 --
 -- No production identity is created here. There is no production account, no default administrator
 -- and no break-glass login in this file, and it reads no environment variable and no external file:

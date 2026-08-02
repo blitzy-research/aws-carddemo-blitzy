@@ -19,6 +19,7 @@ package com.carddemo.api.dto;
 import java.math.BigDecimal;
 import java.util.List;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -81,13 +82,36 @@ import jakarta.validation.constraints.Size;
  * debit are 15-character screen fields whose record counterparts are the five signed zoned
  * decimals with ten integer digits and two decimal places declared in {@code CVACT01Y.cpy}
  * (lines 7, 8, 9, 13 and 14). They are declared {@link BigDecimal} - never a binary
- * floating-point type, never a primitive, never a preformatted string - and scale 2 is a
- * contract this response <em>records</em> rather than applies. The estate carries no rounding
- * clause on any arithmetic statement, so every legacy store into a two-decimal field truncates
- * toward zero, and that truncation is applied in exactly one place,
+ * floating-point type, never a primitive, never a preformatted string. The estate carries no
+ * rounding clause on any arithmetic statement, so every legacy store into a two-decimal field
+ * truncates toward zero, and that truncation is applied in exactly one place,
  * {@code com.carddemo.util.ZonedDecimalCodec} (decision log entry D-02). This file performs no
  * arithmetic, no scaling, no rounding, no negation and no formatting, and it declares no edited
  * presentation mask.
+ *
+ * <p><strong>The shape those five values must have is published, and it is checked.</strong>
+ * Ten integer digits and exactly two decimal places is the whole of the numeric contract, and a
+ * client has no way to discover it from the type alone: {@link BigDecimal} is unbounded, so a
+ * value of any scale and any magnitude satisfies the declaration while breaking the contract.
+ * Each of the five therefore carries schema documentation naming its source picture clause, its
+ * total precision of 12 and its scale of 2, which is what reaches the published interface
+ * description a client actually reads; and the canonical constructor refuses a value whose scale
+ * is not 2 or whose integer part exceeds ten digits.
+ *
+ * <p>It <em>refuses</em> rather than adjusts, and that is the point rather than an oversight.
+ * Adjusting would mean re-scaling, and re-scaling is a rounding decision - the one decision this
+ * module deliberately concentrates in a single place, because the legacy truncates toward zero
+ * where idiomatic Java would round half-even and the difference is a cent on roughly half of all
+ * interest results. A response DTO silently changing a monetary value would be the worst possible
+ * location for that decision, so a value arriving in the wrong shape is a fault in the caller and
+ * is reported as one. The check reads the value's own scale and precision and performs no
+ * arithmetic on it.
+ *
+ * <p>A declarative digit-count annotation was considered for this and rejected on two grounds.
+ * It would not be enforced, because nothing validates an outbound response - constraints are
+ * evaluated on the way in, not on the way out - and it would not be published either, since the
+ * schema generator maps the length, bound and pattern annotations but not that one. It would have
+ * been decoration that neither documents nor enforces.
  *
  * <p>Every identifier stays a bounded string: the account id at 11, the customer id at 9 and the
  * credit score at 3. None becomes an integral type, because a credit score of {@code 001} must
@@ -180,7 +204,7 @@ import jakarta.validation.constraints.Size;
  *
  * <h2>The control components</h2>
  *
- * <p>Five components carry no legacy field value and exist to make the response actionable.
+ * <p>Six components carry no legacy field value and exist to make the response actionable.
  *
  * <ul>
  *   <li><b>An explicit error indicator.</b> It is its own fact, supplied by the service, and is
@@ -205,14 +229,48 @@ import jakarta.validation.constraints.Size;
  *       echoed client state and not a server session, and its program-context condition is what
  *       gates whether field-level decoration is applied at all.</li>
  *   <li><b>The field-error collection</b>, always present, never {@code null}, never mutable.</li>
+ *   <li><b>The echoed conversation token</b>, described in its own section below. Like the four
+ *       above it, it is state the response has to carry for the next turn to be possible; unlike
+ *       them it stands for something the map never showed.</li>
  * </ul>
  *
- * <p><strong>No concurrency component of any kind appears here, and no business logic.</strong>
- * For context only: the legacy compared before-and-after record images, and the estate's single
- * rollback sits on the customer-rewrite failure arm at {@code COACTUPC} lines 4095 to 4103, with
- * the rollback itself at 4099 to 4101, while the account-rewrite failure arm at 4076 to 4081
- * issues none - an asymmetry preserved in the update service, not here. When the service detects
- * a conflicting concurrent change it raises the dedicated failure carrier from
+ * <h2>The conversation token, and why this response must carry it</h2>
+ *
+ * <p>This response has one component that is not a map field and not a control hint, and it is
+ * here because the legacy transaction carries state across its turns that the screen never
+ * displayed. {@code COACTUPC} declares a program communication-area extension at line 652 whose
+ * leading group is the complete old image of the account and the customer as they stood when the
+ * screen was presented. That extension is appended to the shared communication area and handed
+ * back with the screen at lines 1010 to 1018, then sliced off again on the following turn at
+ * lines 888 to 892. When the operator confirms, the program reads both records for update and
+ * only then compares the freshly read records field by field against the carried old image, in
+ * paragraph {@code 9700-CHECK-CHANGE-IN-REC} at line 4109 - reached from line 3947 and running
+ * to its exit at 4193. Any single difference abandons the write.
+ *
+ * <p>Re-reading the records at the start of the confirming turn would not reproduce that, because
+ * the whole purpose of the comparison is to detect a change made <em>after</em> the screen was
+ * presented. The state being compared therefore has to travel with the conversation, which in a
+ * stateless request-response contract means it has to leave on this response and come back on the
+ * next request. {@link AccountUpdateRequest} already declares the returning half; without the
+ * outbound half published here there is nothing for a client to return, and
+ * {@code com.carddemo.service.AccountConcurrencyTokenService} treats an absent token as a
+ * conflict - so the second turn of the transaction could never complete. The two halves are one
+ * contract and only work as a pair.
+ *
+ * <p>In the legacy the carried image was safe because the communication area is held by the
+ * transaction manager and the terminal never sees it. Handed to a client it would not be, so what
+ * travels is not the image: the service seals a pair of digests into an opaque,
+ * integrity-protected value that a client can return and cannot read, forge or edit. Nothing
+ * about the records can be recovered from it.
+ *
+ * <p><strong>This remains a data carrier and performs no business logic.</strong> It does not
+ * mint the token, does not verify it, does not compare images, does not detect change and holds
+ * no record image, digest, sequence number or row-revision counter of any kind - the token is one
+ * opaque string, and every mechanism behind it belongs to the service. For context only: the
+ * estate's single rollback sits on the customer-rewrite failure arm at {@code COACTUPC} lines
+ * 4095 to 4103, with the rollback itself at 4099 to 4101, while the account-rewrite failure arm
+ * at 4076 to 4081 issues none - an asymmetry preserved in the update service, not here. When the
+ * service finds that a record moved it raises the dedicated failure carrier from
  * {@code com.carddemo.exception}, which this file does not and may not import; the response
  * simply carries whatever resulting text reaches the summary slot.
  *
@@ -366,6 +424,12 @@ import jakarta.validation.constraints.Size;
  *        none. Its program-context condition gates field-level decoration.
  * @param fieldErrors the independent per-field errors, never {@code null} and never mutable.
  *        Empty means no field-level error, which is also the first-submission case.
+ * @param concurrencyToken the opaque, integrity-protected description of the account and customer
+ *        records as they stood when this screen was presented, minted by
+ *        {@code com.carddemo.service.AccountConcurrencyTokenService} and to be returned unchanged
+ *        on {@link AccountUpdateRequest}. Not a map field, and {@code null} on a response that
+ *        presents no record to confirm. Opaque by construction: nothing about the records can be
+ *        read out of it.
  * @since 1.0.0
  */
 public record AccountUpdateResponse(
@@ -410,7 +474,11 @@ public record AccountUpdateResponse(
         /* 11. OPNDAY, width 2 - decorated at COACTUPC:3226 (token OPEN-DAY). */
         @Size(max = 2) String openDay,
 
-        /* 12. ACRDLIM, width 15 - decorated at COACTUPC:3232 (token CRED-LIMIT). */
+        /* 12. ACRDLIM, width 15 - decorated at COACTUPC:3232 (token CRED-LIMIT). Record
+         * counterpart ACCT-CREDIT-LIMIT at CVACT01Y.cpy line 8. */
+        @Schema(description = "Account credit limit. Record field ACCT-CREDIT-LIMIT of "
+                + "CVACT01Y.cpy line 8: a signed zoned decimal with ten integer digits and two "
+                + "decimal places, so total precision 12 and scale exactly 2.")
         BigDecimal creditLimit,
 
         /* 13. EXPYEAR, width 4 - decorated at COACTUPC:3238 (token EXPIRY-YEAR). */
@@ -422,7 +490,11 @@ public record AccountUpdateResponse(
         /* 15. EXPDAY, width 2 - decorated at COACTUPC:3250 (token EXPIRY-DAY). */
         @Size(max = 2) String expiryDay,
 
-        /* 16. ACSHLIM, width 15 - decorated at COACTUPC:3256 (token CASH-CREDIT-LIMIT). */
+        /* 16. ACSHLIM, width 15 - decorated at COACTUPC:3256 (token CASH-CREDIT-LIMIT). Record
+         * counterpart ACCT-CASH-CREDIT-LIMIT at CVACT01Y.cpy line 9. */
+        @Schema(description = "Account cash credit limit. Record field ACCT-CASH-CREDIT-LIMIT of "
+                + "CVACT01Y.cpy line 9: a signed zoned decimal with ten integer digits and two "
+                + "decimal places, so total precision 12 and scale exactly 2.")
         BigDecimal cashCreditLimit,
 
         /* 17. RISYEAR, width 4 - decorated at COACTUPC:3262 (token REISSUE-YEAR). */
@@ -434,16 +506,28 @@ public record AccountUpdateResponse(
         /* 19. RISDAY, width 2 - decorated at COACTUPC:3274 (token REISSUE-DAY). */
         @Size(max = 2) String reissueDay,
 
-        /* 20. ACURBAL, width 15 - decorated at COACTUPC:3280 (token CURR-BAL). */
+        /* 20. ACURBAL, width 15 - decorated at COACTUPC:3280 (token CURR-BAL). Record
+         * counterpart ACCT-CURR-BAL at CVACT01Y.cpy line 7. */
+        @Schema(description = "Account current balance. Record field ACCT-CURR-BAL of "
+                + "CVACT01Y.cpy line 7: a signed zoned decimal with ten integer digits and two "
+                + "decimal places, so total precision 12 and scale exactly 2.")
         BigDecimal currentBalance,
 
-        /* 21. ACRCYCR, width 15 - decorated at COACTUPC:3286 (token CURR-CYC-CREDIT). */
+        /* 21. ACRCYCR, width 15 - decorated at COACTUPC:3286 (token CURR-CYC-CREDIT). Record
+         * counterpart ACCT-CURR-CYC-CREDIT at CVACT01Y.cpy line 13. */
+        @Schema(description = "Current cycle credit. Record field ACCT-CURR-CYC-CREDIT of "
+                + "CVACT01Y.cpy line 13: a signed zoned decimal with ten integer digits and two "
+                + "decimal places, so total precision 12 and scale exactly 2.")
         BigDecimal currentCycleCredit,
 
         /* 22. AADDGRP, width 10 - editable, NOT decorated. */
         @Size(max = 10) String accountGroupId,
 
-        /* 23. ACRCYDB, width 15 - decorated at COACTUPC:3292 (token CURR-CYC-DEBIT). */
+        /* 23. ACRCYDB, width 15 - decorated at COACTUPC:3292 (token CURR-CYC-DEBIT). Record
+         * counterpart ACCT-CURR-CYC-DEBIT at CVACT01Y.cpy line 14. */
+        @Schema(description = "Current cycle debit. Record field ACCT-CURR-CYC-DEBIT of "
+                + "CVACT01Y.cpy line 14: a signed zoned decimal with ten integer digits and two "
+                + "decimal places, so total precision 12 and scale exactly 2.")
         BigDecimal currentCycleDebit,
 
         /* 24. ACSTNUM, width 9 - editable, NOT decorated. */
@@ -571,7 +655,15 @@ public record AccountUpdateResponse(
         NavigationContext navigationContext,
 
         /* 56. Independent per-field errors, normalized in the canonical constructor below. */
-        List<ErrorResponse.FieldError> fieldErrors) {
+        List<ErrorResponse.FieldError> fieldErrors,
+
+        /* 57. Not a map field. The outbound half of the program commarea extension COACTUPC
+         * carries across the pseudo-conversational turn, described on the type above. Declared
+         * last, matching the position its returning counterpart occupies on AccountUpdateRequest.
+         * Opaque and unbounded by design, and deliberately unannotated: it has no legacy width
+         * because it is not a legacy field, and its absence on a response that presents nothing
+         * to confirm is ordinary rather than a defect. */
+        String concurrencyToken) {
 
     /*
      * ================================================================================
@@ -819,6 +911,23 @@ public record AccountUpdateResponse(
     public static final String MSG_UPDATE_OF_RECORD_FAILED = "Update of record failed";
 
     /**
+     * The number of decimal places every monetary component carries, from the two decimal places
+     * of the five signed zoned decimals in {@code CVACT01Y.cpy} lines 7, 8, 9, 13 and 14.
+     *
+     * <p>Public because it is part of the numeric contract rather than an implementation choice:
+     * the service that builds a response, and the tests that check one, need the same authority
+     * for the figure instead of each restating it.
+     */
+    public static final int MONEY_SCALE = 2;
+
+    /**
+     * The number of integer digits every monetary component may carry, from the ten integer digits
+     * of the same five record fields. With {@link #MONEY_SCALE} this gives a total precision of 12,
+     * matching the persistence columns.
+     */
+    public static final int MONEY_INTEGER_DIGITS = 10;
+
+    /**
      * Fixed stand-in emitted by {@link #toString()} in place of the whole value payload.
      *
      * <p>A constant rather than any transformation of the values, so nothing about them - not a
@@ -847,9 +956,53 @@ public record AccountUpdateResponse(
      * value that came back trimmed, or a message that came back re-cased, would be a parity
      * defect. No value is trimmed, padded, re-cased, truncated, scaled, rounded or reformatted
      * here.
+     *
+     * <p>The five monetary components are checked rather than normalized, for the reason given on
+     * the type: a value whose scale is not {@link #MONEY_SCALE}, or whose integer part exceeds
+     * {@link #MONEY_INTEGER_DIGITS} digits, does not describe the record field it stands for, and
+     * correcting it here would mean making a rounding decision that belongs in exactly one place
+     * elsewhere in the module. A {@code null} amount is accepted: the legacy screen leaves a
+     * monetary field blank on a submission that never reached the record.
+     *
+     * @throws IllegalArgumentException if any monetary component carries a scale other than
+     *         {@link #MONEY_SCALE} or needs more than {@link #MONEY_INTEGER_DIGITS} integer digits
      */
     public AccountUpdateResponse {
+        requireRecordShape("creditLimit", creditLimit);
+        requireRecordShape("cashCreditLimit", cashCreditLimit);
+        requireRecordShape("currentBalance", currentBalance);
+        requireRecordShape("currentCycleCredit", currentCycleCredit);
+        requireRecordShape("currentCycleDebit", currentCycleDebit);
         fieldErrors = (fieldErrors == null) ? List.of() : List.copyOf(fieldErrors);
+    }
+
+    /**
+     * Confirms that an amount has the decimal shape of the record field it represents.
+     *
+     * <p>Reads only the amount's own scale and precision; it performs no arithmetic on the value,
+     * does not re-scale it, does not round it and does not format it. The failure text names the
+     * component and the offending scale or digit count and never the amount itself, so a rejected
+     * value cannot reach a log through the diagnostic that reports it.
+     *
+     * @param component the component name, for the failure text
+     * @param amount    the amount to check, or {@code null} for a field the screen leaves blank
+     * @throws IllegalArgumentException if the amount does not fit the record field
+     */
+    private static void requireRecordShape(final String component, final BigDecimal amount) {
+        if (amount == null) {
+            return;
+        }
+        if (amount.scale() != MONEY_SCALE) {
+            throw new IllegalArgumentException(component + " must carry scale " + MONEY_SCALE
+                    + ", because its record field stores two decimal places, but its scale is "
+                    + amount.scale());
+        }
+        final int integerDigits = amount.precision() - amount.scale();
+        if (integerDigits > MONEY_INTEGER_DIGITS) {
+            throw new IllegalArgumentException(component + " must fit " + MONEY_INTEGER_DIGITS
+                    + " integer digits, because that is the width of its record field, but it "
+                    + "needs " + integerDigits);
+        }
     }
 
     /**
@@ -912,6 +1065,12 @@ public record AccountUpdateResponse(
      * the entries so that the volume of a diagnostic cannot grow with the number of mistakes an
      * operator made. The echoed conversation state is delegated to its own renderer, which applies
      * the same protection to its own identifying members.
+     *
+     * <p><strong>The conversation token is withheld as well</strong>, and for a different reason
+     * from the values. It discloses nothing about the records - that is what being an opaque
+     * sealed digest pair means - but it is a capability: whoever holds it can present it on the
+     * confirming turn. A diagnostic is the wrong place to leave one, and it is of no use to a
+     * reader who cannot read it, so it is covered by the same placeholder rather than rendered.
      *
      * <p>{@code equals} and {@code hashCode} are deliberately left as the record contract
      * generates them. They compare every component by value, which is what a wire contract

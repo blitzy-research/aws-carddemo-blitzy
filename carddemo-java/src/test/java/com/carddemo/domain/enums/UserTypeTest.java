@@ -37,18 +37,18 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  *
  * <p><strong>What the legacy authority is.</strong> Two authorities describe the same single byte
  * and this class holds the type to both. The declared vocabulary is the pair of level-88 condition
- * names attached to the communication-area field {@code CDEMO-USER-TYPE} ({@code PIC X(01)},
- * {@code app/cpy/COCOM01Y.cpy} L26): {@code CDEMO-USRTYP-ADMIN} valued {@code A} at L27 and
- * {@code CDEMO-USRTYP-USER} valued {@code U} at L28. No third condition name is declared anywhere.
- * The persisted origin is {@code SEC-USR-TYPE} ({@code PIC X(01)}, {@code app/cpy/CSUSR01Y.cpy}
- * L22), the fifth of six fields in the eighty-byte {@code SEC-USER-DATA} record: an eight-byte
- * sign-on identifier, a twenty-byte given name, a twenty-byte family name, the eight-byte
+ * names attached to the one-character communication-area field {@code CDEMO-USER-TYPE}
+ * ({@code app/cpy/COCOM01Y.cpy}): {@code CDEMO-USRTYP-ADMIN} valued {@code A} and
+ * {@code CDEMO-USRTYP-USER} valued {@code U}. No third condition name is declared anywhere.
+ * The persisted origin is the one-character {@code SEC-USR-TYPE} ({@code app/cpy/CSUSR01Y.cpy}),
+ * the fifth of six fields in the eighty-byte {@code SEC-USER-DATA} record: an eight-byte sign-on
+ * identifier, a twenty-byte given name, a twenty-byte family name, the eight-byte
  * {@code SEC-USR-PWD} field, this one-byte type code, and a twenty-three byte
  * {@code SEC-USR-FILLER}. Unlike the anonymous trailing filler of the account and card records,
  * that filler is named. The record geometry is declared a second time and independently by the
- * provisioning job {@code app/jcl/DUSRSECJ.jcl}, whose sequential dataset carries
- * {@code LRECL=80} at L48 and whose cluster definition states {@code KEYS(8,0)} over
- * {@code RECORDSIZE(80,80)} at L65 and L66.
+ * provisioning job {@code app/jcl/DUSRSECJ.jcl}, whose sequential dataset carries a fixed
+ * eighty-byte record and whose cluster definition states an eight-byte key at offset zero over
+ * that same eighty-byte record.
  *
  * <p><strong>The load-bearing fact: routing tolerance, proved by an unconditional alternative.</strong>
  * Sign-on reads the user record, moves the persisted type byte straight into the communication-area
@@ -76,10 +76,11 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * Absorbing it is the contract; rejecting it would be a new behaviour. This class therefore asserts
  * nothing whatever about persistence mapping - no annotation, no column name, no length and no
  * nullability - because the type under test carries none of that and the correspondence between
- * entity and schema is verified in the integration tier against a real database.
+ * entity and schema is asserted by {@code EntityPersistenceMappingTest}, which compares the mapping
+ * the persistence provider computes against the shipped migration {@code V1__create_schema.sql}.
  *
  * <p><strong>Deliberately absent.</strong> The credential field of the same record is referred to
- * here only by its name {@code SEC-USR-PWD} and its declared {@code X(08)} width, which is all the
+ * here only by its name {@code SEC-USR-PWD} and its declared eight-byte width, which is all the
  * offset arithmetic needs; no credential value appears anywhere in this file, and the plaintext
  * comparison the legacy program performs is neither reproduced nor tested. The migration replaces
  * that comparison with a hashed credential, a deliberate parity exception recorded in
@@ -124,7 +125,7 @@ class UserTypeTest {
      *
      * The width assertions encode at an explicit US-ASCII boundary and pin the resulting code
      * point, because a one-character string is inherently one unit wide and measuring its character
-     * count alone would prove nothing about the byte written to the record.
+     * count alone says nothing about the byte written to the record.
      */
 
     /**
@@ -177,10 +178,10 @@ class UserTypeTest {
     /** Fields the user-security copybook declares, counting the named trailing filler. */
     private static final int USER_RECORD_FIELD_COUNT = 6;
 
-    /** Record width, declared by the copybook layout and again by {@code RECORDSIZE(80,80)}. */
+    /** Record width, declared by the copybook layout and again by the cluster definition. */
     private static final int DECLARED_RECORD_WIDTH = 80;
 
-    /** Key width, from {@code KEYS(8,0)}: the leading sign-on identifier and nothing else. */
+    /** Key width: the leading sign-on identifier and nothing else. */
     private static final int SIGN_ON_KEY_WIDTH = 8;
 
     /**

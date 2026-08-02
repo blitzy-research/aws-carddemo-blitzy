@@ -783,6 +783,23 @@ class JobSubmissionServiceBaselineTest {
         /** The label the service writes ahead of the response code. */
         private static final String RESPONSE_LABEL = "response=";
 
+        /**
+         * The label the service writes ahead of the bounded chain of failure types.
+         *
+         * <p>The chain exists because the raw failure is deliberately not handed to the logger -
+         * a rendered stack trace carries the description of every exception in the chain, which is
+         * the externally-supplied text decision DL-041 keeps out of this log. The shape of the
+         * chain was the diagnostically useful part of that trace, and it travels here instead.
+         */
+        private static final String CHAIN_LABEL = "failureChain=";
+
+        /**
+         * A description of the kind a verbose or misconfigured queue client really produces: it
+         * names a credential and echoes it. Its presence anywhere in a diagnostic is a leak.
+         */
+        private static final String DISCLOSING_DESCRIPTION =
+                "refused: secret=QAMARKBASELINELEAK endpoint=https://internal.example";
+
         private Logger logger;
         private ListAppender<ILoggingEvent> recorder;
         private Level originalLevel;
@@ -816,9 +833,10 @@ class JobSubmissionServiceBaselineTest {
         }
 
         @Test
-        @DisplayName("records an empty reason code when the failure carries no description at all,"
-                + " because there is nothing to report and nothing may be invented")
-        void aFailureWithNoDescriptionYieldsAnEmptyReasonCode() {
+        @DisplayName("records an empty reason code when the failure carries no cause at all, because"
+                + " there is then nothing beneath the response code to report and nothing may be"
+                + " invented")
+        void aFailureWithNoCauseYieldsAnEmptyReasonCode() {
             rejectEveryCardWith(new IllegalStateException());
 
             final boolean published = service.writeJobSubmissionQueue(SUBMISSION_ID,
@@ -830,27 +848,41 @@ class JobSubmissionServiceBaselineTest {
             assertThat(diagnostic)
                     .startsWith(JobSubmissionException.DEFAULT_MESSAGE)
                     .contains(RESPONSE_LABEL + IllegalStateException.class.getSimpleName())
-                    .endsWith(REASON_LABEL);
+                    // Both labels are written even when one carries nothing, because the legacy
+                    // paragraph displays both codes regardless.
+                    .contains(REASON_LABEL + " ")
+                    .endsWith(CHAIN_LABEL + IllegalStateException.class.getSimpleName());
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {"", " ", "     ", "\t", "\n", "  \n  "})
-        @DisplayName("records an empty reason code when the failure's description holds nothing but"
-                + " whitespace, so a blank description is treated exactly like an absent one")
-        void aFailureWithABlankDescriptionYieldsAnEmptyReasonCode(final String blankDescription) {
-            rejectEveryCardWith(new IllegalStateException(blankDescription));
+        @ValueSource(strings = {"", " ", "     ", "\t", "\n", "  \n  ", "queue unavailable"})
+        @DisplayName("the failure's description changes no part of the diagnostic, whether it is"
+                + " absent, blank or informative, because no code is derived from it")
+        void theDescriptionChangesNoPartOfTheDiagnostic(final String description) {
+            // The point is not that a blank description behaves like an absent one - it is that the
+            // description is not consulted at all. Every value in this set, blank or not, must yield
+            // the identical diagnostic, which is a stronger claim than any assertion about one of
+            // them.
+            rejectEveryCardWith(new IllegalStateException(description));
 
             final boolean published = service.writeJobSubmissionQueue(SUBMISSION_ID,
                     cardOfWidth("//ONE"), 1);
 
             assertThat(published).isFalse();
-            assertThat(recordedFailureDiagnostic()).endsWith(REASON_LABEL);
+            assertThat(recordedFailureDiagnostic())
+                    .contains(RESPONSE_LABEL + IllegalStateException.class.getSimpleName())
+                    .contains(REASON_LABEL + " ")
+                    .endsWith(CHAIN_LABEL + IllegalStateException.class.getSimpleName());
         }
 
         @Test
-        @DisplayName("records only the first line of a multi-line description, because the legacy"
-                + " reason code is a single fixed-width display field")
-        void onlyTheFirstLineOfADescriptionBecomesTheReasonCode() {
+        @DisplayName("no part of a description becomes any code, not even its first line, because a"
+                + " description is supplied by the queue client rather than by this module")
+        void noPartOfADescriptionBecomesAnyCode() {
+            // The legacy reason code came from the queue manager's own numeric report, not from
+            // free text, so deriving it from a description was never the faithful reading. It is
+            // also the one value in this class's log records that arrives from outside the module,
+            // which is what makes decision DL-041 apply to it.
             rejectEveryCardWith(new IllegalStateException(
                     "queue unavailable\nat some.frame.Deeper\nat some.frame.Deepest"));
 
@@ -859,7 +891,8 @@ class JobSubmissionServiceBaselineTest {
 
             assertThat(published).isFalse();
             assertThat(recordedFailureDiagnostic())
-                    .endsWith(REASON_LABEL + "queue unavailable")
+                    .contains(REASON_LABEL + " ")
+                    .doesNotContain("queue unavailable")
                     .doesNotContain("Deeper")
                     .doesNotContain("Deepest");
         }
@@ -874,7 +907,48 @@ class JobSubmissionServiceBaselineTest {
 
             assertThat(recordedFailureDiagnostic())
                     .contains(RESPONSE_LABEL + UnsupportedOperationException.class.getSimpleName())
-                    .endsWith(REASON_LABEL + "fifo not enabled");
+                    .doesNotContain("fifo not enabled");
+        }
+
+        @Test
+        @DisplayName("names the type of the deepest cause as the reason code, and renders the whole"
+                + " chain of types, so what the suppressed stack trace was useful for survives")
+        void theReasonCodeNamesTheDeepestCauseTypeAndTheChainIsRendered() {
+            rejectEveryCardWith(new IllegalStateException(DISCLOSING_DESCRIPTION,
+                    new UnsupportedOperationException(DISCLOSING_DESCRIPTION,
+                            new NumberFormatException(DISCLOSING_DESCRIPTION))));
+
+            service.writeJobSubmissionQueue(SUBMISSION_ID, cardOfWidth("//ONE"), 1);
+
+            assertThat(recordedFailureDiagnostic())
+                    .contains(RESPONSE_LABEL + IllegalStateException.class.getSimpleName())
+                    .contains(REASON_LABEL + NumberFormatException.class.getSimpleName())
+                    .endsWith(CHAIN_LABEL + IllegalStateException.class.getSimpleName()
+                            + "<-" + UnsupportedOperationException.class.getSimpleName()
+                            + "<-" + NumberFormatException.class.getSimpleName());
+        }
+
+        @Test
+        @DisplayName("a disclosing description is carried by no field of the diagnostic and by no"
+                + " rendered trace, which is the property that makes the derived codes worth having")
+        void aDisclosingDescriptionIsCarriedByNoField() {
+            rejectEveryCardWith(new IllegalStateException(DISCLOSING_DESCRIPTION,
+                    new UnsupportedOperationException(DISCLOSING_DESCRIPTION)));
+
+            service.writeJobSubmissionQueue(SUBMISSION_ID, cardOfWidth("//ONE"), 1);
+
+            final List<ILoggingEvent> errors = this.recorder.list.stream()
+                    .filter(event -> event.getLevel() == Level.ERROR)
+                    .toList();
+            assertThat(errors).as("one refused card records one diagnostic").hasSize(1);
+            assertThat(errors.getFirst().getThrowableProxy())
+                    .as("no throwable may be rendered, because its trace carries every description"
+                            + " in the chain")
+                    .isNull();
+            assertThat(errors.getFirst().getFormattedMessage()).as("the recorded diagnostic")
+                    .doesNotContain("QAMARKBASELINELEAK")
+                    .doesNotContain("secret=")
+                    .doesNotContain("internal.example");
         }
     }
 }

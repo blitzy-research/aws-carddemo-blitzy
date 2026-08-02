@@ -25,6 +25,8 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -1197,6 +1199,20 @@ class CobolStringUtilsTest {
 
     @Nested
     @DisplayName("locale invariance - the default locale cannot change a single emitted byte")
+    // Every test below replaces the JVM-wide default locale for the duration of one call. That is
+    // process state, not test state, so the isolation is declared here rather than left to the
+    // accident of the current execution settings.
+    //
+    // Both locks are needed, and the wider one is the load-bearing one. A lock on the locale alone
+    // only excludes tests that themselves claim the locale, and the thousands of byte-parity tests in
+    // this module claim nothing while depending entirely on the en-US pin the build applies - so a
+    // narrow lock would leave every one of them free to run alongside the replacement and read a
+    // Turkish fold or an Arabic-Indic digit. The global lock is what actually excludes them. The
+    // narrow lock is kept alongside it because it names the specific resource being written, so a
+    // future test that declares a read lock on the locale interlocks with this correctly instead of
+    // silently relying on the global one still being here.
+    @ResourceLock(Resources.GLOBAL)
+    @ResourceLock(Resources.LOCALE)
     class LocaleInvariance {
 
         @Test
@@ -1353,9 +1369,15 @@ class CobolStringUtilsTest {
      * <p>The build pins {@code -Duser.language=en -Duser.country=US}, so a locale defect cannot be
      * observed by any test that does not do this. The previous default is restored in a
      * {@code finally} block, and the format category is restored explicitly because
-     * {@link java.util.Locale#setDefault(java.util.Locale)} overwrites both categories. Surefire is
-     * configured with no parallelism in this module, so mutating this process-wide setting cannot
-     * disturb a concurrently running test.
+     * {@link java.util.Locale#setDefault(java.util.Locale)} overwrites both categories.
+     *
+     * <p>The setting being replaced belongs to the process rather than to the test, so the enclosing
+     * class declares exclusive access through {@link org.junit.jupiter.api.parallel.ResourceLock},
+     * naming both the global resource and the locale. The global one is what actually confers the
+     * guarantee: a lock on the locale alone excludes only tests that claim the locale themselves, and
+     * every byte-parity test in this module claims nothing while depending on the pinned default. The
+     * isolation therefore travels with this code rather than resting on the execution settings
+     * happening to run one test at a time.
      *
      * @param locale the locale to install for the duration of the call
      * @param body   the value to compute under that locale

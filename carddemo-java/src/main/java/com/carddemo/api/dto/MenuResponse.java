@@ -20,123 +20,85 @@ import jakarta.validation.constraints.Size;
 import java.util.List;
 
 /**
- * Immutable response contract for both CardDemo menu screens &mdash; the user main menu, legacy
- * transaction {@code CM00} driven by {@code app/cbl/COMEN01C.cbl}, and the administrative menu,
- * legacy transaction {@code CA00} driven by {@code app/cbl/COADM01C.cbl}.
+ * Immutable response contract for both CardDemo menu screens: the user main menu, legacy transaction
+ * {@code CM00} driven by {@code app/cbl/COMEN01C.cbl}, and the administrative menu, legacy
+ * transaction {@code CA00} driven by {@code app/cbl/COADM01C.cbl}.
  *
- * <p>A single type serves both screens because the two legacy programs are near-identical: their
- * working storage, their key handling, their option-entry sequence and their two screen maps line up
- * statement for statement, and both present the same two title lines from
- * {@code app/cpy/COTTL01Y.cpy} above a numbered list of options and a single message line. Their
- * screen maps are structurally identical too &mdash; {@code app/cpy-bms/COMEN01.CPY} and
- * {@code app/cpy-bms/COADM01.CPY} are both 260 lines with the same field names at the same widths,
- * and {@code app/bms/COMEN01.bms} and {@code app/bms/COADM01.bms} are both 167 lines with the same
- * twelve forty-character option rows, the same two-character option input and the same
- * seventy-eight-character message row. What differs between the two screens is exactly one thing:
- * the catalog of options each one lists.
+ * <p>One type serves both screens because the two legacy programs are near-identical - their working
+ * storage, key handling and option-entry sequence line up statement for statement, and their two
+ * screen maps declare the same field names at the same widths. What differs between the screens is
+ * exactly one thing: the catalog of options each one lists.
  *
  * <p><strong>The two option catalogs are deliberately different shapes, and that asymmetry is
- * contractual.</strong> The user catalog is the group {@code CARDDEMO-MAIN-MENU-OPTIONS} declared at
- * {@code app/cpy/COMEN02Y.cpy} line 19, whose table view at lines 87 to 92 gives each entry four
- * elementary items &mdash; a two-digit number, a thirty-five-character name, an eight-character
- * program name and a one-character user-type code &mdash; for a forty-six-byte entry. The
- * administrative catalog is the group {@code CARDDEMO-ADMIN-MENU-OPTIONS} declared at
- * {@code app/cpy/COADM02Y.cpy} line 19, whose table view at lines 44 to 48 gives each entry only
- * three elementary items, for a forty-five-byte entry: <strong>there is no user-type item in the
- * administrative catalog at all.</strong> {@link UserMenuOption} and {@link AdminMenuOption}
- * therefore have four and three components respectively. They share no supertype, no interface and
- * no common base record, and the administrative shape carries no nullable stand-in for the item its
- * copybook never declared. Unifying them would fabricate a field, and a fabricated field is a
- * feature the legacy system does not have.
+ * contractual.</strong> A user entry declares four elementary items - number, name, program name and
+ * a one-character user-type code - while an administrative entry declares only the first three:
+ * <strong>there is no user-type item in the administrative catalog at all.</strong>
+ * {@link UserMenuOption} and {@link AdminMenuOption} therefore have four and three components. They
+ * share no supertype, no interface and no common base record, and the administrative shape carries no
+ * nullable stand-in for the item its copybook never declared. Unifying them would fabricate a field,
+ * and a fabricated field is a feature the legacy system does not have.
  *
- * <p><strong>Ten user options and four administrative options &mdash; never twelve and nine.</strong>
- * The user count is fixed at ten by {@code CDEMO-MENU-OPT-COUNT} at {@code app/cpy/COMEN02Y.cpy}
- * line 21 and the administrative count at four by {@code CDEMO-ADMIN-OPT-COUNT} at
- * {@code app/cpy/COADM02Y.cpy} line 20, and both programs compare the operator's entry against that
- * count before they index the table. The table views, however, are dimensioned twelve and nine, so
- * two user entries and five administrative entries exist as blank capacity that the counts exclude.
- * That surplus capacity is not part of this contract: this response carries only populated options,
- * this type publishes the two counts and never the two capacities, and no blank option is ever
- * emitted. Iterating capacity instead of count is the single easiest way to render blank rows onto a
- * menu, which is why the capacity numbers appear nowhere below.
+ * <p><strong>Ten user options and four administrative options - never twelve and nine.</strong> Those
+ * two counts are declared in the copybooks and both programs compare the operator's entry against the
+ * count before indexing the table. The table views themselves are dimensioned twelve and nine, so two
+ * user entries and five administrative entries exist as blank capacity the counts exclude. That
+ * surplus is not part of this contract: this response carries only populated options, this type
+ * publishes the two counts and never the two capacities, and no blank option is ever emitted.
+ * Iterating capacity instead of count is the easiest way to render blank rows onto a menu.
  *
- * <p><strong>Option 8 has exactly one label and no role gate.</strong> At
- * {@code app/cpy/COMEN02Y.cpy} the label of user option 8 spans lines 68 to 70, where line 69 is a
- * commented-out alternative and line 70 is the value the compiler actually sees. Only the active
- * value at line 70 exists here. The inactive alternative is neither declared, nor quoted, nor
- * referenced, nor implied, and option 8 carries the same standard user-type code as its nine peers.
- * Reviving that dead comment &mdash; either as a label or as a role restriction on option 8 &mdash;
- * would change who may add a transaction, which is feature expansion rather than migration.
+ * <p><strong>Option 8 has exactly one label and no role gate.</strong> Its copybook label is preceded
+ * by a commented-out alternative; only the active value exists here, and the inactive alternative is
+ * neither declared, quoted, referenced nor implied. Option 8 carries the same standard user-type code
+ * as its nine peers, and reviving that dead comment - as a label or as a role restriction - would
+ * change who may add a transaction, which is feature expansion rather than migration.
  *
- * <p><strong>Every text value crosses this boundary byte for byte.</strong> Nothing here is
- * trimmed, blank-filled, re-cased, re-numbered, re-ordered, canonicalised or re-shaped. Legacy
- * fixed-width fields are space-significant, so leading and trailing spaces are content and are
- * carried exactly as supplied. The option labels arrive in their final display form: the
- * configuration-layer catalog described below already publishes the trimmed label and records the
- * thirty-five-character declared width separately, so this response neither restores the trailing
- * spaces nor removes any. Option order is screen order, taken from the copybook declaration
- * sequence, and is never sorted or re-indexed.
+ * <p><strong>Every text value crosses this boundary byte for byte.</strong> Nothing is trimmed,
+ * blank-filled, re-cased, re-numbered, re-ordered or re-shaped. Legacy fixed-width fields are
+ * space-significant, so leading and trailing spaces are content. Option labels arrive in their final
+ * display form - the configuration-layer catalog already publishes the trimmed label and records the
+ * declared width separately - and option order is screen order, taken from the copybook declaration
+ * sequence, never sorted or re-indexed.
  *
  * <p><strong>Three fixed-width message values exist in this estate and all three must stay
- * separate.</strong> {@code app/cpy/COTTL01Y.cpy} declares three forty-character values, all of
- * which are published below: the first title line at line 19, the <em>active</em> second title line
- * at line 22, and a forty-character acknowledgement at line 24 exposed here as
- * {@link #SCREEN_TITLE_THANK_YOU}. {@code app/cpy/CSMSG01Y.cpy} separately declares two
- * <em>fifty</em>-character common messages at its lines 19 and 21. The acknowledgement in the title
- * copybook and the acknowledgement in the common-message copybook look interchangeable and are not:
- * they carry different product tokens and different declared widths. The two fifty-character values
- * are deliberately <em>not</em> declared in this file &mdash; they belong to the message catalog in
- * the service layer, and keeping them out of this type makes confusing them with
- * {@link #SCREEN_TITLE_THANK_YOU} structurally impossible. This response's {@link #message()}
- * component simply carries whichever of them applies, at its full {@link #COMMON_MESSAGE_WIDTH}
- * characters and untouched.
- *
- * <p><strong>The fifty-versus-forty-nine reconciliation.</strong> Each of the two common messages is
- * forty-nine characters as written in its copybook literal, yet each occupies a fifty-character
- * field, so one trailing space completes it and the stored value is exactly fifty characters. A
- * caller must supply the fifty-character form; measuring the literal instead of the field is how a
- * byte-equivalence comparison silently loses its last character.
+ * separate.</strong> The title copybook declares three forty-character values, all published below:
+ * the two title lines and a forty-character acknowledgement exposed as
+ * {@link #SCREEN_TITLE_THANK_YOU}. The common-message copybook separately declares two
+ * <em>fifty</em>-character messages. The acknowledgement in the title copybook and the one in the
+ * common-message copybook look interchangeable and are not: they carry different product tokens at
+ * different declared widths. The two fifty-character values are deliberately not declared in this
+ * file - they belong to the message catalog in the service layer, and keeping them out makes
+ * confusing them with {@link #SCREEN_TITLE_THANK_YOU} structurally impossible. Each of those two is
+ * forty-nine characters as written in its copybook literal yet occupies a fifty-character field, so
+ * one trailing space completes it and a caller must supply the fifty-character form; measuring the
+ * literal instead of the field is how a byte-equivalence comparison silently loses its last
+ * character.
  *
  * <p><strong>What the message line carries.</strong> Both programs hold the outgoing message in an
- * eighty-character working-storage field declared at {@code app/cbl/COMEN01C.cbl} line 38 and
- * {@code app/cbl/COADM01C.cbl} line 38, then place it into a seventy-eight-character screen field
- * &mdash; {@code ERRMSGO} at {@code app/cpy-bms/COMEN01.CPY} line 260 and
- * {@code app/cpy-bms/COADM01.CPY} line 260, defined at that width in
- * {@code app/bms/COMEN01.bms} line 154 and {@code app/bms/COADM01.bms} line 154. Both widths are
- * published below, because the bound that matters to a caller is the working-storage width while the
- * width that matters to a byte comparison against the screen is the narrower one. Four texts reach
- * that line from the menu programs themselves. The thirty-seven-character rejection
- * {@code "Please enter a valid option number..."} is emitted by both programs at the same line
- * number &mdash; {@code app/cbl/COMEN01C.cbl} line 131 and {@code app/cbl/COADM01C.cbl} line 131
- * &mdash; with a lower-case verb, exactly three dots and no space before them. A
- * thirty-three-character access-denied text is emitted only by the user program, at
- * {@code app/cbl/COMEN01C.cbl} line 140, as part of the user-type gate that spans
- * {@code app/cbl/COMEN01C.cbl} lines 136 to 143 and raises its flag at
- * {@code app/cbl/COMEN01C.cbl} line 138; that text ends in a significant trailing space, and the
- * administrative program has no counterpart to it. The remaining two are the divergent
- * acknowledgements described next.
+ * eighty-character working-storage field and then place it into a seventy-eight-character screen
+ * field. Both widths are published below, because the bound that matters to a caller is the
+ * working-storage width while the width that matters to a byte comparison against the screen is the
+ * narrower one. Four texts reach that line from the menu programs: a thirty-seven-character rejection
+ * emitted by both, with a lower-case verb, exactly three dots and no space before them; a
+ * thirty-three-character access-denied text emitted only by the user program as part of its user-type
+ * gate, ending in a significant trailing space and having no administrative counterpart; and the two
+ * divergent acknowledgements described next.
  *
- * <p><strong>The coming-soon divergence &mdash; two different texts that must never be merged.</strong>
- * When the option a caller selected names a placeholder program, both programs assemble an
- * acknowledgement from a twelve-character prefix and an eighteen-character suffix,
- * {@code "is coming soon ..."}. The user program, at {@code app/cbl/COMEN01C.cbl} lines 159 to 162,
- * inserts the selected option's name between them and takes only the name's leading word, so the
- * rendered result runs the word straight into the suffix with no separating space &mdash; option 1
- * renders as {@code "This option Accountis coming soon ..."}. The administrative program, at
- * {@code app/cbl/COADM01C.cbl} lines 149 to 152, uses the identical construction with the name
- * operand commented out, so its rendered result is {@code "This option is coming soon ..."}. The
- * missing space in the first is a source defect and is nonetheless the observable contract, so the
- * two texts are two distinct behaviours and are never reconciled into one. Assembling either text is
- * the menu service's work; this response only has to carry the result unaltered, which it does
- * because it applies no transformation to {@link #message()} whatsoever.
+ * <p><strong>The coming-soon divergence - two different texts that must never be merged.</strong>
+ * When the selected option names a placeholder program, both programs assemble an acknowledgement
+ * from a twelve-character prefix and an eighteen-character suffix. The user program inserts the
+ * selected option's name between them and takes only the name's leading word, so the rendered result
+ * runs that word straight into the suffix <em>with no separating space</em>. The administrative
+ * program uses the identical construction with the name operand commented out, so its rendered result
+ * carries no name at all. The missing space in the first is a source defect and is nonetheless the
+ * observable contract, so the two texts are two distinct behaviours and are never reconciled into
+ * one. Assembling either is the menu service's work; this response carries the result unaltered.
  *
  * <p><strong>Deliberate duplication with the configuration-layer option catalog.</strong> The
- * configuration layer holds a catalog bean that declares its own pair of nested option records with
- * these same two shapes. That duplication is intentional and must not be removed. This package sits
- * above the configuration layer in the dependency direction, so importing the catalog here would
- * invert the layering and drag a framework-managed singleton into a data-transfer type. The menu
- * service is the component that bridges the catalog to this response. The canonical lists published
- * below therefore exist independently, so that this response contract can be read, asserted against
+ * configuration layer holds a catalog bean declaring its own pair of nested option records with these
+ * same two shapes, and that duplication must not be removed: this package sits above the configuration
+ * layer in the dependency direction, so importing the catalog here would invert the layering and drag
+ * a framework-managed singleton into a data-transfer type. The menu service bridges the two, and the
+ * canonical lists published below exist independently so this contract can be read, asserted against
  * and serialized without reaching into another layer for the text of its own screens.
  *
  * <p><strong>No behaviour lives here.</strong> This type does not normalise the operator's entry
@@ -150,7 +112,7 @@ import java.util.List;
  * has passed. It does not evaluate the user-type gate, does not assemble any message and does not
  * resolve or execute a route. It reads nothing from disk, parses no fixed-width record and never
  * reads a legacy source artefact at run time. It holds no route table, no route enumeration and no
- * dispatch method: {@link #route()} is an opaque declarative string that the navigation service
+ * dispatch method: {@link #nextRoute()} is an opaque declarative string that the navigation service
  * chooses and the client acts on, because the estate's twenty-five program-to-program transfers and
  * nineteen re-arming returns all become route values in a response body rather than server-side
  * forwarding.
@@ -159,7 +121,48 @@ import java.util.List;
  * attribute bytes, cursor placement, terminal highlighting and a twelve-byte terminal-area prefix.
  * None of that appears here. {@link #messageSeverity()} records only the semantic intent the legacy
  * highlighting expressed, never the highlighting itself, and {@link #focusScreenFieldId()} is an
- * opaque label rather than a coordinate.
+ * opaque label rather than a coordinate at most {@link #SCREEN_FIELD_ID_WIDTH} characters wide, which
+ * is the widest symbolic field name either mapset declares.
+ *
+ * <p><strong>The whole common header is published, and its widths are the map's own.</strong>
+ * Both symbolic maps declare the same six-item header before their option rows &mdash;
+ * {@code TRNNAME}, {@code TITLE01}, {@code CURDATE}, {@code PGMNAME}, {@code TITLE02} and
+ * {@code CURTIME} &mdash; and both programs write all six on every send, in the header paragraph at
+ * {@code app/cbl/COMEN01C.cbl} lines 212 to 231 and {@code app/cbl/COADM01C.cbl} lines 202 to 221. The
+ * first six components of this record are those six items in map declaration order, so a client can
+ * redisplay the screen exactly. Two of them differ between the two menus and are therefore components
+ * rather than constants: the transaction identifier and the program name, which the two factory methods
+ * fill from {@link #USER_MENU_TRANSACTION_NAME} and {@link #USER_MENU_PROGRAM_NAME} or from
+ * {@link #ADMIN_MENU_TRANSACTION_NAME} and {@link #ADMIN_MENU_PROGRAM_NAME}. Every one of the six
+ * crosses as text at its measured width, never as a date, time or numeric type, so a rendered leading
+ * zero survives. <strong>The rendered time is eight characters here.</strong> The sign-on map is the
+ * one place in the estate where that item is nine characters wide, so
+ * {@link #CURRENT_TIME_WIDTH} and the sign-on contract's own constant are deliberately separate
+ * figures and must never be folded into one.
+ *
+ * <p><strong>Dispatch and authorization metadata stay server-side.</strong> The two option table views
+ * each declare a target program name, and the user table view additionally declares a one-character
+ * user-type code. Neither is published on the wire by this contract. Both mapsets render an option row
+ * as its number and its label only, and the operator selects a row by typing its number, so the program
+ * name is dispatch metadata and the user-type code is an authorization input &mdash; publishing either
+ * would tell a client which internal program answers a row and which role gates it, and would invite a
+ * client to send back a target of its own choosing. The requirement that every copybook field be mapped
+ * is discharged where those fields are actually used, in the configuration-layer catalog
+ * {@code com.carddemo.config.MenuOptionCatalog}, which declares both option shapes in full with all
+ * fourteen program names and the shared user-type code. That duplication is deliberate: this package
+ * may not depend on the configuration layer, so the wire shape and the server-side shape are declared
+ * independently and only the wire shape is narrowed.
+ *
+ * <p><strong>Exactly one menu, at exactly its declared size.</strong> Three invariants are enforced on
+ * construction rather than left to a caller. Precisely one of the two option collections is present, so
+ * a response can be neither both menus at once nor neither of them; a present user collection holds
+ * exactly {@link #USER_MENU_OPTION_COUNT} entries; and a present administrative collection holds
+ * exactly {@link #ADMIN_MENU_OPTION_COUNT}. Those two figures are declared by the copybooks themselves
+ * &mdash; the occurrence count at {@code app/cpy/COMEN02Y.cpy} line 21 is ten and the one at
+ * {@code app/cpy/COADM02Y.cpy} line 20 is four &mdash; and both programs rebuild their whole table on
+ * every send, including every redisplay after a rejected entry, so a shorter collection is not a
+ * legitimate screen state that this contract would otherwise have to carry. Enforcing the figures here
+ * is what makes a partially-rendered or dual-menu payload unrepresentable rather than merely unusual.
  *
  * <p><strong>Provenance.</strong> Every citation above resolves against commit
  * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} of the legacy repository, which is read-only
@@ -183,29 +186,50 @@ import java.util.List;
  * comment is a copy-and-paste defect and the data item is authoritative, so this file follows the
  * data item: the ten options below are the user menu, whatever the copybook comment says.
  *
- * @param screenTitleLine1   the first screen title line, from {@code CCDA-TITLE01} at
+ * @param transactionName    the transaction identifier the screen echoes, from {@code WS-TRANID} at
+ *                           {@code app/cbl/COMEN01C.cbl} line 37 or {@code app/cbl/COADM01C.cbl} line
+ *                           37, written into {@code TRNNAME} by line 218 or line 208 respectively. At
+ *                           most {@link #TRANSACTION_NAME_WIDTH} characters, and one of
+ *                           {@link #USER_MENU_TRANSACTION_NAME} or
+ *                           {@link #ADMIN_MENU_TRANSACTION_NAME}. May be {@code null}.
+ * @param title01            the first screen title line, from {@code CCDA-TITLE01} at
  *                           {@code app/cpy/COTTL01Y.cpy} line 19, at exactly
  *                           {@link #SCREEN_TITLE_WIDTH} characters with its leading and trailing
  *                           spaces intact. Both menu screens show the same value; see
  *                           {@link #SCREEN_TITLE_LINE_1}. May be {@code null}.
- * @param screenTitleLine2   the second screen title line, from the <em>active</em> value of
+ * @param currentDate        the current date exactly as the screen rendered it, assembled by
+ *                           {@code app/cbl/COMEN01C.cbl} lines 221 to 226 and written into
+ *                           {@code CURDATE}. {@link #CURRENT_DATE_WIDTH} characters of text and never
+ *                           a date type, so the rendered form survives unchanged. May be
+ *                           {@code null}.
+ * @param programName        the program name the screen echoes, from {@code WS-PGMNAME} at line 36 of
+ *                           either program, written into {@code PGMNAME} by line 219 or line 209. At
+ *                           most {@link #PROGRAM_NAME_WIDTH} characters, and one of
+ *                           {@link #USER_MENU_PROGRAM_NAME} or {@link #ADMIN_MENU_PROGRAM_NAME}. This
+ *                           is the responding program's <em>own</em> identity and never a
+ *                           destination. May be {@code null}.
+ * @param title02            the second screen title line, from the <em>active</em> value of
  *                           {@code CCDA-TITLE02} at {@code app/cpy/COTTL01Y.cpy} line 22, at exactly
  *                           {@link #SCREEN_TITLE_WIDTH} characters. The alternative value commented
  *                           out at line 21 of that copybook stays inactive and is not published
  *                           anywhere in this type; see {@link #SCREEN_TITLE_LINE_2}. May be
  *                           {@code null}.
+ * @param currentTime        the current time exactly as the screen rendered it, assembled by
+ *                           {@code app/cbl/COMEN01C.cbl} lines 227 to 231 and written into
+ *                           {@code CURTIME}. {@link #CURRENT_TIME_WIDTH} characters of text &mdash;
+ *                           eight here, not the nine the sign-on map uses. May be {@code null}.
  * @param userMenuOptions    the populated user-menu options in copybook order, or {@code null} when
- *                           this response is not a user-menu response. Never blank-entry filler and
- *                           never dimensioned to the table capacity; see
- *                           {@link #CANONICAL_USER_MENU_OPTIONS} and
- *                           {@link #USER_MENU_OPTION_COUNT}. Defensively copied on construction and
- *                           always immutable when present.
+ *                           this response is an administrative-menu response. Never blank-entry
+ *                           filler and never dimensioned to the table capacity; see
+ *                           {@link #CANONICAL_USER_MENU_OPTIONS}. When present it holds exactly
+ *                           {@link #USER_MENU_OPTION_COUNT} entries, which construction enforces.
+ *                           Defensively copied on construction and always immutable when present.
  * @param adminMenuOptions   the populated administrative-menu options in copybook order, or
- *                           {@code null} when this response is not an administrative-menu response.
- *                           Exactly one of the two option components is populated on any real
- *                           response; see {@link #CANONICAL_ADMIN_MENU_OPTIONS} and
- *                           {@link #ADMIN_MENU_OPTION_COUNT}. Defensively copied on construction and
- *                           always immutable when present.
+ *                           {@code null} when this response is a user-menu response. Exactly one of
+ *                           the two option components is populated on every response, which
+ *                           construction enforces; see {@link #CANONICAL_ADMIN_MENU_OPTIONS}. When
+ *                           present it holds exactly {@link #ADMIN_MENU_OPTION_COUNT} entries.
+ *                           Defensively copied on construction and always immutable when present.
  * @param selectedOption     the operator's option entry echoed back, from {@code OPTIONO} at
  *                           {@code app/cpy-bms/COMEN01.CPY} line 254 and
  *                           {@code app/cpy-bms/COADM01.CPY} line 254, at most
@@ -230,223 +254,214 @@ import java.util.List;
  * @param focusScreenFieldId the legacy screen field identifier that input focus belongs on, or
  *                           {@code null} when the response offers no hint. An opaque label only: it
  *                           is not a coordinate, not an attribute byte and not a cursor position,
- *                           and a client may ignore it.
- * @param route              the declarative next route, or {@code null} when the response nominates
+ *                           and a client may ignore it. At most {@link #SCREEN_FIELD_ID_WIDTH}
+ *                           characters, the widest symbolic field name either mapset declares.
+ * @param nextRoute          the declarative next route, or {@code null} when the response nominates
  *                           none. Opaque to this type, which neither resolves nor performs it.
  * @param navigationContext  the client-echoed navigation state to send back on the next call, or
- *                           {@code null}. Echoed request state and never a server session; see
- *                           {@link NavigationContext}, the typed form of the communication area
- *                           declared at {@code app/cpy/COCOM01Y.cpy} line 19 and included by both
- *                           menu programs.
+ *                           {@code null}. Echoed request state and never a server session.
  * @since 1.0.0
  */
 public record MenuResponse(
-        @Size(max = MenuResponse.SCREEN_TITLE_WIDTH) String screenTitleLine1,
-        @Size(max = MenuResponse.SCREEN_TITLE_WIDTH) String screenTitleLine2,
+        @Size(max = MenuResponse.TRANSACTION_NAME_WIDTH) String transactionName,
+        @Size(max = MenuResponse.SCREEN_TITLE_WIDTH) String title01,
+        @Size(max = MenuResponse.CURRENT_DATE_WIDTH) String currentDate,
+        @Size(max = MenuResponse.PROGRAM_NAME_WIDTH) String programName,
+        @Size(max = MenuResponse.SCREEN_TITLE_WIDTH) String title02,
+        @Size(max = MenuResponse.CURRENT_TIME_WIDTH) String currentTime,
         List<UserMenuOption> userMenuOptions,
         List<AdminMenuOption> adminMenuOptions,
         @Size(max = MenuResponse.SELECTED_OPTION_WIDTH) String selectedOption,
         @Size(max = MenuResponse.MESSAGE_WIDTH) String message,
         MessageSeverity messageSeverity,
         boolean errorFlag,
-        String focusScreenFieldId,
-        String route,
+        @Size(max = MenuResponse.SCREEN_FIELD_ID_WIDTH) String focusScreenFieldId,
+        String nextRoute,
         NavigationContext navigationContext) {
 
-    /**
-     * Number of digits in a menu option number: 2.
-     *
-     * <p>The declared width of {@code CDEMO-MENU-OPT-NUM} in the table view at
-     * {@code app/cpy/COMEN02Y.cpy} lines 87 to 92 and of {@code CDEMO-ADMIN-OPT-NUM} in the table
-     * view at {@code app/cpy/COADM02Y.cpy} lines 44 to 48. Published as provenance for the option
-     * number's external width; the number itself is carried as an {@code int} on both option records
-     * because it is a genuine cardinal that the operator types and the program compares
-     * arithmetically, not an identifier with contractual leading zeros.</p>
-     */
     public static final int OPTION_NUMBER_WIDTH = 2;
 
-    /**
-     * Declared width of a menu option label: 35 characters.
-     *
-     * <p>The width of {@code CDEMO-MENU-OPT-NAME} at {@code app/cpy/COMEN02Y.cpy} lines 87 to 92 and
-     * of {@code CDEMO-ADMIN-OPT-NAME} at {@code app/cpy/COADM02Y.cpy} lines 44 to 48, and the width
-     * every one of the fourteen copybook label literals occupies. It is published as provenance and
-     * as the upper bound on the label component of both option records. It is <em>not</em> a target
-     * width: labels reach this response already in display form and this type widens nothing and
-     * shortens nothing.</p>
-     */
     public static final int OPTION_LABEL_WIDTH = 35;
 
     /**
-     * Declared width of the program name an option targets: 8 characters.
+     * Declared width of the transaction identifier the screen displays: 4 characters.
      *
-     * <p>The width of {@code CDEMO-MENU-OPT-PGMNAME} at {@code app/cpy/COMEN02Y.cpy} lines 87 to 92
-     * and of {@code CDEMO-ADMIN-OPT-PGMNAME} at {@code app/cpy/COADM02Y.cpy} lines 44 to 48. All
-     * fourteen program names in the two canonical lists below occupy exactly this width.</p>
+     * <p>The width of {@code TRNNAMEI} at {@code app/cpy-bms/COMEN01.CPY} line 24 and of the
+     * identically declared item at the same line of {@code app/cpy-bms/COADM01.CPY}, echoed back as
+     * {@code TRNNAMEO}. Both programs move their own four-character transaction identifier into that
+     * field while assembling the header, at {@code app/cbl/COMEN01C.cbl} line 218 and
+     * {@code app/cbl/COADM01C.cbl} line 208.</p>
      */
-    public static final int OPTION_PROGRAM_NAME_WIDTH = 8;
+    public static final int TRANSACTION_NAME_WIDTH = 4;
 
     /**
-     * Declared width of the user-type code on a <em>user</em> menu option: 1 character.
+     * Declared width of the program name the screen displays: 8 characters.
      *
-     * <p>The width of {@code CDEMO-MENU-OPT-USRTYPE}, the fourth elementary item of the user table
-     * view at {@code app/cpy/COMEN02Y.cpy} lines 87 to 92. There is deliberately no administrative
-     * counterpart to this constant, because the administrative table view at
-     * {@code app/cpy/COADM02Y.cpy} lines 44 to 48 declares no such item.</p>
+     * <p>The width of {@code PGMNAMEI} at {@code app/cpy-bms/COMEN01.CPY} line 42 and at the same
+     * line of {@code app/cpy-bms/COADM01.CPY}, echoed back as {@code PGMNAMEO}. Each program moves
+     * its own name into that field at {@code app/cbl/COMEN01C.cbl} line 219 and
+     * {@code app/cbl/COADM01C.cbl} line 209.</p>
+     *
+     * <p>This is the width of the <em>displayed</em> program name in the screen header. It is also
+     * the width the two menu copybooks give the program name of an individual option row, but that
+     * item is a different field with a different owner and is not published by this contract at all;
+     * see {@link UserMenuOption} for why dispatch metadata stays server-side.</p>
      */
-    public static final int USER_OPTION_USER_TYPE_WIDTH = 1;
+    public static final int PROGRAM_NAME_WIDTH = 8;
 
     /**
-     * Width of the echoed option entry: 2 characters.
+     * Declared width of the rendered current date: 8 characters.
      *
-     * <p>The width of the {@code OPTION} screen field, declared as {@code OPTIONI} at
-     * {@code app/cpy-bms/COMEN01.CPY} line 132 and {@code app/cpy-bms/COADM01.CPY} line 132, echoed
-     * back as {@code OPTIONO} at line 254 of each, and defined at that length in
-     * {@code app/bms/COMEN01.bms} line 145 and {@code app/bms/COADM01.bms} line 145.</p>
+     * <p>The width of {@code CURDATEI} at {@code app/cpy-bms/COMEN01.CPY} line 36 and at the same
+     * line of {@code app/cpy-bms/COADM01.CPY}, echoed back as {@code CURDATEO}. Both programs
+     * assemble the value from the system date at {@code app/cbl/COMEN01C.cbl} lines 214 and 221 to
+     * 226 and {@code app/cbl/COADM01C.cbl} lines 204 and 211 to 216, and this contract carries the
+     * assembled text without re-formatting it.</p>
+     */
+    public static final int CURRENT_DATE_WIDTH = 8;
+
+    /**
+     * Declared width of the rendered current time: 8 characters.
      *
-     * <p>Declared separately from {@link #OPTION_NUMBER_WIDTH} even though the two values are equal.
-     * They are different fields with different owners: this one is a screen field the operator types
-     * into and the program echoes back as text, that one is an item of a copybook table. Neither is
-     * derived from the other and a change to one must not silently change the other.</p>
+     * <p>The width of {@code CURTIMEI} at {@code app/cpy-bms/COMEN01.CPY} line 54 and at the same
+     * line of {@code app/cpy-bms/COADM01.CPY}, echoed back as {@code CURTIMEO}. Both programs
+     * assemble the value at {@code app/cbl/COMEN01C.cbl} lines 227 to 231 and
+     * {@code app/cbl/COADM01C.cbl} lines 217 to 221.</p>
+     *
+     * <p><strong>Eight, not nine.</strong> The sign-on mapset is the one place in the estate where
+     * this item is nine characters wide, so the sign-on contract declares its own figure and the two
+     * must never be folded into a single shared constant. Widening this one to match it would put a
+     * character on the menu screens that neither menu map has room for.</p>
+     */
+    public static final int CURRENT_TIME_WIDTH = 8;
+
+    /**
+     * Upper bound on the opaque screen field identifier focus may be nominated for: 7 characters.
+     *
+     * <p>The widest symbolic field name either menu mapset declares. Every field name in
+     * {@code app/cpy-bms/COMEN01.CPY} and {@code app/cpy-bms/COADM01.CPY} fits within it, and the
+     * same figure bounds the equivalent identifier on every other response contract in this package,
+     * so a client that carries one identifier from one screen to the next never has to widen its
+     * own field.</p>
+     *
+     * <p>A measurement and not a vocabulary: this contract does not enumerate the admissible
+     * identifiers, because the set differs by screen and the identifier is advisory in any case.</p>
+     */
+    public static final int SCREEN_FIELD_ID_WIDTH = 7;
+
+    /**
+     * Width of the echoed option entry: 2 characters. Declared separately from
+     * {@link #OPTION_NUMBER_WIDTH} even though the two values are equal: this one is a screen field
+     * the operator types into and the program echoes back as text, that one is an item of a copybook
+     * table. Neither is derived from the other.
      */
     public static final int SELECTED_OPTION_WIDTH = 2;
 
-    /**
-     * Declared width of each screen title line: 40 characters.
-     *
-     * <p>The width of all three elementary items of {@code CCDA-SCREEN-TITLE} in
-     * {@code app/cpy/COTTL01Y.cpy}, and of the {@code TITLE01} and {@code TITLE02} screen fields at
-     * {@code app/cpy-bms/COMEN01.CPY} lines 30 and 48, at the same lines of
-     * {@code app/cpy-bms/COADM01.CPY}, and in {@code app/bms/COMEN01.bms} lines 38 and 61 with
-     * {@code app/bms/COADM01.bms} matching. Every value published below at this width is exactly this
-     * many characters, leading and trailing spaces included.</p>
-     */
     public static final int SCREEN_TITLE_WIDTH = 40;
 
     /**
-     * Declared width of the message the menu programs hold before sending it: 80 characters.
-     *
-     * <p>The width of the outgoing message field in the working storage of both programs, at
-     * {@code app/cbl/COMEN01C.cbl} line 38 and {@code app/cbl/COADM01C.cbl} line 38. This is the
-     * bound applied to {@link #message()}, because it is the widest value either program can hold and
-     * therefore the widest a caller can legitimately supply.</p>
+     * Width of the working-storage field the menu programs hold the outgoing message in: 80
+     * characters. This is the bound a caller is measured against.
      */
     public static final int MESSAGE_WIDTH = 80;
 
     /**
-     * Width of the screen field the message is rendered into: 78 characters.
-     *
-     * <p>The width of {@code ERRMSGI} at {@code app/cpy-bms/COMEN01.CPY} line 138 and of
-     * {@code ERRMSGO} at line 260, matched line for line by {@code app/cpy-bms/COADM01.CPY}, and
-     * defined at that length in {@code app/bms/COMEN01.bms} line 154 and
-     * {@code app/bms/COADM01.bms} line 154.</p>
-     *
-     * <p>Recorded alongside {@link #MESSAGE_WIDTH} because the two genuinely differ and both matter:
-     * a caller is bounded by the working-storage width, while a byte comparison against what the
-     * legacy screen displayed is bounded by this narrower one. This type applies neither width as a
-     * transformation &mdash; it never shortens a message to fit.</p>
+     * Width of the screen field the message is rendered into: 78 characters. Recorded alongside
+     * {@link #MESSAGE_WIDTH} because the two genuinely differ and both matter - a byte comparison
+     * against what the legacy screen displayed is bounded by this narrower one. Neither width is
+     * applied as a transformation: this type never shortens a message to fit.
      */
     public static final int SCREEN_MESSAGE_FIELD_WIDTH = 78;
 
     /**
      * Declared width of the two common messages this response's message line may carry: 50
-     * characters.
+     * characters. Each literal is written as forty-nine characters and occupies a fifty-character
+     * field, so one trailing space completes it and a caller must supply that fifty-character form.
      *
-     * <p>The width of both elementary items of {@code CCDA-COMMON-MESSAGES} in
-     * {@code app/cpy/CSMSG01Y.cpy}, whose literals appear at its lines 19 and 21. Each literal is
-     * written as forty-nine characters and occupies a fifty-character field, so one trailing space
-     * completes it and the stored value is exactly fifty characters. A caller must supply that
-     * fifty-character form.</p>
-     *
-     * <p>The two values themselves are deliberately absent from this file: they belong to the message
-     * catalog in the service layer. Only their width is recorded here, and only so that the
-     * fifty-character acknowledgement can never be mistaken for the forty-character
-     * {@link #SCREEN_TITLE_THANK_YOU} below, which is a different text at a different width.</p>
+     * <p>The two values themselves are deliberately absent from this file - they belong to the message
+     * catalog in the service layer. Only their width is recorded, and only so that the fifty-character
+     * acknowledgement can never be mistaken for the forty-character {@link #SCREEN_TITLE_THANK_YOU}
+     * below, which is a different text at a different width.</p>
      */
     public static final int COMMON_MESSAGE_WIDTH = 50;
 
-    /**
-     * Number of populated user-menu options: 10.
-     *
-     * <p>The value of {@code CDEMO-MENU-OPT-COUNT} at {@code app/cpy/COMEN02Y.cpy} line 21, which is
-     * the count both the legacy program and this contract honour. The table view at lines 87 to 92 of
-     * the same copybook is dimensioned larger, and that surplus is blank capacity rather than
-     * content: it is neither published here nor ever emitted.</p>
-     */
+    /** Number of populated user-menu options: 10. A count, never the larger table capacity. */
     public static final int USER_MENU_OPTION_COUNT = 10;
 
-    /**
-     * Number of populated administrative-menu options: 4.
-     *
-     * <p>The value of {@code CDEMO-ADMIN-OPT-COUNT} at {@code app/cpy/COADM02Y.cpy} line 20. As with
-     * the user menu, the table view at lines 44 to 48 is dimensioned larger and that surplus is blank
-     * capacity that this contract excludes.</p>
-     */
+    /** Number of populated administrative-menu options: 4. A count, never the table capacity. */
     public static final int ADMIN_MENU_OPTION_COUNT = 4;
 
     /**
-     * The one-character standard user-type code carried by every user-menu option: {@code "U"}.
+     * The transaction identifier the <em>user</em> menu screen displays: {@code "CM00"}.
      *
-     * <p>The literal value of the fourth item of all ten entries of {@code CDEMO-MENU-OPTIONS-DATA},
-     * declared across {@code app/cpy/COMEN02Y.cpy} lines 25 to 84. All ten carry this same code
-     * &mdash; <em>including option 8</em>, whose inactive commented-out label at line 69 of that
-     * copybook might suggest otherwise and does not change the code the compiler sees at line 72.</p>
-     *
-     * <p>Published as the raw code rather than as a domain enumeration constant, so this
-     * data-transfer type stays free of any dependency on the domain layer and an undeclared code
-     * arriving from a caller survives the round trip untranslated. The meaning of the code is decided
-     * where the gate is evaluated, which is the menu service, not here.</p>
+     * <p>The value of {@code WS-TRANID} at {@code app/cbl/COMEN01C.cbl} line 37, moved into the
+     * header's transaction field at line 218 of the same program. Exactly
+     * {@link #TRANSACTION_NAME_WIDTH} characters.</p>
      */
-    public static final String STANDARD_USER_TYPE_CODE = "U";
+    public static final String USER_MENU_TRANSACTION_NAME = "CM00";
 
     /**
-     * The first screen title line at its full {@link #SCREEN_TITLE_WIDTH} characters.
+     * The program name the <em>user</em> menu screen displays: {@code "COMEN01C"}.
      *
-     * <p>The value of {@code CCDA-TITLE01} at {@code app/cpy/COTTL01Y.cpy} line 19. Both the six
-     * leading spaces and the seven trailing spaces are content: the legacy value is centred within
-     * its field and the surrounding spaces are what centre it, so a comparison that discards them
-     * compares a different value.</p>
+     * <p>The value of {@code WS-PGMNAME} at {@code app/cbl/COMEN01C.cbl} line 36, moved into the
+     * header's program field at line 219 of the same program. Exactly {@link #PROGRAM_NAME_WIDTH}
+     * characters.</p>
+     */
+    public static final String USER_MENU_PROGRAM_NAME = "COMEN01C";
+
+    /**
+     * The transaction identifier the <em>administrative</em> menu screen displays: {@code "CA00"}.
      *
-     * <p>Written out in full rather than assembled from a shorter literal and a space-producing
-     * helper, so that what this constant contains is visible at the point of declaration and nothing
-     * computes it.</p>
+     * <p>The value of {@code WS-TRANID} at {@code app/cbl/COADM01C.cbl} line 37, moved into the
+     * header's transaction field at line 208 of the same program. Exactly
+     * {@link #TRANSACTION_NAME_WIDTH} characters.</p>
+     *
+     * <p>Declared separately from {@link #USER_MENU_TRANSACTION_NAME} because the two menus are two
+     * transactions: the header identifies which one produced the screen, so a shared value would
+     * misreport it on one of them.</p>
+     */
+    public static final String ADMIN_MENU_TRANSACTION_NAME = "CA00";
+
+    /**
+     * The program name the <em>administrative</em> menu screen displays: {@code "COADM01C"}.
+     *
+     * <p>The value of {@code WS-PGMNAME} at {@code app/cbl/COADM01C.cbl} line 36, moved into the
+     * header's program field at line 209 of the same program. Exactly {@link #PROGRAM_NAME_WIDTH}
+     * characters, and distinct from {@link #USER_MENU_PROGRAM_NAME} for the same reason.</p>
+     */
+    public static final String ADMIN_MENU_PROGRAM_NAME = "COADM01C";
+
+    /**
+     * The first screen title line at its full declared width. The six leading and seven trailing
+     * spaces are content: the legacy value is centred within its field and those spaces are what
+     * centre it, so a comparison that discards them compares a different value. Written out in full
+     * rather than assembled from a shorter literal, so nothing computes it.
      */
     public static final String SCREEN_TITLE_LINE_1 = "      AWS Mainframe Modernization       ";
 
     /**
-     * The second screen title line at its full {@link #SCREEN_TITLE_WIDTH} characters.
-     *
-     * <p>The <em>active</em> value of {@code CCDA-TITLE02}, at {@code app/cpy/COTTL01Y.cpy} line 22.
-     * Line 21 of that copybook holds an alternative value that is commented out; it is inactive in
-     * the legacy source, it is therefore not the screen contract, and it is deliberately declared
-     * nowhere in this file. Reviving it would change what every menu screen displays.</p>
-     *
-     * <p>The fourteen leading and eighteen trailing spaces are content, for the reason given on
-     * {@link #SCREEN_TITLE_LINE_1}.</p>
+     * The second screen title line at its full declared width - the <em>active</em> copybook value.
+     * The alternative commented out beside it is inactive in the legacy source, is therefore not the
+     * screen contract, and is deliberately declared nowhere in this file. Its fourteen leading and
+     * eighteen trailing spaces are content, as for {@link #SCREEN_TITLE_LINE_1}.
      */
     public static final String SCREEN_TITLE_LINE_2 = "              CardDemo                  ";
 
     /**
-     * The forty-character acknowledgement declared in the <em>title</em> copybook, at its full
-     * {@link #SCREEN_TITLE_WIDTH} characters.
+     * The forty-character acknowledgement declared in the <em>title</em> copybook, at its full declared
+     * width and ending in one significant trailing space.
      *
-     * <p>The value of {@code CCDA-THANK-YOU} at {@code app/cpy/COTTL01Y.cpy} line 24, ending in one
-     * significant trailing space.</p>
-     *
-     * <p><strong>This is not the acknowledgement from the common-message copybook.</strong>
-     * {@code app/cpy/CSMSG01Y.cpy} line 19 declares a similar-looking acknowledgement that differs in
-     * two ways at once: it names the product differently and it occupies a
-     * {@link #COMMON_MESSAGE_WIDTH}-character field rather than a
-     * {@link #SCREEN_TITLE_WIDTH}-character one. The two are separate values with separate owners and
-     * merging them, or substituting one for the other, is a byte-equivalence failure. The constant
-     * name here says {@code SCREEN_TITLE} precisely so that the distinction survives a careless
-     * edit.</p>
+     * <p><strong>This is not the acknowledgement from the common-message copybook.</strong> That one
+     * differs in two ways at once: it names the product differently and it occupies a
+     * {@link #COMMON_MESSAGE_WIDTH}-character field rather than a forty-character one. The two are
+     * separate values with separate owners, and merging them or substituting one for the other is a
+     * byte-equivalence failure. This constant's name says {@code SCREEN_TITLE} precisely so the
+     * distinction survives a careless edit.</p>
      */
     public static final String SCREEN_TITLE_THANK_YOU = "Thank you for using CCDA application... ";
 
     /**
-     * The ten populated user-menu options, in the order {@code CDEMO-MENU-OPTIONS-DATA} declares them
-     * across {@code app/cpy/COMEN02Y.cpy} lines 25 to 84.
+     * The ten populated user-menu options, in copybook declaration order.
      *
      * <p>The order is contractual, not incidental: the legacy screen renders the rows in table order
      * and the operator selects a row by the number printed beside it, so this list is never sorted,
@@ -456,23 +471,28 @@ public record MenuResponse(
      *
      * <p>Labels appear in display form, matching the trimmed label the configuration-layer catalog
      * publishes, with {@link #OPTION_LABEL_WIDTH} recorded above as the declared width they occupy in
-     * the copybook. Option 8 carries the active label from line 70 of the copybook and the same
-     * {@link #STANDARD_USER_TYPE_CODE} as every other entry.</p>
+     * the copybook. Option 8 carries the active label from line 70 of the copybook; the inactive
+     * commented-out alternative at line 69 is not the screen contract and appears nowhere here.</p>
+     *
+     * <p>Each entry carries only what the screen renders &mdash; the number and the label. The
+     * program name and user-type code the copybook also declares are dispatch and authorization
+     * inputs rather than screen content, and they stay with
+     * {@code com.carddemo.config.MenuOptionCatalog}, which holds all four items of every entry.</p>
      *
      * <p>Immutable and safe to share: the list is unmodifiable and every element is a record whose
      * components are immutable values.</p>
      */
     public static final List<UserMenuOption> CANONICAL_USER_MENU_OPTIONS = List.of(
-            new UserMenuOption(1, "Account View", "COACTVWC", STANDARD_USER_TYPE_CODE),
-            new UserMenuOption(2, "Account Update", "COACTUPC", STANDARD_USER_TYPE_CODE),
-            new UserMenuOption(3, "Credit Card List", "COCRDLIC", STANDARD_USER_TYPE_CODE),
-            new UserMenuOption(4, "Credit Card View", "COCRDSLC", STANDARD_USER_TYPE_CODE),
-            new UserMenuOption(5, "Credit Card Update", "COCRDUPC", STANDARD_USER_TYPE_CODE),
-            new UserMenuOption(6, "Transaction List", "COTRN00C", STANDARD_USER_TYPE_CODE),
-            new UserMenuOption(7, "Transaction View", "COTRN01C", STANDARD_USER_TYPE_CODE),
-            new UserMenuOption(8, "Transaction Add", "COTRN02C", STANDARD_USER_TYPE_CODE),
-            new UserMenuOption(9, "Transaction Reports", "CORPT00C", STANDARD_USER_TYPE_CODE),
-            new UserMenuOption(10, "Bill Payment", "COBIL00C", STANDARD_USER_TYPE_CODE));
+            new UserMenuOption(1, "Account View"),
+            new UserMenuOption(2, "Account Update"),
+            new UserMenuOption(3, "Credit Card List"),
+            new UserMenuOption(4, "Credit Card View"),
+            new UserMenuOption(5, "Credit Card Update"),
+            new UserMenuOption(6, "Transaction List"),
+            new UserMenuOption(7, "Transaction View"),
+            new UserMenuOption(8, "Transaction Add"),
+            new UserMenuOption(9, "Transaction Reports"),
+            new UserMenuOption(10, "Bill Payment"));
 
     /**
      * The four populated administrative-menu options, in the order
@@ -481,126 +501,205 @@ public record MenuResponse(
      *
      * <p>Exactly {@link #ADMIN_MENU_OPTION_COUNT} entries are present, in screen order, with no blank
      * entry and no surplus capacity, for the reasons given on
-     * {@link #CANONICAL_USER_MENU_OPTIONS}. No entry carries a user-type code, because the
-     * administrative table view declares no such item &mdash; the shape of {@link AdminMenuOption} is
-     * the shape of the copybook.</p>
+     * {@link #CANONICAL_USER_MENU_OPTIONS}. Each entry carries the number and the label the screen
+     * renders and nothing else; the program name the copybook also declares stays with
+     * {@code com.carddemo.config.MenuOptionCatalog}, as it does for the user menu.</p>
      *
      * <p>Immutable and safe to share.</p>
      */
     public static final List<AdminMenuOption> CANONICAL_ADMIN_MENU_OPTIONS = List.of(
-            new AdminMenuOption(1, "User List (Security)", "COUSR00C"),
-            new AdminMenuOption(2, "User Add (Security)", "COUSR01C"),
-            new AdminMenuOption(3, "User Update (Security)", "COUSR02C"),
-            new AdminMenuOption(4, "User Delete (Security)", "COUSR03C"));
+            new AdminMenuOption(1, "User List (Security)"),
+            new AdminMenuOption(2, "User Add (Security)"),
+            new AdminMenuOption(3, "User Update (Security)"),
+            new AdminMenuOption(4, "User Delete (Security)"));
 
     /**
-     * Detaches both option collections from the caller without altering what either of them contains.
+     * Detaches both option collections from the caller and enforces the menu invariants, without
+     * altering what either collection contains.
      *
      * <p>A supplied collection is copied with {@link List#copyOf(java.util.Collection)}, which both
-     * severs any aliasing to caller-owned state and rejects a {@code null} element outright. A blank
-     * option would be exactly the surplus-capacity entry this contract excludes, so failing on
-     * {@code null} is preferable to serializing a row a client would then render.
+     * severs aliasing to caller-owned state and rejects a {@code null} element outright - a blank
+     * option would be exactly the surplus-capacity entry this contract excludes, so failing is
+     * preferable to serializing a row a client would then render.</p>
      *
      * <p><strong>A {@code null} collection is stored as {@code null}, deliberately, and is not
-     * converted to an empty list.</strong> The two option components answer different questions than
+     * converted to an empty list.</strong> The two option components answer a different question than
      * their contents do: on a user-menu response there is no administrative option collection
-     * <em>at all</em>, which is a different statement from an administrative menu that happens to
-     * list nothing. Because the module serializes only non-{@code null} properties, storing
-     * {@code null} omits the irrelevant collection from the payload entirely, and a client reading a
-     * user-menu response never has to decide what an empty administrative collection was supposed to
-     * mean. Callers that want the distinction made for them should use {@link #forUserMenu} or
-     * {@link #forAdminMenu}, which populate exactly one collection and leave the other absent.
+     * <em>at all</em>, which is a different statement from an administrative menu that happens to list
+     * nothing. Because the module serializes only non-{@code null} properties, storing {@code null}
+     * omits the irrelevant collection from the payload entirely. Callers that want the distinction
+     * made for them should use {@link #forUserMenu} or {@link #forAdminMenu}.</p>
      *
-     * <p>No count is enforced. The copybook counts are published as
-     * {@link #USER_MENU_OPTION_COUNT} and {@link #ADMIN_MENU_OPTION_COUNT} and the canonical lists
-     * honour them, but rejecting any other size here would make this response unable to carry a
-     * legitimately shorter collection &mdash; and the legacy programs themselves compare the
-     * operator's entry against the count rather than against the size of what was rendered. Enforcing
-     * the count in a response type would move a service decision into a data-transfer type and would
-     * turn a screen with one fewer row into a server failure.
+     * <p><strong>Three invariants are enforced, and each of them is the legacy screen's own
+     * arithmetic rather than a policy invented here.</strong>
+     *
+     * <ol>
+     *   <li><em>Exactly one option collection is present.</em> A menu screen is one menu. Legacy
+     *       transaction {@code CM00} runs {@code app/cbl/COMEN01C.cbl} and renders the user table;
+     *       legacy transaction {@code CA00} runs {@code app/cbl/COADM01C.cbl} and renders the
+     *       administrative one. Neither program can render both, and neither can render a screen with
+     *       no rows on it, so a response carrying both collections or neither describes no screen the
+     *       estate can produce.</li>
+     *   <li><em>A present user collection holds exactly {@link #USER_MENU_OPTION_COUNT} entries.</em>
+     *       That is the value of {@code CDEMO-MENU-OPT-COUNT} at {@code app/cpy/COMEN02Y.cpy} line
+     *       21, and {@code app/cbl/COMEN01C.cbl} rebuilds every one of those rows on every send,
+     *       including each redisplay after a rejected entry. There is therefore no legitimate screen
+     *       state in which a user menu shows fewer rows.</li>
+     *   <li><em>A present administrative collection holds exactly
+     *       {@link #ADMIN_MENU_OPTION_COUNT} entries.</em> The value of
+     *       {@code CDEMO-ADMIN-OPT-COUNT} at {@code app/cpy/COADM02Y.cpy} line 20, rebuilt in full by
+     *       {@code app/cbl/COADM01C.cbl} on the same terms.</li>
+     * </ol>
+     *
+     * <p>These are cardinality facts about the two copybook tables, and the copybooks are frozen
+     * source. Publishing the counts as constants while accepting any other size would let a
+     * mis-assembled screen reach a client as a well-formed response, which is the failure the
+     * invariants exist to make impossible. A rejected construction raises
+     * {@link IllegalArgumentException}, naming which invariant failed and what was supplied.
      *
      * <p>Every other component is stored exactly as supplied, including {@code null} and including any
      * leading or trailing space, because the legacy fields they derive from are fixed-width and
-     * space-significant.
+     * space-significant. In particular no count, width or identifier is filled in, defaulted or
+     * corrected here.
+     *
+     * @throws IllegalArgumentException when both option collections are present, when neither is, or
+     *                                  when a present collection does not hold exactly the number of
+     *                                  entries its copybook declares
      */
     public MenuResponse {
+        if ((userMenuOptions == null) == (adminMenuOptions == null)) {
+            throw new IllegalArgumentException(
+                    "a menu response carries exactly one option collection, but "
+                            + ((userMenuOptions == null) ? "neither was supplied"
+                                                         : "both were supplied"));
+        }
+        if (userMenuOptions != null && userMenuOptions.size() != USER_MENU_OPTION_COUNT) {
+            throw new IllegalArgumentException("the user menu renders exactly "
+                    + USER_MENU_OPTION_COUNT + " options, but " + userMenuOptions.size()
+                    + " were supplied");
+        }
+        if (adminMenuOptions != null && adminMenuOptions.size() != ADMIN_MENU_OPTION_COUNT) {
+            throw new IllegalArgumentException("the administrative menu renders exactly "
+                    + ADMIN_MENU_OPTION_COUNT + " options, but " + adminMenuOptions.size()
+                    + " were supplied");
+        }
         userMenuOptions = (userMenuOptions == null) ? null : List.copyOf(userMenuOptions);
         adminMenuOptions = (adminMenuOptions == null) ? null : List.copyOf(adminMenuOptions);
     }
 
     /**
-     * Builds a user-menu response &mdash; the reply to legacy transaction {@code CM00}.
+     * Builds a user-menu response, the reply to legacy transaction {@code CM00}: populates the user
+     * option collection, leaves the administrative collection absent, and fills both title lines from
+     * {@link #SCREEN_TITLE_LINE_1} and {@link #SCREEN_TITLE_LINE_2}. Filling the titles here is
+     * faithful rather than convenient - both menu screens display the same two values from the same
+     * copybook, so there is no case in which a menu response carries different ones.
      *
      * <p>Populates the user option collection, leaves the administrative collection absent, and fills
-     * both title lines from {@link #SCREEN_TITLE_LINE_1} and {@link #SCREEN_TITLE_LINE_2}. Filling the
-     * titles here is faithful rather than convenient: both menu screens display the same two values
-     * from the same copybook, so there is no case in which a menu response carries different ones.
+     * every fixed header item the user menu displays: the transaction identifier and program name
+     * from {@link #USER_MENU_TRANSACTION_NAME} and {@link #USER_MENU_PROGRAM_NAME}, and both title
+     * lines from {@link #SCREEN_TITLE_LINE_1} and {@link #SCREEN_TITLE_LINE_2}. Filling those here is
+     * faithful rather than convenient: {@code app/cbl/COMEN01C.cbl} lines 216 to 219 move exactly
+     * those four values into the header on every send, so there is no case in which a user-menu
+     * response carries different ones.
      *
+     * <p>The rendered date and time are parameters rather than constants because they are the only
+     * header items the program computes per interaction, at lines 214 and 221 to 231 of the same
+     * program. They arrive already assembled and are carried unchanged.
+     *
+     * @param currentDate        the rendered current date, at most {@link #CURRENT_DATE_WIDTH}
+     *                           characters, or {@code null}
+     * @param currentTime        the rendered current time, at most {@link #CURRENT_TIME_WIDTH}
+     *                           characters, or {@code null}
      * @param userMenuOptions    the populated user options in screen order, ordinarily
-     *                           {@link #CANONICAL_USER_MENU_OPTIONS}; {@code null} leaves the
-     *                           collection absent
+     *                           {@link #CANONICAL_USER_MENU_OPTIONS}. Must hold exactly
+     *                           {@link #USER_MENU_OPTION_COUNT} entries; {@code null} is rejected,
+     *                           because a user-menu response with no user menu describes no screen
      * @param selectedOption     the echoed option entry, or {@code null}
      * @param message            the message line, or {@code null} when the screen shows none
      * @param messageSeverity    the semantic intent of {@code message}, or {@code null}
      * @param errorFlag          whether this response reports a failed interaction
      * @param focusScreenFieldId the opaque screen field label focus belongs on, or {@code null}
-     * @param route              the declarative next route, or {@code null}
+     * @param nextRoute          the declarative next route, or {@code null}
      * @param navigationContext  the client-echoed navigation state, or {@code null}
      * @return a user-menu response carrying no administrative option collection
+     * @throws IllegalArgumentException when {@code userMenuOptions} is absent or does not hold
+     *                                  exactly {@link #USER_MENU_OPTION_COUNT} entries
      */
-    public static MenuResponse forUserMenu(List<UserMenuOption> userMenuOptions,
+    public static MenuResponse forUserMenu(String currentDate,
+                                           String currentTime,
+                                           List<UserMenuOption> userMenuOptions,
                                            String selectedOption,
                                            String message,
                                            MessageSeverity messageSeverity,
                                            boolean errorFlag,
                                            String focusScreenFieldId,
-                                           String route,
+                                           String nextRoute,
                                            NavigationContext navigationContext) {
-        return new MenuResponse(SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2, userMenuOptions, null,
-                selectedOption, message, messageSeverity, errorFlag, focusScreenFieldId, route,
+        return new MenuResponse(USER_MENU_TRANSACTION_NAME, SCREEN_TITLE_LINE_1, currentDate,
+                USER_MENU_PROGRAM_NAME, SCREEN_TITLE_LINE_2, currentTime, userMenuOptions, null,
+                selectedOption, message, messageSeverity, errorFlag, focusScreenFieldId, nextRoute,
                 navigationContext);
     }
 
     /**
-     * Builds an administrative-menu response &mdash; the reply to legacy transaction {@code CA00}.
+     * Builds an administrative-menu response, the reply to legacy transaction {@code CA00}: populates
+     * the administrative option collection, leaves the user collection absent, and fills both title
+     * lines exactly as {@link #forUserMenu} does, for the same reason.
      *
      * <p>Populates the administrative option collection, leaves the user collection absent, and fills
-     * both title lines exactly as {@link #forUserMenu} does, for the same reason.
+     * the fixed header items exactly as {@link #forUserMenu} does and for the same reason &mdash; but
+     * from {@link #ADMIN_MENU_TRANSACTION_NAME} and {@link #ADMIN_MENU_PROGRAM_NAME}, because
+     * {@code app/cbl/COADM01C.cbl} lines 206 to 209 identify a different transaction and a different
+     * program. The two title lines are the same on both screens.
      *
+     * @param currentDate        the rendered current date, at most {@link #CURRENT_DATE_WIDTH}
+     *                           characters, or {@code null}
+     * @param currentTime        the rendered current time, at most {@link #CURRENT_TIME_WIDTH}
+     *                           characters, or {@code null}
      * @param adminMenuOptions   the populated administrative options in screen order, ordinarily
-     *                           {@link #CANONICAL_ADMIN_MENU_OPTIONS}; {@code null} leaves the
-     *                           collection absent
+     *                           {@link #CANONICAL_ADMIN_MENU_OPTIONS}. Must hold exactly
+     *                           {@link #ADMIN_MENU_OPTION_COUNT} entries; {@code null} is rejected
      * @param selectedOption     the echoed option entry, or {@code null}
      * @param message            the message line, or {@code null} when the screen shows none
      * @param messageSeverity    the semantic intent of {@code message}, or {@code null}
      * @param errorFlag          whether this response reports a failed interaction
      * @param focusScreenFieldId the opaque screen field label focus belongs on, or {@code null}
-     * @param route              the declarative next route, or {@code null}
+     * @param nextRoute          the declarative next route, or {@code null}
      * @param navigationContext  the client-echoed navigation state, or {@code null}
      * @return an administrative-menu response carrying no user option collection
+     * @throws IllegalArgumentException when {@code adminMenuOptions} is absent or does not hold
+     *                                  exactly {@link #ADMIN_MENU_OPTION_COUNT} entries
      */
-    public static MenuResponse forAdminMenu(List<AdminMenuOption> adminMenuOptions,
+    public static MenuResponse forAdminMenu(String currentDate,
+                                            String currentTime,
+                                            List<AdminMenuOption> adminMenuOptions,
                                             String selectedOption,
                                             String message,
                                             MessageSeverity messageSeverity,
                                             boolean errorFlag,
                                             String focusScreenFieldId,
-                                            String route,
+                                            String nextRoute,
                                             NavigationContext navigationContext) {
-        return new MenuResponse(SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2, null, adminMenuOptions,
-                selectedOption, message, messageSeverity, errorFlag, focusScreenFieldId, route,
+        return new MenuResponse(ADMIN_MENU_TRANSACTION_NAME, SCREEN_TITLE_LINE_1, currentDate,
+                ADMIN_MENU_PROGRAM_NAME, SCREEN_TITLE_LINE_2, currentTime, null, adminMenuOptions,
+                selectedOption, message, messageSeverity, errorFlag, focusScreenFieldId, nextRoute,
                 navigationContext);
     }
 
     /**
      * Tests whether this response carries a user option collection at all.
      *
-     * <p>Presence, not content: a response that carries an empty user collection answers {@code true}
-     * here, because an empty collection is still a user menu whereas an absent one is not a user menu.
-     * This is the test a client uses to decide which of the two option shapes it is about to read, and
-     * it selects nothing and routes nothing.
+     * <p>Presence, not content. It answers which of the two option shapes a client is about to read,
+     * and it selects nothing and routes nothing.
      *
-     * @return {@code true} when the user option collection is present, even if empty
+     * <p>Because construction admits exactly one option collection, this test and
+     * {@link #carriesAdminMenu()} always disagree: whichever answers {@code true} identifies the menu
+     * this response describes, and a client needs only one of the two tests. Content never enters the
+     * answer &mdash; a present collection is guaranteed to hold exactly
+     * {@link #USER_MENU_OPTION_COUNT} entries, so there is no empty-collection case left for this
+     * test to have an opinion about.
+     *
+     * @return {@code true} when this response describes the user menu
      */
     public boolean carriesUserMenu() {
         return userMenuOptions != null;
@@ -610,127 +709,128 @@ public record MenuResponse(
      * Tests whether this response carries an administrative option collection at all.
      *
      * <p>The administrative counterpart of {@link #carriesUserMenu()}, with the same
-     * presence-not-content semantics.
+     * presence-not-content semantics and the same guarantee: a present collection holds exactly
+     * {@link #ADMIN_MENU_OPTION_COUNT} entries, and exactly one of the two tests answers
+     * {@code true}.
      *
-     * @return {@code true} when the administrative option collection is present, even if empty
+     * @return {@code true} when this response describes the administrative menu
      */
     public boolean carriesAdminMenu() {
         return adminMenuOptions != null;
     }
 
     /**
-     * What a menu message <em>means</em>, so that a client can present it appropriately without this
+     * What a menu message <em>means</em>, so a client can present it appropriately without this
      * contract dictating how.
      *
      * <p>The legacy programs distinguished the two cases by switching the message line's terminal
      * highlighting before sending the screen. That highlighting is a presentation value belonging to a
-     * 3270 device and it is modelled nowhere in this module: no highlight value, no attribute byte and
-     * no marker character appears in this package. Only the distinction the highlighting encoded
-     * survives, as these two constants.
+     * 3270 device and is modelled nowhere in this module; only the distinction it encoded survives, as
+     * these two constants.</p>
      *
      * <p>The two are genuinely independent of {@link MenuResponse#errorFlag()} and neither is derived
-     * from the other. Both programs set their error switch on a rejected entry, and both also emit a
-     * message on the successful path where the selected option names a placeholder program &mdash;
-     * that path leaves the error switch clear and still needs a message, which is exactly why the
-     * intent is carried separately.
+     * from the other: both programs set their error switch on a rejected entry, and both also emit a
+     * message on the successful placeholder path, which leaves the switch clear and still needs a
+     * message.</p>
      *
      * @since 1.0.0
      */
     public enum MessageSeverity {
 
         /**
-         * The message reports an outcome rather than a problem.
-         *
-         * <p>The case the legacy programs took at {@code app/cbl/COMEN01C.cbl} lines 159 to 162 and
-         * {@code app/cbl/COADM01C.cbl} lines 149 to 152: the interaction succeeded, the selected
-         * option simply has no program behind it yet, and the operator is told so. The error switch is
+         * The message reports an outcome rather than a problem: the interaction succeeded, the selected
+         * option simply has no program behind it, and the operator is told so. The error switch is
          * clear on this path.
          */
         INFORMATIONAL,
 
         /**
-         * The message reports a problem the operator has to resolve.
-         *
-         * <p>The case the legacy programs took when they rejected the entry at their common line 131,
-         * when the user program refused an option the signed-on user type may not select at
-         * {@code app/cbl/COMEN01C.cbl} lines 136 to 143, and when either program received an
-         * unmapped key. The error switch is set on these paths.
+         * The message reports a problem the operator has to resolve - a rejected entry, an option the
+         * signed-on user type may not select, or an unmapped key. The error switch is set on these
+         * paths.
          */
         ERROR
     }
 
     /**
-     * One populated entry of the <em>user</em> menu catalog: four components, matching the four
-     * elementary items of the table view at {@code app/cpy/COMEN02Y.cpy} lines 87 to 92.
+     * One rendered row of the <em>user</em> menu: the option number the operator types and the text
+     * printed beside it, from the first two elementary items of the table view at
+     * {@code app/cpy/COMEN02Y.cpy} lines 87 to 92.
      *
-     * <p>This shape is not interchangeable with {@link AdminMenuOption}. It carries a user-type code
-     * that the administrative shape does not have, because the administrative copybook does not
-     * declare one. The two records share no supertype and neither is a specialisation of the other; a
-     * caller that holds one always knows which menu it belongs to, and no run-time test is needed to
-     * find out.
+     * <p><strong>Only what the screen renders is published.</strong> The mapset lays out one field per
+     * row, {@code OPTN001} onward at {@code app/cpy-bms/COMEN01.CPY} line 60 and following, and the
+     * program fills it with the number and the label. The two remaining items of the copybook entry
+     * are not screen content: the program name is the dispatch target the program transfers control
+     * to, and the user-type code is the input to the authorization comparison the program makes
+     * <em>before</em> it dispatches, at {@code app/cbl/COMEN01C.cbl} lines 136 to 143. Neither is ever
+     * displayed and neither is needed to select a row, because selection is by number. Both remain
+     * where they belong, on {@code com.carddemo.config.MenuOptionCatalog}, which carries all four
+     * items of every entry and is where row three of the migration's construct-mapping table is
+     * discharged. Publishing them here would hand a client the means to name a dispatch target and
+     * would let it read an authorization rule it has no use for.
      *
-     * <p>Nothing is validated and nothing is transformed. The bounds below measure and never alter, so
-     * a value arrives and leaves byte for byte. No presence, pattern or numeric-range constraint is
+     * <p>This shape is not interchangeable with {@link AdminMenuOption}, and the guarantee rests on
+     * type identity rather than on the two shapes differing in their component lists. The records
+     * share no supertype, neither is a specialisation of the other, and neither is convertible to the
+     * other: a caller holding one always knows which menu it came from, statically, and would still
+     * know if the two ever came to carry the same components. That is the property worth having,
+     * because it does not decay when a copybook changes.
+     *
+     * <p>Nothing is validated and nothing is transformed. The bound below measures and never alters,
+     * so a value arrives and leaves byte for byte. No presence, pattern or numeric-range constraint is
      * applied: the option number's admissible range is the count comparison both legacy programs
      * perform <em>before</em> they index their table, and that comparison belongs to the menu service,
      * not to a response record that has already been handed the rows to render.
      *
-     * @param number      the option number the operator types to select this row, from
-     *                    {@code CDEMO-MENU-OPT-NUM}. An {@code int} because it is a cardinal the
-     *                    program compares arithmetically against its option count, not an identifier
-     *                    with contractual leading zeros; its external width is
-     *                    {@link MenuResponse#OPTION_NUMBER_WIDTH} digits.
-     * @param label       the row text, from {@code CDEMO-MENU-OPT-NAME}, declared
-     *                    {@link MenuResponse#OPTION_LABEL_WIDTH} characters wide. Carried in display
-     *                    form exactly as supplied &mdash; neither widened to the declared width nor
-     *                    shortened.
-     * @param programName the legacy program this row targets, from {@code CDEMO-MENU-OPT-PGMNAME},
-     *                    {@link MenuResponse#OPTION_PROGRAM_NAME_WIDTH} characters. Carried as an
-     *                    opaque legacy name; whether it denotes a placeholder is the menu service's
-     *                    question, not this record's.
-     * @param userType    the raw one-character user-type code, from {@code CDEMO-MENU-OPT-USRTYPE},
-     *                    {@link MenuResponse#USER_OPTION_USER_TYPE_WIDTH} character. Held as raw text
-     *                    rather than as a domain enumeration so an undeclared code survives the round
-     *                    trip untranslated and this data-transfer type stays independent of the domain
-     *                    layer. All ten canonical entries carry
-     *                    {@link MenuResponse#STANDARD_USER_TYPE_CODE}.
+     * @param number the option number the operator types to select this row, from
+     *               {@code CDEMO-MENU-OPT-NUM}. An {@code int} because it is a cardinal the program
+     *               compares arithmetically against its option count, not an identifier with
+     *               contractual leading zeros; its external width is
+     *               {@link MenuResponse#OPTION_NUMBER_WIDTH} digits.
+     * @param label  the row text, from {@code CDEMO-MENU-OPT-NAME}, declared
+     *               {@link MenuResponse#OPTION_LABEL_WIDTH} characters wide. Carried in display form
+     *               exactly as supplied &mdash; neither widened to the declared width nor shortened.
      * @since 1.0.0
      */
     public record UserMenuOption(
             int number,
-            @Size(max = MenuResponse.OPTION_LABEL_WIDTH) String label,
-            @Size(max = MenuResponse.OPTION_PROGRAM_NAME_WIDTH) String programName,
-            @Size(max = MenuResponse.USER_OPTION_USER_TYPE_WIDTH) String userType) {
+            @Size(max = MenuResponse.OPTION_LABEL_WIDTH) String label) {
     }
 
     /**
-     * One populated entry of the <em>administrative</em> menu catalog: three components, matching the
-     * three elementary items of the table view at {@code app/cpy/COADM02Y.cpy} lines 44 to 48.
+     * One rendered row of the <em>administrative</em> menu: the option number the operator types and
+     * the text printed beside it, from the first two elementary items of the table view at
+     * {@code app/cpy/COADM02Y.cpy} lines 44 to 48.
+     *
+     * <p>As on the user shape, only screen content is published. The mapset fills one field per row,
+     * {@code OPTN001} onward at {@code app/cpy-bms/COADM01.CPY} line 60 and following, with the number
+     * and the label; the program name the copybook also declares is the dispatch target
+     * {@code app/cbl/COADM01C.cbl} transfers control to and is never displayed. It stays on
+     * {@code com.carddemo.config.MenuOptionCatalog}.
      *
      * <p><strong>There is no user-type component here and none may be added.</strong> The
-     * administrative table view declares a two-digit number, a label and a program name and nothing
-     * else, giving a forty-five-byte entry against the user catalog's forty-six. Adding a component
-     * &mdash; even a permanently absent one &mdash; would fabricate a field the copybook does not
-     * have, and a field that exists in the contract is a field a client will eventually populate. The
-     * asymmetry against {@link UserMenuOption} is the whole point and is preserved on purpose.
+     * administrative table view declares no such item, giving a forty-five-byte entry against the user
+     * catalog's forty-six. That asymmetry is a fact about the two copybooks and is recorded where the
+     * full entries live; adding a component here &mdash; even a permanently absent one &mdash; would
+     * fabricate a field the copybook does not have, and a field that exists in a contract is a field a
+     * client will eventually populate.
      *
-     * <p>As with the user shape, nothing is validated and nothing is transformed; the bounds below
-     * measure only.
+     * <p>This shape is likewise not interchangeable with {@link UserMenuOption}: two distinct record
+     * types with no shared supertype and no conversion between them, which is what makes the
+     * distinction survive independently of what either one happens to carry.
      *
-     * @param number      the option number the operator types to select this row, from
-     *                    {@code CDEMO-ADMIN-OPT-NUM}, external width
-     *                    {@link MenuResponse#OPTION_NUMBER_WIDTH} digits.
-     * @param label       the row text, from {@code CDEMO-ADMIN-OPT-NAME}, declared
-     *                    {@link MenuResponse#OPTION_LABEL_WIDTH} characters wide and carried in
-     *                    display form exactly as supplied.
-     * @param programName the legacy program this row targets, from {@code CDEMO-ADMIN-OPT-PGMNAME},
-     *                    {@link MenuResponse#OPTION_PROGRAM_NAME_WIDTH} characters, carried as an
-     *                    opaque legacy name.
+     * <p>Nothing is validated and nothing is transformed; the bound below measures only.
+     *
+     * @param number the option number the operator types to select this row, from
+     *               {@code CDEMO-ADMIN-OPT-NUM}, external width
+     *               {@link MenuResponse#OPTION_NUMBER_WIDTH} digits.
+     * @param label  the row text, from {@code CDEMO-ADMIN-OPT-NAME}, declared
+     *               {@link MenuResponse#OPTION_LABEL_WIDTH} characters wide and carried in display
+     *               form exactly as supplied.
      * @since 1.0.0
      */
     public record AdminMenuOption(
             int number,
-            @Size(max = MenuResponse.OPTION_LABEL_WIDTH) String label,
-            @Size(max = MenuResponse.OPTION_PROGRAM_NAME_WIDTH) String programName) {
+            @Size(max = MenuResponse.OPTION_LABEL_WIDTH) String label) {
     }
 }

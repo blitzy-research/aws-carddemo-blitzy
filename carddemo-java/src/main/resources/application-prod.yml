@@ -33,16 +33,40 @@
 # is written as ${VARIABLE} and never as ${VARIABLE:something} - not a placeholder, not an empty
 # tail, not a development convenience.
 #
-# A MISSING SECRET MUST ABORT START-UP, AND THAT IS THE DESIGNED BEHAVIOUR RATHER THAN A ROUGH EDGE.
-# An unresolvable placeholder is raised while the context is being refreshed, before the first
-# request is accepted, so the deployment fails loudly instead of running on something accidental.
-# Nothing in this file may be softened to make a start "work" without its environment.
+# A MISSING SECRET MUST ABORT START-UP, AND A CODE GUARD - NOT THIS SYNTAX - IS WHAT MAKES IT DO SO.
+# Writing a value as a bare ${VARIABLE} states an intention and enforces nothing, because the
+# framework is lenient about a reference nothing satisfied:
 #
-# Four values are secrets and carry NO fallback; six more are deployment-specific locations that a
-# guess would turn into an accident, and they carry no fallback either. Everything that DOES carry a
-# value below is a resource name, a published behavioural constant or a non-sensitive setting - see
-# the note on that distinction above the security block, because the no-default rule must not be
-# over-generalised into "nothing may have a value".
+#   * A setting bound as a configuration-properties object binds the LITERAL TEXT ${VARIABLE} when
+#     the variable is unset. That text is not blank, so a not-blank constraint on it reports no
+#     violation, the context refreshes, and the application signs tokens with the text of its own
+#     placeholder. The data source location, the data source user, the key store location, the key
+#     store format, the key entry alias and the region all bind this way.
+#   * A setting read through a value expression DOES fail - but at the moment the one bean that
+#     happens to read it is created, in words that describe a placeholder rather than naming a
+#     variable a deployer must set, and only for whichever such bean is reached first.
+#   * A variable exported as an EMPTY STRING is silent on every path. It resolves to an empty
+#     string, binds as an empty string, and is then offered to a database server as a credential.
+#
+# So com.carddemo.config.ProductionConfigurationValidator publishes a bean-factory post-processor
+# under this profile alone. It runs while bean definitions are still being processed - before the
+# data source is created, before a migration opens a connection, before the embedded server reads
+# the key store, before any configuration-properties object is bound - and it refuses every required
+# setting that is undeclared, still unresolved, or blank. It reports ALL of the faults at once, each
+# one naming the property and the environment variable a deployer must set. See
+# docs/decision-log.md DL-105.
+#
+# Nothing in this file may be softened to make a start "work" without its environment, and no key
+# below may be given a fallback tail without being removed from that guard's list - the two are
+# asserted against each other, so a mismatch fails the build rather than going unnoticed.
+#
+# EVERY value in the two REQUIRED lists below carries NO fallback - the secrets, and the
+# deployment-specific locations a guess would turn into an accident alike. No count of them is
+# written anywhere in this file on purpose: the set is enumerated in the guard, and the guard is
+# compared against this document, so a count in prose would be a second place to be wrong.
+# Everything that DOES carry a value below is a resource name, a published behavioural constant or a
+# non-sensitive setting - see the note on that distinction above the security block, because the
+# no-default rule must not be over-generalised into "nothing may have a value".
 #
 # -------------------------------------------------------------------------------------------------
 # ENVIRONMENT VARIABLES THIS PROFILE REQUIRES
@@ -50,7 +74,8 @@
 # This list is the authoritative one. carddemo-java/README.md and any deployment runbook are written
 # from it, so a variable added or renamed here must be carried into both.
 #
-#   REQUIRED - SECRET. No fallback. Start-up aborts when any one of these is absent.
+#   REQUIRED - SECRET. No fallback. The guard named above aborts start-up when any one of these is
+#   absent, empty or left as an unresolved reference, and names it in the failure.
 #     CARDDEMO_DB_PASSWORD             credential for the data source user below
 #     CARDDEMO_JWT_SECRET              signing material for the bearer token that carries the
 #                                      navigation state the legacy pseudo-conversation kept in its
@@ -65,7 +90,8 @@
 #     CARDDEMO_TLS_KEYSTORE_PASSWORD   credential protecting the server key store named below
 #
 #   REQUIRED - NOT SECRET, but deployment-specific. No fallback, because a guessed value would be
-#   worse than a failed start.
+#   worse than a failed start. Guarded on exactly the same terms as the secrets above: a location is
+#   as capable of pointing somewhere accidental as a credential is of being forged.
 #     CARDDEMO_DB_URL                  JDBC location of the PostgreSQL 16 server. Never defaulted: a
 #                                      production data source must not be inferred
 #     CARDDEMO_DB_USERNAME             data source user
@@ -107,7 +133,12 @@
 # -------------------------------------------------------------------------------------------------
 # WHAT IS DELIBERATELY ABSENT - every absence below is a recorded decision, not an oversight
 #
-#   * THE SEED MIGRATIONS ARE UNREACHABLE FROM THIS PROFILE. See the schema-evolution block.
+#   * THE SEED MIGRATIONS ARE UNREACHABLE FROM THIS PROFILE, and com.carddemo.config.FlywayConfig
+#     is what makes that a control rather than a claim. See the schema-evolution block.
+#   * THIS PROFILE MUST NOT BE ACTIVATED ALONGSIDE `local` OR `test`, IN EITHER ORDER, and it cannot
+#     be: com.carddemo.config.FlywayConfig refuses the combination before any bean is instantiated.
+#     No document can enforce this by itself, because a document cannot see the list that selected
+#     it - see the co-activation block below.
 #   * No pool sizing and no pool time-out on the data source. See the data-source block.
 #   * NO CAPACITY OR SERVICE-LEVEL FIGURE OF ANY KIND, in a property or in a comment: no heap
 #     figure, no worker-thread count, no latency figure, no volume figure, no availability figure.
@@ -125,6 +156,33 @@
 #   * No certificate, no ingress definition and no infrastructure resource. See the server block.
 #   * No framework-managed initialisation script and no bootstrap SQL file. The versioned migrations
 #     are the only path by which a table or a row is created.
+#
+# -------------------------------------------------------------------------------------------------
+# CO-ACTIVATION IS REFUSED IN CODE, BECAUSE A DOCUMENT CANNOT REFUSE IT
+#
+# Every guarantee this file makes is a guarantee about the values IT declares. None of them is a
+# guarantee about the values a deployment RESOLVES, and the two differ the moment more than one
+# profile is active: overlapping property sources are resolved by activation order, so the last
+# profile that declares a key wins it. Activating `prod,local` therefore starts a deployment that
+# reads this file and then lets the local overlay overwrite whatever it also declares - the seed
+# migration location among it, together with repository-known signing and field-encryption material,
+# an emulator endpoint standing in for the real services, and a transport rule relaxed for loopback
+# development. Activating `local,prod` changes which document wins a contested key and changes
+# nothing about the fact that both were loaded. Neither ordering is a configuration anyone writes on
+# purpose; both are a plausible accident in a deployment script or a container definition.
+#
+# This file cannot detect that, and neither can its siblings: a profile document is selected BY the
+# active-profile list and never sees it. So the refusal lives in com.carddemo.config.FlywayConfig,
+# which publishes a bean-factory post-processor - a hook that runs after every bean definition is
+# loaded and before any bean is instantiated. `prod` activated together with `local` or with `test`
+# aborts start-up there, ahead of the data source, ahead of the migration, ahead of the messaging
+# clients and ahead of every @ConfigurationProperties binding. That ordering is the point: a refusal
+# raised by a listener, a health indicator or the migration itself would already be too late for at
+# least one of them.
+#
+# The same class also refuses, at migration time, any location resolving under classpath:db/seed
+# while this profile is active - so a merged environment, an operator override or a copied overlay
+# block cannot reintroduce the seeds in silence even if the co-activation guard were ever removed.
 # =================================================================================================
 
 spring:
@@ -133,11 +191,19 @@ spring:
   # DATA SOURCE - PostgreSQL 16, standing in for the ten indexed base clusters plus the sequential
   # daily-transaction input.
   #
-  # ALL THREE VALUES ARE BARE ENVIRONMENT REFERENCES. The credential is the single most important
-  # line in this file, and the location and the user are held to the same standard: a defaulted
-  # location would silently aim a production deployment at whatever host happened to be guessed, and
-  # a defaulted user would do the same for the identity it connects as. The driver is the only fixed
-  # value, and it is fixed so that nothing can fall back to an embedded database.
+  # ALL THREE VALUES ARE BARE ENVIRONMENT REFERENCES, AND ALL THREE ARE GUARDED. The credential is
+  # the single most important line in this file, and the location and the user are held to the same
+  # standard: a defaulted location would silently aim a production deployment at whatever host
+  # happened to be guessed, and a defaulted user would do the same for the identity it connects as.
+  # The driver is the only fixed value, and it is fixed so that nothing can fall back to an embedded
+  # database.
+  #
+  # These three are the reason the guard described at the head of this file exists rather than being
+  # left to the framework. They are bound as a configuration-properties object, so an unset variable
+  # binds the LITERAL text ${CARDDEMO_DB_URL} and the pool then fails on a URL no driver accepts -
+  # far from the missing variable and in words that do not name it. An EMPTY credential variable is
+  # worse: it binds as an empty string and is offered to the server as a password, and whether that
+  # is refused is the server's decision rather than this module's. See docs/decision-log.md DL-105.
   #
   # THE POOL KEEPS ITS SHIPPED DEFAULTS, AND THAT IS DELIBERATE. No sizing property and no time-out
   # override is declared, here or anywhere else in this module. A production profile is exactly where
@@ -170,43 +236,74 @@ spring:
       ddl-auto: validate
 
   # -----------------------------------------------------------------------------------------------
-  # SCHEMA EVOLUTION - AND A SECURITY CONTROL, NOT A TIDINESS PREFERENCE.
+  # SCHEMA EVOLUTION - AND `target: 2` IS A SECURITY CONTROL, NOT A TIDINESS PREFERENCE.
   #
-  # The location list below is `classpath:db/migration` ALONE. Four migrations exist in this module
-  # and they live in two locations on purpose:
+  # THE CONTROL IS `target: 2`, A VERSION CEILING. It is re-asserted here rather than inherited: the
+  # shared baseline in application.yml already defaults it to the same restrictive value, so a profile
+  # that forgets the property inherits the safe ceiling, and this overlay states the most consequential
+  # setting in the file out loud for anyone reading only this file. Five migrations exist in this
+  # module, all five in the single classpath:db/migration location, and production applies the first
+  # three of them:
   #
-  #   classpath:db/migration   V1__create_schema.sql            the eleven application tables
-  #                            V2__create_indexes.sql           keys and alternate-index equivalents
-  #                                                             -> EVERY profile, production included
-  #   classpath:db/seed        V3__seed_reference_data.sql      sample reference rows
-  #                            V4__seed_user_security.sql       sign-on identities
-  #                                                             -> local and test ONLY, NEVER here
+  #   V1__create_schema.sql             the eleven application tables         APPLIED HERE
+  #   V1_1__create_batch_metadata.sql   batch job-repository metadata         APPLIED HERE
+  #   V2__create_indexes.sql            keys and alternate-index equivalents  APPLIED HERE
+  #   -------------------------------------------------------------- ceiling: target 2
+  #   V3__seed_reference_data.sql       sample reference rows                 NEVER HERE
+  #   V4__seed_user_security.sql        sign-on identities                    NEVER HERE
   #
-  # WHY THE SECOND LOCATION MUST NOT APPEAR IN THIS FILE. The sign-on seed inserts ten known
-  # identities - five with the administrative user type and five with the standard one - whose stored
-  # credentials are all hashes of one single well-known value. Had that migration ever run against a
+  # WHY THE TWO SEEDS MUST NOT REACH THIS PROFILE. The sign-on seed inserts ten known identities -
+  # five with the administrative user type and five with the standard one - whose stored credentials
+  # are all hashes of one single well-known value. Were that migration ever to run against a
   # production database, the deployment would ship with ten predictable identities, half of them
   # capable of reaching the administrative user-management surface. The reference seed inserts fifty
   # sample customer rows carrying synthetic personal data, including the two identity fields this
   # module encrypts at rest. Neither belongs in production, and neither reaching it would be
   # untidiness: it would be a credential incident and a privacy incident respectively.
   #
-  # Keeping the seeds in a SEPARATE LOCATION rather than behind a flag is what makes the guarantee
-  # structural instead of conditional - there is no switch to leave in the wrong position. Any seed
-  # script added later must therefore stay under db/seed and out of db/migration, and must store a
-  # sign-on credential only as a hash.
+  # WHY A CEILING RATHER THAN A SEPARATE LOCATION. An earlier revision put the two seeds in a
+  # classpath:db/seed location that this file did not list. That made the guarantee depend on two
+  # location lists staying different from each other - a difference no single file states and no
+  # single review sees - and it made the version numbers stop describing what production would apply.
+  # It also meant a new seed script was safe only if its author happened to choose the right
+  # directory. The ceiling is stronger on every count: it is stated HERE, in the file whose posture it
+  # governs; it is one line a reviewer can see; it cannot be defeated by moving, renaming or
+  # renumbering a file, because the exclusion is arithmetic. Verified against Flyway 11.7.2 - with
+  # target 2 the applied set is exactly {1, 1.1, 2} and version 3 is not resolved at all.
+  #
+  # THE RULE FOR ANY FUTURE SCRIPT, and it is the whole rule: a script production MUST run is
+  # numbered at or below 2; a script production must NEVER run is numbered above 2. Raise this ceiling
+  # only in the same commit that adds a production-required script above it, and never to admit a
+  # seed. A sign-on credential is stored only as a hash regardless, so that even a mistake here leaks
+  # no usable secret.
+  #
+  # `target` does not weaken validation: validate-on-migrate stays on, and an unapplied script sitting
+  # above the ceiling is not a validation failure - only a CHANGED already-applied script is.
+  #
+  # A LOCATION LIST IS ONLY EXCLUDED WHILE NOTHING RE-ADDS IT, and until com.carddemo.config.
+  # FlywayConfig existed the exclusion below was the whole of the mechanism. That class now refuses
+  # the seed location outright whenever this profile is active - checked against the MERGED, BOUND
+  # location list rather than against this document, so an inherited value, an operator override on
+  # the command line and a co-activated overlay are all covered by one check. It also completes the
+  # list the other way round: a profile that needs fixtures and lost the seed location has it added
+  # back, because a fixture-bearing profile silently migrating no fixtures is a defect too.
+  #
+  # The same class registers the component that seals the seeded regulated identifiers, and registers
+  # it for the local and test profiles ALONE - so this profile neither seeds an identifier nor carries
+  # the component that would seal one.
   #
   # baseline-on-migrate stays off: this is a greenfield schema, nothing exists to baseline, and
   # enabling it would let V1 be skipped in silence against a database that already holds objects.
-  # Destructive clean is refused outright. Validation on migrate is on, so a checksum that no longer
-  # matches stops the deployment instead of drifting.
+  # Destructive clean is refused outright.
   #
   # Version 11 of the migration tool resolves PostgreSQL support from a separate artefact declared
   # beside flyway-core in pom.xml; without it the build still succeeds and the application then fails
   # at run time, so the two must stay declared together.
   flyway:
     enabled: true
+    # See docs/decision-log.md DL-102.
     locations: classpath:db/migration
+    target: "2"
     baseline-on-migrate: false
     validate-on-migrate: true
     clean-disabled: true
@@ -219,9 +316,16 @@ spring:
   # would make every measured step duration meaningless. The value is inherited as false from
   # application.yml and restated here so the production posture is stated independently of it.
   #
-  # The batch framework's own metadata tables are NOT provisioned at start-up in production. Local
-  # and test let the bundled script create them; here the setting is narrowed to `never`, so every
-  # piece of production schema arrives through a reviewed migration and nothing else.
+  # The batch framework's own metadata tables are NOT provisioned at start-up, here or anywhere: the
+  # value is `never` under EVERY profile, and V1_1__create_batch_metadata.sql creates the six tables
+  # and three sequences instead. So every piece of production schema arrives through a reviewed
+  # migration and nothing else.
+  #
+  # This file previously carried `never` while NO migration created those tables, and while local and
+  # test let the framework create its own. Production was therefore the single environment in which a
+  # job launch would have failed on a missing relation, and the two environments that could have
+  # revealed it were the two configured not to. `never` everywhere plus one migration removes both
+  # halves of that: there is exactly one owner, and local and test exercise it.
   batch:
     job:
       enabled: false
@@ -245,9 +349,13 @@ spring:
   # inventory above: with none present, the SDK's default provider chain resolves a role, and the
   # placeholder pair the local profile uses for the emulator must never be carried across to here.
   #
-  # The region is required rather than defaulted. application.yml supplies a fallback so a developer
-  # can start without preparing an environment; a production deployment silently landing in whatever
-  # region that fallback names is a different matter, so the fallback is removed here.
+  # The region is required rather than defaulted, and guarded. application.yml supplies a fallback so
+  # a developer can start without preparing an environment; a production deployment silently landing
+  # in whatever region that fallback names is a different matter, so the fallback is removed here.
+  # Removing it is not by itself enough - the region is bound as a configuration-properties value, so
+  # an unset variable would bind the literal text and the SDK would reject it as an unknown region
+  # rather than reporting a variable nobody set. The guard at the head of this file reports it
+  # correctly, before any client is built. See docs/decision-log.md DL-105.
   #
   # Path-style addressing is off. It is on locally only because the emulator does not serve
   # virtual-hosted bucket subdomains.
@@ -286,6 +394,13 @@ spring:
 # key store is generated, no ingress or listener is defined, and no infrastructure resource of any
 # kind is created by this module. Provisioning those is outside this migration's authority and belongs
 # to whoever operates the deployment; this file only states what the application expects to be handed.
+#
+# ALL FOUR KEY-STORE SETTINGS ARE GUARDED. They are bound as a configuration-properties object, so an
+# unset variable binds the literal placeholder text and the embedded server then fails while opening a
+# file whose name is that text - a confusing report of a missing file rather than a plain report of a
+# missing variable, and one raised only after the context has otherwise been built. The guard
+# described at the head of this file refuses all four before the server is created, and reports them
+# together rather than one per restart. See docs/decision-log.md DL-105.
 #
 # The session cookie attributes are belt and braces. The migrated interface is stateless - navigation
 # state travels in the token rather than in a server-side session, exactly as it travelled in the
@@ -386,6 +501,11 @@ management:
       probability: ${CARDDEMO_TRACING_SAMPLE_RATE:0.1}
   otlp:
     tracing:
+      # NO FALLBACK, and guarded. The sample rate above may default - it is a sampling decision, not
+      # a destination - but a collector address must not: a defaulted address would send production
+      # spans to whatever host the fallback named, or silently to nothing. An unset variable would
+      # otherwise bind the literal placeholder text and the exporter would treat it as a malformed
+      # address at export time, long after start-up. See docs/decision-log.md DL-105.
       endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}
 
 # Restated for the same reason as the management block above: both switches - the generated interface
@@ -435,21 +555,21 @@ logging:
 # name grants nothing - reaching it needs the role that this profile deliberately does not hardcode.
 #
 # THE QUEUE IS AN EXTERNAL INTERFACE CONTRACT, AND THE SOLE ONLINE-TO-BATCH BRIDGE IN THE ESTATE. The
-# legacy system wrote to a CICS transient-data queue from exactly one site. Its attribute values are
-# behavioural, so they are reproduced rather than approximated:
+# legacy system wrote to a CICS transient-data queue from exactly one site. Its declared behaviour is
+# reproduced rather than approximated:
 #
-#   RECORDSIZE(80)         one 80-character fixed-width card per message; record-length carries that
-#                          width so the publisher asserts it instead of assuming it
-#   RECORDFORMAT(FIXED)    one message per card - no batching and no concatenation
-#   BLOCKFORMAT(UNBLOCKED) the same: cards are not grouped into a block
-#   DISPOSITION(MOD)       appended, so ORDER IS PART OF THE CONTRACT. Hence a first-in-first-out queue
-#                          and ONE stable message-group id: order survives only within a single group,
-#                          and a standard queue would reorder without saying so
-#   ERROROPTION(IGNORE)    a write failure was tolerated; fail-on-error false keeps exactly that,
-#                          logging the publish failure and continuing rather than aborting the caller
-#   TYPEFILE(OUTPUT)       publish only - nothing in this module consumes from this queue
-#   OPENTIME(INITIAL)      the queue pre-existed first use, so it must be provisioned before the
-#                          application starts rather than created lazily on first publish
+#   fixed-width 80-character records  one card per message; record-length carries that width so the
+#                                     publisher asserts it instead of assuming it
+#   one message per card              no batching, no concatenation, no grouping of cards into a block
+#   writes append                     so ORDER IS PART OF THE CONTRACT. Hence a first-in-first-out
+#                                     queue and ONE stable message-group id: order survives only
+#                                     within a single group, and a standard queue would reorder
+#                                     without saying so
+#   a write failure was tolerated     fail-on-error false keeps exactly that, logging the publish
+#                                     failure and continuing rather than aborting the caller
+#   publish only                      nothing in this module consumes from this queue
+#   the queue pre-existed first use    so it must be provisioned before the application starts rather
+#                                     than created lazily on first publish
 #
 # The .fifo suffix on the queue name is not decoration: the queue service rejects a first-in-first-out
 # queue whose name omits it, which is a start-up failure rather than a style preference.
@@ -476,6 +596,13 @@ carddemo:
       # NO DEFAULT. A deployment names its own queue, and a fallback here would be a placeholder
       # that started cleanly and published nowhere. The canonical name is JOBS.fifo, recorded in
       # application.yml and in the comment above; production must still be told it explicitly.
+      #
+      # The publisher does refuse a name that omits the first-in-first-out suffix - but it refuses it
+      # when the publisher is constructed, and an unset variable would have reached it as the literal
+      # text ${CARDDEMO_SQS_QUEUE}, which carries no suffix and would therefore be reported as a
+      # malformed queue name rather than as a variable a deployer forgot to set. The guard described
+      # at the head of this file reports the absence for what it is, and earlier. See
+      # docs/decision-log.md DL-105.
       job-submission-queue: ${CARDDEMO_SQS_QUEUE}
       message-group-id: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:carddemo-job-submission}
       # The 80-character card width and the tolerate-a-publish-failure behaviour are NOT declared as
@@ -487,10 +614,15 @@ carddemo:
       job-notification-topic: ${CARDDEMO_SNS_TOPIC:carddemo-job-notifications}
   security:
     # -------------------------------------------------------------------------------------------
-    # SIGNING MATERIAL. A bare environment reference with NO fallback: a missing value aborts
-    # start-up rather than letting a token be signed with something anybody who read this
-    # repository could forge. The token replaces the state the legacy pseudo-conversation carried
-    # in its communication area across turns, so forging one forges a whole navigation identity.
+    # SIGNING MATERIAL. A bare environment reference with NO fallback, and the guard described at the
+    # head of this file is what turns that into an aborted start rather than a stated hope. This key
+    # is the clearest illustration of why the guard was needed: the settings record that binds it
+    # already carries a not-blank constraint, and with the variable unset the value binds as the
+    # literal text ${CARDDEMO_JWT_SECRET}, which is sixteen characters and therefore not blank. The
+    # constraint passes, the context refreshes, and tokens are signed with the text of a placeholder
+    # anybody who read this repository could reproduce. The token replaces the state the legacy
+    # pseudo-conversation carried in its communication area across turns, so forging one forges a
+    # whole navigation identity. See docs/decision-log.md DL-105.
     #
     # THE ISSUER AND THE LIFETIME ARE NOT SECRETS, so they carry values. The issuer is a token
     # claim naming this module and is deliberately not the metric service label; neither should be
@@ -515,10 +647,14 @@ carddemo:
       secret: ${CARDDEMO_JWT_SECRET}
       expiration: ${CARDDEMO_JWT_EXPIRATION:PT30M}
     # -------------------------------------------------------------------------------------------
-    # FIELD-ENCRYPTION KEY. A bare environment reference with NO fallback, held to the same rule as
-    # the signing material and for a stronger reason: a missing key must abort start-up rather than
-    # let regulated customer identifiers be sealed under something accidental, because a value
-    # sealed under the wrong key is not recoverable by fixing the configuration afterwards.
+    # FIELD-ENCRYPTION KEY. A bare environment reference with NO fallback, guarded on the same terms
+    # as the signing material and for a stronger reason: a missing key must abort start-up rather
+    # than let regulated customer identifiers be sealed under something accidental, because a value
+    # sealed under the wrong key is not recoverable by fixing the configuration afterwards. The
+    # consuming service does decode this value and check its length, so a malformed key was already
+    # caught - but only when that service was constructed, and an EMPTY variable would have reached
+    # it as an empty string rather than as an absence. The guard stops both cases earlier, and names
+    # the variable rather than the malformed value. See docs/decision-log.md DL-105.
     #
     # The customer record carries two regulated identity values in clear text on the mainframe - a
     # nine-digit national identifier and a twenty-character government-issued identifier - and

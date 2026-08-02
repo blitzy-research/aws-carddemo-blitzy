@@ -42,15 +42,19 @@ import com.carddemo.util.SensitiveFieldCodec;
  * into an unrecoverable one. Both are enforced by the service rather than by its callers, so both are
  * asserted directly against it.</p>
  *
- * <p>Every value used here is fabricated. The key is the fixed development value the test overlay
- * declares, which is worth nothing outside this suite, and the identifiers are invented digit strings
- * rather than anything resembling a real national identifier.</p>
+ * <p>Every value used here is fabricated. The key is the one non-production fixture key that every
+ * non-production profile declares, which is worth nothing outside this suite, and the identifiers are
+ * invented digit strings rather than anything resembling a real national identifier.</p>
  */
 @DisplayName("sensitive field encryption service, field binding and boundary guards")
 class SensitiveFieldEncryptionServiceBoundaryTest {
 
-    /** The fixed development key the test overlay declares: Base64 of exactly thirty-two bytes. */
-    private static final String TEST_KEY = "Y2FyZGRlbW8tdGVzdC1vbmx5LWZpeGVkLWtleSEhISE=";
+    /**
+     * The one non-production fixture key, declared identically by {@code application-local.yml}, the
+     * packaged {@code application-test.yml} and the suite's own {@code application-test.yml}: Base64
+     * of exactly thirty-two bytes.
+     */
+    private static final String TEST_KEY = "Y2FyZGRlbW8tbm9ucHJvZC1maXh0dXJlLWtleSEhISE=";
 
     /** A second key of the same length, used to prove that authentication is key-bound. */
     private static final String OTHER_KEY = Base64.getEncoder().encodeToString(

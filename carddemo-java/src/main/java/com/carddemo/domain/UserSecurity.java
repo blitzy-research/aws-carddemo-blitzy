@@ -57,14 +57,20 @@ import java.util.Objects;
  *
  * <p><strong>What this class stores, and what does not yet exist.</strong> This entity performs no
  * hashing, no verification and no comparison, and it is the width and the format of the column that
- * are fixed here - not the production or checking of the digest. <strong>No password encoder, no
- * sign-on path and no credential-verifying component exists anywhere in the module yet.</strong>
- * Decision log entry D-12 records that as an unmet requirement rather than an implemented control.
- * Whatever component later fills that gap carries two obligations that this mapping cannot enforce on
- * its behalf: it must write only a digest, and it must never store or compare a cleartext credential.
- * Until it exists no row can be written to this table at all, because the column is not nullable and
- * no cleartext value may be supplied. The attribute is left uninitialised so that no default,
- * fallback or placeholder credential can exist in source.
+ * are fixed here - not the production or checking of the digest. Producing and checking a digest
+ * belongs to {@code service.CredentialDigestService}, which is delivered: it wraps a BCrypt encoder,
+ * exposes a verifying comparison, and refuses at the persistence boundary any value that is not
+ * digest-shaped. <strong>What does not exist yet is the sign-on path that would call it</strong> - no
+ * authentication service and no sign-on endpoint is delivered, so no request is authenticated against
+ * this column. Decision log entry D-12 records that remaining gap.
+ *
+ * <p>Rows do exist in this table from the outset: {@code V4__seed_user_security.sql} sits flat beside
+ * the other four migrations and seeds ten identities, every credential an independently salted
+ * 60-character digest, so the not-null column is satisfied without any cleartext value. Whatever
+ * component later authenticates against those rows carries two obligations this mapping cannot enforce
+ * on its behalf: it must write only a digest, and it must never store or compare a cleartext
+ * credential. The attribute is left uninitialised so that no default, fallback or placeholder
+ * credential can exist in source.
  *
  * <p><strong>The role code is a raw character, not an enumerated field.</strong> The legacy field
  * carries {@code A} for an administrator and {@code U} for a standard user, and the communication-area
@@ -205,8 +211,10 @@ import java.util.Objects;
  *   <li><strong>No rows are seeded by the reference-data migration.</strong> The table is empty
  *       after {@code V3__seed_reference_data.sql}. {@code V4__seed_user_security.sql} owns the ten
  *       sign-on identities - five of type {@code A} and five of type {@code U}, matching the job
- *       stream above - stores each credential as a BCrypt digest, and is profile-scoped to local
- *       and test only, so no production deployment ever receives a seeded login.</li>
+ *       stream above - and stores each credential as a BCrypt digest. It sits flat beside the other
+ *       four migrations and is kept out of production by the version pin
+ *       {@code spring.flyway.target=2} that {@code application-prod.yml} declares, so no production
+ *       deployment ever receives a seeded login.</li>
  * </ul>
  *
  * <h2>Provenance</h2>

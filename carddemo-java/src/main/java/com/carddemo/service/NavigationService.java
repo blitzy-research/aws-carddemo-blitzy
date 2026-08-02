@@ -31,60 +31,72 @@ import org.springframework.stereotype.Service;
 
 import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.exception.AbendException;
 import com.carddemo.domain.enums.UserType;
 
 /**
  * The CardDemo navigation graph, expressed as a route vocabulary plus the rules that select a route.
+ * Translated from the transfer-control dispatch sites and pseudo-conversational re-arm sites of the 17
+ * online programs in {@code app/cbl}, the transaction-to-program bindings of
+ * {@code app/csd/CARDDEMO.CSD}, and the navigation state of {@code app/cpy/COCOM01Y.cpy}.
  *
- * <p><strong>Provenance.</strong> Translated from the AWS CardDemo z/OS mainframe estate at checkout
- * SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, whose every COBOL and job-control member
- * carries the trailer release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy
- * authorities for this class are the <strong>25</strong> transfer-control ({@code EXEC CICS XCTL})
- * dispatch sites and the <strong>19</strong> pseudo-conversational re-arm
- * ({@code EXEC CICS RETURN TRANSID}) sites spread across the 17 online programs of
- * {@code app/cbl}, the transaction-to-program bindings registered in {@code app/csd/CARDDEMO.CSD},
- * and the navigation state carried in the communication area {@code app/cpy/COCOM01Y.cpy}. Both
- * counts were verified mechanically over non-comment source lines: the transfer-control sites
- * distribute as {@code COACTUPC} 1, {@code COACTVWC} 1, {@code COADM01C} 2, {@code COBIL00C} 1,
- * {@code COCRDLIC} 3, {@code COCRDSLC} 1, {@code COCRDUPC} 1, {@code COMEN01C} 2, {@code CORPT00C} 1,
- * {@code COSGN00C} 2, {@code COTRN00C} 2, {@code COTRN01C} 1, {@code COTRN02C} 1, {@code COUSR00C} 3,
- * {@code COUSR01C} 1, {@code COUSR02C} 1 and {@code COUSR03C} 1.
+ * <p><strong>There is no server-side forwarding, and that is the central design decision of this
+ * class.</strong> In the legacy system control was handed to another program inside the same task,
+ * carrying the communication area with it, and the next pseudo-conversational turn was re-armed on the
+ * same terminal. Neither is reproduced: an endpoint <em>returns a route constant in its response body</em>
+ * and the <strong>client drives the next call</strong>. That is what makes every endpoint independently
+ * testable &mdash; no endpoint is reachable only as the continuation of another, and no test has to drive
+ * a conversation to reach a screen. This class accordingly performs no redirect, no {@code forward:}, no
+ * request-dispatcher call, no response-entity construction and no web-framework operation of any kind.
  *
- * <p><strong>There is no server-side forwarding. This is the central design decision of this
- * class.</strong> In the legacy system a transfer-control command hands control to another program
- * inside the same task, carrying the communication area with it, and a return-with-transaction
- * command re-arms the next pseudo-conversational turn on the same terminal. Neither is reproduced.
- * In the target an endpoint <em>returns a route constant in its response body</em> and the
- * <strong>client drives the next call</strong>. That is precisely what makes every endpoint
- * independently testable: no endpoint is reachable only as the continuation of another, and no test
- * has to drive a conversation to reach a screen. Accordingly this class performs no redirect, no
- * {@code forward:}, no request-dispatcher call, no response-entity construction and no web-framework
- * operation of any kind. It has exactly two responsibilities:
+ * <p>It has exactly two responsibilities: it owns the route vocabulary, one constant per reachable
+ * destination, as compile-time strings in {@link Routes} and in typed form in {@link Route}; and it owns
+ * the route-resolution rules, one named method per legacy rule. It returns values, and callers place
+ * those values in their own response payloads.
  *
- * <ul>
- *   <li>it <strong>owns the route vocabulary</strong> - one constant per reachable destination, in
- *       {@link Routes} as compile-time string constants and in {@link Route} as the typed form; and</li>
- *   <li>it <strong>owns the route-resolution rules</strong> - which destination a given outcome leads
- *       to, one named method per legacy rule.</li>
- * </ul>
+ * <p><strong>Destinations are named for their role, never for a COBOL program.</strong> No route value on
+ * the wire contains a legacy program name; each legacy identifier is recorded on the constant it belongs
+ * to instead, which keeps the published contract free of mainframe vocabulary while leaving every route
+ * traceable. The 18 reachable destinations correspond exactly to the 18 transaction definitions the
+ * resource definition file registers.
  *
- * <p>It returns values. Callers place those values in their own response payloads.
+ * <p><strong>Two source anomalies are recorded and neither produces a target.</strong> The resource
+ * definition file registers a program definition {@code COCRDSEC} for which no source member exists, so
+ * <em>no route constant is created for it</em>. The developer transaction {@code CDV1} is itself bound to
+ * that dangling definition, which means it cannot have been dispatchable in the shipped estate; the
+ * date-validation destination therefore records {@code CSUTLDTC}, the subprogram that does exist, and the
+ * binding anomaly is documented rather than reproduced.
  *
  * <p><strong>Destinations are named for their role, never for a COBOL program.</strong> No route
  * value on the wire contains a legacy program name; each legacy program and transaction identifier
  * is recorded in the documentation of its constant instead, which keeps the published contract free
- * of mainframe vocabulary while leaving every route traceable back to its origin. The 18 reachable
- * destinations correspond exactly to the 18 transaction definitions registered in the resource
- * definition file.
+ * of mainframe vocabulary while leaving every route traceable back to its origin. The resource
+ * definition file registers 18 transaction definitions, and 17 of them have a reachable destination:
+ * the eighteenth is bound to a program definition that has no source member, so it is recorded as an
+ * anomaly below rather than published as a route.
  *
  * <p><strong>Two source anomalies are recorded here and neither produces a target.</strong> The
  * resource definition file registers a program definition named {@code COCRDSEC} for which no source
  * member exists anywhere in {@code app/cbl}; it is a dangling definition, so <em>no route constant is
  * created for it</em>. Verification of that finding turned up a second one: the developer transaction
- * {@code CDV1} is itself bound to that dangling program definition, which means the transaction
- * cannot have been dispatchable in the shipped estate. The date-validation destination below
- * therefore records {@code CSUTLDTC} - the date-validation subprogram that does exist - as its legacy
- * program, and the binding anomaly is documented rather than reproduced.
+ * {@code CDV1} at {@code [app/csd/CARDDEMO.CSD:L388]} is itself bound to that dangling program
+ * definition at {@code [app/csd/CARDDEMO.CSD:L211]}, which means the transaction cannot have been
+ * dispatchable in the shipped estate. <em>No route constant is created for {@code CDV1} either</em>, and
+ * the reason is worth stating because an earlier revision of this class did create one.
+ *
+ * <p>That revision reasoned that {@code CDV1} is one of the eighteen registered transaction definitions
+ * and that omitting it would leave the vocabulary short of the resource definition it derives from, so
+ * it substituted the date-validation subprogram {@code CSUTLDTC} as the destination's implementation.
+ * The substitution invents a destination the estate does not have. {@code CSUTLDTC} is bound to no
+ * transaction anywhere in the resource definition file, is named by no transfer-control statement and by
+ * no menu catalogue, and is reached only by static {@code CALL} from four sites - two in
+ * {@code app/cbl/COTRN02C.cbl} and two in {@code app/cbl/CORPT00C.cbl}. It is an internal subprogram,
+ * not a navigable screen, and it stays internal: it is modelled by the date-validation service and is
+ * absent from this vocabulary. A transaction whose only binding is to a program that does not exist has
+ * no reachable destination to record, so the honest vocabulary is seventeen destinations and an anomaly
+ * note, not eighteen destinations one of which is fabricated. The dangling binding is anomaly 3 of the
+ * register in {@code docs/decision-log.md}, and both this correction and the unresolvable-transfer
+ * correction below are reasoned in {@code docs/decision-log.md} DL-107.
  *
  * <p><strong>Rules, and where each comes from.</strong> Every method below is one legacy navigation
  * rule, named so it can be cited:
@@ -114,16 +126,68 @@ import com.carddemo.domain.enums.UserType;
  * action and never a route; this class maps an action plus context <em>to</em> a route. It carries no
  * screen message text - the messages belong to {@code MessageCatalogService} and to the owning online
  * service, so the "coming soon" text and the admin-only text are composed by {@code MenuService} and
- * not here. It makes no authorisation decision - role gating is enforced by the security
- * configuration and at the controller; {@link #adminScopedRoutes()} and {@link Route#isAdminScoped()}
- * merely <em>report</em> that a destination is administrative, which the controller layer consumes.
+ * not here. It makes no authorisation decision: {@link #adminScopedRoutes()} and
+ * {@link Route#isAdminScoped()} merely <em>report</em> that a destination is administrative.
  * It touches no database, no repository, no monetary value and no fixed-width record offset.
+ *
+ * <p><strong>That an administrative destination is actually gated is an obligation on code that does
+ * not exist yet, and this class does not discharge it.</strong> The distinction matters because the
+ * two halves of the usual claim are in different states. The security configuration does declare a
+ * rule - it requires the administrator authority for every request beneath the {@code /api/admin} path
+ * prefix - so that half is real. The controller half is not: no endpoint of any kind is mapped in this
+ * module, so there is presently no request for that rule to match, and a reader who takes the report
+ * from {@link #adminScopedRoutes()} as evidence that the five administrative destinations are already
+ * protected would be mistaken.
+ *
+ * <p>The gap is narrower than "no gating exists" and wider than "gating is enforced elsewhere", and it
+ * is worth stating exactly, because it is not closed automatically by adding a controller. A route
+ * value here is a logical label - {@code admin-menu}, {@code user-list} - and not a URL, so nothing
+ * connects a destination this class reports as administrative to the path prefix the configuration
+ * gates. Whatever endpoints eventually serve these five destinations are therefore required either to
+ * be mapped beneath that prefix, so the declared rule applies to them, or to carry an equivalent
+ * method-level authority guard of their own; and their real route mappings must be exercised by a test
+ * that asserts a non-administrative principal is refused. Until then, the administrative marking on a
+ * destination is a statement about the legacy transaction it came from and not an access control.
  *
  * <p><strong>Immutability and thread safety.</strong> Every lookup table is built once during class
  * initialization and published only through an unmodifiable view, and the class declares no mutable
  * field of any kind. Instances are therefore stateless and safe to share across threads, which is
  * what allows the framework to manage a single one. Constructor injection is the convention
  * throughout this layer; this class injects nothing because it collaborates with nothing.
+ *
+ * <p><strong>What a diagnostic is allowed to say about a program name.</strong> The two nomination
+ * rules read their program name out of the navigation state a <em>client</em> echoes, and the
+ * published contract bounds those fields by width alone - eight characters - and by nothing else. A
+ * caller may therefore supply a name containing a line feed, a carriage return, a null or any other
+ * control character, and every one of them survives this class's blank test and padding strip, which
+ * recognise the space and the low value as padding and nothing more. Reproducing such a value inside
+ * a log record would let the caller choose where a record ends and the next begins, so
+ * <strong>no diagnostic here reproduces a caller-supplied value that is not printable US-ASCII</strong>;
+ * a renderer substitutes the offending character's zero-based position and code point instead, which
+ * localises the fault exactly without echoing it. Because the framework's parameter substitution
+ * escapes nothing, this is a correctness requirement of the diagnostic and not a matter of taste.
+ *
+ * <p>Three renderers exist rather than one, and they differ by the provenance of what they screen -
+ * {@link #describeNomination(String)} for a nomination a client echoed,
+ * {@link #renderCatalogName(String)} for a program name the server's own option catalogue supplied,
+ * and {@link #describeForLog(String)} for a menu option's user-type code. The distinction is
+ * deliberate: a nomination is never reproduced even when it is printable, because an unrecognised
+ * client-chosen name is itself the finding and its length is all a reader needs, whereas a catalogue
+ * name is worth naming in full because an operator confirming that a menu entry is deliberately
+ * inactive needs to see which entry it was.
+ *
+ * <p>What is single is the scan. All three delegate to {@link #firstNonPrintableIndex(String)}, which
+ * reads the one printable bound this class declares, so the three cannot come to disagree about which
+ * values offend - only about what to say once one does. No caller-supplied value reaches this class's
+ * logger by any other path, so a diagnostic added later cannot reopen the hole by interpolating a raw
+ * value. Route tokens, rule names, transaction identifiers and enum constants are not caller-supplied
+ * and are logged directly - each is a value this class or the vocabulary itself declares. Prose that
+ * states this class's own expectation of a value is not an echo of one.
+ *
+ * <p><strong>Rendering never changes resolution.</strong> The printable bound governs what a
+ * diagnostic may say and never what this class accepts: a name outside the range resolves, or fails
+ * to resolve, exactly as it did before, and the caller's default still applies on the same terms.
+ * Nothing on any resolution path consults the bound.
  *
  * <p><strong>Faithful beats idiomatic.</strong> Where the legacy semantics and the natural Java shape
  * diverge, the legacy wins and the divergence is documented at the member concerned. The three that
@@ -141,10 +205,37 @@ public final class NavigationService {
      *
      * <p>The logger name is the fully qualified class name, which places it under the
      * {@code com.carddemo.service} logger declared in the logging configuration. Only route tokens,
-     * legacy program names and transaction identifiers are ever logged from here; no navigation
-     * context is logged as a whole, and nothing regulated passes through this class at all.
+     * rule names and program-name renderings are ever logged from here; no navigation context is
+     * logged as a whole, and nothing regulated passes through this class at all.
+     *
+     * <p><strong>Every caller-supplied value reaching this logger passes through one of the three
+     * renderers first</strong>, and all three screen against the single scan the class declares. The
+     * program names this class resolves arrive in client-echoed navigation state, so they are untrusted
+     * text and not the eight-character mainframe tokens their legacy width suggests; see the class
+     * documentation for which renderer screens which provenance, and for why that makes the screening a
+     * correctness requirement rather than a precaution.
      */
     private static final Logger LOG = LoggerFactory.getLogger(NavigationService.class);
+
+    /**
+     * Sentinel returned by {@link #firstNonPrintableIndex(String)} when every character of a value is
+     * printable US-ASCII: -1, which is no valid index.
+     */
+    private static final int NO_NON_PRINTABLE_INDEX = -1;
+
+    /**
+     * Fixed stand-in a diagnostic uses for an absent value: {@code (absent)}.
+     *
+     * <p>Preferred over the framework's rendering of an absent reference because that rendering is the
+     * four-character text {@code null}, which is indistinguishable from a program name of that exact
+     * text. The parenthesised form cannot be confused with any value, since a value that reaches a
+     * diagnostic verbatim is printable US-ASCII and this substitute is only ever produced for an
+     * absent one.
+     */
+    private static final String ABSENT_VALUE_SUBSTITUTE = "(absent)";
+    /* Used by all three diagnostic renderers - describeNomination, renderCatalogName and
+     * describeForLog - so one absent value cannot render two different ways depending on which
+     * renderer happened to see it. */
 
     /**
      * Number of transfer-control dispatch sites in the legacy estate: 25.
@@ -162,113 +253,110 @@ public final class NavigationService {
     public static final int LEGACY_REARM_SITE_COUNT = 19;
 
     /**
-     * Number of reachable destinations: 18, one per transaction definition registered in
-     * {@code app/csd/CARDDEMO.CSD}.
+     * Number of reachable destinations: 17, one per online program that both exists in {@code app/cbl}
+     * and is bound to a transaction definition in {@code app/csd/CARDDEMO.CSD}.
      *
-     * <p>The resource definition file also registers 18 program definitions, but the two sets are not
-     * in correspondence: one program definition is dangling, as the class documentation describes.
+     * <p>The resource definition file registers 18 transaction definitions and 18 program definitions,
+     * and neither figure is this one. The two sets are not in correspondence: one program definition,
+     * {@code COCRDSEC}, is dangling, and the one transaction bound to it, {@code CDV1}, is therefore not
+     * dispatchable. Both anomalies are described on the class documentation and neither produces a
+     * destination, which is why a vocabulary derived from 18 registrations numbers 17.</p>
      */
-    public static final int ROUTE_COUNT = 18;
+    public static final int ROUTE_COUNT = 17;
 
     /**
-     * The five leading characters that suppress menu dispatch: {@code DUMMY}.
-     *
-     * <p>The legacy menu programs guard dispatch with a comparison of the first five characters of the
-     * catalogued program name against this literal, at {@code app/cbl/COMEN01C.cbl} line 146 and
-     * {@code app/cbl/COADM01C.cbl} line 138. Held here because the literal and the five-character
-     * width are both part of the rule; see {@link #isDispatchSuppressed(String)} for why the branch is
-     * unreachable in the shipped estate and is nonetheless preserved.
+     * Abend reason for a nomination naming a destination that cannot be resolved. Within the fifty
+     * characters {@code ABEND-REASON} reserves.
+     */
+    private static final String UNRESOLVABLE_PROGRAM_REASON = "XCTL TO UNRESOLVABLE PROGRAM NAME";
+
+    /**
+     * The five leading characters that suppress menu dispatch. The legacy guard compares only the first
+     * five characters of the catalogued program name against this literal, at
+     * {@code app/cbl/COMEN01C.cbl:L146} and {@code app/cbl/COADM01C.cbl:L138}, so both the literal and the
+     * five-character width are part of the rule. See {@link #isDispatchSuppressed(String)}.
      */
     public static final String DUMMY_PROGRAM_PREFIX = "DUMMY";
 
     /**
-     * The catalogued option user-type code that the user menu's administrator-only gate tests:
-     * {@code A}.
-     *
-     * <p>From the gate at {@code app/cbl/COMEN01C.cbl} lines 136 to 143. Declared here rather than
-     * borrowed from the menu catalogue because that catalogue lives in the configuration layer, which
-     * this layer must not depend on.
+     * The catalogued option user-type code that the user menu's administrator-only gate tests. Declared
+     * here rather than borrowed from the menu catalogue, because that catalogue lives in the configuration
+     * layer and this layer must not depend on it.
      */
     public static final String ADMIN_ONLY_OPTION_USER_TYPE_CODE = "A";
 
     /**
+     * Lowest character this class will place inside a log record: the ASCII space.
+     *
+     * <p>Everything below it is a C0 control code, and this class's records are the only place a
+     * client-echoed program nomination reaches a log file. A line feed ends the record, so the text
+     * after it appears as a separate entry that the service never emitted; a carriage return returns the
+     * cursor so the remainder overwrites what preceded it. The bound is the same one
+     * {@link com.carddemo.util.FixedWidthFieldReader} and {@code JobSubmissionService} apply to
+     * fragments they did not author, so that "printable" has one meaning across the module.
+     *
+     * <p>It governs <strong>rendering</strong> only and never acceptance. A program name carrying a
+     * character outside the range still resolves, or still fails to resolve, exactly as it did before -
+     * it is merely described rather than reproduced when a diagnostic mentions it. Conflating the two
+     * would change which navigations this class permits.
+     *
+     * <p>It is the single bound behind all three of this class's renderers. Two of them screen a
+     * program name and the third screens a menu option's user-type code; each delegates the scan to
+     * {@link #firstNonPrintableIndex(String)}, so the three cannot come to disagree about what
+     * "printable" means.
+     */
+    private static final char FIRST_PRINTABLE_US_ASCII = 0x20;
+
+    /**
+     * Highest character this class will place inside a log record: the tilde.
+     *
+     * <p>The delete control sits immediately above it and is refused for the same reason as the C0
+     * range below the space, as is every character that is not representable in a single US-ASCII byte.
+     */
+    private static final char LAST_PRINTABLE_US_ASCII = 0x7E;
+
+    /**
      * The route values as compile-time string constants - the vocabulary that travels on the wire.
      *
-     * <p>These are the values a response body carries and a client echoes back. They are compile-time
-     * constants so that a controller, a response payload or a test can name a destination without
-     * duplicating its text: the typed {@link Route} constants are initialized from exactly these
-     * fields, so there is one definition of each value and no possibility of the two drifting apart.
-     *
-     * <p><strong>Every value is named for the destination's role.</strong> None contains a COBOL
-     * program name, a transaction identifier or any other mainframe token. The form is lower case with
-     * hyphen separators, which is stable, readable inside a JSON payload and independent of the
-     * endpoint paths that the API layer chooses - this layer does not know those paths and must not
-     * encode them.
-     *
-     * <p>A holder of constants only: it is final, it declares no instance member, and its single
-     * private constructor exists to make instantiation impossible rather than merely unusual.
+     * <p>Every value is named for the destination's role and contains no mainframe token. The lower-case
+     * hyphenated form is deliberately independent of the endpoint paths the API layer chooses: this layer
+     * does not know those paths and must not encode them.
      */
     public static final class Routes {
 
-        /** Sign-on. Legacy transaction {@code CC00}, legacy program {@code COSGN00C}. */
         public static final String SIGN_ON = "sign-on";
 
-        /** User main menu, 10 options. Legacy transaction {@code CM00}, legacy program {@code COMEN01C}. */
         public static final String USER_MENU = "user-menu";
 
-        /** Administrative menu, 4 options. Legacy transaction {@code CA00}, legacy program {@code COADM01C}. */
         public static final String ADMIN_MENU = "admin-menu";
 
-        /** Account view. Legacy transaction {@code CAVW}, legacy program {@code COACTVWC}. */
         public static final String ACCOUNT_VIEW = "account-view";
 
-        /** Account update. Legacy transaction {@code CAUP}, legacy program {@code COACTUPC}. */
         public static final String ACCOUNT_UPDATE = "account-update";
 
-        /** Card list. Legacy transaction {@code CCLI}, legacy program {@code COCRDLIC}. */
         public static final String CARD_LIST = "card-list";
 
-        /** Card detail. Legacy transaction {@code CCDL}, legacy program {@code COCRDSLC}. */
         public static final String CARD_DETAIL = "card-detail";
 
-        /** Card update. Legacy transaction {@code CCUP}, legacy program {@code COCRDUPC}. */
         public static final String CARD_UPDATE = "card-update";
 
-        /** Transaction list. Legacy transaction {@code CT00}, legacy program {@code COTRN00C}. */
         public static final String TRANSACTION_LIST = "transaction-list";
 
-        /** Transaction view. Legacy transaction {@code CT01}, legacy program {@code COTRN01C}. */
         public static final String TRANSACTION_VIEW = "transaction-view";
 
-        /** Transaction add. Legacy transaction {@code CT02}, legacy program {@code COTRN02C}. */
         public static final String TRANSACTION_ADD = "transaction-add";
 
-        /** Report request. Legacy transaction {@code CR00}, legacy program {@code CORPT00C}. */
         public static final String REPORT_REQUEST = "report-request";
 
-        /** Bill payment. Legacy transaction {@code CB00}, legacy program {@code COBIL00C}. */
         public static final String BILL_PAYMENT = "bill-payment";
 
-        /** User list, administrative. Legacy transaction {@code CU00}, legacy program {@code COUSR00C}. */
         public static final String USER_LIST = "user-list";
 
-        /** User add, administrative. Legacy transaction {@code CU01}, legacy program {@code COUSR01C}. */
         public static final String USER_ADD = "user-add";
 
-        /** User update, administrative. Legacy transaction {@code CU02}, legacy program {@code COUSR02C}. */
         public static final String USER_UPDATE = "user-update";
 
-        /** User delete, administrative. Legacy transaction {@code CU03}, legacy program {@code COUSR03C}. */
         public static final String USER_DELETE = "user-delete";
-
-        /**
-         * Date-validation utility. Legacy transaction {@code CDV1}, legacy program {@code CSUTLDTC}.
-         *
-         * <p>The resource definition file binds {@code CDV1} to the dangling program definition
-         * {@code COCRDSEC}, which has no source member; the date-validation subprogram
-         * {@code CSUTLDTC} is the destination's real implementation and is recorded here in its place.
-         */
-        public static final String DATE_VALIDATION = "date-validation";
 
         /**
          * Not instantiable. This type is a holder of compile-time constants and has no behaviour and
@@ -280,18 +368,20 @@ public final class NavigationService {
     }
 
     /**
-     * The typed route vocabulary - one constant per reachable destination, 18 in all.
+     * The typed route vocabulary - one constant per reachable destination, 17 in all.
      *
-     * <p>The destinations correspond exactly to the 18 transaction definitions registered in
-     * {@code app/csd/CARDDEMO.CSD}. Each constant carries four things: the wire value, taken directly
+     * <p>The destinations correspond to the 17 dispatchable transaction definitions among the 18
+     * registered in {@code app/csd/CARDDEMO.CSD}. Each constant carries four things: the wire value,
+     * taken directly
      * from the matching field of {@link Routes} so the two can never diverge; the legacy transaction
      * identifier and legacy program name, held for traceability and never published as the route value
      * itself; and whether the destination is administrative.
      *
      * <p>Declaration order is the order a user traverses the application - sign-on, then the two
      * menus, then the account, card, transaction, reporting and payment destinations, then the
-     * administrative user-maintenance destinations, then the date-validation utility. That order is
-     * what {@link #routes()} exposes.
+     * administrative user-maintenance destinations. The order ends there: the date-validation
+     * subprogram is internal and has no constant here, for the reason the class documentation gives.
+     * That order is what {@link #routes()} exposes.
      *
      * <p><strong>No constant exists for {@code COCRDSEC}</strong>, the dangling program definition
      * described in the class documentation, and none may be added.
@@ -302,127 +392,74 @@ public final class NavigationService {
     public enum Route {
 
         /**
-         * Sign-on, the entry point and the destination of every sign-off and every
-         * entry that carries no prior navigation state.
-         *
-         * <p>Legacy transaction {@code CC00}, legacy program {@code COSGN00C}. It is the target that
-         * both menu programs nominate on their sign-off path, at {@code app/cbl/COMEN01C.cbl} line 173
-         * and {@code app/cbl/COADM01C.cbl} line 163.
+         * Sign-on: the entry point, and the destination of every sign-off and every entry carrying no
+         * prior navigation state. Both menu programs nominate it on their sign-off path,
+         * {@code app/cbl/COMEN01C.cbl:L173} and {@code app/cbl/COADM01C.cbl:L163}.
          */
         SIGN_ON(Routes.SIGN_ON, "CC00", "COSGN00C", false),
 
         /**
-         * User main menu, carrying 10 options.
-         *
-         * <p>Legacy transaction {@code CM00}, legacy program {@code COMEN01C}. This is the destination
-         * of the unconditional alternative in the sign-on role split at
-         * {@code app/cbl/COSGN00C.cbl} line 235, and the verified back-navigation default of the
-         * bill-payment program at {@code app/cbl/COBIL00C.cbl} line 130.
+         * User main menu, carrying 10 options. The destination of the unconditional alternative in the
+         * sign-on role split, {@code app/cbl/COSGN00C.cbl:L235}, and the verified back-navigation default
+         * of the bill-payment program, {@code app/cbl/COBIL00C.cbl:L130}.
          */
         USER_MENU(Routes.USER_MENU, "CM00", "COMEN01C", false),
 
         /**
-         * Administrative menu, carrying 4 options.
-         *
-         * <p>Legacy transaction {@code CA00}, legacy program {@code COADM01C}. Reached only when the
-         * administrator condition holds at {@code app/cbl/COSGN00C.cbl} line 230. Administrative.
+         * Administrative menu, carrying 4 options. Reached only when the administrator condition holds at
+         * {@code app/cbl/COSGN00C.cbl:L230}.
          */
         ADMIN_MENU(Routes.ADMIN_MENU, "CA00", "COADM01C", true),
 
-        /** Account view. Legacy transaction {@code CAVW}, legacy program {@code COACTVWC}. */
         ACCOUNT_VIEW(Routes.ACCOUNT_VIEW, "CAVW", "COACTVWC", false),
 
-        /** Account update. Legacy transaction {@code CAUP}, legacy program {@code COACTUPC}. */
         ACCOUNT_UPDATE(Routes.ACCOUNT_UPDATE, "CAUP", "COACTUPC", false),
 
-        /** Card list. Legacy transaction {@code CCLI}, legacy program {@code COCRDLIC}. */
         CARD_LIST(Routes.CARD_LIST, "CCLI", "COCRDLIC", false),
 
-        /** Card detail. Legacy transaction {@code CCDL}, legacy program {@code COCRDSLC}. */
         CARD_DETAIL(Routes.CARD_DETAIL, "CCDL", "COCRDSLC", false),
 
-        /** Card update. Legacy transaction {@code CCUP}, legacy program {@code COCRDUPC}. */
         CARD_UPDATE(Routes.CARD_UPDATE, "CCUP", "COCRDUPC", false),
 
-        /** Transaction list. Legacy transaction {@code CT00}, legacy program {@code COTRN00C}. */
         TRANSACTION_LIST(Routes.TRANSACTION_LIST, "CT00", "COTRN00C", false),
 
-        /** Transaction view. Legacy transaction {@code CT01}, legacy program {@code COTRN01C}. */
         TRANSACTION_VIEW(Routes.TRANSACTION_VIEW, "CT01", "COTRN01C", false),
 
         /**
-         * Transaction add. Legacy transaction {@code CT02}, legacy program {@code COTRN02C}.
-         *
-         * <p>Not administrative. The user menu's eighth option carries a commented-out alternative
-         * label marking this destination as administrator-only, and that label is inactive in the
-         * shipped estate; the active label and the option's user-type code both make it available to a
-         * standard user, so treating it as administrative here would deny access the legacy grants.
+         * Transaction add, and <strong>not</strong> administrative. The user menu's eighth option carries a
+         * commented-out alternative label marking this destination administrator-only, and that label is
+         * inactive in the shipped estate; the active label and the option's user-type code both make it
+         * available to a standard user, so treating it as administrative would deny access the legacy
+         * grants.
          */
         TRANSACTION_ADD(Routes.TRANSACTION_ADD, "CT02", "COTRN02C", false),
 
         /**
-         * Report request. Legacy transaction {@code CR00}, legacy program {@code CORPT00C}.
-         *
-         * <p>The only destination whose own processing crosses into the batch tier, by way of the
-         * estate's single transient-data-queue write. That bridge belongs to the job-submission
-         * service; nothing about it is navigation, and nothing about it appears here.
+         * Report request &mdash; the only destination whose own processing crosses into the batch tier, by
+         * way of the estate's single transient-data-queue write. That bridge belongs to the job-submission
+         * service; nothing about it is navigation and nothing about it appears here.
          */
         REPORT_REQUEST(Routes.REPORT_REQUEST, "CR00", "CORPT00C", false),
 
-        /** Bill payment. Legacy transaction {@code CB00}, legacy program {@code COBIL00C}. */
         BILL_PAYMENT(Routes.BILL_PAYMENT, "CB00", "COBIL00C", false),
 
-        /**
-         * User list. Legacy transaction {@code CU00}, legacy program {@code COUSR00C}. Administrative:
-         * reachable in the legacy estate only from the administrative menu.
-         */
         USER_LIST(Routes.USER_LIST, "CU00", "COUSR00C", true),
 
-        /** User add. Legacy transaction {@code CU01}, legacy program {@code COUSR01C}. Administrative. */
         USER_ADD(Routes.USER_ADD, "CU01", "COUSR01C", true),
 
-        /** User update. Legacy transaction {@code CU02}, legacy program {@code COUSR02C}. Administrative. */
         USER_UPDATE(Routes.USER_UPDATE, "CU02", "COUSR02C", true),
 
         /** User delete. Legacy transaction {@code CU03}, legacy program {@code COUSR03C}. Administrative. */
-        USER_DELETE(Routes.USER_DELETE, "CU03", "COUSR03C", true),
+        USER_DELETE(Routes.USER_DELETE, "CU03", "COUSR03C", true);
 
-        /**
-         * Date-validation utility. Legacy transaction {@code CDV1}, legacy program {@code CSUTLDTC}.
-         *
-         * <p>Not administrative, and not reachable from either menu catalogue: the resource definition
-         * file describes {@code CDV1} as a developer transaction. It is included because it is one of
-         * the 18 registered transaction definitions, and omitting it would leave the vocabulary short
-         * of the resource definition it is derived from.
-         *
-         * <p>The transaction definition binds to the dangling program definition {@code COCRDSEC},
-         * which has no source member. {@code CSUTLDTC} is recorded here instead because it is the
-         * date-validation subprogram that exists and that four call sites in the estate invoke; the
-         * binding anomaly is documented rather than reproduced, and no route is created for
-         * {@code COCRDSEC}.
-         */
-        DATE_VALIDATION(Routes.DATE_VALIDATION, "CDV1", "CSUTLDTC", false);
-
-        /** The wire value, identical to the matching field of {@link Routes}. Never {@code null}. */
         private final String routeValue;
 
-        /** The four-character legacy transaction identifier. Traceability only. Never {@code null}. */
         private final String legacyTransactionId;
 
-        /** The eight-character legacy program name. Traceability only. Never {@code null}. */
         private final String legacyProgramName;
 
-        /** Whether the destination is administrative. */
         private final boolean adminScoped;
 
-        /**
-         * Binds a destination to its wire value, its legacy identifiers and its administrative scope.
-         *
-         * @param routeValue          the wire value, supplied from {@link Routes}
-         * @param legacyTransactionId the four-character legacy transaction identifier
-         * @param legacyProgramName   the eight-character legacy program name
-         * @param adminScoped         whether the destination is administrative
-         */
         Route(String routeValue, String legacyTransactionId, String legacyProgramName,
                 boolean adminScoped) {
             this.routeValue = routeValue;
@@ -432,50 +469,33 @@ public final class NavigationService {
         }
 
         /**
-         * Returns the wire value for this destination - the token a response body carries and a client
-         * echoes back.
-         *
-         * <p>Role-named, and free of any legacy program name or transaction identifier.
-         *
-         * @return the wire value; never {@code null}
+         * @return the wire value a response body carries and a client echoes back; role-named and free of
+         *         any legacy program name or transaction identifier
          */
         public String getRouteValue() {
             return routeValue;
         }
 
         /**
-         * Returns the legacy transaction identifier this destination replaces, as registered in
-         * {@code app/csd/CARDDEMO.CSD}.
-         *
-         * <p>Traceability only: it is never the wire value and nothing in the published contract
-         * depends on it.
-         *
-         * @return the four-character legacy transaction identifier; never {@code null}
+         * @return the four-character legacy transaction identifier, as registered in
+         *         {@code app/csd/CARDDEMO.CSD}; traceability only, and never the wire value
          */
         public String getLegacyTransactionId() {
             return legacyTransactionId;
         }
 
         /**
-         * Returns the legacy program name this destination replaces.
-         *
-         * <p>This is also the value the communication area carries in its originating- and
-         * destination-program fields, which is why the enclosing service can resolve one of those
-         * fields to a destination. Traceability only as a published value: it is never the wire value.
-         *
-         * @return the eight-character legacy program name; never {@code null}
+         * @return the eight-character legacy program name; traceability only as a published value, but
+         *         also the value the communication area carries in its originating- and
+         *         destination-program fields, which is what lets the enclosing service resolve them
          */
         public String getLegacyProgramName() {
             return legacyProgramName;
         }
 
         /**
-         * Reports whether this destination is administrative - that is, one of the administrative menu
-         * and the four user-maintenance destinations.
-         *
-         * <p>This <strong>reports</strong> scope and <strong>decides</strong> nothing. Enforcement
-         * belongs to the security configuration and to the controller; nothing in this class or this
-         * enum performs an access check.
+         * <strong>Reports</strong> scope and <strong>decides</strong> nothing; enforcement belongs to the
+         * security configuration and the controller.
          *
          * @return {@code true} for the administrative menu and the four user-maintenance destinations
          */
@@ -485,59 +505,36 @@ public final class NavigationService {
     }
 
     /**
-     * Every destination, in declaration order, as an immutable list.
-     *
-     * <p>Built from the declared constants themselves rather than from a second hand-written list, so
-     * it cannot fall out of step with them. Exposed through {@link #routes()}.
+     * Every destination in declaration order, built from the declared constants themselves rather than
+     * from a second hand-written list, so it cannot fall out of step with them.
      */
     private static final List<Route> ALL_ROUTES = List.of(Route.values());
 
     /**
-     * The administrative destinations: the administrative menu and the four user-maintenance
-     * destinations, five in all.
-     *
-     * <p>Derived by filtering the declared constants on their own administrative flag, so adding a
-     * destination marked administrative extends this set automatically and no second list has to be
-     * maintained. Immutable, and exposed through {@link #adminScopedRoutes()}.
+     * The five administrative destinations, derived by filtering the declared constants on their own
+     * administrative flag, so adding one marked administrative extends this set automatically.
      */
     private static final Set<Route> ADMIN_SCOPED_ROUTES = indexAdminScoped();
 
     /**
-     * Index from legacy program name to destination, used to resolve the originating- and
-     * destination-program fields of the communication area, and the program name a menu catalogue
-     * entry carries.
-     *
-     * <p>Immutable and built once. This is the table that makes back-navigation possible at all: the
-     * legacy fields carry an eight-character program name, not a route.
+     * Index from legacy program name to destination. This is what makes back-navigation possible at all:
+     * the communication-area fields carry an eight-character program name, not a route.
      */
     private static final Map<String, Route> ROUTES_BY_LEGACY_PROGRAM = indexBy(Route::getLegacyProgramName);
 
-    /**
-     * Index from legacy transaction identifier to destination, mirroring the transaction definitions
-     * registered in {@code app/csd/CARDDEMO.CSD}. Immutable and built once.
-     */
+    /** Index from legacy transaction identifier to destination, mirroring {@code app/csd/CARDDEMO.CSD}. */
     private static final Map<String, Route> ROUTES_BY_LEGACY_TRANSACTION =
             indexBy(Route::getLegacyTransactionId);
 
-    /**
-     * Index from wire value to destination, used to read back a route a client echoed. Immutable and
-     * built once.
-     */
+    /** Index from wire value to destination, used to read back a route a client echoed. */
     private static final Map<String, Route> ROUTES_BY_VALUE = indexBy(Route::getRouteValue);
 
     /**
-     * Creates the navigation service.
-     *
-     * <p>Explicit and empty because this class injects nothing: it is the base of the service layer
-     * and collaborates with no other service, so there is no dependency to receive. Constructor
-     * injection remains the convention for every service that does have collaborators.
-     *
-     * <p>The instance holds no state. All four lookup structures are immutable static members
-     * initialized once during class initialization, so instances are interchangeable and safe to share
-     * across threads.
+     * Creates the navigation service. Explicit and empty because this class is the base of the service
+     * layer and collaborates with nothing, so there is no dependency to receive; constructor injection
+     * remains the convention for every service that does have collaborators.
      */
     public NavigationService() {
-        // No collaborators and no state to initialize; the route tables are immutable static members.
     }
 
     // ------------------------------------------------------------------------------------------
@@ -547,33 +544,25 @@ public final class NavigationService {
     /**
      * Resolves the destination a completed sign-on leads to, from the signed-on user's type.
      *
-     * <p><strong>Reproduces an asymmetry that must not be tidied up.</strong> The legacy program tests
-     * the administrator condition at {@code app/cbl/COSGN00C.cbl} line 230 and hands control to the
-     * administrative menu when it holds. What follows at line 235 is an
-     * <strong>unconditional alternative</strong>, closing at line 240: it is <em>not</em> a second test
-     * of the standard-user condition, there is no third branch, and there is no validation of the type
-     * value anywhere on the path. The value reaching the test was moved straight out of the credential
-     * record at line 227 without inspection.
+     * <p><strong>Reproduces an asymmetry that must not be tidied up.</strong> The legacy program tests the
+     * administrator condition at {@code app/cbl/COSGN00C.cbl:L230} and hands control to the administrative
+     * menu when it holds. What follows at {@code L235} is an <strong>unconditional alternative</strong>: it
+     * is <em>not</em> a second test of the standard-user condition, there is no third branch, and the value
+     * reaching the test was moved straight out of the credential record at {@code L227} without inspection.
      *
-     * <p>Two consequences are therefore contractual. Only the administrator type reaches the
-     * administrative menu. <em>Every</em> other input - the standard user type, and equally an absent
-     * type or one outside the two-value vocabulary the estate declares - reaches the user main menu.
-     * This method consequently accepts {@code null} and <strong>never throws</strong>: the conventional
-     * Java shape would reject an unrecognised type with an exception, and that would abort a sign-on
-     * the legacy program completes.
-     *
-     * @param userType the signed-on user's type, or {@code null} when the raw code could not be
-     *                 resolved to one of the two declared values
-     * @return {@link Route#ADMIN_MENU} for the administrator type; {@link Route#USER_MENU} for every
-     *         other input, including {@code null}
+     * <p>Two consequences are therefore contractual. Only the administrator type reaches the administrative
+     * menu, and <em>every</em> other input &mdash; the standard user type, an absent type, or one outside
+     * the two-value vocabulary the estate declares &mdash; reaches the user main menu. This method
+     * consequently accepts {@code null} and <strong>never throws</strong>: rejecting an unrecognised type
+     * would abort a sign-on the legacy program completes.
      */
     public Route resolveSignOnRoute(final UserType userType) {
         final Route route;
         if (userType != null && userType.isAdmin()) {
             route = Route.ADMIN_MENU;
         } else {
-            // The unconditional alternative: the standard user type, an absent type and any type
-            // outside the declared vocabulary all arrive here. No further test, and no error path.
+            // The unconditional alternative: the standard type, an absent type and any undeclared type all
+            // arrive here, with no further test and no error path.
             route = Route.USER_MENU;
         }
         LOG.debug("Sign-on route resolved: rule=sign-on-role-split userType={} route={}",
@@ -582,22 +571,15 @@ public final class NavigationService {
     }
 
     /**
-     * Resolves the destination a completed sign-on leads to, from the raw one-character user-type code.
-     *
-     * <p>The whole of the legacy path in one call: the code is resolved to a type exactly as the
-     * credential record's value is moved into the communication area at
-     * {@code app/cbl/COSGN00C.cbl} line 227, and the resolved type then drives the split described on
-     * {@link #resolveSignOnRoute(UserType)}.
+     * Resolves the destination a completed sign-on leads to, from the raw one-character user-type code
+     * &mdash; the whole legacy path in one call. The code is resolved to a type exactly as the credential
+     * record's value is moved into the communication area at {@code app/cbl/COSGN00C.cbl:L227}, and the
+     * resolved type then drives the split described on {@link #resolveSignOnRoute(UserType)}.
      *
      * <p>Resolution never throws and applies no case fold, so a code that is absent, blank, over-long,
-     * lower-cased or simply undeclared resolves to nothing - and nothing, being not the administrator
-     * type, reaches the user main menu. That is the unconditional alternative faithfully reproduced,
-     * and it is why this method has no error path.
-     *
-     * @param userTypeCode the raw one-character code, as carried by the communication area or read
-     *                     from the credential record; may be {@code null}
-     * @return {@link Route#ADMIN_MENU} for the administrator code; {@link Route#USER_MENU} for every
-     *         other code, including {@code null}, a blank and any value outside the declared vocabulary
+     * lower-cased or simply undeclared resolves to nothing &mdash; and nothing, not being the administrator
+     * type, reaches the user main menu. That is the unconditional alternative faithfully reproduced, and it
+     * is why this method has no error path.
      */
     public Route resolveSignOnRouteForUserTypeCode(final String userTypeCode) {
         final Optional<UserType> resolved = UserType.fromCode(userTypeCode);
@@ -609,16 +591,12 @@ public final class NavigationService {
     // ------------------------------------------------------------------------------------------
 
     /**
-     * Reports whether an online turn carries no prior navigation state.
-     *
-     * <p>The equivalent of the zero-length communication-area test that opens every online program's
-     * main paragraph, at {@code app/cbl/COBIL00C.cbl} line 107 and in its sixteen peers. A turn is
-     * stateless when no context was supplied at all, and equally when the supplied context is the
-     * wholly empty one: an empty context carries no signed-on user, no selection and no previous
-     * screen, which is exactly the state a zero-length communication area describes.
-     *
-     * @param context the navigation state echoed by the client; may be {@code null}
-     * @return {@code true} when the context is {@code null} or wholly empty
+     * Reports whether an online turn carries no prior navigation state: the equivalent of the zero-length
+     * communication-area test that opens every online program's main paragraph,
+     * {@code app/cbl/COBIL00C.cbl:L107} and its sixteen peers. A turn is stateless when no context was
+     * supplied and equally when the supplied context is wholly empty, since an empty context carries no
+     * signed-on user, no selection and no previous screen &mdash; exactly what a zero-length communication
+     * area describes.
      */
     public boolean isNavigationContextAbsent(final NavigationContext context) {
         return context == null || NavigationContext.empty().equals(context);
@@ -626,18 +604,13 @@ public final class NavigationService {
 
     /**
      * Returns the destination an online turn carrying no prior navigation state leads to: sign-on,
-     * unconditionally.
+     * unconditionally. From the zero-length branch at {@code app/cbl/COBIL00C.cbl:L107-L108}, which
+     * nominates the sign-on program without consulting anything else; the administrative menu takes the
+     * same branch at {@code app/cbl/COADM01C.cbl:L82-L84}.
      *
-     * <p>From the zero-length communication-area branch at {@code app/cbl/COBIL00C.cbl} lines 107 and
-     * 108, which nominates the sign-on program and returns to the previous screen without consulting
-     * anything else. The administrative menu takes the same branch at
-     * {@code app/cbl/COADM01C.cbl} lines 82 to 84.
-     *
-     * <p>Named and exposed rather than left to each caller so that the rule is stated once. It takes no
-     * argument and admits no override, because the legacy branch takes none either: there is no
-     * per-program default on this path, unlike the back-navigation path.
-     *
-     * @return {@link Route#SIGN_ON}, always
+     * <p>Named and exposed rather than left to each caller so the rule is stated once. It admits no
+     * override because the legacy branch takes none: there is no per-program default on this path, unlike
+     * the back-navigation path.
      */
     public Route resolveAbsentContextRoute() {
         return Route.SIGN_ON;
@@ -648,49 +621,51 @@ public final class NavigationService {
     // ------------------------------------------------------------------------------------------
 
     /**
-     * Reports whether an attention-key action is the one that returns to the previous screen.
+     * Reports whether an attention-key action is the one that returns to the previous screen: the third
+     * program-function key alone, which all seventeen online programs treat that way,
+     * {@code app/cbl/COBIL00C.cbl:L128}.
      *
-     * <p>True for the third program-function key alone. All seventeen online programs treat that key as
-     * "return to the previous screen", as the attention-key evaluation at
-     * {@code app/cbl/COBIL00C.cbl} line 128 does.
-     *
-     * <p>This class performs <strong>no</strong> attention-key decoding: turning a raw terminal
+     * <p>This class performs <strong>no</strong> attention-key decoding &mdash; turning a raw terminal
      * identifier into an action, including the fold of program-function keys 13 through 24 back onto 1
-     * through 12, belongs to the utility-layer key translator. This method consumes an already decoded
-     * action and derives nothing. A {@code null} action means no key was decoded, which is not the
-     * back-navigation key, so it answers {@code false} rather than throwing.
-     *
-     * @param keyAction the decoded attention-key action; may be {@code null}
-     * @return {@code true} if and only if the action is the third program-function key
+     * through 12, belongs to the utility-layer key translator. A {@code null} action means no key was
+     * decoded, which is not the back-navigation key, so it answers {@code false} rather than throwing.
      */
     public boolean isBackNavigationKey(final KeyAction keyAction) {
         return keyAction == KeyAction.PFK03;
     }
 
     /**
-     * Resolves the destination that returning to the previous screen leads to, given the navigation
-     * state and the calling screen's own default.
+     * Resolves the destination that returning to the previous screen leads to, given the navigation state
+     * and the calling screen's own default.
      *
      * <p><strong>Both arms of the legacy rule are modelled.</strong> At
-     * {@code app/cbl/COBIL00C.cbl} lines 129 to 134 the program tests the originating-program field of
-     * the communication area: when the field holds spaces or low values it nominates the calling
-     * screen's own default, and otherwise it nominates the destination that field names. The default is
-     * <strong>per screen and not global</strong> - the bill-payment program's is the user main menu at
-     * line 130, while both menu programs default their sign-off path to sign-on - which is why the
-     * fallback is a parameter here and is never assumed.
+     * {@code app/cbl/COBIL00C.cbl:L129-L134} the program tests the <em>originating</em>-program field of the
+     * communication area: when it holds spaces or low values it nominates the calling screen's own default,
+     * and otherwise it nominates the destination that field names. The default is <strong>per screen and
+     * not global</strong> &mdash; the bill-payment program's is the user main menu at {@code L130}, while
+     * both menu programs default their sign-off path to sign-on &mdash; which is why the fallback is a
+     * parameter here and is never assumed.
      *
-     * <p>The blank test is the legacy test, not the conventional Java one: the field is fixed width, so
-     * a value consisting entirely of spaces or of low values is blank, while a value containing other
-     * white space is not.
+     * <p>The blank test is the legacy test, not the conventional Java one: the field is fixed width, so a
+     * value consisting entirely of spaces or of low values is blank, while one containing other white space
+     * is not.
      *
-     * <p><strong>One documented divergence.</strong> When the field is present but names no reachable
-     * destination, the caller's default applies and the event is logged as a warning. The legacy would
-     * have attempted the transfer and abended on an unresolvable program name. The divergence is
-     * deliberate: this field is client-echoed state and therefore untrusted, so honouring it blindly
-     * would let a client provoke a server failure by echoing an unknown name, while a value that names
-     * no reachable destination nominates nothing - which is behaviourally what an empty field does.
-     * In the shipped estate the field can only ever hold one of the seventeen online program names, so
-     * the divergence is unreachable from legitimate input.
+     * <p><strong>An unresolvable nomination fails.</strong> When the field is present but names no
+     * reachable destination, this raises {@link AbendException} rather than quietly applying the caller's
+     * default. The legacy transfer-control statement would have attempted the transfer and abended on an
+     * unresolvable program name, and that is the behaviour reproduced here.
+     *
+     * <p>An earlier revision applied the caller's default and logged a warning instead, reasoning that
+     * the field is client-echoed and therefore untrusted, so honouring it blindly would let a client
+     * provoke a server failure. The premise is right and the conclusion does not follow. Substituting a
+     * different destination is not the safe response to untrusted input; it is a silent change of
+     * outcome, which is worse than a failure because it is invisible. Untrusted input is handled where it
+     * belongs - the name is bounded to the legacy field width before it reaches a diagnostic, exactly as a
+     * move into {@code PIC X(8)} bounds it - and the outcome is left alone. A refused navigation is a
+     * refusal, not a redirection.
+     *
+     * <p>In the shipped estate the field can only ever hold one of the seventeen online program names, so
+     * a legitimate client never reaches this path.
      *
      * @param context       the navigation state echoed by the client; must not be {@code null}. Entry
      *                      carrying no state at all is a different rule - see
@@ -699,8 +674,10 @@ public final class NavigationService {
      * @param callerDefault the calling screen's own default destination, applied when the originating
      *                      program field nominates nothing usable; must not be {@code null}
      * @return the destination the originating-program field names, or {@code callerDefault} when that
-     *         field is blank or names no reachable destination
+     *         field is blank; never {@code null}
      * @throws NullPointerException if {@code context} or {@code callerDefault} is {@code null}
+     * @throws AbendException       if the originating-program field names a destination that cannot be
+     *                              resolved, reproducing the abend the legacy transfer would have raised
      */
     public Route resolveBackNavigation(final NavigationContext context, final Route callerDefault) {
         Objects.requireNonNull(context, "context must not be null");
@@ -709,25 +686,15 @@ public final class NavigationService {
     }
 
     /**
-     * Resolves the destination an attention key leads to, producing a destination only for the key that
-     * returns to the previous screen.
+     * Resolves the destination an attention key leads to, producing one only for the key that returns to the
+     * previous screen. The navigation-bearing arm of the attention-key evaluation at
+     * {@code app/cbl/COBIL00C.cbl:L125-L142}: only the third program-function key transfers control there,
+     * while the enter key is processed by the screen itself and every other key produces an invalid-key
+     * message and re-presents the same screen. Neither of those transfers control, so neither yields a
+     * destination and both are reported as an empty result.
      *
-     * <p>The navigation-bearing arm of the attention-key evaluation at
-     * {@code app/cbl/COBIL00C.cbl} lines 125 to 142. Only the third program-function key transfers
-     * control there; the enter key is processed by the screen itself, and every other key produces an
-     * invalid-key message and re-presents the same screen. Neither of those transfers control, so
-     * neither yields a destination, and both are reported here as an empty result.
-     *
-     * <p>The message text that accompanies an unmapped key is not this class's concern; it belongs to
-     * the common message catalogue and is emitted by the owning online service.
-     *
-     * @param keyAction     the decoded attention-key action; may be {@code null}, which yields an empty
-     *                      result
-     * @param context       the navigation state echoed by the client; must not be {@code null}
-     * @param callerDefault the calling screen's own back-navigation default; must not be {@code null}
-     * @return the back-navigation destination when the action is the third program-function key,
-     *         otherwise an empty result
-     * @throws NullPointerException if {@code context} or {@code callerDefault} is {@code null}
+     * <p>The message text accompanying an unmapped key belongs to the common message catalogue and is
+     * emitted by the owning online service.
      */
     public Optional<Route> resolveAttentionKeyRoute(final KeyAction keyAction,
             final NavigationContext context, final Route callerDefault) {
@@ -746,26 +713,25 @@ public final class NavigationService {
     // ------------------------------------------------------------------------------------------
 
     /**
-     * Resolves the destination already nominated in the navigation state, falling back to the caller's
-     * own default when nothing is nominated.
+     * Resolves the destination already nominated in the navigation state, falling back to the caller's own
+     * default when nothing is nominated.
      *
-     * <p>A rule distinct from back-navigation, and distinct in the source too. Back-navigation inspects
-     * the <em>originating</em>-program field; this inspects the <em>destination</em>-program field,
-     * which a screen sets before handing off. The legacy shape is the sign-off paragraph of the two
-     * menu programs, at {@code app/cbl/COMEN01C.cbl} lines 170 to 177 and
-     * {@code app/cbl/COADM01C.cbl} lines 160 to 167: the field is tested for low values or spaces, the
-     * program's own default is substituted when it is blank, and control transfers to whatever the
-     * field then holds.
+     * <p>A rule distinct from back-navigation, and distinct in the source too: back-navigation inspects the
+     * <em>originating</em>-program field, while this inspects the <em>destination</em>-program field, which
+     * a screen sets before handing off. The legacy shape is the sign-off paragraph of the two menu
+     * programs, {@code app/cbl/COMEN01C.cbl:L170-L177} and {@code app/cbl/COADM01C.cbl:L160-L167}.
      *
      * <p>The fallback is a parameter for the same reason it is on back-navigation: the default is per
-     * screen. The unrecognised-name divergence documented on
+     * screen. The unresolvable-nomination failure documented on
      * {@link #resolveBackNavigation(NavigationContext, Route)} applies identically here.
      *
      * @param context       the navigation state echoed by the client; must not be {@code null}
      * @param callerDefault the destination to use when nothing is nominated; must not be {@code null}
      * @return the nominated destination, or {@code callerDefault} when the destination-program field is
-     *         blank or names no reachable destination
+     *         blank; never {@code null}
      * @throws NullPointerException if {@code context} or {@code callerDefault} is {@code null}
+     * @throws AbendException       if the destination-program field names a destination that cannot be
+     *                              resolved, reproducing the abend the legacy transfer would have raised
      */
     public Route resolveNominatedDestination(final NavigationContext context, final Route callerDefault) {
         Objects.requireNonNull(context, "context must not be null");
@@ -774,21 +740,14 @@ public final class NavigationService {
     }
 
     /**
-     * Resolves the destination a sign-off leads to, defaulting to sign-on.
+     * Resolves the destination a sign-off leads to, defaulting to sign-on &mdash; the verified special case
+     * of {@link #resolveNominatedDestination(NavigationContext, Route)} for the two menu programs, each of
+     * which nominates the sign-on program on its exit key and defaults to sign-on when nothing is
+     * nominated, at {@code app/cbl/COMEN01C.cbl:L97, L173} and {@code app/cbl/COADM01C.cbl:L97, L163}.
      *
-     * <p>The verified special case of {@link #resolveNominatedDestination(NavigationContext, Route)}
-     * for the two menu programs: each nominates the sign-on program on its exit key and each defaults
-     * the destination to sign-on when nothing is nominated, at {@code app/cbl/COMEN01C.cbl} lines 97
-     * and 173 and {@code app/cbl/COADM01C.cbl} lines 97 and 163.
-     *
-     * <p>This method fixes the fallback because the source fixes it for these two programs, and for
-     * them only. It is <strong>not</strong> a global default: any other screen resolving a nominated
-     * destination must supply its own fallback through
+     * <p>This method fixes the fallback because the source fixes it for these two programs and for them
+     * only. It is <strong>not</strong> a global default: any other screen must supply its own through
      * {@link #resolveNominatedDestination(NavigationContext, Route)}.
-     *
-     * @param context the navigation state echoed by the client; must not be {@code null}
-     * @return the nominated destination, or {@link Route#SIGN_ON} when nothing usable is nominated
-     * @throws NullPointerException if {@code context} is {@code null}
      */
     public Route resolveSignOffRoute(final NavigationContext context) {
         return resolveNominatedDestination(context, Route.SIGN_ON);
@@ -799,60 +758,43 @@ public final class NavigationService {
     // ------------------------------------------------------------------------------------------
 
     /**
-     * Reports whether a catalogued program name suppresses dispatch.
-     *
-     * <p>The legacy guard compares the <strong>first five characters</strong> of the catalogued program
-     * name against the literal {@code DUMMY} and dispatches only when they differ, at
-     * {@code app/cbl/COMEN01C.cbl} line 146 and {@code app/cbl/COADM01C.cbl} line 138. When they match,
-     * control never transfers and the program falls through to compose a "coming soon" message instead -
-     * so a suppressed selection produces <strong>no route at all</strong>, which is why the menu
+     * Reports whether a catalogued program name suppresses dispatch. The legacy guard compares the
+     * <strong>first five characters</strong> of the name against the suppression literal and dispatches only
+     * when they differ, at {@code app/cbl/COMEN01C.cbl:L146} and {@code app/cbl/COADM01C.cbl:L138}. When
+     * they match, control never transfers and the program falls through to compose a "coming soon" message
+     * instead &mdash; so a suppressed selection produces <strong>no route at all</strong>, which is why the
      * dispatch methods return an empty result rather than a destination.
      *
      * <p><strong>Documented unreachable, and deliberately preserved.</strong> No entry in either menu
-     * catalogue names a program beginning with {@code DUMMY}: the user catalogue's ten entries name the
-     * account, card, transaction, reporting and payment programs, and the administrative catalogue's
-     * four name the user-maintenance programs. The branch therefore cannot fire in the shipped estate.
-     * It is reproduced anyway, because deleting it would discard a documented behaviour of the source
-     * and because the guard is what makes a catalogue entry safely extensible.
+     * catalogue names a program beginning with the literal, so the branch cannot fire in the shipped estate.
+     * It is reproduced anyway, because deleting it would discard a documented behaviour of the source and
+     * because the guard is what makes a catalogue entry safely extensible.
      *
-     * <p>A blank or absent name is <em>not</em> suppressed, faithfully: it does not begin with the
-     * literal, so the legacy guard would let dispatch proceed. Such a name simply names no reachable
-     * destination, and the dispatch methods report that as an empty result.
-     *
-     * @param catalogProgramName the program name carried by the selected menu catalogue entry; may be
-     *                           {@code null}
-     * @return {@code true} if and only if the name's first five characters are the suppression literal
+     * <p>A blank or absent name is <em>not</em> suppressed, faithfully: it does not begin with the literal,
+     * so the legacy guard would let dispatch proceed. Such a name simply names no reachable destination,
+     * which the dispatch methods report as an empty result.
      */
     public boolean isDispatchSuppressed(final String catalogProgramName) {
         return catalogProgramName != null && catalogProgramName.startsWith(DUMMY_PROGRAM_PREFIX);
     }
 
     /**
-     * Reports whether the user menu's administrator-only gate denies a selection.
-     *
-     * <p>The gate at {@code app/cbl/COMEN01C.cbl} lines 136 to 143 fires when two conditions hold
-     * together: the signed-on type satisfies the <em>standard-user</em> condition, and the selected
-     * catalogue entry's own user-type code is the administrator code. When it fires, an error is raised,
-     * the menu is re-presented and no control transfer occurs - so no route is produced.
+     * Reports whether the user menu's administrator-only gate denies a selection. The gate at
+     * {@code app/cbl/COMEN01C.cbl:L136-L143} fires when two conditions hold together: the signed-on type
+     * satisfies the <em>standard-user</em> condition, and the selected catalogue entry's own user-type code
+     * is the administrator code. When it fires an error is raised, the menu is re-presented and no control
+     * transfer occurs, so no route is produced.
      *
      * <p><strong>The first condition is the standard-user condition, not "not an administrator".</strong>
      * That distinction is behavioural and is preserved: a type outside the declared two-value vocabulary
-     * satisfies neither condition name, so it does <em>not</em> trip the gate, even though it is equally
-     * not an administrator. Widening the test to "not an administrator" would deny a selection the
-     * legacy permits.
+     * satisfies neither condition name, so it does <em>not</em> trip the gate even though it is equally not
+     * an administrator. Widening the test would deny a selection the legacy permits.
      *
-     * <p><strong>Documented unreachable, and deliberately preserved.</strong> All ten entries of the
-     * user menu catalogue carry the standard-user code, so the second condition can never hold and the
-     * gate can never fire. The eighth entry does carry a commented-out alternative label marking it
-     * administrator-only, and that label is inactive in the shipped estate - which is precisely why the
-     * gate exists and equally why it is dormant. It is reproduced rather than deleted or corrected.
-     *
-     * <p>The denial message text belongs to the owning menu service, not here.
-     *
-     * @param selectingUserType  the signed-on user's type; may be {@code null}, which trips nothing
-     * @param optionUserTypeCode the user-type code carried by the selected catalogue entry; may be
-     *                           {@code null}, which trips nothing
-     * @return {@code true} if and only if a standard user selected an administrator-only entry
+     * <p><strong>Documented unreachable, and deliberately preserved.</strong> All ten entries of the user
+     * menu catalogue carry the standard-user code, so the second condition can never hold. The eighth entry
+     * does carry a commented-out alternative label marking it administrator-only, and that label is inactive
+     * &mdash; which is precisely why the gate exists and equally why it is dormant. The denial message text
+     * belongs to the owning menu service.
      */
     public boolean isAdminOnlyOptionDenied(final UserType selectingUserType,
             final String optionUserTypeCode) {
@@ -862,33 +804,26 @@ public final class NavigationService {
 
     /**
      * Resolves the destination a user-menu selection dispatches to, applying the legacy gates in source
-     * order.
+     * order. <strong>The order is the contract:</strong> the administrator-only gate at
+     * {@code app/cbl/COMEN01C.cbl:L136-L143} is evaluated first and short-circuits, then the suppression
+     * guard at {@code L146}, and only then does control transfer at {@code L152-L155}. Either gate yields an
+     * empty result, because in both cases the legacy program re-presents the menu instead of transferring
+     * control.
      *
-     * <p>The order is the contract and is preserved: the administrator-only gate at
-     * {@code app/cbl/COMEN01C.cbl} lines 136 to 143 is evaluated first and short-circuits, then the
-     * suppression guard at line 146, and only then does control transfer at lines 152 to 155. Either
-     * gate yields an empty result, because in both cases the legacy program re-presents the menu instead
-     * of transferring control.
-     *
-     * <p>The option's program name and user-type code are passed in as plain values rather than read
-     * from the menu catalogue, because the catalogue is a configuration-layer component and this layer
-     * must not depend on it. The caller supplies the two fields of the selected entry.
-     *
-     * <p>Both gates are documented-unreachable in the shipped estate; see
-     * {@link #isAdminOnlyOptionDenied(UserType, String)} and {@link #isDispatchSuppressed(String)} for
-     * the evidence and for why each is preserved.
-     *
-     * @param selectingUserType  the signed-on user's type; may be {@code null}
-     * @param optionUserTypeCode the user-type code of the selected catalogue entry; may be {@code null}
-     * @param catalogProgramName the program name of the selected catalogue entry; may be {@code null}
-     * @return the destination to dispatch to, or an empty result when the administrator-only gate denies
-     *         the selection, when suppression applies, or when the name resolves to no destination
+     * <p>The option's program name and user-type code are passed in as plain values rather than read from
+     * the menu catalogue, because the catalogue is a configuration-layer component and this layer must not
+     * depend on it. Both gates are documented-unreachable; see
+     * {@link #isAdminOnlyOptionDenied(UserType, String)} and {@link #isDispatchSuppressed(String)}.
      */
     public Optional<Route> resolveMenuDispatch(final UserType selectingUserType,
             final String optionUserTypeCode, final String catalogProgramName) {
         if (isAdminOnlyOptionDenied(selectingUserType, optionUserTypeCode)) {
+            // The option code is caller-supplied, so it is described rather than reproduced. The gate
+            // that guards this branch admits only the administrator code, so the description is in
+            // practice that one character - but the funnel is applied here too, because a value's
+            // safety must not rest on a guard that a later change could widen.
             LOG.debug("Menu dispatch denied: rule=user-menu-admin-only-gate userType={} optionUserType={}",
-                    selectingUserType, optionUserTypeCode);
+                    selectingUserType, describeForLog(optionUserTypeCode));
             return Optional.empty();
         }
         return resolveCatalogDispatch(catalogProgramName, "user-menu-dispatch");
@@ -904,8 +839,17 @@ public final class NavigationService {
      * the absence of the gate is a property of the administrative menu, not an argument a caller
      * chooses.
      *
-     * <p>Access to the administrative menu itself is what restricts these destinations, and that is
-     * enforced by the security configuration and the controller, never here.
+     * <p>Access to the administrative menu itself is what restricts these destinations - never anything
+     * this method does. <strong>That restriction is an obligation on code that does not exist yet.</strong>
+     * The legacy design placed the whole gate on reaching the administrative menu, so a caller who is
+     * already dispatching from it is, by that design, already an administrator; this method therefore
+     * cannot re-check what it was never given. The consequence is that the gate has to exist upstream,
+     * and today it does not: the security configuration declares an authority requirement for the
+     * {@code /api/admin} path prefix, but no endpoint is mapped anywhere in this module, so nothing
+     * currently prevents a caller from reaching this method with any catalogue entry it chooses. The
+     * endpoint that eventually serves the administrative menu must therefore be gated itself - see the
+     * class comment for the two acceptable ways to do that - because a missing gate here is not a
+     * defect in this method but an unmet precondition of calling it.
      *
      * @param catalogProgramName the program name of the selected catalogue entry; may be {@code null}
      * @return the destination to dispatch to, or an empty result when suppression applies or the name
@@ -920,30 +864,24 @@ public final class NavigationService {
     // ------------------------------------------------------------------------------------------
 
     /**
-     * Resolves a legacy program name to its destination.
+     * Resolves a legacy program name to its destination &mdash; the lookup the two nomination rules rest on,
+     * because the communication-area fields they read carry an eight-character program name rather than a
+     * route. It also serves menu dispatch, whose catalogue entries carry the same kind of value.
      *
-     * <p>This is the lookup the two nomination rules rest on, because the communication-area fields they
-     * read carry an eight-character program name rather than a route. It also serves menu dispatch,
-     * whose catalogue entries carry the same kind of value.
-     *
-     * <p>Matching tolerates the trailing padding of a fixed-width field - the legacy field is eight
-     * characters wide and the transfer-control command ignores trailing blanks - but applies no case
-     * fold and no other normalisation, because program names are case-sensitive in the resource
-     * definition. The value inspected is never altered; only the key used for the lookup is.
-     *
-     * <p>Never throws. An absent name, a blank one and one naming no reachable destination all yield an
-     * empty result. No name resolves to the dangling program definition, which has no destination.
-     *
-     * @param legacyProgramName the eight-character legacy program name; may be {@code null}
-     * @return the matching destination, or an empty result
+     * <p>Matching tolerates the trailing padding of a fixed-width field, because the legacy transfer-control
+     * command ignores trailing blanks, but applies no case fold and no other normalisation, because program
+     * names are case-sensitive in the resource definition. The value inspected is never altered; only the
+     * lookup key is. Never throws, and no name resolves to the dangling program definition.
      */
     public Optional<Route> routeForLegacyProgram(final String legacyProgramName) {
         return lookupFixedWidth(ROUTES_BY_LEGACY_PROGRAM, legacyProgramName);
     }
 
     /**
-     * Resolves a legacy transaction identifier to its destination, mirroring the 18 transaction
-     * definitions registered in {@code app/csd/CARDDEMO.CSD}.
+     * Resolves a legacy transaction identifier to its destination, mirroring the 17 dispatchable
+     * transaction definitions among the 18 registered in {@code app/csd/CARDDEMO.CSD}. The
+     * eighteenth, {@code CDV1}, resolves to nothing, because the program definition it is bound to
+     * has no source member.
      *
      * <p>Matching tolerates the trailing padding of the four-character fixed-width field and applies no
      * case fold, exactly as {@link #routeForLegacyProgram(String)} does. Never throws.
@@ -956,16 +894,11 @@ public final class NavigationService {
     }
 
     /**
-     * Resolves a wire value back to its destination - the inverse of {@link Route#getRouteValue()}.
-     *
-     * <p>Used to read back a route a client echoed. Matching is <strong>exact</strong>: unlike the two
-     * legacy-identifier lookups, a wire value is not a fixed-width field, so its surrounding white space
-     * is not padding to be tolerated but a difference from the published token. Never throws; an
-     * unrecognised value yields an empty result rather than an error, so a malformed echo cannot fail a
-     * request here.
-     *
-     * @param routeValue the wire value to resolve; may be {@code null}
-     * @return the matching destination, or an empty result
+     * Resolves a wire value back to its destination, the inverse of {@link Route#getRouteValue()}. Matching
+     * is <strong>exact</strong>: unlike the two legacy-identifier lookups, a wire value is not a fixed-width
+     * field, so surrounding white space is not padding to be tolerated but a difference from the published
+     * token. An unrecognised value yields an empty result rather than an error, so a malformed echo cannot
+     * fail a request here.
      */
     public Optional<Route> routeForValue(final String routeValue) {
         if (routeValue == null) {
@@ -981,7 +914,7 @@ public final class NavigationService {
      * list is immutable, so a caller can hold it without copying and cannot disturb the vocabulary. Its
      * size is {@link #ROUTE_COUNT}.
      *
-     * @return an immutable list of all 18 destinations
+     * @return an immutable list of all 17 destinations
      */
     public List<Route> routes() {
         return ALL_ROUTES;
@@ -991,9 +924,17 @@ public final class NavigationService {
      * Returns the administrative destinations - the administrative menu and the four user-maintenance
      * destinations.
      *
-     * <p>This <strong>reports</strong> scope so the controller layer can consume it; it enforces
-     * nothing. Role gating is applied by the security configuration and at the controller, and this
-     * class performs no access check and holds no dependency on the configuration layer.
+     * <p>This <strong>reports</strong> scope; it enforces nothing. This class performs no access check
+     * and holds no dependency on the configuration layer.
+     *
+     * <p><strong>No consumer of this set currently applies it, so the set is a description and not yet
+     * a control.</strong> It is offered so that a controller layer can consume it, and no controller
+     * layer exists to do so - no endpoint is mapped anywhere in this module. A caller must therefore not
+     * read the membership of a destination in this set as evidence that the destination is protected;
+     * membership records that the legacy transaction behind it was reachable only from the
+     * administrative menu, which is a fact about the migrated design rather than a runtime guarantee.
+     * The obligation to turn it into one falls on the endpoints that eventually serve these five
+     * destinations, in the manner the class comment sets out.
      *
      * @return an immutable set of the five administrative destinations
      */
@@ -1006,18 +947,47 @@ public final class NavigationService {
     // ------------------------------------------------------------------------------------------
 
     /**
+     * Bounds a client-echoed program name to the width the legacy communication-area field reserves.
+     *
+     * <p>{@code CDEMO-FROM-PROGRAM} and {@code CDEMO-TO-PROGRAM} are {@code PIC X(8)}, so on the mainframe
+     * a longer value could not survive the move into either field - it would be truncated on the right.
+     * A REST client echoes the field and is not bound by that width, so the truncation is applied here
+     * instead, at the point the value first leaves this class. Doing so keeps an overlong name from
+     * turning a navigation failure into a width-validation failure raised from inside the abend, which
+     * would report the wrong problem.
+     *
+     * <p>This bounds the value a diagnostic carries. It does not change the outcome: a name that resolves
+     * to no destination fails whether or not it was overlong.
+     *
+     * @param nominatedProgram the program name as echoed; never {@code null} by the time this is reached
+     * @return the name, truncated on the right to the legacy field width if it exceeded it
+     */
+    private static String boundToLegacyProgramWidth(final String nominatedProgram) {
+        if (nominatedProgram.length() <= AbendException.CULPRIT_LENGTH) {
+            return nominatedProgram;
+        }
+        return nominatedProgram.substring(0, AbendException.CULPRIT_LENGTH);
+    }
+
+    /**
      * Applies the shared nomination rule: a blank field yields the fallback, a field naming a reachable
-     * destination yields that destination, and a field naming an unreachable one yields the fallback
-     * with a warning.
+     * destination yields that destination, and a field naming an unreachable one fails.
      *
      * <p>Shared by back-navigation and by nominated-destination resolution because the two rules differ
-     * only in which communication-area field they read. The rule name is passed in so that a log line
+     * only in which communication-area field they read. The rule name is passed in so that a diagnostic
      * identifies which of the two produced it.
+     *
+     * <p>The blank case is the legacy's own: a communication-area field holding spaces or low values
+     * nominates nothing, and the calling screen's default applies. The unresolvable case is the legacy's
+     * too, and it is a failure - a transfer-control statement naming a program the region cannot resolve
+     * abends the task. Only the reachable case produces a destination.
      *
      * @param nominatedProgram the program name read from the communication area; may be {@code null}
      * @param fallback         the caller's own default; never {@code null} by the time this is reached
      * @param rule             the rule name, for diagnostics
-     * @return the effective destination
+     * @return the effective destination, never {@code null}
+     * @throws AbendException if the field names a destination that cannot be resolved, reproducing the
+     *                        abend an unresolvable legacy transfer would have raised
      */
     private Route resolveNominatedProgram(final String nominatedProgram, final Route fallback,
             final String rule) {
@@ -1028,20 +998,109 @@ public final class NavigationService {
         }
         final Optional<Route> nominated = routeForLegacyProgram(nominatedProgram);
         if (nominated.isEmpty()) {
-            LOG.warn("Nominated program names no reachable destination, applying caller default: "
-                    + "rule={} nominatedProgram={} route={}",
-                    rule, nominatedProgram, fallback.getRouteValue());
-            return fallback;
+            // The legacy transfer would have been attempted and would have abended on a program name the
+            // region cannot resolve. The name is bounded to the legacy field width first, because it is
+            // client-echoed and a fixed-width move is what bounds it on the mainframe.
+            //
+            // The diagnostic describes the nomination rather than echoing it. This branch is the one
+            // place in the class where an unrecognised, wholly caller-controlled string would otherwise
+            // reach a log record, and a value such as "A\r\nFORGED" would end the record early and
+            // present the remainder as a second, invented entry. The bounded culprit still travels on
+            // the abend, where it is structured data on an exception rather than text in a log record.
+            final String culprit = boundToLegacyProgramWidth(nominatedProgram);
+            LOG.error("Nominated program names no reachable destination, abending: "
+                    + "rule={} nominatedProgram={}", rule, describeNomination(nominatedProgram));
+            throw new AbendException(AbendException.ONLINE_ABEND_CODE, culprit,
+                    UNRESOLVABLE_PROGRAM_REASON,
+                    "NAVIGATION TRANSFER FAILED, RULE " + rule);
         }
         final Route route = nominated.get();
+        // Reaching this line means the nomination matched an entry of the fixed destination table, so
+        // the canonical name from that table is available and is logged in place of the client's text.
+        // The two are equal up to the fixed-width padding the lookup tolerates, which is precisely why
+        // the canonical one is the better field to publish: it is a value this class owns.
         LOG.debug("Nomination honoured: rule={} nominatedProgram={} route={}",
-                rule, nominatedProgram, route.getRouteValue());
+                rule, route.getLegacyProgramName(), route.getRouteValue());
         return route;
+    }
+
+    /**
+     * Describes a nominated program name for a diagnostic without reproducing it.
+     *
+     * <p>Returns a fixed-shape description in every case, and caller-supplied text in none. That is
+     * stricter than the printable-US-ASCII substitution this module applies to fragments it partly
+     * authors, and the extra strictness is deliberate here. The nominated program is echoed to the
+     * client in the navigation context and returned by it unaltered, so it is wholly attacker-chosen on
+     * this path; and this class's log records are read as space-separated {@code key=value} pairs, which
+     * an eight-character attacker-chosen value is long enough to imitate - {@code route=CA} fits inside
+     * the legacy field width. Refusing control characters alone would close the record-splitting attack
+     * and leave the field-forging one open, so no caller text is published at all.</p>
+     *
+     * <p>What is published is still enough to act on. The length distinguishes a truncated or padded
+     * field from a misspelled one, and the position and code point of an offending character identify
+     * exactly which byte to remove. An operator correlating this record with the request that produced
+     * it can read the value itself there, where it is data rather than log syntax.</p>
+     *
+     * <p>It degrades rather than throwing. The caller is already on a fallback path, having decided to
+     * apply the caller default; raising here would convert a handled navigation fallback into an
+     * unhandled failure, which is a behavioural change and not a security improvement.</p>
+     *
+     * @param nominatedProgram the caller-supplied nomination, which may be {@code null}
+     * @return a fixed-shape description that never contains caller-supplied text, and
+     *         {@link #ABSENT_VALUE_SUBSTITUTE} when the nomination is {@code null}
+     */
+    private static String describeNomination(final String nominatedProgram) {
+        if (nominatedProgram == null) {
+            return ABSENT_VALUE_SUBSTITUTE;
+        }
+        final int offendingIndex = firstNonPrintableIndex(nominatedProgram);
+        if (offendingIndex != NO_NON_PRINTABLE_INDEX) {
+            return "<not printable US-ASCII: zero-based position " + offendingIndex
+                    + " is code point " + (int) nominatedProgram.charAt(offendingIndex) + ">";
+        }
+        return "<unrecognised, length " + nominatedProgram.length() + ">";
+    }
+
+    /**
+     * Renders a catalogue-supplied program name for a diagnostic, substituting a description when it is
+     * not printable US-ASCII.
+     *
+     * <p>Deliberately less strict than {@link #describeNomination(String)}, because the value has a
+     * different provenance. A catalogue program name comes from the server's own menu option catalogue,
+     * not from the request, so publishing it discloses nothing a client chose and its legibility is
+     * worth keeping: the suppression record in particular is most useful when it names the sentinel it
+     * suppressed on, which is how an operator confirms that a menu entry is deliberately inactive
+     * rather than misconfigured.</p>
+     *
+     * <p>The printable scan remains, because provenance is an argument about likelihood and not a
+     * guarantee. The catalogue is configuration, configuration is edited, and a diagnostic that can be
+     * made to split a log record is a forging primitive whatever supplied the text - the same reasoning
+     * {@code FixedWidthFieldReader} applies to the field names its callers pass it.</p>
+     *
+     * @param catalogProgramName the catalogue-supplied program name, which may be {@code null}
+     * @return the name unchanged when it is printable US-ASCII, {@link #ABSENT_VALUE_SUBSTITUTE}
+     *         when it is {@code null}, and a description of the offending character otherwise
+     */
+    private static String renderCatalogName(final String catalogProgramName) {
+        if (catalogProgramName == null) {
+            return ABSENT_VALUE_SUBSTITUTE;
+        }
+        final int offendingIndex = firstNonPrintableIndex(catalogProgramName);
+        if (offendingIndex != NO_NON_PRINTABLE_INDEX) {
+            return "<not printable US-ASCII: zero-based position " + offendingIndex
+                    + " is code point " + (int) catalogProgramName.charAt(offendingIndex) + ">";
+        }
+        return catalogProgramName;
     }
 
     /**
      * Applies the suppression guard and then the program-name lookup, shared by both menu dispatch
      * rules.
+     *
+     * <p>The catalogued name is supplied by the caller rather than read from the menu catalogue - the
+     * catalogue lives in the configuration layer, which this layer must not depend on - so it is
+     * screened through {@link #renderCatalogName(String)} before any diagnostic mentions it. Both the
+     * suppression guard and the lookup receive the value unaltered.
      *
      * @param catalogProgramName the program name of the selected catalogue entry; may be {@code null}
      * @param rule               the rule name, for diagnostics
@@ -1050,28 +1109,22 @@ public final class NavigationService {
     private Optional<Route> resolveCatalogDispatch(final String catalogProgramName, final String rule) {
         if (isDispatchSuppressed(catalogProgramName)) {
             LOG.debug("Menu dispatch suppressed: rule={} catalogProgramName={}",
-                    rule, catalogProgramName);
+                    rule, renderCatalogName(catalogProgramName));
             return Optional.empty();
         }
         final Optional<Route> target = routeForLegacyProgram(catalogProgramName);
         if (target.isEmpty()) {
             LOG.warn("Menu entry names no reachable destination: rule={} catalogProgramName={}",
-                    rule, catalogProgramName);
+                    rule, renderCatalogName(catalogProgramName));
         }
         return target;
     }
 
     /**
-     * Reports whether a fixed-width field value is blank in the legacy sense - entirely spaces or
-     * entirely low values.
-     *
-     * <p>This is deliberately narrower than the conventional Java blank test. The legacy comparison is
-     * against the space and low-value figurative constants only, so a tab or a line feed is not blank
-     * even though a general white-space test would call it so. An absent value and an empty one are both
-     * blank: neither names anything.
-     *
-     * @param value the field value; may be {@code null}
-     * @return {@code true} when the value is absent, empty, all spaces or all low values
+     * Reports whether a fixed-width field value is blank in the legacy sense: entirely spaces or entirely
+     * low values. Deliberately narrower than the conventional Java blank test &mdash; the legacy comparison
+     * is against those two figurative constants only, so a tab or a line feed is not blank even though a
+     * general white-space test would call it so. An absent value and an empty one are both blank.
      */
     private static boolean isSpacesOrLowValues(final String value) {
         if (value == null) {
@@ -1086,13 +1139,7 @@ public final class NavigationService {
         return true;
     }
 
-    /**
-     * Looks a fixed-width field value up in an index, tolerating the field's trailing padding.
-     *
-     * @param index    the immutable index to probe
-     * @param rawValue the raw field value; may be {@code null}
-     * @return the matching destination, or an empty result
-     */
+    /** Looks a fixed-width field value up in an index, tolerating the field's trailing padding. */
     private static Optional<Route> lookupFixedWidth(final Map<String, Route> index,
             final String rawValue) {
         if (rawValue == null) {
@@ -1102,15 +1149,9 @@ public final class NavigationService {
     }
 
     /**
-     * Removes the trailing space and low-value padding of a fixed-width field value, leaving everything
-     * else untouched.
-     *
-     * <p>Only trailing padding is removed, and only the two characters the legacy fields are padded
-     * with. Leading characters, interior characters and letter case are never altered, so a name that
-     * differs other than by padding still fails to match - which is the intended outcome.
-     *
-     * @param value the raw field value; never {@code null} by the time this is reached
-     * @return the value without its trailing padding, possibly empty
+     * Removes the trailing space and low-value padding of a fixed-width field value. Only trailing padding
+     * is removed, and only those two characters; leading characters, interior characters and letter case are
+     * never altered, so a name differing other than by padding still fails to match, which is intended.
      */
     private static String stripTrailingPadding(final String value) {
         int end = value.length();
@@ -1121,20 +1162,13 @@ public final class NavigationService {
     }
 
     /**
-     * Builds an immutable index of every destination, keyed by one of its own attributes.
+     * Builds an immutable index of every destination keyed by one of its own attributes. Built from the
+     * declared constants themselves, so an index can never disagree with the vocabulary, and copied into a
+     * genuinely immutable map rather than merely wrapped.
      *
-     * <p>Built from the declared constants themselves, so an index can never disagree with the
-     * vocabulary, and copied into a genuinely immutable map rather than merely wrapped, so that no
-     * caller and no later change can mutate it.
-     *
-     * <p>The iteration order of the returned map is unspecified, which is deliberate and harmless: an
-     * index is only ever probed by key. Order-bearing exposure is {@link #routes()}, which preserves
-     * declaration order. Every key is distinct - each destination has its own wire value, its own
-     * legacy transaction identifier and its own legacy program name - so no entry can silently
-     * displace another.
-     *
-     * @param keyExtractor supplies the key for a destination
-     * @return an immutable index from key to destination
+     * <p>The iteration order of the returned map is unspecified, which is harmless because an index is only
+     * ever probed by key; order-bearing exposure is {@link #routes()}. Every key is distinct, so no entry
+     * can silently displace another.
      */
     private static Map<String, Route> indexBy(final Function<Route, String> keyExtractor) {
         final Map<String, Route> index = new LinkedHashMap<>();
@@ -1142,6 +1176,88 @@ public final class NavigationService {
             index.put(keyExtractor.apply(route), route);
         }
         return Map.copyOf(index);
+    }
+
+    /**
+     * Renders a caller-supplied value for a diagnostic, substituting a description when the value is
+     * not safe to reproduce.
+     *
+     * <p>The single funnel every caller-supplied value passes through before it reaches this class's
+     * logger. Three outcomes, in this order:
+     *
+     * <ul>
+     *   <li>an absent value renders as {@link #ABSENT_VALUE_SUBSTITUTE}, which no real value can be
+     *       mistaken for;</li>
+     *   <li>a value carrying any character outside printable US-ASCII renders as the zero-based
+     *       position and code point of its <em>first</em> such character and nothing else, so the
+     *       fault is located exactly without any part of the value being reproduced; and</li>
+     *   <li>any other value renders verbatim, because every one of its characters is printable and it
+     *       can therefore neither terminate a log record early nor forge a new one.</li>
+     * </ul>
+     *
+     * <p><strong>This method degrades and never throws</strong>, which is the deliberate choice
+     * between the two shapes the module's diagnostic rule admits. Its callers are already reporting
+     * something else - that a nomination named no reachable destination, that dispatch was suppressed,
+     * that a gate denied a selection - and throwing here would replace the diagnostic being composed
+     * with an unrelated failure, and would additionally convert a client-echoed value into a server
+     * error on a path whose whole documented purpose is that it must not fail. It returns a substitute
+     * of the same shape instead: a string a message can concatenate.
+     *
+     * <p>Only the first offending character is reported. A second would say nothing the first does not
+     * about whether the value is safe, and reporting every one would leak the value's shape by
+     * enumeration.
+     *
+     * @param value the caller-supplied value; may be {@code null}
+     * @return a rendering that is always printable US-ASCII when the value is, and a description of
+     *         the first offending character otherwise; never {@code null}
+     */
+    private static String describeForLog(final String value) {
+        if (value == null) {
+            return ABSENT_VALUE_SUBSTITUTE;
+        }
+        final int offendingIndex = firstNonPrintableIndex(value);
+        if (offendingIndex != NO_NON_PRINTABLE_INDEX) {
+            return "(not printable US-ASCII: the character at zero-based position " + offendingIndex
+                    + " is code point " + (int) value.charAt(offendingIndex) + ")";
+        }
+        return value;
+    }
+
+    /**
+     * Returns the zero-based index of the first character of a value that is not printable US-ASCII.
+     *
+     * <p>Scans forward and stops at the first offender, so the index it reports is the lowest one. A
+     * character is printable when its code point lies between
+     * {@link #FIRST_PRINTABLE_US_ASCII} and {@link #LAST_PRINTABLE_US_ASCII}
+     * inclusive; everything below that is a control character and everything above is either the
+     * delete control character or outside single-byte US-ASCII entirely.
+     *
+     * <p>This is the only scan in the class. All three renderers delegate to it -
+     * {@link #describeNomination(String)} for a client-echoed nomination,
+     * {@link #renderCatalogName(String)} for a catalogue-supplied program name and
+     * {@link #describeForLog(String)} for a menu option's user-type code - so the three differ only in
+     * what they say about an offending value and never in which values offend. They report the same
+     * two facts in three different delimiter styles, because the styles are what let a reader of a log
+     * record tell a described nomination from a described catalogue entry without the record having to
+     * name its own provenance.
+     *
+     * <p>Scanning by character rather than by code point is correct here and not an oversight: a
+     * character outside the basic multilingual plane is encoded as a surrogate pair, and each
+     * surrogate on its own already lies above the printable ceiling, so the first half of the pair is
+     * reported and the value is described rather than reproduced - which is the required outcome.
+     *
+     * @param value the value to scan; never {@code null} by the time this is reached
+     * @return the index of the first character outside printable US-ASCII, or
+     *         {@link #NO_NON_PRINTABLE_INDEX} when there is none
+     */
+    private static int firstNonPrintableIndex(final String value) {
+        for (int index = 0; index < value.length(); index++) {
+            final char character = value.charAt(index);
+            if (character < FIRST_PRINTABLE_US_ASCII || character > LAST_PRINTABLE_US_ASCII) {
+                return index;
+            }
+        }
+        return NO_NON_PRINTABLE_INDEX;
     }
 
     /**

@@ -795,8 +795,10 @@ class FixedWidthFieldReaderTest {
             // The three pad bytes are individually present.
             assertThat(defaultGroup.field(7, 3)).isEqualTo("   ");
             assertThat(zeroRateGroup.field(7, 3)).isEqualTo("   ");
-            // Both groups carry a rate at the same offset, one non-zero and one zero, which is what
-            // makes the rate-lookup branches reachable from seeded data alone.
+            // Both groups carry a rate at the same offset, one non-zero and one zero. A seed-only
+            // accrual run reads the non-zero one, because every seeded account falls back to the
+            // default group; reaching the zero one needs a constructed account. Either way the reader
+            // must slice both images identically, which is what is asserted here.
             assertThat(defaultGroup.field("DIS-INT-RATE", 16, 6)).isEqualTo("00150{");
             assertThat(zeroRateGroup.field("DIS-INT-RATE", 16, 6)).isEqualTo("00000{");
         }

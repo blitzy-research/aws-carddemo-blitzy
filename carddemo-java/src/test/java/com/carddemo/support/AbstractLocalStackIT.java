@@ -23,6 +23,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.localstack.LocalStackContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -77,6 +79,30 @@ import software.amazon.awssdk.services.sqs.model.ReceiveMessageResponse;
  * JVM. It deliberately does not reuse a long-running emulator on a fixed port, because a shared
  * emulator would let one test observe another's messages and would let a test purge a queue another
  * process depends on.
+ *
+ * <h2>How a subclass that boots a Spring context reaches the same emulator</h2>
+ * {@link #registerAwsProperties(DynamicPropertyRegistry)} publishes this emulator's endpoint, region
+ * and throwaway credentials as {@code spring.cloud.aws.*} properties, so a framework-created client
+ * inside such a context addresses the container this class started rather than anything a file
+ * declared.
+ *
+ * <p>An AWS endpoint is not like a database address, and the difference is why this registration
+ * matters more than it looks. An absent datasource URL fails closed. An absent AWS endpoint does
+ * <em>not</em>: the SDK falls back to the region's real public endpoint, so a client with no endpoint
+ * set addresses a real account on whatever credentials it happens to find, and does so silently.
+ * Both copies of {@code application-test.yml} therefore also declare the emulator endpoint
+ * explicitly, as a floor - this method raises the value from that fixed floor to the ephemeral
+ * address of the container actually running, and neither path can reach a real account.</p>
+ *
+ * <p>The queue tests in this module build their own client against {@link #sqsAsyncClient()} rather
+ * than resolving one from a context, because a directly-built client is the cheapest way to assert a
+ * transport contract. This registration is what makes a context-booting test correct by construction
+ * instead of by remembering to wire it, and it is verified from both ends:
+ * {@code LocalStackPropertyRegistrationIT} calls it with a recording registry and asserts that each key
+ * resolves to the running emulator's own value, and {@code ContextInheritsContainerAddressesIT} boots a
+ * real context and asserts that the endpoint it observes is this emulator's ephemeral one rather than
+ * the fixed floor the profile documents declare - which is what demonstrates that a dynamic property
+ * source really does outrank a property file. See {@code docs/decision-log.md} DL-104.</p>
  *
  * <p>Provenance: this support type has no legacy antecedent - the legacy estate carries no test
  * harness of any kind. It exists to serve tests of the queue that replaces
@@ -146,6 +172,33 @@ public abstract class AbstractLocalStackIT {
     }
 
     /**
+     * Publishes the running emulator's endpoint, region and credentials into the environment of any
+     * subclass that boots a Spring context.
+     *
+     * <p>The global endpoint is registered and then restated for each of the three services. That
+     * redundancy is the point: it means no client can fall through to a real AWS endpoint if the
+     * global setting is ever dropped, or if one client's auto-configuration stops consulting it. The
+     * failure being guarded against is silent success against the wrong target, not an error.</p>
+     *
+     * <p>The credentials published here are the emulator's own throwaway pair. They authenticate
+     * nothing: the emulator accepts any non-empty pair and verifies neither. They are registered so
+     * that a context never reaches the default credentials chain, which on a developer's machine or a
+     * build agent could find real ones.</p>
+     *
+     * @param registry the registry the Spring TestContext Framework supplies; must not be null
+     */
+    @DynamicPropertySource
+    protected static void registerAwsProperties(final DynamicPropertyRegistry registry) {
+        registry.add("spring.cloud.aws.region.static", AbstractLocalStackIT::emulatorRegion);
+        registry.add("spring.cloud.aws.credentials.access-key", AbstractLocalStackIT::emulatorAccessKey);
+        registry.add("spring.cloud.aws.credentials.secret-key", AbstractLocalStackIT::emulatorSecretKey);
+        registry.add("spring.cloud.aws.endpoint", AbstractLocalStackIT::emulatorEndpoint);
+        registry.add("spring.cloud.aws.s3.endpoint", AbstractLocalStackIT::emulatorEndpoint);
+        registry.add("spring.cloud.aws.sqs.endpoint", AbstractLocalStackIT::emulatorEndpoint);
+        registry.add("spring.cloud.aws.sns.endpoint", AbstractLocalStackIT::emulatorEndpoint);
+    }
+
+    /**
      * Returns the shared client bound to the running emulator.
      *
      * @return the queue client
@@ -170,6 +223,30 @@ public abstract class AbstractLocalStackIT {
      */
     protected static String emulatorRegion() {
         return LOCALSTACK.getRegion();
+    }
+
+    /**
+     * Returns the emulator's throwaway access key.
+     *
+     * <p>This is not a credential of anything: the emulator accepts any non-empty pair and verifies
+     * neither value, and the pair never leaves the test JVM.</p>
+     *
+     * @return the access key the emulator reports
+     */
+    protected static String emulatorAccessKey() {
+        return LOCALSTACK.getAccessKey();
+    }
+
+    /**
+     * Returns the emulator's throwaway secret key.
+     *
+     * <p>See {@link #emulatorAccessKey()}: this authenticates nothing and never leaves the test
+     * JVM.</p>
+     *
+     * @return the secret key the emulator reports
+     */
+    protected static String emulatorSecretKey() {
+        return LOCALSTACK.getSecretKey();
     }
 
     /**

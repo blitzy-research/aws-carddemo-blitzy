@@ -308,25 +308,35 @@ core.[0-9]*
 !mvnw
 !.mvn/wrapper/maven-wrapper.properties
 
-# The committed Spring profiles. The production profile holds no secret value, only
+# The committed Spring profiles - ALL FOUR. The production profile holds no secret value, only
 # unresolved environment references.
+#
+# application-test.yml appears TWICE in this module, under src/main/resources and under
+# src/test/resources, and both are named deliverables. The one below is the packaged copy: it is the
+# complete definition of the profile and it is what lets the BUILT ARTEFACT be started with
+# --spring.profiles.active=test. Omitting it from the build context, as an earlier revision did,
+# silently withdrew that capability from the image while leaving the file in the repository looking
+# delivered. The suite-only copy is re-included further down for a different reason.
 !src/main/resources/application.yml
 !src/main/resources/application-local.yml
+!src/main/resources/application-test.yml
 !src/main/resources/application-prod.yml
 !src/main/resources/logback-spring.xml
 !src/main/resources/banner.txt
 
-# Schema migrations, seeds and the externalised validation lookup tables.
+# Schema migrations - all five, flat in one location - and the externalised validation lookup tables.
+# The two seed scripts are included deliberately: an image is run under the local and test profiles as
+# well as production, and production excludes them by version ceiling (spring.flyway.target: 2) rather
+# than by their absence from the image.
 !src/main/resources/db/migration/**
-!src/main/resources/db/seed/**
 !src/main/resources/lookup/**
 
 # Test resources and byte-parity fixtures. The builder stage packages with tests skipped, so
 # these are not inputs to the packaging step itself; they are sent so that the same context can
 # run the suite inside the builder stage without a second, differently-shaped context, and so a
 # byte-parity fixture can be compared against output produced by the image rather than only by a
-# workstation. There is exactly one test profile and it lives here, under src/test/resources -
-# src/main/resources holds no test profile, so nothing above re-includes one.
+# workstation. This is the SUITE-ONLY copy of the test profile; it specialises the packaged copy
+# re-included above, and on the test class path it shadows it. Both are required.
 !src/test/resources/application-test.yml
 !src/test/resources/fixtures/input/**
 !src/test/resources/fixtures/expected/**

@@ -1,17 +1,44 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# TEST profile - bound to Testcontainers-provided endpoints.
+# TEST profile, SUITE OVERLAY - the copy on the test classpath.
 #
-# Container URLs are intentionally NOT hardcoded here: integration tests supply them through
-# @ServiceConnection (spring-boot-testcontainers) or @DynamicPropertySource from the shared
-# support base classes (AbstractPostgresIT / AbstractLocalStackIT). Unit tests that never touch
-# a container simply do not start a datasource.
+# THIS FILE SHARES ITS NAME WITH src/main/resources/application-test.yml AND SHADOWS IT DURING A
+# SUITE RUN, because target/test-classes precedes target/classes. That is deliberate and both copies
+# are required by the plan, so neither may be deleted. This copy is what a suite run resolves; the
+# packaged copy is what a deployed `test`-profile run resolves. ConfigurationProfileBaselineTest
+# asserts BOTH by physical location rather than by classpath name, so an assertion written for the
+# packaged copy can no longer be answered by this one.
+#
+# WHERE A CONTAINER ADDRESS COMES FROM
+#
+#   A container is assigned an ephemeral host port when it starts, so no address written into a file
+#   can be correct for a suite run. Two shared support base classes own the container lifecycle and
+#   are the single place an address lives:
+#
+#     src/test/java/com/carddemo/support/AbstractPostgresIT.java     the database server
+#     src/test/java/com/carddemo/support/AbstractLocalStackIT.java   the AWS emulator
+#
+#   Each declares a @DynamicPropertySource method that registers the started container's real
+#   address into the environment of any test that boots a Spring context, at a precedence above
+#   every property file - so a context-booting subclass inherits the container it was given rather
+#   than anything written here. A test that works directly against the container, over raw JDBC or a
+#   directly-built SDK client, takes the same values through the accessors instead. NO TEST DECLARES
+#   ITS OWN CONTAINER; that is what keeps the tiers composable. @ServiceConnection is deliberately
+#   NOT used - spring-boot-testcontainers is not a dependency of this module - and an earlier
+#   revision of this comment named it anyway. See docs/decision-log.md DL-104.
 
 spring:
   datasource:
-    # Overridden per test class by Testcontainers; the driver is fixed so slicing tests
-    # (@DataJpaTest etc.) do not attempt embedded-database auto-detection.
+    # NO ADDRESS, NO USER AND NO PASSWORD ARE DECLARED HERE, AND THAT ABSENCE IS THE SETTING. An
+    # ephemeral port is unknowable ahead of the run, and any value written here that is REACHABLE is
+    # worse than no value: it would let a test that forgot to extend AbstractPostgresIT connect to
+    # the DEVELOPER'S OWN database and silently pass. With the keys absent, data-source resolution
+    # fails during context refresh and names the missing property. A context-booting subclass of
+    # AbstractPostgresIT gets the container's address from that class's @DynamicPropertySource.
+    #
+    # The driver IS fixed, so a slicing test does not attempt embedded-database auto-detection and
+    # quietly substitute an in-memory engine for the migrated schema.
     driver-class-name: org.postgresql.Driver
 
   jpa:
@@ -26,16 +53,43 @@ spring:
 
   flyway:
     enabled: true
-    # Reference-data and user-security seeds are required by the gate fixtures.
-    locations: classpath:db/migration,classpath:db/seed
+    # One location holds all five scripts. The shared baseline pins spring.flyway.target at "2"; this
+    # overlay lifts the pin to latest, and that is what admits V3__seed_reference_data.sql and
+    # V4__seed_user_security.sql - the reference-data and sign-on seeds the gate fixtures assert
+    # against. Production re-asserts target: 2 and so applies only V1, V1_1 and V2. Do not lower this
+    # ceiling: it would leave the fixtures asserting against empty result sets.
+    locations: classpath:db/migration
+    target: latest
     clean-disabled: false
 
   batch:
     job:
       enabled: false
     jdbc:
-      initialize-schema: always
+      # `never` under every profile. V1_1__create_batch_metadata.sql owns the six framework metadata
+      # tables and three sequences, so a suite run exercises the same migration production depends on.
+      initialize-schema: never
 
+  # AN AWS ENDPOINT IS NOT LIKE A DATABASE ADDRESS AND MUST BE DECLARED. An absent datasource URL
+  # fails closed; an absent AWS endpoint does NOT - the SDK falls back to the REGION'S REAL PUBLIC
+  # ENDPOINT. So a framework-created S3, SQS or SNS client under this profile with no endpoint set
+  # would address a real AWS account, and would do so silently on the credentials it happened to
+  # find. An earlier revision of this file set no endpoint at all and relied on the base classes,
+  # which only ever bound the clients they built themselves.
+  #
+  # The endpoints below therefore redirect every client at the emulator. The redirection IS the
+  # setting, not a placeholder. It is the same shape the packaged copy uses, so the two agree: the
+  # emulator answers on a FIXED container port, 4566, so an endpoint written here is meaningful, and
+  # both variables allow a differently-published emulator to be addressed without editing the file.
+  # A context-booting subclass of AbstractLocalStackIT overrides all of this with the ephemeral
+  # address of the emulator that class started, at a precedence above every property file. Whichever
+  # of the two applies, no client can reach a real account. See docs/decision-log.md DL-104.
+  #
+  # The credentials are what the emulator wants: it accepts any non-empty pair and verifies nothing.
+  # They are NOT keys. Never substitute a real access key here.
+  #
+  # Path-style addressing is required because the emulator does not serve virtual-hosted bucket
+  # subdomains; production turns it off.
   cloud:
     aws:
       region:
@@ -43,15 +97,32 @@ spring:
       credentials:
         access-key: test
         secret-key: test
+      endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
       s3:
+        endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
         path-style-access-enabled: true
+      sqs:
+        endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
+      sns:
+        endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
 
 management:
   tracing:
+    # Instrumentation off entirely in the suite: the wiring cost is paid on every one of several
+    # hundred context refreshes and no test asserts on a span.
     enabled: false
   otlp:
     tracing:
-      # No trace export during tests.
+      export:
+        # THE export control, and the reason nothing is exported. Boot resolves this key BEFORE
+        # management.tracing.enabled when deciding whether to create the OTLP exporter, so export
+        # stays off even if a test re-enables tracing above. Declaring it is not redundant: a
+        # sampling probability cannot do this job, because the effective sampler is parent-based and
+        # a request carrying an already-sampled traceparent is sampled whatever the ratio says.
+        # See docs/decision-log.md DL-104.
+        enabled: false
+      # Never called. Retained so the key path is identical across profiles and a deliberate
+      # diagnostic session has somewhere to send spans the moment both switches above are flipped.
       endpoint: http://localhost:4318/v1/traces
 
 logging:
@@ -82,9 +153,16 @@ carddemo:
       secret: test-only-signing-secret-not-used-outside-tests-0123456789
       expiration: PT15M
     field-encryption:
-      # Base64 of exactly 32 bytes. Fixed rather than random so that a sealed fixture is reproducible
-      # across runs; test-only, never deployed, and worth nothing outside this suite.
-      key: Y2FyZGRlbW8tdGVzdC1vbmx5LWZpeGVkLWtleSEhISE=
+      # THE ONE NON-PRODUCTION FIXTURE KEY. Base64 of exactly 32 bytes. Fixed rather than random so
+      # that a sealed fixture is reproducible across runs; test-only, never deployed, and worth
+      # nothing outside this suite.
+      #
+      # This literal must stay byte-identical to the default in application-local.yml and in the
+      # packaged src/main/resources/application-test.yml. V3__seed_reference_data.sql seeds fifty
+      # customer.govt_issued_id values as ENC1 envelopes, an envelope opens under exactly one key,
+      # and every non-production profile applies V3 - so a divergent key here would leave the seeded
+      # rows unreadable in this suite while remaining readable elsewhere.
+      key: Y2FyZGRlbW8tbm9ucHJvZC1maXh0dXJlLWtleSEhISE=
     # RELAXES A REQUIRED BASELINE, stated here so the concession is visible in the profile taking it.
     # application.yml requires transport security. A Testcontainers-provided endpoint is reached over
     # the loopback interface by the process that started it and is destroyed with the suite, so there

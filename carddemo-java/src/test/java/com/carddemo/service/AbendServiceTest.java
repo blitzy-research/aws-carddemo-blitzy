@@ -49,9 +49,9 @@ import static org.junit.jupiter.api.Assertions.assertAll;
  *
  * <p>Three legacy constructs converge on this class. The online members carry an {@code ABEND-DATA}
  * area declared in {@code app/cpy/CSMSG02Y.cpy} and an {@code ABEND-ROUTINE} paragraph that fills it
- * and issues {@code EXEC CICS ABEND}; the batch members instead perform a status-display paragraph
- * followed by {@code 9999-ABEND-PROGRAM}, which invokes {@code CALL 'CEE3ABD'}; and a file failure
- * reaches the batch tier through the raw two-character {@code FILE STATUS}.
+ * and issues the region's abend request; the batch members instead run a status-display paragraph
+ * followed by {@code 9999-ABEND-PROGRAM}, which calls the language-environment abort service
+ * {@code CEE3ABD}; and a file failure reaches the batch tier through the raw two-character status.
  *
  * <p><strong>Emit first, raise second - the decisive property.</strong> Every legacy abort path
  * displays its diagnostic before it aborts. {@code app/cbl/CBACT01C.cbl} does so at three
@@ -92,16 +92,16 @@ final class AbendServiceTest {
     // test. Each one is separately asserted against the production constant it mirrors, so a drift in
     // either direction fails a test instead of quietly agreeing with itself.
 
-    /** {@code ABEND-CODE PIC X(4)}, the first field of the context area. */
+    /** Width of {@code ABEND-CODE}, the first field of the context area. */
     private static final int ORACLE_CODE_WIDTH = 4;
 
-    /** {@code ABEND-CULPRIT PIC X(8)}, wide enough for a COBOL member name and no wider. */
+    /** Width of {@code ABEND-CULPRIT}, wide enough for a COBOL member name and no wider. */
     private static final int ORACLE_CULPRIT_WIDTH = 8;
 
-    /** {@code ABEND-REASON PIC X(50)}. */
+    /** Width of {@code ABEND-REASON}. */
     private static final int ORACLE_REASON_WIDTH = 50;
 
-    /** {@code ABEND-MSG PIC X(72)}, the last field of the context area. */
+    /** Width of {@code ABEND-MSG}, the last field of the context area. */
     private static final int ORACLE_MESSAGE_WIDTH = 72;
 
     /** The whole {@code ABEND-DATA} area: four plus eight plus fifty plus seventy-two. */

@@ -60,8 +60,8 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * unchanged and undecrypted; a cleartext value, an empty value and a value carrying the
  * marker but no usable body are each refused; the refusal never echoes the value it
  * rejected; a refused write leaves the previously stored value in place; and a {@code null}
- * is carried through as a genuine null on the nullable attribute rather than converted to an
- * empty string or to the literal text {@code null}, while the non-null attribute refuses it.</p>
+ * is carried through as a genuine null on both regulated attributes rather than converted to
+ * an empty string or to the literal text {@code null}.</p>
  *
  * <h2>Why the two never-validated fields carry no constraint</h2>
  *
@@ -349,6 +349,7 @@ class CustomerBoundaryTest {
             customer.setPhoneNum1(null);
             customer.setPhoneNum2(null);
             customer.setCustSsn(null);
+            customer.setGovtIssuedId(null);
             customer.setCustDob(null);
             customer.setEftAccountId(null);
             customer.setPriCardHolderInd(null);
@@ -357,13 +358,12 @@ class CustomerBoundaryTest {
             assertThat(customer.getCustId()).isNull();
             assertThat(customer.getCustSsn()).isNull();
             assertThat(customer.getFicoCreditScore()).isNull();
-
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> customer.setGovtIssuedId(null))
-                    .withMessageContaining("govtIssuedId");
             assertThat(customer.getGovtIssuedId())
-                    .as("a refused write leaves the previously stored value in place")
-                    .isEqualTo(GOVT_ISSUED_ID);
+                    .as("both regulated attributes clear to a genuine null, never to an empty string"
+                            + " or to the text \"null\"")
+                    .isNull();
+            assertThat(customer.getGovtIssuedId()).isNotEqualTo("");
+            assertThat(customer.getGovtIssuedId()).isNotEqualTo("null");
         }
     }
 

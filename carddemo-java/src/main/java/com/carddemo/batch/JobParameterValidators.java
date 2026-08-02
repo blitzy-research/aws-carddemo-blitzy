@@ -134,9 +134,27 @@ import com.carddemo.service.DateValidationService;
  * is, from {@link #parseDateParmRecord(String)}, which parses a record rather than validating a
  * parameter set — raise {@link ValidationException} instead.</p>
  *
- * <p>Every diagnostic names both the offending parameter and the offending value, because a batch
- * failure is read from a log after the fact and a message that omits either is not actionable. None of
- * the four parameters is a credential, so echoing the value discloses nothing.</p>
+ * <h2>What a diagnostic is allowed to say about a value</h2>
+ *
+ * <p>Every diagnostic names the offending parameter, and names the offending value too whenever that
+ * value is renderable, because a batch failure is read from a log after the fact and a message that
+ * omits both is not actionable. Renderability is the limit. A value carrying any character outside
+ * printable US-ASCII is replaced, in every message and every log record this class produces, by a
+ * substitute that names the offending character's zero-based position and code point and never the
+ * character itself.</p>
+ *
+ * <p>That is a correctness requirement rather than a stylistic preference. Parameter substitution
+ * escapes nothing, so a launch value carrying a carriage return or a line feed would otherwise forge
+ * additional log records, and a log record is a sink a human or a tool later reads exactly as a
+ * rejection message is. The substitution is therefore applied at a single point,
+ * {@link #describeValue(String)}, through which every value this class writes into a message or a log
+ * record passes — including the values it writes on the <em>accepting</em> path — so that adding a
+ * diagnostic here later cannot reopen the hole. The one value bound from configuration rather than from
+ * a launch, the probe-mode enumeration, is refused outright at the boundary where it is supplied
+ * instead, because a configuration mistake is better reported where it is made.</p>
+ *
+ * <p>None of the four parameters is a credential, so the substitution protects the integrity of the log
+ * rather than the confidentiality of the value.</p>
  *
  * <h2>Thread safety</h2>
  *
@@ -225,9 +243,9 @@ public final class JobParameterValidators {
     // =================================================================================================
 
     /**
-     * Width of the interest parameter's date field: {@code PARM-DATE PIC X(10)} at
-     * {@code [app/cbl/CBACT04C.cbl:L178]}, and the exact length of the literal supplied at
-     * {@code [app/jcl/INTCALC.jcl:L22]}.
+     * Width of the interest parameter's date field {@code PARM-DATE}, declared in
+     * {@code [app/cbl/CBACT04C.cbl]} and matching the exact length of the literal supplied at
+     * {@code [app/jcl/INTCALC.jcl]}.
      */
     private static final int INTEREST_PARM_DATE_WIDTH = 10;
 
@@ -251,6 +269,10 @@ public final class JobParameterValidators {
      * from {@code [app/cbl/CBTRN03C.cbl:L122]} through {@code [app/cbl/CBTRN03C.cbl:L125]}. The record
      * <em>image</em> is wider — an eighty-byte area at {@code [app/cbl/CBTRN03C.cbl:L88]} — but only
      * these positions carry content.
+     *
+     * <p>This is therefore the width of the <em>receiving group</em> of the legacy read, which is what
+     * makes it both the minimum a supplied record must measure and the exact extent that is read: the
+     * move fills the group from the leading bytes of the record area and discards the rest.</p>
      */
     private static final int DATEPARM_SIGNIFICANT_WIDTH = 21;
 
@@ -294,20 +316,6 @@ public final class JobParameterValidators {
     private static final char DATEPARM_SEPARATOR = ' ';
 
     /**
-     * Space filler of a fixed-width record image. Declared separately from {@link #DATEPARM_SEPARATOR}
-     * even though the two characters coincide, because the roles do not: one is content the layout
-     * requires in a specific position, the other is what fills the positions the layout does not use.
-     */
-    private static final char RECORD_PADDING_SPACE = ' ';
-
-    /**
-     * Low-value filler of a fixed-width record image. A record area longer than its significant content
-     * carries either spaces or the low-value byte beyond that content, and both are padding rather than
-     * data.
-     */
-    private static final char RECORD_PADDING_LOW_VALUE = '\0';
-
-    /**
      * Highest code unit the single-byte character set of the legacy fields can represent.
      *
      * <p>Every width this class enforces is a byte reservation, so a value carrying a code unit above
@@ -316,6 +324,45 @@ public final class JobParameterValidators {
      * substitute a replacement byte and leave a value of the right width holding the wrong content.</p>
      */
     private static final char MAX_SINGLE_BYTE_CHARACTER = 0x7F;
+
+    /**
+     * Lowest character this class will place inside a diagnostic: the ASCII space.
+     *
+     * <p>Everything below it is a C0 control code, and every one of those is a log-forging primitive
+     * when it reaches a record this class composes. A line feed ends the record, so one rejected value
+     * becomes two apparent log entries and an operator reading the batch log cannot tell which of them
+     * the job actually emitted. A carriage return returns the cursor so the remainder of the record
+     * overwrites what preceded it. An escape reaching a terminal-backed viewer can reposition the
+     * cursor and overwrite records already written, forging history without emitting a terminator at
+     * all. A NUL truncates the record for any consumer that reads a C string.</p>
+     *
+     * <p>The bound is deliberately the same one {@link com.carddemo.util.FixedWidthFieldReader} and
+     * {@code JobSubmissionService} apply to the fragments they do not author, so that "printable" has
+     * one definition across the module rather than one per class.</p>
+     */
+    private static final char FIRST_PRINTABLE_US_ASCII = 0x20;
+
+    /**
+     * Highest character this class will place inside a diagnostic: the tilde.
+     *
+     * <p>{@link #MAX_SINGLE_BYTE_CHARACTER} is retained separately because it answers a different
+     * question - whether a character can occupy the byte count a legacy field reserves - and the two
+     * limits are reported through different diagnostics. The single code point between this bound and
+     * that one is the delete control, which is refused here for the same reason as the C0 range.</p>
+     */
+    private static final char LAST_PRINTABLE_US_ASCII = 0x7E;
+
+    /**
+     * What a diagnostic says in place of a value that was never supplied.
+     *
+     * <p>Rendered in parentheses rather than in the brackets a reproduced value gets, so that a reader
+     * can tell an absent value from a value that was supplied and happened to be empty without the
+     * message having to say which it was. Only {@link #describeValue(String)} uses it: the message
+     * composer renders an absent fragment as the literal {@code null} instead, because a message that
+     * names a parameter and then says {@code (absent)} where the value should be reads as though the
+     * parameter itself were optional.</p>
+     */
+    private static final String ABSENT_VALUE_SUBSTITUTE = "(absent)";
 
     /** Lowest and highest characters a legacy numeric-picture position accepts. */
     private static final char FIRST_DIGIT = '0';
@@ -444,15 +491,26 @@ public final class JobParameterValidators {
      * later mutation of the caller's collection and its diagnostics list the legal values in a stable
      * order.</p>
      *
+     * <p>Every legal mode name is reproduced verbatim inside the diagnostic of a rejected launch, so the
+     * enumeration is admitted only in printable US-ASCII. That condition is enforced here, at the
+     * configuration boundary, rather than each time a diagnostic is rendered: a mode name is supplied once
+     * by the job configuration and read back into many messages, so guarding the boundary is what makes it
+     * impossible for a later diagnostic to reintroduce an unescaped control character. Nothing is lost by
+     * it — the mode value is a Java-side symbolic name with no legacy antecedent literal, so no legacy
+     * value can fall outside the bound.</p>
+     *
      * @param legalModeNames the exact set of acceptable mode values, in the order they should be
      *                       reported; must not be {@code null}, must not be empty, and must not contain
-     *                       a {@code null} or blank entry
+     *                       a {@code null} entry, a blank entry, or an entry carrying a character outside
+     *                       printable US-ASCII
      * @return a stateless validator over an unmodifiable copy of {@code legalModeNames}, never
      *         {@code null}
      * @throws NullPointerException     if {@code legalModeNames} is {@code null}
      * @throws IllegalArgumentException if {@code legalModeNames} is empty, or contains a {@code null} or
      *                                  blank entry, either of which would make the validator reject a
-     *                                  launch it was configured to accept
+     *                                  launch it was configured to accept; or contains an entry carrying a
+     *                                  character outside printable US-ASCII, which could not be reproduced
+     *                                  into a diagnostic safely
      */
     public JobParametersValidator fileProbeModeValidator(final Collection<String> legalModeNames) {
         final Set<String> legalModes = copyLegalModeNames(legalModeNames);
@@ -485,34 +543,40 @@ public final class JobParameterValidators {
      *   <li>the record was supplied at all;</li>
      *   <li>every character is representable in the single-byte character set the record area reserves
      *       bytes for;</li>
-     *   <li>trailing padding — spaces or low-value bytes, the two fillers a fixed-width image carries
-     *       beyond its content — is discarded, and the remaining significant content measures exactly
-     *       twenty-one encoded bytes;</li>
+     *   <li>the record carries at least the twenty-one encoded bytes the target group occupies, so there
+     *       is something for every declared position to receive;</li>
      *   <li>the eleventh position is exactly one separator character;</li>
      *   <li>both extracted dates satisfy the same cascade the report date range validator applies, which
      *       includes the inclusive-ordering test between them.</li>
      * </ol>
      *
-     * <p>Discarding trailing padding before measuring is what lets a genuine eighty-byte record image
-     * through while still refusing a record whose content is the wrong width. Measurement is in encoded
-     * bytes rather than characters because the layout reserves bytes.</p>
+     * <p>Measurement is in encoded bytes rather than characters because the layout reserves bytes.</p>
      *
-     * <h4>One deliberate departure from the legacy, recorded</h4>
+     * <h4>The eighty-to-twenty-one move, reproduced</h4>
      *
-     * <p>The legacy read moves the eighty-byte image into the twenty-one-byte group, and such a move
-     * keeps the leading twenty-one bytes and discards the rest silently — so a record carrying stray
-     * content beyond position twenty-one would be tolerated on the mainframe. This method refuses it
-     * instead, because the significant width is part of the parameter contract and a control record whose
-     * content runs past its layout is a defect worth failing on rather than truncating. The window this
-     * method returns for a well-formed record is identical to the window the legacy move produces; the two
-     * differ only on malformed input. Raised here for the migration decision log.</p>
+     * <p>The legacy read is {@code READ DATE-PARMS-FILE INTO WS-DATEPARM-RECORD} at
+     * {@code [app/cbl/CBTRN03C.cbl:L221]}: an eighty-byte record area moved into a twenty-one-byte group.
+     * A COBOL group move of a longer sending item into a shorter receiving item keeps the leading bytes of
+     * the sender and discards the remainder, silently and without diagnostic. This method reproduces that
+     * exactly - it requires enough input to fill the twenty-one-byte group, reads the leading twenty-one
+     * bytes, and ignores whatever follows them.</p>
      *
-     * @param recordText the record as read, either the twenty-one significant bytes or the full padded
-     *                   image; must not be {@code null}
+     * <p>So a record carrying content beyond position twenty-one is <em>not</em> refused, because the
+     * legacy did not refuse it. An earlier revision of this method did refuse it, on the reasoning that a
+     * control record running past its layout is a defect worth failing on. That reasoning describes a
+     * system the estate is not: it made the method reject input the mainframe accepted, which is a
+     * behavioural regression whatever its merits as policy, and only an explicit authorisation could
+     * license it. The withdrawal is reasoned in {@code docs/decision-log.md} DL-107. Input shorter than the
+     * group is still refused - a sending item too small to fill the
+     * receiving group has no legacy reading at all, since the record area is fixed at eighty bytes.</p>
+     *
+     * @param recordText the record as read, either the twenty-one bytes of the group or the full
+     *                   eighty-byte image; anything beyond the leading twenty-one bytes is ignored, as the
+     *                   legacy move ignores it; must not be {@code null}
      * @return the validated window, never {@code null}
      * @throws ValidationException if the record is absent, is not representable in a single-byte
-     *                             character set, does not measure exactly twenty-one significant encoded
-     *                             bytes, does not carry the separator in the eleventh position, or carries
+     *                             character set, measures fewer than twenty-one encoded bytes, does not
+     *                             carry the separator in the eleventh position, or carries
      *                             a date that fails the report window cascade. This is not the framework's
      *                             validator contract — no parameter set is being validated — so the
      *                             module's own validation failure is raised rather than the framework's
@@ -530,22 +594,25 @@ public final class JobParameterValidators {
                             + " bytes for, so it cannot occupy the declared record positions");
         }
 
-        final String significant = stripTrailingRecordPadding(recordText);
-        final int significantWidth = encodedByteWidth(significant);
-        if (significantWidth != DATEPARM_SIGNIFICANT_WIDTH) {
-            throw dateParmFailure(DATEPARM_RECORD_LABEL, significant,
-                    "must carry exactly " + DATEPARM_SIGNIFICANT_WIDTH + " significant encoded bytes -"
+        final int suppliedWidth = encodedByteWidth(recordText);
+        if (suppliedWidth < DATEPARM_SIGNIFICANT_WIDTH) {
+            throw dateParmFailure(DATEPARM_RECORD_LABEL, recordText,
+                    "must carry at least " + DATEPARM_SIGNIFICANT_WIDTH + " encoded bytes -"
                             + " two " + ISO_DATE_WIDTH + "-character dates either side of one separator -"
-                            + " but measures " + significantWidth);
+                            + " but measures " + suppliedWidth);
         }
-        if (significant.charAt(DATEPARM_SEPARATOR_INDEX) != DATEPARM_SEPARATOR) {
-            throw dateParmFailure(DATEPARM_RECORD_LABEL, significant,
+
+        // The eighty-to-twenty-one group move: the leading bytes are what the receiving group gets, and
+        // the remainder of the sending record area is discarded without diagnostic.
+        final String group = recordText.substring(0, DATEPARM_SIGNIFICANT_WIDTH);
+        if (group.charAt(DATEPARM_SEPARATOR_INDEX) != DATEPARM_SEPARATOR) {
+            throw dateParmFailure(DATEPARM_RECORD_LABEL, group,
                     "must carry a single separator character in position "
                             + (DATEPARM_SEPARATOR_INDEX + 1) + ", between the two dates");
         }
 
-        final String startDate = significant.substring(0, ISO_DATE_WIDTH);
-        final String endDate = significant.substring(DATEPARM_END_DATE_INDEX, DATEPARM_SIGNIFICANT_WIDTH);
+        final String startDate = group.substring(0, ISO_DATE_WIDTH);
+        final String endDate = group.substring(DATEPARM_END_DATE_INDEX, DATEPARM_SIGNIFICANT_WIDTH);
 
         final Optional<String> failure = checkReportWindow(DATEPARM_START_DATE_LABEL, startDate,
                 DATEPARM_END_DATE_LABEL, endDate);
@@ -554,8 +621,8 @@ public final class JobParameterValidators {
                     ValidationException.FieldState.INVALID, failure.get());
         }
 
-        LOG.debug("Report date window read from the {}: [{}] through [{}], both bounds inclusive",
-                DATEPARM_RECORD_LABEL, startDate, endDate);
+        LOG.debug("Report date window read from the {}: {} through {}, both bounds inclusive",
+                DATEPARM_RECORD_LABEL, describeValue(startDate), describeValue(endDate));
         return new ReportDateWindow(startDate, endDate);
     }
 
@@ -582,7 +649,7 @@ public final class JobParameterValidators {
             throw new JobParametersInvalidException(failure.get());
         }
 
-        LOG.debug("Interest parameter date accepted verbatim: [{}]", value);
+        LOG.debug("Interest parameter date accepted verbatim: {}", describeValue(value));
     }
 
     /**
@@ -605,8 +672,8 @@ public final class JobParameterValidators {
             throw new JobParametersInvalidException(failure.get());
         }
 
-        LOG.debug("Report date window accepted: [{}] through [{}], both bounds inclusive",
-                startDate, endDate);
+        LOG.debug("Report date window accepted: {} through {}, both bounds inclusive",
+                describeValue(startDate), describeValue(endDate));
     }
 
     /**
@@ -636,13 +703,29 @@ public final class JobParameterValidators {
             throw new JobParametersInvalidException(describe(FILE_PROBE_MODE_KEY, value)
                     + "is blank; the legal values are " + legalModes);
         }
+        // Representability is asserted explicitly rather than left to the membership test below. The
+        // membership test would reject a control-bearing mode too, since no legal mode carries one, but
+        // it would reject it as "not one of the legal probe modes" - which tells an operator to check a
+        // spelling when the real defect is an invisible character, and is the least actionable message
+        // this class could produce for the one input most likely to have been assembled by a script.
+        // Naming the position and the code point is what turns that into a correctable report.
+        if (firstNonPrintableIndex(value) >= 0) {
+            // The offending position and code point are not re-derived here. describeValue already
+            // renders exactly that, and a guard that spelled its own copy of the description would let
+            // one machine-checked condition be reported two different ways inside one class depending on
+            // which site happened to see it.
+            throw new JobParametersInvalidException("Job parameter [" + FILE_PROBE_MODE_KEY + "] must"
+                    + " not hold a character outside printable US-ASCII, because the mode is written to"
+                    + " the batch log and no legal mode carries one; the supplied value is "
+                    + describeValue(value));
+        }
         if (!legalModes.contains(value)) {
             throw new JobParametersInvalidException(describe(FILE_PROBE_MODE_KEY, value)
                     + "is not one of the legal probe modes " + legalModes
                     + "; matching is exact and case sensitive");
         }
 
-        LOG.debug("File-probe mode accepted: [{}]", value);
+        LOG.debug("File-probe mode accepted: {}", describeValue(value));
     }
 
     // =================================================================================================
@@ -768,8 +851,15 @@ public final class JobParameterValidators {
             return endFailure;
         }
         if (startValue.compareTo(endValue) > 0) {
-            return Optional.of("Job parameter [" + startName + "] value [" + startValue + "] follows ["
-                    + endName + "] value [" + endValue + "]; the report window is filtered with an"
+            // Both bounds have already passed the ISO-date cascade, so both are printable by
+            // construction and neither scan below can substitute anything. They are rendered through
+            // the shared guard regardless, because this is the one diagnostic in the class that
+            // composes a value without going through describe(), and a message whose safety depends on
+            // a check performed by a different method further up is safe only until that method is
+            // reordered. Guarding here makes this record's safety a property of this record.
+            return Optional.of("Job parameter [" + renderSafely(startName) + "] value ["
+                    + renderSafely(startValue) + "] follows [" + renderSafely(endName) + "] value ["
+                    + renderSafely(endValue) + "]; the report window is filtered with an"
                     + " inclusive lower and an inclusive upper bound, so the start must not be later than"
                     + " the end");
         }
@@ -803,8 +893,8 @@ public final class JobParameterValidators {
                 dateValidationService.validateDate(candidate, formatMask);
         final boolean acceptable = dateValidationService.isDateAcceptable(result);
         if (!acceptable) {
-            LOG.debug("Calendar authority rejected [{}] under mask [{}]: severity [{}] messageNumber [{}]",
-                    candidate, formatMask, result.severityCode(), result.messageNumber());
+            LOG.debug("Calendar authority rejected {} under mask [{}]: severity [{}] messageNumber [{}]",
+                    describeValue(candidate), formatMask, result.severityCode(), result.messageNumber());
         }
         return acceptable;
     }
@@ -844,10 +934,22 @@ public final class JobParameterValidators {
      * launches it was configured to accept, and failing where the mistake was made is more useful than
      * failing where it is felt.</p>
      *
+     * <p>An entry carrying a character outside printable US-ASCII is refused here too, and for a reason
+     * that is not about matching. Each legal value is reproduced verbatim inside the diagnostic of every
+     * rejected launch, and parameter substitution escapes nothing, so an entry carrying a line feed would
+     * let a configuration mistake forge log records at every subsequent rejection. Guarding it at the one
+     * point where the enumeration enters this class is what makes that impossible without every diagnostic
+     * having to re-check it, and the guard names the offending character's position and code point rather
+     * than repeating the entry, so the report of the problem cannot itself be the problem.</p>
+     *
      * @param legalModeNames the caller's collection
      * @return an unmodifiable copy in declaration order, never empty
      * @throws NullPointerException     if {@code legalModeNames} is {@code null}
-     * @throws IllegalArgumentException if the collection is empty or carries a {@code null} or blank entry
+     * @throws IllegalArgumentException if the collection is empty, carries a {@code null} or blank entry,
+     *                                  or carries an entry with a character outside printable US-ASCII;
+     *                                  the message names the admissible range as well as the offending
+     *                                  position and code point, because it is read by whoever declared
+     *                                  the enumeration rather than by whoever launched the job
      */
     private static Set<String> copyLegalModeNames(final Collection<String> legalModeNames) {
         Objects.requireNonNull(legalModeNames, "legalModeNames must not be null: the probe job"
@@ -858,6 +960,26 @@ public final class JobParameterValidators {
             if (modeName == null || modeName.isBlank()) {
                 throw new IllegalArgumentException("legalModeNames must not carry a null or blank entry,"
                         + " because no launch could ever match one");
+            }
+            // A legal mode is the one value that reaches the batch log on the success path, and it is
+            // also echoed into the membership-failure diagnostic as part of the legal-value set. A
+            // control character in a configured mode name would therefore forge a record on a launch
+            // that succeeded, which no amount of guarding at the launch-parameter boundary can catch,
+            // because the value did not arrive as a launch parameter. It is rejected at construction
+            // so the failure is felt where the mode enumeration is declared.
+            final int offendingIndex = firstNonPrintableIndex(modeName);
+            if (offendingIndex >= 0) {
+                // This guard's reader is a developer correcting a declaration, not an operator
+                // correcting a launch, so it states the admissible range as well as the offence. The
+                // range is read from the same two constants the scan compares against, so it cannot
+                // describe a bound the scan does not enforce.
+                throw new IllegalArgumentException("legalModeNames must not carry an entry with a"
+                        + " character outside printable US-ASCII, because an accepted mode is written to"
+                        + " the batch log; an entry may carry printable US-ASCII only, that is code"
+                        + " points " + (int) FIRST_PRINTABLE_US_ASCII + " to "
+                        + (int) LAST_PRINTABLE_US_ASCII + ", and the entry's character at zero-based"
+                        + " position " + offendingIndex + " is code point "
+                        + (int) modeName.charAt(offendingIndex));
             }
             copy.add(modeName);
         }
@@ -887,14 +1009,137 @@ public final class JobParameterValidators {
      *
      * <p>Both are always named. A batch diagnostic is read after the fact, so one that omits either the
      * parameter or the value is not actionable. None of the four parameters carries a credential, so
-     * echoing the value discloses nothing.</p>
+     * naming the value discloses nothing.</p>
+     *
+     * <p><strong>Disclosing nothing is not the same as being safe to print, and both fragments are
+     * therefore rendered through {@link #renderSafely(String)} rather than interpolated.</strong> This
+     * method is the single composer behind every diagnostic this class produces - the file-probe
+     * rejections, the interest-parameter cascade, the ISO-date cascade and the {@code DATEPARM} record
+     * parser all route through it - and the value it renders is launch-time input that no code in this
+     * module authored. A value carrying a line feed would end the log record early and let the
+     * remainder appear as a second, forged entry; the runtime proof of that defect was a probe mode of
+     * {@code ACCT\nFORGED} producing a two-line exception message. Guarding here rather than at each of
+     * the ten call sites is deliberate: a guard at the composer cannot be forgotten by the next
+     * diagnostic added above it.</p>
+     *
+     * <p>The name is guarded as well as the value. Most callers pass one of this class's own constants,
+     * which are printable by construction, but two do not - the ISO-date cascade takes a parameter name
+     * from its caller and the record parser passes a positional label - and a fragment that is only
+     * usually authored here still has to be checked. The cost of guarding a constant is one scan of a
+     * short string on a path that has already failed.</p>
      *
      * @param name  the parameter key or record-position label
      * @param value the offending value
      * @return the prefix, ending in a space so a reason can follow directly
      */
     private static String describe(final String name, final String value) {
-        return "Job parameter [" + name + "] value [" + value + "] ";
+        return "Job parameter [" + renderSafely(name) + "] value [" + renderSafely(value) + "] ";
+    }
+
+    /**
+     * Renders caller-supplied text for inclusion in a diagnostic, substituting a description of the
+     * first offending character when the text is not printable US-ASCII.
+     *
+     * <p>Printable text renders unchanged, which keeps every legitimate diagnostic exactly as legible
+     * as it was: a rejected probe mode still reads {@code [ACCTFILE]} and a rejected date still reads
+     * {@code [2022-13-01]}, which is the most useful thing the message can say. Only text that could
+     * reframe the record is replaced, and it is replaced by the two facts that make the defect
+     * correctable - the zero-based position of the offending character and its code point - and by
+     * nothing else. Neither fact can be used to forge a record, and together they identify exactly one
+     * character.</p>
+     *
+     * <p>It degrades rather than throwing, following {@code FixedWidthFieldReader.describeField}. Every
+     * caller is already on a failure path composing a message for a defect it has just detected;
+     * throwing here would discard that message and report an unrelated fault, hiding the real one
+     * behind a secondary one. A {@code null} renders as the literal {@code null} rather than raising,
+     * for the same reason - a diagnostic must survive being handed nothing.</p>
+     *
+     * @param text the caller-supplied fragment, which may be {@code null}
+     * @return the text unchanged when it is printable US-ASCII, the literal {@code "null"} when it is
+     *         {@code null}, and a substitute fragment naming the offending position and code point
+     *         otherwise
+     */
+    private static String renderSafely(final String text) {
+        if (text == null) {
+            return "null";
+        }
+        final int offendingIndex = firstNonPrintableIndex(text);
+        if (offendingIndex >= 0) {
+            return "value not printable US-ASCII: the character at zero-based position "
+                    + offendingIndex + " is code point " + (int) text.charAt(offendingIndex);
+        }
+        return text;
+    }
+
+    /**
+     * Reports the zero-based position of the first character outside printable US-ASCII.
+     *
+     * <p>The single scan behind both the degrading renderer and the throwing file-probe check, so the
+     * two cannot disagree about what "printable" means. Returning the position rather than a boolean is
+     * what lets both callers name the offending character precisely; a boolean would force each of them
+     * to scan a second time to say anything actionable.</p>
+     *
+     * @param text the text to scan, never {@code null}
+     * @return the zero-based position of the first offending character, or {@code -1} when every
+     *         character is printable US-ASCII
+     */
+    private static int firstNonPrintableIndex(final String text) {
+        for (int index = 0; index < text.length(); index++) {
+            final char character = text.charAt(index);
+            if (character < FIRST_PRINTABLE_US_ASCII || character > LAST_PRINTABLE_US_ASCII) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Renders a caller-supplied value, with its own delimiters, for a log record or for a message that
+     * does not bracket the value itself.
+     *
+     * <p>Every log record this class emits routes through here, on the accepting path as well as on the
+     * rejecting path. That is the half of the CWE-117 surface a message composer cannot reach: a
+     * launch value that is <em>accepted</em> is written to the batch log verbatim, so a value carrying
+     * a line feed would forge a second apparent log entry on a job that succeeded, where no rejection
+     * message is ever produced and nothing else would have screened it. The probe mode and the interest
+     * parameter are both logged on acceptance, and both arrive from a launch.
+     *
+     * <p>Three renderings exist, and the delimiters are what distinguish them at a glance:
+     *
+     * <ul>
+     *   <li>a value that was never supplied becomes {@value #ABSENT_VALUE_SUBSTITUTE}, in parentheses,
+     *       so a reader can tell it from a value that was supplied and happened to be empty;</li>
+     *   <li>a value that is printable US-ASCII is reproduced verbatim inside square brackets, which is
+     *       what keeps an ordinary batch failure actionable - a rejected probe mode still reads
+     *       {@code [ACCTFILE]};</li>
+     *   <li>any other value is replaced, in parentheses, by the zero-based position and the code point
+     *       of its first offending character, and never by that character itself.</li>
+     * </ul>
+     *
+     * <p>The scan is {@link #firstNonPrintableIndex(String)}, shared with {@link #renderSafely(String)}
+     * and with the probe-mode configuration guard, so "printable" has exactly one definition in this
+     * class and the three policies built on it cannot drift apart. The two renderers differ only in
+     * presentation: this one supplies delimiters because its callers do not, and
+     * {@code renderSafely} does not because its callers already wrote the brackets around it.
+     *
+     * <p>It degrades rather than throwing, for the same reason {@code renderSafely} does. Several
+     * callers are already reporting a failure they have just detected, and throwing here would replace
+     * that report with an unrelated one.
+     *
+     * @param value the value to render, or {@code null} when none was supplied
+     * @return the rendering, never {@code null} and never carrying a character outside printable
+     *         US-ASCII
+     */
+    private static String describeValue(final String value) {
+        if (value == null) {
+            return ABSENT_VALUE_SUBSTITUTE;
+        }
+        final int offendingIndex = firstNonPrintableIndex(value);
+        if (offendingIndex >= 0) {
+            return "(not printable US-ASCII: the character at zero-based position " + offendingIndex
+                    + " is code point " + (int) value.charAt(offendingIndex) + ")";
+        }
+        return "[" + value + "]";
     }
 
     /**
@@ -937,33 +1182,6 @@ public final class JobParameterValidators {
             }
         }
         return true;
-    }
-
-    /**
-     * Discards the trailing padding of a fixed-width record image, leaving its significant content.
-     *
-     * <p>A record area longer than its content carries either spaces or low-value bytes beyond it, and
-     * both are padding rather than data. Discarding them before measuring is what lets a genuine padded
-     * record image satisfy a significant-width check while a record whose content is the wrong width still
-     * fails it.</p>
-     *
-     * <p>Only trailing padding is discarded. Leading padding is not, because the layout starts its first
-     * field in the first position, so a leading space is content in the wrong place and must fail rather
-     * than be absorbed.</p>
-     *
-     * @param recordText the record as read
-     * @return the significant content, possibly empty
-     */
-    private static String stripTrailingRecordPadding(final String recordText) {
-        int end = recordText.length();
-        while (end > 0) {
-            final char character = recordText.charAt(end - 1);
-            if (character != RECORD_PADDING_SPACE && character != RECORD_PADDING_LOW_VALUE) {
-                break;
-            }
-            end--;
-        }
-        return recordText.substring(0, end);
     }
 
     /**
@@ -1051,8 +1269,8 @@ public final class JobParameterValidators {
             if (!isSingleByteRepresentable(processingDate)
                     || encodedByteWidth(processingDate) != ISO_DATE_WIDTH) {
                 throw new IllegalArgumentException("processingDate must be exactly " + ISO_DATE_WIDTH
-                        + " encoded bytes to be compared against this window, but [" + processingDate
-                        + "] is not");
+                        + " encoded bytes to be compared against this window, but "
+                        + describeValue(processingDate) + " is not");
             }
             return startDate.compareTo(processingDate) <= 0 && processingDate.compareTo(endDate) <= 0;
         }

@@ -17,6 +17,8 @@
 package com.carddemo.api.dto;
 
 import com.carddemo.domain.enums.KeyAction;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
 import java.util.Arrays;
 import java.util.Collections;
@@ -109,19 +111,33 @@ import java.util.List;
  * parts at lines 327 to 331 - the shared navigation area it holds in common with every other online
  * program, and its own paging area declared at lines 229 to 248 - and it writes both back out at
  * lines 609 to 612 for the next turn. The client returns what it was given. This request therefore
- * carries those two areas as two components: {@link PageMetadata} for the private paging area, whose
- * retained first and last browse keys are the composite of a 16-character card number followed by an
- * 11-character account identifier, and {@link NavigationContext} for the shared area. Both are
- * absent on a first entry into the screen, exactly as the legacy initialises them, and neither is
- * synthesised here.
+ * carries those two areas as two components: {@link PageMetadata.PageCursorRequest} for the private
+ * paging area, whose retained first and last browse keys are the composite of a 16-character card
+ * number followed by an 11-character account identifier, and {@link NavigationContext} for the shared
+ * area. Both are absent on a first entry into the screen, exactly as the legacy initialises them, and
+ * neither is synthesised here.
+ *
+ * <p><strong>The inbound half of the paging area is a narrower shape than the outbound half.</strong>
+ * What the client legitimately hands back is the browse key to restart from and the direction it is
+ * asking for. It does not hand back how many rows fit on the screen, whether a further page exists in
+ * either direction, or which page number to print: every one of those is the server's own conclusion
+ * about the browse it is about to perform, restated on the way out. Accepting them inbound would let a
+ * caller name a page size the screen does not have - the row count is fixed at
+ * {@link PageMetadata#CARD_LIST_PAGE_SIZE} by the shape of the map itself - or assert the existence of
+ * a page the browse has not found. {@link PageMetadata.PageCursorRequest} therefore carries the two
+ * keys and the direction and nothing else, while the full {@link PageMetadata} remains the outbound
+ * form on the response contract. The two are separate types rather than one type used in two
+ * directions, so neither can drift into the other's role.
  *
  * <p><strong>The inbound page indicator is never read by the program.</strong> The screen-number is
  * written outbound at line 667, and an exhaustive search finds no inbound read of the corresponding
  * input item anywhere in the program. It is carried here because the map declares it and the client
- * echoes it, and it is documented as a display value only: the retained browse keys are the
- * authoritative navigation state. It is three characters wide and travels as text, never as a
- * number - the transaction-list and user-list screens use a differently named eight-character
- * indicator, so no width is shared between them.
+ * echoes it, and it is <strong>non-bindable</strong> for exactly that reason: a value the legacy
+ * program never consults is a value this contract must not let a caller use to influence anything.
+ * Serialized so that the echo remains visible in the contract, ignored inbound so that the retained
+ * browse keys stay the sole authoritative navigation state. It is three characters wide and travels
+ * as text, never as a number - the transaction-list and user-list screens use a differently named
+ * eight-character indicator, so no width is shared between them.
  *
  * <p><strong>The attention key has no default.</strong> Direction and exit are decided by the key
  * the operator pressed: the program branches on the backward and forward program-function keys and
@@ -144,10 +160,20 @@ import java.util.List;
  * after the comma and the article that reads {@code A 11} and {@code A 16}. Bean Validation
  * evaluates constraints in an unspecified order and could not reproduce that message set, so the
  * digit-format checks are service checks and this request <strong>accepts null, blank and
- * malformed values without rejecting them</strong>. The only declarative constraint used anywhere
- * in this file is a maximum length at each component's measured map width, which restates the
+ * malformed values without rejecting them</strong>. The only declarative constraint used on a text
+ * component is a maximum length at each component's measured map width, which restates the
  * physical width of the 3270 field rather than any business rule; it neither trims a value nor
- * disturbs a leading or trailing space, and no other constraint annotation appears.
+ * disturbs a leading or trailing space, and no format, presence, vocabulary or cross-field
+ * constraint appears on any of them.
+ *
+ * <p><strong>The two nested components carry a cascade, which is not a field edit.</strong> The
+ * paging component and the navigation component each declare widths of their own, and a nested
+ * constraint is evaluated only when the enclosing component asks for it: without the cascade those
+ * widths are stated on paper and enforced nowhere, so an arbitrarily wide browse cursor or echoed
+ * identifier crosses this boundary unmeasured on its way to a query. The cascade adds no rule that
+ * the nested types do not already declare, expresses no opinion about any value here, and cannot
+ * pre-empt a service cascade, because an over-wide nested value is a state no 3270 submission could
+ * produce and the estate therefore has no ordered check and no message for it.
  *
  * <p><strong>Both filters are optional and neither has a default.</strong> The screen distinguishes
  * three states per filter - blank, supplied but unusable, and supplied and usable - so a blank
@@ -199,8 +225,10 @@ import java.util.List;
  *        verbatim, never masked or truncated, and excluded from {@link #toString()}.
  * @param displayedPageNumber the page indicator the screen shows - map field {@code PAGENO}, width
  *        3. Written outbound at line 667 and <em>never read inbound</em>, so it is a display echo
- *        rather than navigation state; the browse keys on {@code page} are authoritative. Text, not
- *        a number, and may be {@code null} when the client has nothing to echo.
+ *        rather than navigation state; the browse keys on {@code pageMetadata} are authoritative.
+ *        <strong>Non-bindable</strong>: present in the contract so the echo is documented, ignored
+ *        when a body supplies it, because the program consults no such value and neither may this
+ *        boundary. Text, not a number, and may be {@code null} when the client has nothing to echo.
  * @param selection1 action code marked on screen row one - map field {@code CRDSEL1}, width 1,
  *        staged into the first slot at line 972. Position is the row index. {@code null}, empty or
  *        blank all mean the row was not marked, and the value is neither interpreted nor
@@ -217,22 +245,28 @@ import java.util.List;
  *        staged into the sixth slot at line 977. Same semantics as row one.
  * @param selection7 action code marked on screen row seven - map field {@code CRDSEL7}, width 1,
  *        staged into the seventh and last slot at line 978. Same semantics as row one.
- * @param page the paging state the previous turn handed back, reproducing the program's own paging
- *        area declared at lines 229 to 248 and returned at lines 609 to 612. Supplies the browse
- *        key to restart from and the direction asked for. {@code null} on a first entry into the
- *        screen, where the legacy initialises the area instead. Its browse keys embed a card
- *        number, so it is excluded from {@link #toString()}.
+ * @param pageMetadata the paging state the previous turn handed back, reproducing the program's own
+ *        paging area declared at lines 229 to 248 and returned at lines 609 to 612. Supplies the
+ *        browse key to restart from and the direction asked for, and <em>only</em> those: the page
+ *        size, the two availability flags and the displayed page number are server conclusions and
+ *        are not accepted from a caller, which is why the inbound shape is
+ *        {@link PageMetadata.PageCursorRequest} rather than the full {@link PageMetadata}. Validated
+ *        transitively, so the browse-key widths it declares are actually evaluated. {@code null} on a
+ *        first entry into the screen, where the legacy initialises the area instead. Its browse keys
+ *        embed a card number, so it is excluded from {@link #toString()}.
  * @param keyAction the attention key the operator pressed, which decides direction and exit.
  *        {@code null} when the key mapped to nothing, mirroring a translation that has 28 ordered
  *        clauses and no catch-all and therefore leaves the previously held value untouched. No
  *        substitute is invented.
  * @param navigationContext the shared navigation state echoed from the previous turn, the other
- *        half of the passed area sliced at lines 327 to 331. {@code null} on a first entry. It
- *        redacts its own identifying values when stringified.
+ *        half of the passed area sliced at lines 327 to 331. Validated transitively, so the widths it
+ *        declares are actually evaluated. {@code null} on a first entry. It redacts its own
+ *        identifying values when stringified.
  */
 public record CardListRequest(
         @Size(max = CardListRequest.ACCOUNT_ID_FILTER_LENGTH) String accountIdFilter,
         @Size(max = CardListRequest.CARD_NUMBER_FILTER_LENGTH) String cardNumberFilter,
+        @JsonProperty(access = JsonProperty.Access.READ_ONLY)
         @Size(max = CardListRequest.DISPLAYED_PAGE_NUMBER_LENGTH) String displayedPageNumber,
         @Size(max = CardListRequest.SELECTION_LENGTH) String selection1,
         @Size(max = CardListRequest.SELECTION_LENGTH) String selection2,
@@ -241,9 +275,9 @@ public record CardListRequest(
         @Size(max = CardListRequest.SELECTION_LENGTH) String selection5,
         @Size(max = CardListRequest.SELECTION_LENGTH) String selection6,
         @Size(max = CardListRequest.SELECTION_LENGTH) String selection7,
-        PageMetadata page,
+        @Valid PageMetadata.PageCursorRequest pageMetadata,
         KeyAction keyAction,
-        NavigationContext navigationContext) {
+        @Valid NavigationContext navigationContext) {
 
     /**
      * Fixed stand-in emitted by {@link #toString()} in place of each regulated component.
@@ -385,7 +419,7 @@ public record CardListRequest(
                 + ", selection5=" + selection5
                 + ", selection6=" + selection6
                 + ", selection7=" + selection7
-                + ", page=" + REDACTION_PLACEHOLDER
+                + ", pageMetadata=" + REDACTION_PLACEHOLDER
                 + ", keyAction=" + keyAction
                 + ", navigationContext=" + navigationContext
                 + "]";

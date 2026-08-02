@@ -57,9 +57,23 @@ import java.util.Optional;
  *       batch program when it synthesises an accrued-interest transaction.</li>
  * </ul>
  *
+ * <p><strong>Where the padded image actually lives.</strong> The ten-character image is
+ * the form the fixed-width record carries, and it is the only form this type resolves. A
+ * relational column is a separate question: {@code VARCHAR(10)} is able to hold the padded
+ * image, but whether a given row does depends on who wrote the row. The record writers in
+ * {@code com.carddemo.util} always emit the full ten bytes, space-padding on the right, so
+ * a value that arrives by slicing a record image is always padded. The reference seed
+ * {@code V3__seed_reference_data.sql} instead stores display text right-trimmed, so its
+ * three hundred daily-transaction rows hold an eight-character source. Both are correct and
+ * they produce identical record bytes, because the writer pads whatever it is handed out to
+ * the field width. The consequence for this type is specific and is stated again on
+ * {@link #fromValue(String)}: resolve against a sliced record image, or pad a column value
+ * back to {@link #VALUE_LENGTH} first. Nothing here does that padding, because a lookup
+ * that silently repaired its argument would hide the very width error it exists to expose.</p>
+ *
  * <p><strong>Not a JPA attribute type.</strong> The transaction and daily-transaction
  * entities keep their source column as a raw {@code VARCHAR(10)} string, because only a
- * raw string preserves the padding, and neither entity refers to this enum. Translation
+ * raw string can carry the padded image at all, and neither entity refers to this enum. Translation
  * between the stored image and this vocabulary belongs to the service layer. This type
  * carries no persistence mapping at all, for three independently sufficient reasons: a
  * string-valued enum mapping would persist the Java constant name rather than the padded
@@ -172,6 +186,15 @@ public enum TransactionSourceType {
      * which is what slicing bytes 23 through 32 out of a fixed-width record produces. No
      * trimming, stripping or case folding is applied, so a trimmed or re-cased argument is
      * simply not found rather than being coerced into a match.</p>
+     *
+     * <p>There is one routine way to hold a trimmed argument by accident, and it is worth
+     * naming because it is not a defect anywhere else. Display text is stored right-trimmed
+     * in the relational schema - the reference seed inserts an eight-character source for all
+     * three hundred daily-transaction rows - so a value taken from a column rather than from a
+     * record image is short by two spaces and will not resolve. Pad it to
+     * {@link #VALUE_LENGTH} before calling, or resolve from the record image instead. This
+     * method deliberately does neither on the caller's behalf: coercing a short argument into
+     * a match would make a genuine width error indistinguishable from a normal lookup.</p>
      *
      * <p>An unrecognised image is a legitimate outcome rather than an error, and is
      * reported as {@link Optional#empty()}. The legacy system never validated this field

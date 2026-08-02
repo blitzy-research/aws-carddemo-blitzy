@@ -16,6 +16,7 @@
  */
 package com.carddemo.api.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 import java.util.List;
@@ -294,7 +295,13 @@ public record TransactionAddResponse(
         @Size(max = 60) String description,
 
         /* TRNAMT, width 12 on the map - COTRN02.CPY:96. Carried as an exact decimal of
-           contractual scale 2, never as the edited display form the screen shows. */
+           contractual scale 2, never as the edited display form the screen shows. The scale is
+           stated in the published schema and enforced by the compact constructor, because a scale
+           that is documented and unchecked is a scale a producer can silently break. */
+        @Schema(description = "Transaction amount. Record field TRAN-AMT of CVTRA05Y.cpy line 10: a "
+                + "signed zoned decimal with nine integer digits and two decimal places, so total "
+                + "precision 11 and scale exactly 2. The map's twelve-character edited display form "
+                + "is deliberately not reproduced; this is the numeric value alone.")
         BigDecimal amount,
 
         /* TORIGDT, width 10 - COTRN02.CPY:102. Opaque text; no date type anywhere in this file. */
@@ -706,10 +713,72 @@ public record TransactionAddResponse(
      * and space-significant, the success path supplies blanks for all fourteen echoed values, and
      * the two success fragments carry contractual spaces at their joins. No component is trimmed,
      * padded, case-folded, scaled, rounded, reformatted or canonicalised here, and this
-     * constructor performs no validation, no defaulting and no business logic of any kind.
+     * constructor performs no defaulting and no business logic of any kind.
+     *
+     * <p><strong>The one thing it refuses.</strong> The amount is checked against the decimal shape
+     * of the record field it represents, and a value of the wrong shape is rejected rather than
+     * repaired. This is a refusal and not a normalisation, and the distinction is the whole point:
+     * nothing here rescales, rounds, truncates or reformats the amount, so the value a producer
+     * published still crosses this boundary at exactly the scale it published it at. What changes is
+     * that a producer which published the wrong scale now finds out at construction instead of
+     * emitting a payload whose precision silently contradicts the schema this type publishes. A
+     * {@code null} amount is accepted untouched, because the success path deliberately blanks every
+     * echoed value.
+     *
+     * @throws IllegalArgumentException if {@code amount} carries a scale other than
+     *     {@link #AMOUNT_SCALE} or needs more than {@link #AMOUNT_INTEGER_DIGITS} integer digits
      */
     public TransactionAddResponse {
         fieldErrors = (fieldErrors == null) ? List.of() : List.copyOf(fieldErrors);
+        requireRecordShape(amount);
+    }
+
+    /**
+     * The number of decimal places the amount carries, from the two decimal places of
+     * {@code TRAN-AMT PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy} line 10.
+     *
+     * <p>Public because it is part of the numeric contract rather than an implementation choice: the
+     * service that builds a response, and the tests that check one, need a single authority for the
+     * figure instead of each restating it. Declaring it here and not sharing it with the
+     * transaction-list contract is deliberate for the same reason the widths are not shared - each
+     * map is its own contract - even though both happen to derive from the same record field.
+     */
+    public static final int AMOUNT_SCALE = 2;
+
+    /**
+     * The number of integer digits the amount may carry, from the nine integer digits of the same
+     * record field. With {@link #AMOUNT_SCALE} this gives the total precision of eleven that the
+     * relational column declares.
+     */
+    public static final int AMOUNT_INTEGER_DIGITS = 9;
+
+    /**
+     * Confirms that the amount has the decimal shape of the record field it represents.
+     *
+     * <p>Reads only the amount's own scale and precision. It performs no arithmetic on the value,
+     * does not re-scale it, does not round it and does not format it, so it cannot change what the
+     * client receives. The failure text names the offending scale or digit count and never the amount
+     * itself, so a rejected value cannot reach a log through the diagnostic that reports it.
+     *
+     * @param amount the amount to check, or {@code null} on the success path where every echoed value
+     *     is deliberately blank
+     * @throws IllegalArgumentException if the amount does not fit the record field
+     */
+    private static void requireRecordShape(final BigDecimal amount) {
+        if (amount == null) {
+            return;
+        }
+        if (amount.scale() != AMOUNT_SCALE) {
+            throw new IllegalArgumentException("amount must carry scale " + AMOUNT_SCALE
+                    + ", because its record field stores two decimal places, but its scale is "
+                    + amount.scale());
+        }
+        final int integerDigits = amount.precision() - amount.scale();
+        if (integerDigits > AMOUNT_INTEGER_DIGITS) {
+            throw new IllegalArgumentException("amount must fit " + AMOUNT_INTEGER_DIGITS
+                    + " integer digits, because that is the width of its record field, but it needs "
+                    + integerDigits);
+        }
     }
 
     /**

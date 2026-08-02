@@ -963,8 +963,8 @@ class JobSubmissionServiceParityTest {
         }
 
         @Test
-        @DisplayName("a multi-line publish description is reduced to its first line, so the reason code "
-                + "stays a single readable value")
+        @DisplayName("a multi-line publish description reaches neither the operator-facing text nor "
+                + "any derived code, because no code is derived from a description at all")
         void aMultiLinePublishDescriptionIsStillAbsorbed() {
             final RecordingSqsOperations queue = RecordingSqsOperations.failingOnAttemptWith(1,
                     new IllegalStateException("first line\nsecond line\nthird line"));
@@ -974,10 +974,14 @@ class JobSubmissionServiceParityTest {
 
             assertThat(result.failed()).isTrue();
             assertThat(result.failureMessage())
-                    .as("the diagnostic detail belongs in the log; the result carries only the frozen "
-                            + "operator-facing literal")
+                    .as("the legacy screen shows one frozen literal and no diagnostic detail, so the "
+                            + "result carries exactly that literal; the response and reason codes are "
+                            + "derived from the failure's type rather than its description and reach "
+                            + "the log alone")
                     .isEqualTo(JobSubmissionException.DEFAULT_MESSAGE)
-                    .doesNotContain("first line");
+                    .doesNotContain("first line")
+                    .doesNotContain("second line")
+                    .doesNotContain("third line");
         }
 
         @Test

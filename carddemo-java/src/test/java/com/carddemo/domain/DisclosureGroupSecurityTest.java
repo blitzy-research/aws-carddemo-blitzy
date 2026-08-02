@@ -182,8 +182,8 @@ class DisclosureGroupSecurityTest {
         }
 
         @Test
-        @DisplayName("a zero rate is stored as zero rather than as null, so the zero-rate skip branch of the "
-                + "interest program is reachable from a real row")
+        @DisplayName("a zero rate is stored as zero rather than as null, so what the zero-rate skip branch "
+                + "of the interest program reads is a genuine row value and never a null")
         void aZeroRateIsStoredAsZero() {
             final DisclosureGroup subject = new DisclosureGroup(ZERO_APR_GROUP_ID, TYPE_CODE,
                     CATEGORY_CODE, new BigDecimal("0.00"));

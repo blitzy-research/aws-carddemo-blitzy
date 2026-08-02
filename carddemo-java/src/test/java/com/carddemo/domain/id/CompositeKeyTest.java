@@ -73,10 +73,10 @@ final class CompositeKeyTest {
      */
     private static final String DEFAULT_GROUP_ID = "DEFAULT   ";
 
-    /** The zero-rate group, which makes the interest program's rate-is-zero branch reachable. */
+    /** The zero-rate group; an account constructed with this key reaches the rate-is-zero branch. */
     private static final String ZERO_RATE_GROUP_ID = "ZEROAPR   ";
 
-    /** The explicitly keyed group, which makes the direct-hit branch reachable. */
+    /** The explicitly keyed group; an account constructed with this key reaches the direct-hit branch. */
     private static final String DIRECT_HIT_GROUP_ID = "A000000000";
 
     /** {@code TRANCAT-ACCT-ID PIC 9(11)} is eleven bytes. */
@@ -221,8 +221,10 @@ final class CompositeKeyTest {
         @Test
         @DisplayName("the three fixture group identifiers are distinct keys at the same type and category")
         void theThreeFixtureGroupsAreDistinctKeys() {
-            // The seed fixture holds three consecutive seventeen-row groups, which is what makes the
-            // direct-hit branch, the default-fallback branch and the zero-rate branch all reachable.
+            // The seed fixture holds three consecutive seventeen-row groups. A seed-only accrual run
+            // reaches the default-fallback branch alone, because every seeded account holds ten spaces
+            // in its group identifier; the other two branches need an account constructed with one of
+            // the keys below, which is what makes their distinctness worth asserting here.
             final DisclosureGroupId directHit =
                     new DisclosureGroupId(DIRECT_HIT_GROUP_ID, TYPE_CODE, CATEGORY_CODE);
             final DisclosureGroupId fallback =

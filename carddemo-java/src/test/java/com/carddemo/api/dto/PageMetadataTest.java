@@ -16,15 +16,18 @@
  */
 package com.carddemo.api.dto;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.StreamWriteFeature;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.databind.json.JsonMapper;
 
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.Validation;
+import jakarta.validation.Validator;
+import jakarta.validation.ValidatorFactory;
+
+import java.lang.reflect.RecordComponent;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -42,306 +45,186 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * Unit test for {@link PageMetadata}, the browse-cursor contract shared by the three paginated
  * CardDemo screens.
  *
- * <p>{@link PageMetadata} is the REST projection of the CICS browse protocol the legacy screens use
- * to walk a key-sequenced cluster: position the browse at a record key, walk forward, walk backward,
- * release. Seven properties of that protocol are contractual rather than incidental, and each is
- * asserted below against the legacy member that establishes it.</p>
+ * <p>{@link PageMetadata} is the REST projection of the browse protocol the legacy screens use to
+ * walk a key-sequenced cluster: position at a record key, walk forward, walk backward, release.
+ * Seven properties of that protocol are contractual rather than incidental, and each is asserted
+ * below against the legacy member that establishes it.</p>
  * <ol>
- *   <li><strong>Three screen row counts, one per paginated screen</strong>, each proven by a
- *       different mechanism in a different member and each asserted against its own independent
- *       arithmetic rather than against either of the other two.</li>
- *   <li><strong>No aggregate row figure of any kind.</strong> The legacy browse never counts a
- *       cluster; it discovers that a further page exists by attempting one more read and observing
- *       the outcome, so the two conditions the screens actually know are carried as the separate
- *       flags {@link PageMetadata#hasMorePages()} and {@link PageMetadata#hasPreviousPages()}.</li>
- *   <li><strong>An opaque textual cursor, never a numeric offset.</strong> The legacy programs
- *       retain a record key across a pseudo-conversational turn and restart the browse from it, so
- *       leading zeros, embedded characters and padding all have to survive untouched.</li>
- *   <li><strong>Two boundary cursors, both live at once.</strong> Each paginated screen retains the
- *       key of the first row on the page <em>and</em> the key of the last row, as two adjacent
- *       fields of one commarea group, and repositions on whichever one the operator's attention key
- *       calls for - the first key for the preceding page, the last key for the following one. The
- *       card list declares {@code WS-CA-FIRST-CARDKEY} and {@code WS-CA-LAST-CARDKEY} at
- *       {@code app/cbl/COCRDLIC.cbl} lines 230 to 235, each a 16-character card number followed by
- *       an 11-digit account identifier; the transaction list declares
- *       {@code CDEMO-CT00-TRNID-FIRST} and {@code CDEMO-CT00-TRNID-LAST} as 16-character siblings at
- *       {@code app/cbl/COTRN00C.cbl} lines 63 and 64; the user list declares
- *       {@code CDEMO-CU00-USRID-FIRST} and {@code CDEMO-CU00-USRID-LAST} as 8-character siblings at
- *       {@code app/cbl/COUSR00C.cbl} lines 68 and 69. A page in the middle of a browse can be paged
- *       either way and therefore needs both, which is asserted in
- *       {@link BoundaryCursorPairContract}. The two are an ordered pair rather than a set: swapping
- *       them yields a different value, and that is asserted too.</li>
- *   <li><strong>A textual page indicator whose width differs by screen.</strong> The card-list map
- *       declares a three-character alphanumeric field named {@code PAGENO}; the transaction-list and
- *       user-list maps each declare an eight-character alphanumeric field named {@code PAGENUM}.
+ *   <li>Three screen row counts, one per paginated screen, each proven by a different mechanism in a
+ *       different member and each asserted against its own independent arithmetic rather than
+ *       against either of the other two.</li>
+ *   <li>No aggregate row figure of any kind. The legacy browse never counts a cluster; it discovers
+ *       that a further page exists by attempting one more read and observing the outcome, so the two
+ *       conditions the screens actually know are carried as the separate flags
+ *       {@link PageMetadata#hasMorePages()} and {@link PageMetadata#hasPreviousPages()}.</li>
+ *   <li>An opaque textual cursor, never a numeric offset. The legacy programs retain a record key
+ *       across a pseudo-conversational turn and restart the browse from it, so leading zeros,
+ *       embedded characters and padding all have to survive untouched.</li>
+ *   <li>Two boundary cursors, both live at once. Each paginated screen retains the key of the first
+ *       row on the page <em>and</em> the key of the last row, as two adjacent fields of one commarea
+ *       group, and repositions on whichever one the operator's attention key calls for - the first
+ *       key for the preceding page, the last key for the following one. The card-list pair is a
+ *       16-character card number followed by an 11-digit account identifier, the transaction-list
+ *       pair is 16-character siblings and the user-list pair is 8-character siblings
+ *       [{@code app/cbl/COCRDLIC.cbl}, {@code app/cbl/COTRN00C.cbl}, {@code app/cbl/COUSR00C.cbl}].
+ *       A page in the middle of a browse can be paged either way and therefore needs both, which is
+ *       asserted in {@link BoundaryCursorPairContract}. The two are an ordered pair rather than a
+ *       set: swapping them yields a different value, and that is asserted too.</li>
+ *   <li>A textual page indicator whose width differs by screen: the card-list map declares three
+ *       alphanumeric characters [{@code app/cpy-bms/COCRDLI.CPY}], the transaction-list and
+ *       user-list maps eight [{@code app/cpy-bms/COTRN00.CPY}, {@code app/cpy-bms/COUSR00.CPY}].
  *       Neither width is normalised to the other and neither becomes numeric.</li>
- *   <li><strong>Exactly two browse directions</strong>, one per CICS browse verb, with no third
- *       constant and no default, because the legacy programs always branch on an explicit attention
- *       key.</li>
- *   <li><strong>A cursor crosses the wire in full and never reaches a diagnostic.</strong> The card
- *       cursor cited above is a primary account number concatenated with an account identifier, so it
- *       is regulated data that the client nevertheless has to receive in order to resume the browse.
- *       The accessors, the JSON wire form and equality therefore carry both cursors byte for byte
- *       while {@link PageMetadata#toString()} replaces both with a fixed placeholder, asserted in
+ *   <li>Exactly two browse directions, one per legacy browse verb, with no third constant and no
+ *       default, because the legacy programs always branch on an explicit attention key.</li>
+ *   <li>A cursor crosses the wire in full and never reaches a diagnostic. The card cursor is a
+ *       primary account number concatenated with an account identifier, so it is regulated data that
+ *       the client nevertheless has to receive in order to resume the browse. The accessors, the JSON
+ *       wire form and equality therefore carry both cursors byte for byte while
+ *       {@link PageMetadata#toString()} replaces both with a fixed placeholder, asserted in
  *       {@link DiagnosticRedactionContract}. Decision log entry DL-081 records the arrangement.</li>
  * </ol>
  *
- * <p>The three counts are asserted in {@link ScreenRowCountContract}. Nothing here derives one count
- * from another, and the two counts that happen to be equal are asserted against two separate
- * constants using two separate legacy arithmetics:</p>
- * <ul>
- *   <li><strong>Card list, seven rows.</strong> {@code app/cbl/COCRDLIC.cbl} declares a
- *       196-character all-rows screen area at line 253, redefined at line 255 as a table of seven
- *       occurrences whose element is 28 characters wide - an 11-character account identifier, a
- *       16-character card number and a 1-character status indicator at lines 258 to 260 - so the
- *       product 28 by 7 accounts for all 196 characters and the count follows from two independently
- *       declared widths. A second witness is the screen-line counter at lines 177 and 178, whose
- *       declared value is 7, and a third is the backward fill counter seeded at that value plus one
- *       at lines 1284 and 1285 and decremented to zero.</li>
- *   <li><strong>Transaction list, ten rows.</strong> {@code app/cbl/COTRN00C.cbl} establishes the
- *       count <em>purely from loop bounds</em>: the row-clearing loop is bounded at ten on line 290,
- *       the row index is reset to one on line 295, and the row-filling loop on line 297 stops once
- *       the index reaches eleven. There is no row table in that program at all - its single
- *       {@code OCCURS} clause, on line 89, is the communication-area redefinition and has nothing to
- *       do with screen rows - so a future reader who looks for a table and finds none must not
- *       conclude the constant is unfounded, which is why the arithmetic on the two loop bounds is
- *       asserted explicitly below.</li>
- *   <li><strong>User list, ten rows.</strong> {@code app/cbl/COUSR00C.cbl} declares the screen row
- *       group {@code USER-REC} as a genuine table of ten occurrences at lines 56 and 57, whose
- *       element sums to 48 characters across its five data fields and two fillers - a different
- *       mechanism again.</li>
- * </ul>
- * <p>Each of those figures is a legacy screen shape rather than a knob: changing any of them would
- * put a different number of rows in front of an operator, which is a visible behavioural change and
- * not a configuration adjustment.</p>
+ * <p>The three counts are asserted in {@link ScreenRowCountContract}. Nothing derives one count from
+ * another, and the two counts that happen to be equal are asserted against two separate constants
+ * using two separate legacy arithmetics. The card list's seven rows follow from a 196-character
+ * all-rows screen area redefined as seven occurrences of a 28-character element - an 11-character
+ * account identifier, a 16-character card number and a 1-character status indicator - with a
+ * declared screen-line counter of 7 and a backward fill counter seeded one past it as two further
+ * witnesses. The transaction list's ten rows follow <em>purely from loop bounds</em>, because that
+ * program declares no screen-row table at all, so a future reader who looks for a table and finds
+ * none must not conclude the constant is unfounded. The user list's ten rows follow from a genuine
+ * table of ten occurrences whose element sums to 48 characters across five data fields and two
+ * fillers. Each of those figures is a legacy screen shape rather than a knob: changing any of them
+ * would put a different number of rows in front of an operator, which is a visible behavioural
+ * change and not a configuration adjustment.</p>
  *
- * <p><strong>Scope.</strong> This is a pure in-process unit test. It starts no application context,
- * opens no database connection, provisions no container, reads no file and touches no network,
- * because the type under test is an immutable record whose only dependencies are two validation
- * annotations and {@code java.util.Objects}. It performs no introspection either: immutability, the
- * constant declarations and the absence of a mutator are established by what this source is able to
- * compile and by observable behaviour, never by interrogating class metadata at run time. The type
- * under test names no web, persistence or data-access abstraction and neither does this test, so no
- * paging abstraction from any framework appears in the imports above.</p>
+ * <p>This is a pure in-process unit test: no application context, no database connection, no
+ * container, no file and no network, because the type under test is an immutable record whose only
+ * dependencies are two validation annotations and {@code java.util.Objects}. It performs no
+ * introspection either - immutability, the constant declarations and the absence of a mutator are
+ * established by what this source is able to compile and by observable behaviour, never by
+ * interrogating class metadata at run time.</p>
  *
- * <p><strong>Expectations are derived, never echoed.</strong> Every expected value below is a literal
- * typed out in this source and follows from a measured legacy fact. No expectation is produced by
- * calling the type under test, no assertion compares a computed value with a second evaluation of the
- * same computation, and where an equality expectation involves two instances the two instances are
- * constructed independently. No line of legacy source text is reproduced anywhere in this file - only
- * member names, field names, record widths, field counts and line numbers.</p>
+ * <p>Every expected value below is a literal typed out in this source and follows from a measured
+ * legacy fact: no expectation is produced by calling the type under test, no assertion compares a
+ * computed value with a second evaluation of the same computation, and where an equality expectation
+ * involves two instances the two instances are constructed independently.</p>
  */
 @DisplayName("PageMetadata :: browse-cursor contract of the three paginated screens")
 class PageMetadataTest {
 
-    // Legacy geometry, declared here so that every assertion below reads against a named figure
-    // whose origin is stated. Each constant is a width, a count or a loop bound measured from one
-    // named legacy member. None of them is derived from a constant of the type under test, so an
-    // assertion that relates the two is a genuine cross-check rather than a restatement.
+    // Legacy geometry: each constant is a width, a count or a loop bound measured from one named
+    // legacy member. None is derived from a constant of the type under test, so an assertion that
+    // relates the two is a genuine cross-check rather than a restatement.
 
-    /**
-     * Width of the account identifier inside one card-list screen row: legacy field
-     * {@code WS-ROW-ACCTNO}, an 11-character field at {@code app/cbl/COCRDLIC.cbl} line 258.
-     */
     private static final int CARD_ROW_ACCOUNT_ID_WIDTH = 11;
 
-    /**
-     * Width of the card number inside one card-list screen row: legacy field
-     * {@code WS-ROW-CARD-NUM}, a 16-character field at {@code app/cbl/COCRDLIC.cbl} line 259.
-     */
     private static final int CARD_ROW_CARD_NUMBER_WIDTH = 16;
 
-    /**
-     * Width of the status indicator inside one card-list screen row: legacy field
-     * {@code WS-ROW-CARD-STATUS}, a 1-character field at {@code app/cbl/COCRDLIC.cbl} line 260.
-     */
     private static final int CARD_ROW_STATUS_WIDTH = 1;
 
     /**
-     * Width of the whole card-list rows area: legacy field {@code WS-ALL-ROWS}, a 196-character
-     * field at {@code app/cbl/COCRDLIC.cbl} line 253, which line 255 redefines as the row table.
-     * Declared independently of the three row-field widths above so that the two can be reconciled.
+     * The card-list rows area as a whole [{@code app/cbl/COCRDLIC.cbl}], which the same member
+     * redefines as the row table. Declared independently of the three row-field widths so that the
+     * two can be reconciled.
      */
     private static final int CARD_ALL_ROWS_AREA_WIDTH = 196;
 
     /**
-     * Value of the card-list screen-line counter: legacy field {@code WS-MAX-SCREEN-LINES}, declared
-     * with value 7 at {@code app/cbl/COCRDLIC.cbl} lines 177 and 178. A second, independent witness
-     * to the card-list row count, held separately so the two can be reconciled.
+     * The card-list screen-line counter [{@code app/cbl/COCRDLIC.cbl}]: a second, independent
+     * witness to the card-list row count, held separately so the two can be reconciled.
      */
     private static final int CARD_DECLARED_SCREEN_LINES = 7;
 
-    /**
-     * Seed of the card-list backward fill counter: {@code app/cbl/COCRDLIC.cbl} lines 1284 and 1285
-     * compute it as the screen-line counter plus one, so its value is 8. The backward path fills
-     * rows from that seed downward, decrementing at lines 1307 and 1346 and stopping at zero, which
-     * is how a backward page is filled from the bottom row upward.
-     */
     private static final int CARD_BACKWARD_FILL_SEED = 8;
 
-    /**
-     * Bound of the transaction-list row-clearing loop: {@code app/cbl/COTRN00C.cbl} line 290 runs
-     * the index from one while it is not greater than ten.
-     */
     private static final int TRANSACTION_CLEARING_LOOP_BOUND = 10;
 
     /**
-     * Stop value of the transaction-list row-filling loop: {@code app/cbl/COTRN00C.cbl} line 297
-     * halts once the index reaches eleven, having reset it to one on line 295. The number of rows
-     * filled is therefore this stop value less one, and this is the whole of the evidence for the
-     * transaction-list row count - the program declares no row table.
+     * Stop value of the transaction-list row-filling loop [{@code app/cbl/COTRN00C.cbl}]. The number
+     * of rows filled is this stop value less one, and that is the whole of the evidence for the
+     * transaction-list row count, because the program declares no row table.
      */
     private static final int TRANSACTION_FILL_LOOP_STOP = 11;
 
-    /**
-     * Seed of the transaction-list backward fill index: {@code app/cbl/COTRN00C.cbl} line 349 moves
-     * ten into the index inside the backward paragraph that begins at line 333, then the loop at
-     * lines 351 to 357 reads backward at line 352 and decrements at line 355 until the index falls
-     * to zero, filling slots ten down to one.
-     */
     private static final int TRANSACTION_BACKWARD_FILL_SEED = 10;
 
     /**
-     * Widths of the seven fields that make up one user-list screen row group, in declaration order
-     * at {@code app/cbl/COUSR00C.cbl} lines 58 to 64: a 1-character selection field, a 2-character
-     * filler, an 8-character user identifier, a 2-character filler, a 25-character name, a
-     * 2-character filler and an 8-character type. The group is declared with ten occurrences at
-     * lines 56 and 57.
+     * The seven fields of one user-list screen row group, in declaration order
+     * [{@code app/cbl/COUSR00C.cbl}]. That group is declared with ten occurrences, which is the
+     * user-list row-count evidence.
      */
     private static final List<Integer> USER_ROW_FIELD_WIDTHS = List.of(1, 2, 8, 2, 25, 2, 8);
 
     /**
-     * Total width of one user-list screen row group: the seven field widths above sum to 48.
-     * Declared independently so the sum can be reconciled with it.
+     * Total width of one user-list screen row group, declared independently of the seven field
+     * widths above so that their sum can be reconciled with it.
      */
     private static final int USER_ROW_GROUP_WIDTH = 48;
 
-    /**
-     * Width of the card number component of the card-list retained browse key: legacy field
-     * {@code WS-CA-LAST-CARD-NUM}, a 16-character field at {@code app/cbl/COCRDLIC.cbl} line 231,
-     * paired with the identically shaped first-key group at line 234.
-     */
     private static final int CARD_KEY_CARD_NUMBER_WIDTH = 16;
 
-    /**
-     * Width of the account identifier component of the card-list retained browse key: legacy field
-     * {@code WS-CA-LAST-CARD-ACCT-ID}, an 11-digit field at {@code app/cbl/COCRDLIC.cbl} line 232,
-     * paired with the first-key group at line 235.
-     */
     private static final int CARD_KEY_ACCOUNT_ID_WIDTH = 11;
 
-    /**
-     * Width of the transaction-list retained browse key: legacy fields
-     * {@code CDEMO-CT00-TRNID-FIRST} and {@code CDEMO-CT00-TRNID-LAST}, 16-character fields at
-     * {@code app/cbl/COTRN00C.cbl} lines 63 and 64.
-     */
     private static final int TRANSACTION_KEY_WIDTH = 16;
 
-    /**
-     * Width of the user-list retained browse key: legacy fields {@code CDEMO-CU00-USRID-FIRST} and
-     * {@code CDEMO-CU00-USRID-LAST}, 8-character fields at {@code app/cbl/COUSR00C.cbl} lines 68
-     * and 69.
-     */
     private static final int USER_KEY_WIDTH = 8;
 
-    /**
-     * Width of the card-list page indicator field: {@code app/cpy-bms/COCRDLI.CPY} declares
-     * {@code PAGENO} as a three-character alphanumeric field, on line 60 for input and line 332 for
-     * output.
-     */
     private static final int CARD_MAP_INDICATOR_WIDTH = 3;
 
-    /**
-     * Width of the transaction-list and user-list page indicator field: both
-     * {@code app/cpy-bms/COTRN00.CPY} and {@code app/cpy-bms/COUSR00.CPY} declare {@code PAGENUM} as
-     * an eight-character alphanumeric field on line 60. The two maps disagree with the card-list map
-     * on this width, and that disagreement is part of the contract.
-     */
     private static final int LIST_MAP_INDICATOR_WIDTH = 8;
 
-    // Synthetic sample values. Every one is invented for this test and identifies nothing real. Not
-    // one of them authenticates anything, and no legacy sign-on literal appears in this file.
+    // Synthetic sample values. Every one is invented for this test, identifies nothing real and
+    // authenticates nothing. Each is shaped to exercise one hazard: the widest legacy key at 27
+    // characters, leading zeros a numeric reading would collapse, a value that cannot be parsed as a
+    // number at all, and padding on either side of a fixed-width indicator. Within a boundary pair
+    // the two values always differ, so an assertion which confused the first cursor with the last
+    // would fail rather than pass by coincidence.
 
-    /**
-     * Card-list style key of the <em>last</em> row on a page, at the widest legacy key width: a
-     * 16-character card number of leading zeros followed by an 11-digit account identifier, 27
-     * characters in total. Chosen so that one value exercises the widest key and the leading-zero
-     * requirement together. This is the value the legacy card list retains in its LAST key group and
-     * repositions on when the operator asks for the following page.
-     */
     private static final String CARD_LAST_CURSOR = "0000000000000042" + "00000000011";
 
-    /**
-     * Card-list style key of the <em>first</em> row on the same page, at the same 27-character width
-     * and deliberately a different value from {@link #CARD_LAST_CURSOR}, so that an assertion which
-     * confused the two boundaries would fail rather than pass by coincidence. This is the value the
-     * legacy card list retains in its FIRST key group and repositions on for the preceding page.
-     */
     private static final String CARD_FIRST_CURSOR = "0000000000000036" + "00000000011";
 
     /**
-     * Transaction-list style key of the <em>last</em> row on a page: a 16-character identifier
-     * carrying fifteen leading zeros. A numeric reading of this value would collapse it to two
-     * characters, which is precisely what must not happen.
+     * Fifteen leading zeros: a numeric reading would collapse this cursor to two characters.
      */
     private static final String TRANSACTION_LAST_CURSOR = "0000000000000042";
 
-    /**
-     * Transaction-list style key of the <em>first</em> row on the same page, at the same 16-character
-     * width and a different value, for the reason given on {@link #CARD_FIRST_CURSOR}.
-     */
     private static final String TRANSACTION_FIRST_CURSOR = "0000000000000033";
 
-    /**
-     * User-list style key of the <em>last</em> row on a page: an 8-character synthetic user
-     * identifier. Deliberately not all-numeric, so that a cursor which could not be parsed as a
-     * number at all is exercised too.
-     */
     private static final String USER_LAST_CURSOR = "USRT0001";
 
-    /**
-     * User-list style key of the <em>first</em> row on the same page, at the same 8-character width
-     * and a different value, and likewise not all-numeric.
-     */
     private static final String USER_FIRST_CURSOR = "USRA0009";
 
-    /**
-     * Card-list style page indicator at the three-character map width, right-justified with two
-     * leading spaces the way a fixed-width alphanumeric screen field carries a single digit.
-     */
     private static final String CARD_MAP_INDICATOR = "  1";
 
-    /**
-     * Transaction-list and user-list style page indicator at the eight-character map width, zero
-     * filled.
-     */
     private static final String LIST_MAP_INDICATOR = "00000007";
 
-    /**
-     * Second eight-character indicator, this one left-justified with trailing spaces, so that
-     * padding on the other side of the value is exercised as well.
-     */
     private static final String LIST_MAP_INDICATOR_TRAILING = "1       ";
 
     /**
      * JSON mapper built to match the module's shared configuration file, which declares non-null
      * property inclusion, ISO-8601 rather than numeric dates, lenient handling of unknown inbound
-     * properties, and plain rather than scientific decimal output. It is created here as a plain
-     * local mapper rather than obtained from a framework context, because this test starts no
-     * context; configuring it from the same four settings the module declares is what makes the wire
-     * assertions below representative of the published contract.
+     * properties, and plain rather than scientific decimal output. It is a plain local mapper rather
+     * than one obtained from a framework context, because this test starts no context; configuring
+     * it from the same four settings is what makes the wire assertions representative of the
+     * published contract.
      *
-     * <p>Property inclusion is applied through the value-and-content form rather than the older
-     * single-argument form, because the latter is deprecated and this module compiles with warnings
-     * promoted to errors. For a record of seven scalar components only the value part is observable.
-     * The plain-decimal setting has no observable effect on this record either, since it carries no
-     * decimal component; it is configured anyway so that the mapper is a faithful stand-in for the
-     * module's own and cannot drift from it.</p>
+     * <p>For a record of seven scalar components only the value part of the inclusion setting is
+     * observable, and the plain-decimal setting has no observable effect at all here since this
+     * record carries no decimal component. Both are nonetheless in force, because the mapper is not
+     * assembled in this file: it is obtained from
+     * {@link JsonContractSupport#declaredSettingsMapper()}, the single place in the test tree where
+     * the module's four declared settings are written out by hand. This file therefore cannot
+     * transcribe them differently from a sibling suite, and cannot omit one whose effect it did not
+     * expect to observe.</p>
      *
-     * <p>"Cannot drift" is enforced outside this file. {@link ApplicationJsonContractTest} obtains
-     * the mapper from a real context that has read the module's {@code application.yml}, asserts the
-     * same four behaviours against it, and compares its output with a mapper built exactly as this
-     * one is - so an edit to that file fails there instead of quietly making this stand-in
+     * <p>What that mapper evidences is the shape this record takes <em>under those settings</em>,
+     * and nothing more; it is not evidence about the mapper a deployed instance holds, and no
+     * assertion below is worded as though it were. {@link ApplicationJsonContractTest} carries that
+     * burden against a mapper obtained from a real context that has read the module's
+     * {@code application.yml}: it compares that mapper's output with this very factory's output, so
+     * an edit to the module's file fails there instead of quietly making this stand-in
      * unrepresentative.</p>
      */
     private static final ObjectMapper WIRE_MAPPER = wireMapper();
@@ -351,29 +234,17 @@ class PageMetadataTest {
             new TypeReference<Map<String, Object>>() { };
 
     /**
-     * Builds the mapper described by {@link #WIRE_MAPPER}.
+     * Supplies the mapper described by {@link #WIRE_MAPPER}.
      *
-     * @return a mapper configured from the module's four declared JSON settings
+     * @return a mapper carrying the module's four declared serialisation settings
      */
     private static ObjectMapper wireMapper() {
-        return JsonMapper.builder()
-                .defaultPropertyInclusion(
-                        JsonInclude.Value.construct(
-                                JsonInclude.Include.NON_NULL, JsonInclude.Include.NON_NULL))
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-                .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
-                .build();
+        return JsonContractSupport.declaredSettingsMapper();
     }
 
     /**
      * Serializes an instance and reads it straight back as a property map, so that assertions can be
      * made about which property names cross the wire and in which order.
-     *
-     * @param metadata the instance to serialize
-     * @return the serialized properties, in the order the serializer emitted them
-     * @throws JsonProcessingException if serialization or the read-back fails, which fails the
-     *     calling test with the mapper's own diagnostic
      */
     private static Map<String, Object> wireProperties(PageMetadata metadata)
             throws JsonProcessingException {
@@ -387,8 +258,7 @@ class PageMetadataTest {
         @Test
         @DisplayName("the card-list screen presents seven rows")
         void cardListScreenPresentsSevenRows() {
-            // First of three assertions, each naming a different constant. This one is asserted
-            // against a literal seven and against nothing else in the type under test; the
+            // Asserted against a literal seven and against nothing else in the type under test; the
             // independent arithmetic behind the seven is reconciled in
             // cardRowWidthsAccountForTheWholeDeclaredRowsArea below.
             assertThat(PageMetadata.CARD_LIST_PAGE_SIZE).isEqualTo(7);
@@ -398,15 +268,12 @@ class PageMetadataTest {
         @DisplayName("the transaction-list screen presents ten rows, established by loop bounds and "
                 + "by no row table whatsoever")
         void transactionListScreenPresentsTenRows() {
-            // Second of three assertions, naming the transaction-list constant only.
-            //
-            // PROVENANCE, recorded here so that a future reader who goes looking for a row table
-            // does not conclude this constant is unfounded: app/cbl/COTRN00C.cbl declares NO table
-            // for its screen rows. The ten comes entirely from loop bounds - the clearing loop is
-            // bounded at ten on line 290, the index is reset to one on line 295, and the filling
-            // loop on line 297 halts once the index reaches eleven. The single OCCURS clause in
-            // that program, on line 89, is the inbound communication-area redefinition and has
-            // nothing to do with screen rows. The arithmetic on those bounds is asserted in
+            // Recorded here because a future reader who goes looking for a row table will not find
+            // one: app/cbl/COTRN00C.cbl declares no screen-row table at all, and the ten comes
+            // entirely from loop bounds - the clearing loop is bounded at ten, the index is reset to
+            // one, and the filling loop halts once the index reaches eleven. That program's single
+            // table clause is the inbound communication-area redefinition and has nothing to do
+            // with screen rows. The arithmetic on those bounds is asserted in
             // transactionRowCountFollowsFromLoopBoundsAlone below.
             assertThat(PageMetadata.TRANSACTION_LIST_PAGE_SIZE).isEqualTo(10);
         }
@@ -415,9 +282,9 @@ class PageMetadataTest {
         @DisplayName("the user-list screen presents ten rows, declared as a genuine ten-occurrence "
                 + "table")
         void userListScreenPresentsTenRows() {
-            // Third of three assertions, naming the user-list constant only. Unlike the transaction
-            // count above, this one rests on a real table declaration at app/cbl/COUSR00C.cbl lines
-            // 56 and 57 - a different mechanism, in a different member, for the same figure.
+            // Unlike the transaction count above, this one rests on a real table declaration in
+            // app/cbl/COUSR00C.cbl - a different mechanism, in a different member, for the same
+            // figure.
             assertThat(PageMetadata.USER_LIST_PAGE_SIZE).isEqualTo(10);
         }
 
@@ -425,13 +292,12 @@ class PageMetadataTest {
         @DisplayName("the two ten-row screens are two separately named constants, never one shared "
                 + "constant used twice")
         void theTwoTenRowScreensAreTwoSeparatelyNamedConstants() {
-            // This is the only expression in the file where all three names appear together, and it
-            // is here to make one point: three names resolve, and they carry two distinct figures.
-            // The two tens coincide by accident of two unrelated screen layouts proven by two
-            // unrelated mechanisms, so neither is derived from the other and no assertion above
-            // compares one against the other. Were they collapsed into a single shared constant, a
-            // future change to one screen would travel silently to the other, which is a
-            // behavioural regression on a screen nobody edited.
+            // The only expression in the file where all three names appear together, and it makes
+            // one point: three names resolve and they carry two distinct figures. The two tens
+            // coincide by accident of two unrelated screen layouts proven by two unrelated
+            // mechanisms, so neither is derived from the other. Were they collapsed into a single
+            // shared constant, a change to one screen would travel silently to the other, which is
+            // a behavioural regression on a screen nobody edited.
             List<Integer> declared =
                     List.of(
                             PageMetadata.CARD_LIST_PAGE_SIZE,
@@ -2029,6 +1895,239 @@ class PageMetadataTest {
             assertThatNullPointerException()
                     .isThrownBy(() -> new PageMetadata(0, "", "", null, false, false, ""))
                     .withMessage("direction must be supplied explicitly");
+        }
+    }
+
+    @Nested
+    @DisplayName("The inbound cursor shape carries only what a caller may legitimately choose, so no "
+            + "screen dimension or browse outcome can be dictated from outside")
+    class InboundCursorRequestContract {
+
+        @Test
+        @DisplayName("it declares exactly the two boundary keys and the direction, and declares no page "
+                + "size, no exhaustion flag and no display indicator")
+        void itDeclaresOnlyTheThreeCallerOwnedComponents() {
+            List<String> declared =
+                    Arrays.stream(PageMetadata.PageCursorRequest.class.getRecordComponents())
+                            .map(RecordComponent::getName)
+                            .toList();
+
+            assertThat(declared)
+                    .containsExactly("previousCursorKey", "nextCursorKey", "direction")
+                    .hasSize(3);
+            assertThat(declared)
+                    .as("the row count is the shape of a legacy screen and the two exhaustion flags are "
+                            + "outcomes the browse discovers, so none of the four is a caller's to send")
+                    .doesNotContain("pageSize")
+                    .doesNotContain("hasMorePages")
+                    .doesNotContain("hasPreviousPages")
+                    .doesNotContain("displayedPageNumber");
+        }
+
+        @Test
+        @DisplayName("both boundary keys are text and the direction is the same two-constant vocabulary "
+                + "the outbound shape publishes, so one type governs both halves of the browse")
+        void itsComponentTypesMatchTheOutboundShape() {
+            Map<String, Class<?>> types = new LinkedHashMap<>();
+            for (RecordComponent component
+                    : PageMetadata.PageCursorRequest.class.getRecordComponents()) {
+                types.put(component.getName(), component.getType());
+            }
+
+            assertThat(types.get("previousCursorKey")).isEqualTo(String.class);
+            assertThat(types.get("nextCursorKey")).isEqualTo(String.class);
+            assertThat(types.get("direction")).isEqualTo(PageMetadata.PagingDirection.class);
+        }
+
+        @Test
+        @DisplayName("each boundary key is bounded at the same twenty-seven characters the outbound shape "
+                + "uses, which is the widest legacy browse key of the three screens")
+        void eachBoundaryKeyIsBoundedAtTheSharedCursorWidth() {
+            String widest = "x".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH);
+            PageMetadata.PageCursorRequest atTheBound = new PageMetadata.PageCursorRequest(
+                    widest, widest, PageMetadata.PagingDirection.FORWARD);
+
+            try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
+                assertThat(factory.getValidator().validate(atTheBound))
+                        .as("a key of exactly the declared width is the card-list pair, sixteen digits of "
+                                + "card number followed by eleven of account id")
+                        .isEmpty();
+            }
+
+            assertThat(PageMetadata.CURSOR_KEY_MAX_LENGTH)
+                    .isEqualTo(CARD_KEY_CARD_NUMBER_WIDTH + CARD_KEY_ACCOUNT_ID_WIDTH);
+        }
+
+        @Test
+        @DisplayName("a key one character past the bound is reported on its own component, and the bound "
+                + "measures without shortening the value it rejected")
+        void aKeyPastTheBoundIsReportedWithoutBeingShortened() {
+            String tooWide = "x".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH + 1);
+            PageMetadata.PageCursorRequest request = new PageMetadata.PageCursorRequest(
+                    tooWide, null, PageMetadata.PagingDirection.BACKWARD);
+
+            try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
+                Validator validator = factory.getValidator();
+                Set<ConstraintViolation<PageMetadata.PageCursorRequest>> violations =
+                        validator.validate(request);
+
+                assertThat(violations).hasSize(1);
+                assertThat(violations.iterator().next().getPropertyPath())
+                        .hasToString("previousCursorKey");
+            }
+
+            assertThat(request.previousCursorKey())
+                    .as("a bound measures and never alters, so the oversized value still reaches the "
+                            + "accessor byte for byte")
+                    .isEqualTo(tooWide)
+                    .hasSize(PageMetadata.CURSOR_KEY_MAX_LENGTH + 1);
+        }
+
+        @Test
+        @DisplayName("construction guards nothing at all, because the direction is legitimately absent on "
+                + "the first entry to a list screen")
+        void constructionGuardsNothingIncludingTheDirection() {
+            assertThatCode(() -> new PageMetadata.PageCursorRequest(null, null, null))
+                    .as("the outbound shape requires a direction because it reports a browse that already "
+                            + "happened; the inbound shape describes one that has not started")
+                    .doesNotThrowAnyException();
+
+            PageMetadata.PageCursorRequest empty =
+                    new PageMetadata.PageCursorRequest(null, null, null);
+
+            assertThat(empty.previousCursorKey()).isNull();
+            assertThat(empty.nextCursorKey()).isNull();
+            assertThat(empty.direction())
+                    .as("no default is substituted, so the service resolves the direction from the "
+                            + "accompanying attention key rather than inheriting a guess made here")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("an empty or awkward key crosses construction untouched, exactly as it does on the "
+                + "outbound shape, so nothing fires out of the legacy cascade's turn")
+        void awkwardKeysCrossConstructionUntouched() {
+            PageMetadata.PageCursorRequest request = new PageMetadata.PageCursorRequest(
+                    "", "** ?? //", PageMetadata.PagingDirection.FORWARD);
+
+            assertThat(request.previousCursorKey()).isEmpty();
+            assertThat(request.nextCursorKey()).isEqualTo("** ?? //");
+        }
+
+        @Test
+        @DisplayName("it is a value: two requests built from the same three values are equal and share a "
+                + "hash code")
+        void itIsAValue() {
+            PageMetadata.PageCursorRequest first = new PageMetadata.PageCursorRequest(
+                    CARD_FIRST_CURSOR, CARD_LAST_CURSOR, PageMetadata.PagingDirection.BACKWARD);
+            PageMetadata.PageCursorRequest second = new PageMetadata.PageCursorRequest(
+                    CARD_FIRST_CURSOR, CARD_LAST_CURSOR, PageMetadata.PagingDirection.BACKWARD);
+
+            assertThat(first).isEqualTo(second).hasSameHashCodeAs(second);
+            assertThat(first)
+                    .isNotEqualTo(new PageMetadata.PageCursorRequest(
+                            CARD_FIRST_CURSOR, CARD_LAST_CURSOR,
+                            PageMetadata.PagingDirection.FORWARD));
+        }
+
+        @Test
+        @DisplayName("its diagnostic rendering withholds both boundary keys, because a card-list browse "
+                + "key is the card number itself")
+        void itsDiagnosticRenderingWithholdsBothBoundaryKeys() {
+            PageMetadata.PageCursorRequest request = new PageMetadata.PageCursorRequest(
+                    CARD_FIRST_CURSOR, CARD_LAST_CURSOR, PageMetadata.PagingDirection.BACKWARD);
+
+            String rendered = request.toString();
+
+            assertThat(rendered)
+                    .doesNotContain(CARD_FIRST_CURSOR)
+                    .doesNotContain(CARD_LAST_CURSOR)
+                    .doesNotContain("0000000000000036")
+                    .doesNotContain("0000000000000042")
+                    .contains("BACKWARD");
+            assertThat(request.previousCursorKey())
+                    .as("only the rendering changes; the accessors are untouched")
+                    .isEqualTo(CARD_FIRST_CURSOR);
+            assertThat(request.nextCursorKey()).isEqualTo(CARD_LAST_CURSOR);
+        }
+
+        @Test
+        @DisplayName("its rendering withholds a key even when the key is absent, so the placeholder is "
+                + "fixed and reveals nothing about length or presence")
+        void itsRenderingIsLengthAndPresenceIndependent() {
+            String withKeys = new PageMetadata.PageCursorRequest(
+                    CARD_FIRST_CURSOR, CARD_LAST_CURSOR, PageMetadata.PagingDirection.FORWARD)
+                    .toString();
+            String withoutKeys = new PageMetadata.PageCursorRequest(
+                    null, null, PageMetadata.PagingDirection.FORWARD).toString();
+
+            assertThat(withoutKeys)
+                    .as("an absent key renders identically to a present one, so nothing is inferable "
+                            + "from the rendering alone")
+                    .isEqualTo(withKeys)
+                    .doesNotContain("null");
+        }
+
+        @Test
+        @DisplayName("on the wire it publishes exactly its three members and accepts a body that also "
+                + "carries the four server-owned ones, discarding them")
+        void onTheWireItPublishesThreeMembersAndDiscardsTheServerOwnedFour()
+                throws JsonProcessingException {
+            PageMetadata.PageCursorRequest request = new PageMetadata.PageCursorRequest(
+                    CARD_FIRST_CURSOR, CARD_LAST_CURSOR, PageMetadata.PagingDirection.BACKWARD);
+
+            Map<String, Object> published =
+                    WIRE_MAPPER.readValue(WIRE_MAPPER.writeValueAsString(request), WIRE_SHAPE);
+
+            assertThat(published)
+                    .containsOnlyKeys("previousCursorKey", "nextCursorKey", "direction");
+            assertThat(published).containsEntry("direction", "BACKWARD");
+
+            String overreachingBody = "{\"previousCursorKey\":\"" + CARD_FIRST_CURSOR + "\","
+                    + "\"nextCursorKey\":\"" + CARD_LAST_CURSOR + "\",\"direction\":\"FORWARD\","
+                    + "\"pageSize\":2147483647,\"hasMorePages\":true,\"hasPreviousPages\":true,"
+                    + "\"displayedPageNumber\":\"" + LIST_MAP_INDICATOR + "\"}";
+
+            PageMetadata.PageCursorRequest bound =
+                    WIRE_MAPPER.readValue(overreachingBody, PageMetadata.PageCursorRequest.class);
+
+            assertThat(bound.previousCursorKey()).isEqualTo(CARD_FIRST_CURSOR);
+            assertThat(bound.nextCursorKey()).isEqualTo(CARD_LAST_CURSOR);
+            assertThat(bound.direction()).isEqualTo(PageMetadata.PagingDirection.FORWARD);
+            assertThat(WIRE_MAPPER.writeValueAsString(bound))
+                    .as("the row count a caller tried to dictate is not merely ignored on the way in, it "
+                            + "has nowhere to be held and so cannot be echoed on the way out")
+                    .doesNotContain("2147483647")
+                    .doesNotContain("pageSize")
+                    .doesNotContain("hasMorePages")
+                    .doesNotContain("hasPreviousPages")
+                    .doesNotContain("displayedPageNumber");
+        }
+
+        @Test
+        @DisplayName("an absent direction is omitted rather than published as null, and a body that omits "
+                + "it binds without one")
+        void anAbsentDirectionIsOmittedAndAcceptedBack() throws JsonProcessingException {
+            String published = WIRE_MAPPER.writeValueAsString(
+                    new PageMetadata.PageCursorRequest(null, null, null));
+
+            assertThat(published).isEqualTo("{}").doesNotContain("null");
+            assertThat(WIRE_MAPPER.readValue("{}", PageMetadata.PageCursorRequest.class).direction())
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("the outbound shape still declares all seven of its members, so adding the inbound "
+                + "shape narrowed the request without narrowing the response")
+        void theOutboundShapeIsUnchanged() {
+            List<String> declared = Arrays.stream(PageMetadata.class.getRecordComponents())
+                    .map(RecordComponent::getName)
+                    .toList();
+
+            assertThat(declared)
+                    .containsExactly("pageSize", "previousCursorKey", "nextCursorKey", "direction",
+                            "hasMorePages", "hasPreviousPages", "displayedPageNumber")
+                    .hasSize(7);
         }
     }
 }

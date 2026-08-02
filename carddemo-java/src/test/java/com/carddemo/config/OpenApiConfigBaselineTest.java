@@ -543,13 +543,21 @@ final class OpenApiConfigBaselineTest {
         }
 
         @Test
-        @DisplayName("the components block declares only the security scheme, so no schema is hand-written "
-                + "here in competition with the ones derived from the request and response types")
-        void theComponentsBlockDeclaresOnlyTheSecurityScheme() {
+        @DisplayName("the components block hand-writes nothing: every schema name is the simple name of a "
+                + "declaring request or response type, and no response, parameter, request body or header "
+                + "is authored here in competition with the derived shapes")
+        void theComponentsBlockHandWritesNothing() {
             final Components components = configuredWithoutBuildInformation().cardDemoOpenApi()
                     .getComponents();
 
-            assertThat(components.getSchemas()).isNull();
+            assertThat(components.getSchemas().keySet())
+                    .as("the schema map is filled by deriving each published contract type, so an empty map "
+                            + "would mean the derivation step had been dropped from the bean")
+                    .isNotEmpty()
+                    .allSatisfy(schemaName -> assertThat(schemaName)
+                            .as("a derived name is the declaring type's simple name; a hand-authored key "
+                                    + "would be free to be anything at all")
+                            .matches("[A-Z][A-Za-z0-9]*"));
             assertThat(components.getResponses()).isNull();
             assertThat(components.getParameters()).isNull();
             assertThat(components.getRequestBodies()).isNull();

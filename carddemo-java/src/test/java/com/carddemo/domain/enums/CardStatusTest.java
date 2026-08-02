@@ -77,7 +77,8 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * test is a value type with no collaborator. It deliberately asserts nothing about persistence
  * mapping - the type carries no persistence annotation and no attribute converter, the card entity
  * keeps the status as a raw one-character column, and the correspondence between entity and schema
- * is verified in the integration tier against a real database rather than here.
+ * is asserted by {@code EntityPersistenceMappingTest}, which compares the mapping the persistence
+ * provider computes against the shipped migration {@code V1__create_schema.sql}, rather than here.
  *
  * <p><strong>Legacy provenance.</strong> Repository checkout
  * 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release stamp CardDemo_v1.0-15-g27d6c6f-68
@@ -103,8 +104,8 @@ class CardStatusTest {
      * instead of the exception an idiomatic lookup would raise.
      *
      * The width assertion encodes the raw char to bytes at an explicit US-ASCII boundary and pins
-     * the resulting code point, because a char is inherently one byte wide in that encoding and
-     * measuring it alone would prove nothing.
+     * the resulting code point, because a char is inherently one byte wide in that encoding, so a
+     * width measurement alone says nothing about which byte lands in the record.
      *
      * Two independent derivations of the record length are used on purpose. The offset test sums the
      * five field widths declared ahead of the status; the layout test sums the seven-element width
@@ -301,10 +302,11 @@ class CardStatusTest {
                         .hasSize(STATUS_FIELD_WIDTH);
             }
 
-            // Measuring the width alone would prove nothing, because a char is
-            // inherently one byte wide in this encoding. The code points below are
-            // read from the ASCII table and pin which byte actually lands at
-            // offset 91, which is the part a wrong constant could get wrong.
+            // A width measurement alone says nothing about which byte lands in the
+            // record, because a char is inherently one byte wide in this encoding. The
+            // code points below are read from the ASCII table and pin the byte that
+            // actually reaches offset 91, which is the part a wrong constant could get
+            // wrong.
             final byte[] activeEncoded =
                     String.valueOf(CardStatus.Y.getCode()).getBytes(StandardCharsets.US_ASCII);
             final byte[] inactiveEncoded =

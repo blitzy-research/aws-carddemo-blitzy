@@ -21,13 +21,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.StreamWriteFeature;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 
@@ -91,10 +88,12 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * deserialize from a request body, because an endpoint cannot verify a credential it refuses to
  * read.</p>
  *
- * <p><strong>Credential verification is not exercised here and cannot be: no password encoder and no
- * verifying sign-on path exists anywhere in the module yet.</strong> Replacing the legacy plaintext
+ * <p><strong>Credential verification is not exercised here: this type carries the two values and
+ * asserts nothing about how they are checked.</strong> The encoder and the verifying comparison are
+ * delivered in {@code service.CredentialDigestService} and are exercised by its own tests; no sign-on
+ * path that calls them exists yet. Replacing the legacy plaintext
  * comparison at line 223 of {@code COSGN00C} with hashed verification is a documented parity
- * exception that remains an unmet requirement, recorded as decision log entry D-12. No credential
+ * exception that remains partly unmet, recorded as decision log entry D-12. No credential
  * encoder, authentication token, user-details type or security annotation appears in this class, and
  * the eight-character value used below is synthetic: it is not the value the legacy provisioning job
  * seeds, which appears nowhere in this module's test sources.</p>
@@ -249,27 +248,27 @@ class SignOnRequestTest {
             };
 
     /**
-     * Mapper mirroring the shared application settings.
+     * Mapper carrying the four settings the module declares in its own {@code application.yml}.
      *
-     * <p>Non-null value inclusion and non-null content inclusion, which is the pair the
-     * shared setting expands to; timestamps as text; unknown incoming properties tolerated;
-     * and plain rather than scientific decimal notation. That last setting has no field to
-     * act on here and is configured only so the mapper stays a faithful stand-in for the one
-     * the application builds.</p>
+     * <p>Non-null value inclusion and non-null content inclusion, which is the pair the shared
+     * setting expands to; timestamps as text; unknown incoming properties tolerated; and plain
+     * rather than scientific decimal notation. That last setting has no field to act on here, and it
+     * is in force anyway because this file does not assemble the mapper: it comes from
+     * {@link JsonContractSupport#declaredSettingsMapper()}, the single place in the test tree where
+     * the four settings are written out by hand. This file therefore cannot transcribe them
+     * differently from a sibling suite, and cannot omit one whose effect it did not expect to
+     * observe.</p>
      *
-     * <p>That the stand-in is still faithful is asserted in
-     * {@link ApplicationJsonContractTest}, which builds the mapper from a real context that has read
-     * the module's {@code application.yml} and compares the two on this type's own payload. A change
-     * to the module's settings therefore surfaces there rather than leaving this file confidently
-     * asserting a shape no client receives.</p>
+     * <p>What this mapper evidences is the shape this type takes <em>under those settings</em>, and
+     * nothing more; it is not evidence about the mapper a deployed instance holds, and no assertion
+     * below is worded as though it were. {@link ApplicationJsonContractTest} carries that burden
+     * against a mapper obtained from a real context that has read the module's file: it compares
+     * that mapper's output with this very factory's output, so a change to the module's settings
+     * surfaces there rather than leaving this file confidently asserting a shape no client
+     * receives.</p>
      */
-    private static final ObjectMapper SHARED_SETTINGS_MAPPER = JsonMapper.builder()
-            .defaultPropertyInclusion(
-                    JsonInclude.Value.construct(JsonInclude.Include.NON_NULL, JsonInclude.Include.NON_NULL))
-            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-            .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-            .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
-            .build();
+    private static final ObjectMapper SHARED_SETTINGS_MAPPER =
+            JsonContractSupport.declaredSettingsMapper();
 
     /**
      * Mapper that rejects an unknown property instead of ignoring it.

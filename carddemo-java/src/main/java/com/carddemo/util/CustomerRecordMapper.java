@@ -31,8 +31,8 @@ import com.carddemo.domain.Customer;
  * Two copybooks are the source of truth, {@code [app/cpy/CVCUS01Y.cpy]} and
  * {@code [app/cpy/CUSTREC.cpy]}, and both declare the same {@code CUSTOMER-RECORD} group. The cluster
  * definition in {@code [app/jcl/CUSTFILE.jcl]} corroborates the geometry independently, declaring
- * {@code RECORDSIZE(500 500)} and {@code KEYS(9 0)} - a nine-byte key at offset zero. Offsets below
- * are zero-based byte offsets into the record image.
+ * corroborates the geometry independently: 500-byte fixed records with a nine-byte key at offset
+ * zero. Offsets below are zero-based byte offsets into the record image.
  *
  * <pre>
  *  #   COBOL field                  PIC       Offset  Length  Java property on Customer
@@ -49,8 +49,9 @@ import com.carddemo.domain.Customer;
  * 10  CUST-ADDR-ZIP                X(10)        239      10  addrZip
  * 11  CUST-PHONE-NUM-1             X(15)        249      15  phoneNum1
  * 12  CUST-PHONE-NUM-2             X(15)        264      15  phoneNum2
- * 13  CUST-SSN                     9(09)        279       9  custSsn  (the only nullable column)
- * 14  CUST-GOVT-ISSUED-ID          X(20)        288      20  govtIssuedId
+ * 13  CUST-SSN                     9(09)        279       9  custSsn       (nullable, see below)
+ * 14  CUST-GOVT-ISSUED-ID          X(20)        288      20  govtIssuedId  (mandatory column, see
+ *                                                                          below)
  * 15  CUST-DOB-YYYY-MM-DD  or                   308      10  custDob
  *     CUST-DOB-YYYYMMDD            X(10)
  * 16  CUST-EFT-ACCOUNT-ID          X(10)        318      10  eftAccountId
@@ -70,13 +71,12 @@ import com.carddemo.domain.Customer;
  * classic fixed-width mapper defect. Every {@code fromRecord} input is additionally validated as
  * exactly {@value #RECORD_WIDTH} <em>encoded bytes</em>.
  *
- * <p><strong>No zoned-decimal field exists in this layout.</strong> Every field is either
- * {@code PIC X(n)} character data or unsigned {@code PIC 9(n)} external decimal; none is signed, none
- * carries an implied decimal point and none is monetary. {@link ZonedDecimalCodec} is therefore
- * deliberately never invoked from this class. That is recorded explicitly rather than left as an
- * absence so a reviewer can confirm by inspection that no monetary field was overlooked: the codec
- * exists for the {@code PIC S9(n)V99} amounts and rates carried by the account, transaction,
- * category-balance and disclosure-group layouts, and the customer record carries none of them.
+ * <p><strong>No zoned-decimal field exists in this layout.</strong> Every field is either character
+ * data or an unsigned digit string; none is signed, none carries an implied decimal point and none
+ * is monetary. {@link ZonedDecimalCodec} is therefore deliberately never invoked from this class.
+ * That is recorded explicitly rather than left as an absence so a reviewer can confirm by
+ * inspection that no monetary field was overlooked: the codec exists for the signed two-decimal
+ * amounts and rates of the account, transaction, category-balance and disclosure-group layouts.
  *
  * <h2>Two COBOL spellings of the date of birth, one entity, one mapper, one code path</h2>
  * {@code [app/cpy/CVCUS01Y.cpy]} and {@code [app/cpy/CUSTREC.cpy]} declare the same record name, the
@@ -125,26 +125,48 @@ import com.carddemo.domain.Customer;
  * byte of record geometry: the record image stays nine bytes at offset 279 and twenty bytes at offset
  * 288 regardless of how wide the column behind them is.
  *
- * <h2>The national identifier is the schema's only nullable column</h2>
- * {@code custSsn} maps to the one nullable column in the whole schema, and every one of the fifty
- * seeded rows stores {@code null} there. Null tolerance is therefore mandatory rather than defensive,
- * and it is asymmetric by design:
+ * <h2>The two regulated identifiers are treated alike here and differently by the schema</h2>
+ * Both identifiers are protected values in the column, and this class is null-tolerant for both. The
+ * schema is not: {@code cust_ssn} is the one intentionally nullable column in the whole schema, and
+ * {@code govt_issued_id} is {@code NOT NULL}.
+ *
+ * <p>The difference is a seeding decision rather than a difference in kind. Static SQL cannot produce
+ * a protected-value envelope from cleartext without committing key material to a checked-in artifact,
+ * so the reference seed records absence for the national identifier and leaves the encryption path to
+ * supply a real value at run time. For the government-issued identifier the seed instead carries a
+ * pre-sealed envelope for every one of the fifty rows, produced under the shared non-production
+ * fixture key, which is what lets a mandatory protected column be seeded at all without any cleartext
+ * appearing in the artifact. The national identifier was deliberately not given the same treatment:
+ * see the reasoning recorded alongside the seed itself.
+ *
+ * <p>Null tolerance in <em>this</em> class is therefore not a consequence of what the seed happens to
+ * hold, and would remain correct if the seed changed. An in-memory customer assembled at a boundary
+ * may legitimately not yet carry a protected value for either identifier - the entity accepts absence
+ * and refuses only cleartext - and a fixed-width record has to be composable from whatever the
+ * instance holds. Whether such an instance may be <em>persisted</em> is a question for the column, not
+ * for this class: an absent government-issued identifier is refused by {@code NOT NULL} at the
+ * persistence boundary, and an absent national identifier is accepted there. The tolerance is
+ * consequently symmetric across both fields:
  *
  * <ul>
- *   <li>{@code fromRecord} always reads the nine bytes at offset 279. A record's field is never
- *       absent - a fixed-width record has no notion of a missing field - so the slice is always
- *       present and is always passed to the caller's sealing operation, even when it is nine
- *       spaces.</li>
- *   <li>{@code toRecord} <strong>tolerates a null</strong> national identifier and emits
- *       <strong>nine spaces</strong> in its place, without consulting the caller's revealing
- *       operation at all. Raising here would break every round trip against the seeded database,
- *       because every seeded row holds {@code null}.</li>
+ *   <li>{@code fromRecord} always reads the nine bytes at offset 279 and the twenty bytes at offset
+ *       288. A record's field is never absent - a fixed-width record has no notion of a missing field
+ *       - so each slice is always present and is always passed to the caller's sealing operation, even
+ *       when it is all spaces.</li>
+ *   <li>{@code toRecord} <strong>tolerates a null</strong> in either identifier and emits a field of
+ *       <strong>spaces</strong> in its place - nine for the national identifier, twenty for the
+ *       government-issued one - without consulting the caller's revealing operation at all, because
+ *       there is no envelope to open. Raising on the national identifier would break every round trip
+ *       against the seeded database, because every seeded row holds {@code null} in it; raising on the
+ *       government-issued identifier would make an in-memory instance uncomposable before it had ever
+ *       been offered to the column that actually requires it, and would move a persistence constraint
+ *       into a layout translator that has no business restating one.</li>
  * </ul>
  *
  * <p>An absent value is rendered as an all-space field and never as {@code 000000000}, which is how
- * COBOL renders an unset field and which also avoids fabricating a nine-digit value that was never
- * held. Nine spaces round-trip exactly: read back, the field is nine spaces, and placing nine spaces
- * reproduces nine spaces.
+ * COBOL renders an unset field and which also avoids fabricating a value that was never held. An
+ * all-space field round-trips exactly: read back, the field is spaces, and placing spaces reproduces
+ * spaces.
  *
  * <p>No diagnostic raised by this class contains the national identifier, the government-issued
  * identifier or any other field value. Messages name the artefact, the field, the offset and the
@@ -202,8 +224,8 @@ import com.carddemo.domain.Customer;
  * with that padding intact.
  *
  * <h2>Filler, and the exact bound for a round-trip comparison</h2>
- * {@code toRecord} emits the 168-byte filler as spaces. COBOL {@code FILLER X(168)} carries no
- * {@code VALUE} clause and is therefore uninitialised, so no byte value is canonical, and the sample
+ * {@code toRecord} emits the 168-byte filler as spaces. The legacy filler is declared without an
+ * initial value and is therefore uninitialised, so no byte value is canonical, and the sample
  * data shows exactly that divergence: the four master fixtures carry space filler while the four
  * reference-table fixtures carry ASCII-zero filler. Space is the module-wide default.
  *
@@ -214,8 +236,8 @@ import com.carddemo.domain.Customer;
  * that a test author does not encode the coincidence instead of the rule.
  *
  * <h2>Identity, versioning and column naming</h2>
- * The JPA identifier is {@code custId}, the legacy business key itself. {@code KEYS(9 0)} places that
- * key at offset zero as the leading substring of the record image, so no surrogate identifier is
+ * The JPA identifier is {@code custId}, the legacy business key itself. The cluster key is nine
+ * bytes at offset zero, the leading substring of the record image, so no surrogate identifier is
  * introduced: a surrogate would sever the record-image-to-row correspondence that byte-level output
  * parity depends on.
  *
@@ -278,8 +300,8 @@ import com.carddemo.domain.Customer;
  *   <li>Malformed fixed-width input raises {@link IllegalArgumentException} rather than a module
  *       exception type, because a short record has no legacy antecedent. Already recorded for the
  *       fixed-width primitive; it governs this mapper's contract too.</li>
- *   <li>A further source observation, not among the rows the module's anomaly register currently
- *       carries: lines 6 through 22 of {@code [app/cpy/CUSTREC.cpy]} are indented with literal tab
+ *   <li>A further source observation, outside the module's anomaly register: the opening field
+ *       declarations of {@code [app/cpy/CUSTREC.cpy]} are indented with literal tab
  *       characters where its sibling copybook uses spaces. It affects that member's own source
  *       formatting only - no field, no offset, no width and no record byte - and the legacy tree is
  *       left byte-identical, so nothing is corrected. Recorded so that a reviewer diffing the two
@@ -320,95 +342,95 @@ public final class CustomerRecordMapper {
      */
     public static final String CUST_DOB_FIELD_CUSTREC = "CUST-DOB-YYYYMMDD";
 
-    /** Offset of the customer identifier, {@code PIC 9(09)}: 0, and the record key at {@code KEYS(9 0)}. */
+    /** Offset of the customer identifier: 0. This is also the record key. */
     public static final int CUST_ID_OFFSET = 0;
 
     /** Length of the customer identifier: 9. */
     public static final int CUST_ID_LENGTH = 9;
 
-    /** Offset of the given name, {@code PIC X(25)}: 9. */
+    /** Offset of the given name: 9. */
     public static final int FIRST_NAME_OFFSET = CUST_ID_OFFSET + CUST_ID_LENGTH;
 
     /** Length of the given name: 25. */
     public static final int FIRST_NAME_LENGTH = 25;
 
-    /** Offset of the middle name, {@code PIC X(25)}: 34. */
+    /** Offset of the middle name: 34. */
     public static final int MIDDLE_NAME_OFFSET = FIRST_NAME_OFFSET + FIRST_NAME_LENGTH;
 
     /** Length of the middle name: 25. */
     public static final int MIDDLE_NAME_LENGTH = 25;
 
-    /** Offset of the family name, {@code PIC X(25)}: 59. */
+    /** Offset of the family name: 59. */
     public static final int LAST_NAME_OFFSET = MIDDLE_NAME_OFFSET + MIDDLE_NAME_LENGTH;
 
     /** Length of the family name: 25. */
     public static final int LAST_NAME_LENGTH = 25;
 
-    /** Offset of the first address line, {@code PIC X(50)}: 84. */
+    /** Offset of the first address line: 84. */
     public static final int ADDR_LINE_1_OFFSET = LAST_NAME_OFFSET + LAST_NAME_LENGTH;
 
     /** Length of the first address line: 50. */
     public static final int ADDR_LINE_1_LENGTH = 50;
 
-    /** Offset of the second address line, {@code PIC X(50)}: 134. */
+    /** Offset of the second address line: 134. */
     public static final int ADDR_LINE_2_OFFSET = ADDR_LINE_1_OFFSET + ADDR_LINE_1_LENGTH;
 
     /** Length of the second address line: 50. */
     public static final int ADDR_LINE_2_LENGTH = 50;
 
-    /** Offset of the third address line, {@code PIC X(50)}: 184. */
+    /** Offset of the third address line: 184. */
     public static final int ADDR_LINE_3_OFFSET = ADDR_LINE_2_OFFSET + ADDR_LINE_2_LENGTH;
 
     /** Length of the third address line: 50. */
     public static final int ADDR_LINE_3_LENGTH = 50;
 
-    /** Offset of the state code, {@code PIC X(02)}: 234. */
+    /** Offset of the state code: 234. */
     public static final int ADDR_STATE_CD_OFFSET = ADDR_LINE_3_OFFSET + ADDR_LINE_3_LENGTH;
 
     /** Length of the state code: 2. */
     public static final int ADDR_STATE_CD_LENGTH = 2;
 
-    /** Offset of the country code, {@code PIC X(03)}: 236. */
+    /** Offset of the country code: 236. */
     public static final int ADDR_COUNTRY_CD_OFFSET = ADDR_STATE_CD_OFFSET + ADDR_STATE_CD_LENGTH;
 
     /** Length of the country code: 3. */
     public static final int ADDR_COUNTRY_CD_LENGTH = 3;
 
-    /** Offset of the postal code, {@code PIC X(10)}: 239. */
+    /** Offset of the postal code: 239. */
     public static final int ADDR_ZIP_OFFSET = ADDR_COUNTRY_CD_OFFSET + ADDR_COUNTRY_CD_LENGTH;
 
     /** Length of the postal code: 10. */
     public static final int ADDR_ZIP_LENGTH = 10;
 
-    /** Offset of the primary telephone number, {@code PIC X(15)}: 249. */
+    /** Offset of the primary telephone number: 249. */
     public static final int PHONE_NUM_1_OFFSET = ADDR_ZIP_OFFSET + ADDR_ZIP_LENGTH;
 
     /** Length of the primary telephone number: 15. */
     public static final int PHONE_NUM_1_LENGTH = 15;
 
-    /** Offset of the secondary telephone number, {@code PIC X(15)}: 264. */
+    /** Offset of the secondary telephone number: 264. */
     public static final int PHONE_NUM_2_OFFSET = PHONE_NUM_1_OFFSET + PHONE_NUM_1_LENGTH;
 
     /** Length of the secondary telephone number: 15. */
     public static final int PHONE_NUM_2_LENGTH = 15;
 
     /**
-     * Offset of the national identifier, {@code PIC 9(09)}: 279. Nine bytes in the record image
-     * regardless of how wide the column behind them is.
+     * Offset of the national identifier: 279. Nine bytes in the record image regardless of how
+     * wide the column behind them is.
      */
     public static final int CUST_SSN_OFFSET = PHONE_NUM_2_OFFSET + PHONE_NUM_2_LENGTH;
 
     /** Length of the national identifier: 9. */
     public static final int CUST_SSN_LENGTH = 9;
 
-    /** Offset of the government-issued identifier, {@code PIC X(20)}: 288. */
+    /** Offset of the government-issued identifier: 288. */
     public static final int GOVT_ISSUED_ID_OFFSET = CUST_SSN_OFFSET + CUST_SSN_LENGTH;
 
     /** Length of the government-issued identifier: 20. */
     public static final int GOVT_ISSUED_ID_LENGTH = 20;
 
     /**
-     * Offset of the date of birth, {@code PIC X(10)}: 308. One offset for both copybook spellings,
+     * Offset of the date of birth: 308. One offset for both copybook spellings,
      * {@link #CUST_DOB_FIELD_CVCUS01Y} and {@link #CUST_DOB_FIELD_CUSTREC}.
      */
     public static final int CUST_DOB_OFFSET = GOVT_ISSUED_ID_OFFSET + GOVT_ISSUED_ID_LENGTH;
@@ -416,19 +438,19 @@ public final class CustomerRecordMapper {
     /** Length of the date of birth: 10. */
     public static final int CUST_DOB_LENGTH = 10;
 
-    /** Offset of the electronic-funds-transfer account identifier, {@code PIC X(10)}: 318. */
+    /** Offset of the electronic-funds-transfer account identifier: 318. */
     public static final int EFT_ACCOUNT_ID_OFFSET = CUST_DOB_OFFSET + CUST_DOB_LENGTH;
 
     /** Length of the electronic-funds-transfer account identifier: 10. */
     public static final int EFT_ACCOUNT_ID_LENGTH = 10;
 
-    /** Offset of the primary-cardholder indicator, {@code PIC X(01)}: 328. */
+    /** Offset of the primary-cardholder indicator: 328. */
     public static final int PRI_CARD_HOLDER_IND_OFFSET = EFT_ACCOUNT_ID_OFFSET + EFT_ACCOUNT_ID_LENGTH;
 
     /** Length of the primary-cardholder indicator: 1. */
     public static final int PRI_CARD_HOLDER_IND_LENGTH = 1;
 
-    /** Offset of the credit score, {@code PIC 9(03)}: 329. Never range-validated by this mapper. */
+    /** Offset of the credit score: 329. Never range-validated by this mapper. */
     public static final int FICO_CREDIT_SCORE_OFFSET =
             PRI_CARD_HOLDER_IND_OFFSET + PRI_CARD_HOLDER_IND_LENGTH;
 
@@ -448,12 +470,12 @@ public final class CustomerRecordMapper {
     /** Offset at which the trailing filler begins: 332, immediately after the mapped data prefix. */
     public static final int FILLER_OFFSET = MAPPED_DATA_WIDTH;
 
-    /** Length of the trailing {@code FILLER X(168)}: 168. Not mapped and not persisted. */
+    /** Length of the trailing filler: 168. Not mapped and not persisted. */
     public static final int FILLER_LENGTH = 168;
 
     /**
-     * Record width in encoded bytes: 500, derived as {@code 332 + 168}. Corroborated independently by
-     * {@code RECORDSIZE(500 500)} in {@code [app/jcl/CUSTFILE.jcl]} and by the record-length note in
+     * Record width in encoded bytes: 500, derived as {@code 332 + 168}. Corroborated independently
+     * by the cluster definition in {@code [app/jcl/CUSTFILE.jcl]} and by the record-length note in
      * both copybook headers.
      */
     public static final int RECORD_WIDTH = MAPPED_DATA_WIDTH + FILLER_LENGTH;
@@ -630,20 +652,22 @@ public final class CustomerRecordMapper {
      * zero-filled, character data left-justified and space-padded. The 168-byte trailing filler is
      * emitted as spaces.
      *
-     * <p>The national identifier is the one field that may legitimately be absent, and an absent
-     * value is rendered as {@value #CUST_SSN_LENGTH} spaces without the revealing operation being
-     * consulted. Every other attribute is required, because every other column is not nullable, and a
-     * {@code null} there is reported as a customer the record image cannot represent.
+     * <p>The two regulated identifiers are the fields that may legitimately be absent, and an absent
+     * value is rendered as {@value #CUST_SSN_LENGTH} spaces for the national identifier and
+     * {@value #GOVT_ISSUED_ID_LENGTH} spaces for the government-issued one, without the revealing
+     * operation being consulted at all. Every other attribute is required, because every other column
+     * is not nullable, and a {@code null} there is reported as a customer the record image cannot
+     * represent.
      *
      * <p>The returned image carries no line terminator. A caller writing a newline-terminated file
      * appends the separator itself.
      *
-     * @param customer                the customer to render; every attribute other than the national
-     *                                identifier must be present
+     * @param customer                the customer to render; every attribute other than the two
+     *                                regulated identifiers must be present
      * @param regulatedFieldRevealer  recovers the cleartext a record image requires from the stored
      *                                protected-value envelope; applied to the two regulated
-     *                                identifiers only, never to an absent national identifier, and
-     *                                must not return {@code null}
+     *                                identifiers only, never to an absent one, and must not return
+     *                                {@code null}
      * @return the complete record image, exactly {@value #RECORD_WIDTH} characters, never
      *         {@code null}
      * @throws NullPointerException     if {@code customer} or {@code regulatedFieldRevealer} is
@@ -665,12 +689,12 @@ public final class CustomerRecordMapper {
      * wants. The encoding is US-ASCII, named explicitly by the slicing primitive rather than inherited
      * from the platform default.
      *
-     * @param customer                the customer to render; every attribute other than the national
-     *                                identifier must be present
+     * @param customer                the customer to render; every attribute other than the two
+     *                                regulated identifiers must be present
      * @param regulatedFieldRevealer  recovers the cleartext a record image requires from the stored
      *                                protected-value envelope; applied to the two regulated
-     *                                identifiers only, never to an absent national identifier, and
-     *                                must not return {@code null}
+     *                                identifiers only, never to an absent one, and must not return
+     *                                {@code null}
      * @return a new array of exactly {@value #RECORD_WIDTH} bytes, never {@code null}
      * @throws NullPointerException     if {@code customer} or {@code regulatedFieldRevealer} is
      *                                  {@code null}
@@ -780,12 +804,14 @@ public final class CustomerRecordMapper {
         image.putAlphanumeric(PHONE_NUM_2_FIELD, PHONE_NUM_2_OFFSET, PHONE_NUM_2_LENGTH,
                 requirePresent(customer.getPhoneNum2(), "phoneNum2", PHONE_NUM_2_FIELD));
 
-        // The only attribute that may legitimately be absent. An absent national identifier is
-        // rendered as a field of spaces - COBOL's rendering of an unset field - and the revealing
-        // operation is not consulted at all, because there is no envelope to open. Numeric placement
-        // is deliberately not used here: it would zero-fill and so fabricate a nine-digit value that
-        // was never held. Every seeded row stores no identifier, so this is the common path and not an
-        // edge case.
+        // The two attributes that may legitimately be absent, handled identically. An absent
+        // regulated identifier is rendered as a field of spaces - COBOL's rendering of an unset field
+        // - and the revealing operation is not consulted at all, because there is no envelope to open.
+        // Numeric placement is deliberately not used on either absent path: it would zero-fill and so
+        // fabricate a value that was never held. Every seeded row stores neither identifier, so this
+        // is the common path and not an edge case. ABSENT_VALUE is the empty string and the placement
+        // primitive space-pads it to the full field width, so nine and twenty spaces respectively are
+        // what reach the record image.
         String heldNationalIdentifier = customer.getCustSsn();
         if (heldNationalIdentifier == null) {
             image.putAlphanumeric(CUST_SSN_FIELD, CUST_SSN_OFFSET, CUST_SSN_LENGTH, ABSENT_VALUE);
@@ -794,10 +820,15 @@ public final class CustomerRecordMapper {
                     reveal(regulatedFieldRevealer, CUST_SSN_FIELD, heldNationalIdentifier));
         }
 
-        image.putAlphanumeric(GOVT_ISSUED_ID_FIELD, GOVT_ISSUED_ID_OFFSET, GOVT_ISSUED_ID_LENGTH,
-                reveal(regulatedFieldRevealer, GOVT_ISSUED_ID_FIELD,
-                        requirePresent(customer.getGovtIssuedId(), "govtIssuedId",
-                                GOVT_ISSUED_ID_FIELD)));
+        String heldGovernmentIdentifier = customer.getGovtIssuedId();
+        if (heldGovernmentIdentifier == null) {
+            image.putAlphanumeric(GOVT_ISSUED_ID_FIELD, GOVT_ISSUED_ID_OFFSET,
+                    GOVT_ISSUED_ID_LENGTH, ABSENT_VALUE);
+        } else {
+            image.putAlphanumeric(GOVT_ISSUED_ID_FIELD, GOVT_ISSUED_ID_OFFSET,
+                    GOVT_ISSUED_ID_LENGTH, reveal(regulatedFieldRevealer, GOVT_ISSUED_ID_FIELD,
+                            heldGovernmentIdentifier));
+        }
         image.putAlphanumeric(CUST_DOB_FIELD_CVCUS01Y, CUST_DOB_OFFSET, CUST_DOB_LENGTH,
                 requirePresent(customer.getCustDob(), "custDob", CUST_DOB_FIELD_CVCUS01Y));
         image.putAlphanumeric(EFT_ACCOUNT_ID_FIELD, EFT_ACCOUNT_ID_OFFSET, EFT_ACCOUNT_ID_LENGTH,

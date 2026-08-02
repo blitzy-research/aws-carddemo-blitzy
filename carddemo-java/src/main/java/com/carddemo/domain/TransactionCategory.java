@@ -86,8 +86,19 @@ import java.util.Objects;
  * narrow to a value that renders as {@code 5}, or the 6-byte key image would no longer reconstruct from
  * its two components - and the seeded reference data contains such values. No attribute here is
  * numeric, temporal or monetary, so this class converts nothing and its mutators normalize nothing; no
- * trimming, padding, case folding or validation appears anywhere. Trimming in particular would destroy
- * the space padding that fills the 50-character description to its full external width.
+ * trimming, padding, case folding or validation appears anywhere.
+ *
+ * <p><strong>Where the description's padding lives.</strong> Because this class neither adds nor removes
+ * padding, the two callers on either side of it decide, and they decide differently on purpose. In the
+ * 60-byte record image the description occupies its whole 50-byte span - every one of the eighteen
+ * fixture records is space-filled to fifty - and the placement primitive the record mapper writes
+ * through guarantees it by writing the trailing pad explicitly. In the relational row the description is
+ * stored right-trimmed, at the twelve to twenty-nine characters the reference seed inserts. Neither form
+ * loses anything, because placing the trimmed form back through the mapper reproduces the identical
+ * fifty bytes. What would break the contract is this class silently converting between the two, so it
+ * stores whichever it is handed and compares it unchanged. The description is not part of the key, so no
+ * lookup turns on the choice; the two key components are fixed-shape and zero-filled, on which a trim is
+ * a no-op.
  *
  * <p><strong>No relationships, and no foreign key in either direction.</strong> No migration defines
  * any foreign key that targets this table or originates from it - in particular none from this table's
@@ -98,8 +109,8 @@ import java.util.Objects;
  *
  * <p><strong>Seeded volume.</strong> The reference data holds exactly 18 rows, derived from
  * {@code app/data/ASCII/trancatg.txt}, measured at 1,098 bytes for 18 records at the 60-byte record
- * length. Description values in that fixture are space-padded to the full width of 50 and the column
- * must not trim them.
+ * length. Description values in that fixture are space-padded to the full width of 50 in the record and
+ * are seeded right-trimmed into the column, which the record writer re-pads on output.
  *
  * <p><strong>Mutability and thread safety.</strong> This is a mutable persistent entity, as the
  * provider requires, and is therefore not thread safe. Instances are confined to the persistence
@@ -146,9 +157,10 @@ public class TransactionCategory {
      * 50. Mapped to column {@code tran_cat_type_desc}, declared {@code VARCHAR(50) NOT NULL} by the
      * schema migration. Not part of the key.
      *
-     * <p>Values arrive space padded to the full external width of 50 and are stored exactly as
-     * supplied, because that padding is part of the fixed-width contract the migrated output must
-     * reproduce.
+     * <p>A value arriving from the record mapper is space padded to the full external width of 50; a
+     * value arriving from the seeded column is right-trimmed. Either is stored exactly as supplied,
+     * because converting between them here would move a decision that belongs to the record writer,
+     * which re-pads to fifty on output in both cases.
      */
     @Column(name = "tran_cat_type_desc", length = 50, nullable = false)
     private String tranCatTypeDesc;
@@ -172,14 +184,15 @@ public class TransactionCategory {
      * <p>Parameter order follows the record layout: the two key components first, in contractual key
      * order, then the description. All three values are stored exactly as supplied - no trimming,
      * padding, case folding or validation is applied, because the persisted widths are enforced by
-     * the schema and because silently altering a caller's value would either corrupt the key or
-     * strip the description's contractual space padding.
+     * the schema and because silently altering a caller's value would either corrupt the key or move
+     * the description's padding decision away from the record writer that owns it.
      *
      * @param tranTypeCd      the 2-character transaction type code, key component 1, from offset 0
      * @param tranCatCd       the 4-character transaction category code held as text so that leading
      *                        zeros survive, key component 2, from offset 2
-     * @param tranCatTypeDesc the 50-character category description, space padded to its full width,
-     *                        from offset 6
+     * @param tranCatTypeDesc the category description from offset 6, padded to its full width of 50
+     *                        when it comes from a record image and right-trimmed when it comes from
+     *                        the column; stored either way
      */
     public TransactionCategory(final String tranTypeCd, final String tranCatCd,
             final String tranCatTypeDesc) {
@@ -234,7 +247,7 @@ public class TransactionCategory {
     /**
      * Returns the category description.
      *
-     * @return the 50-character description exactly as stored, including any trailing space padding,
+     * @return the description exactly as stored, including any trailing space padding it was given,
      *         or {@code null} if unpopulated
      */
     public String getTranCatTypeDesc() {
@@ -244,10 +257,10 @@ public class TransactionCategory {
     /**
      * Replaces the category description.
      *
-     * <p>A plain assignment. The value is stored verbatim so that the space padding filling the
-     * description to its external width of 50 is preserved.
+     * <p>A plain assignment. The value is stored verbatim, so whatever padding it carries survives and
+     * none is added - the record writer owns the external width of 50, not this mutator.
      *
-     * @param tranCatTypeDesc the 50-character description to store
+     * @param tranCatTypeDesc the description to store, padded or trimmed as the caller holds it
      */
     public void setTranCatTypeDesc(final String tranCatTypeDesc) {
         this.tranCatTypeDesc = tranCatTypeDesc;
@@ -309,7 +322,7 @@ public class TransactionCategory {
      * Returns a diagnostic representation of all three mapped fields.
      *
      * <p>No field of this record is a credential or a monetary value, so none requires redaction.
-     * The description is reproduced as stored, padding included.
+     * The description is reproduced as stored, whatever padding it carries.
      *
      * @return a diagnostic representation of this row
      */

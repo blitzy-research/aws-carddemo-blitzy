@@ -31,14 +31,9 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.StreamWriteFeature;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.databind.json.JsonMapper;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -134,10 +129,12 @@ import static org.assertj.core.api.Assertions.tuple;
  * timing figure: the type carries no temporal component and no numeric component at all.
  *
  * <p>It starts no application context even where it asserts the wire shape. The mapper used for
- * that is built locally from the four settings the module's configuration file declares, so the
- * shape assertions stay part of a unit suite; the separate question of whether a hand-built mapper
- * is equivalent to the deployed bean belongs to the one suite in this package that does start a
- * context, and is asserted there rather than assumed here.
+ * that comes from {@link JsonContractSupport#declaredSettingsMapper()}, which carries the four
+ * settings the module's configuration file declares and is the single place in the test tree where
+ * they are written out by hand, so the shape assertions stay part of a unit suite; the separate
+ * question of whether that shared mapper corresponds to the deployed bean belongs to the one suite
+ * in this package that does start a context, and is asserted there against this very factory rather
+ * than assumed here.
  *
  * <p>It reproduces none of the macro's 3270 mechanisms. Neither the attribute-level colour change
  * nor the marker character written over a blank field's displayed value has a REST counterpart, so
@@ -340,26 +337,25 @@ class FieldErrorDecoratorTest {
     }
 
     /**
-     * Builds a mapper configured exactly as the four wire settings of
-     * {@code src/main/resources/application.yml} configure the deployed one.
+     * Supplies a mapper carrying the four wire settings declared in
+     * {@code src/main/resources/application.yml}.
      *
-     * <p>Built locally and by hand rather than obtained from a context: this suite starts no
-     * application context, so the settings are mirrored from the configuration file - {@code null}
-     * values omitted, dates not written as timestamps, unknown properties tolerated on read and
-     * plain rather than scientific rendering of decimals. The last of those cannot affect this
-     * type, which has no numeric component, and is mirrored anyway so that the mapper is the
-     * deployed one's equivalent and not a subset of it.
+     * <p>This suite starts no application context, so the mapper is not the deployed object. It is
+     * obtained from {@link JsonContractSupport#declaredSettingsMapper()}, the single place in the
+     * test tree where those settings are written out by hand - {@code null} values omitted, dates not
+     * written as timestamps, unknown properties tolerated on read and plain rather than scientific
+     * rendering of decimals. The last of those cannot affect this type, which has no numeric
+     * component, and is in force anyway because the factory is shared rather than per-file, so this
+     * mapper carries the full set and not a subset of it.
      *
-     * @return a mapper equivalent to the deployed configuration
+     * <p>What it evidences is the shape this type takes under those settings, and nothing more. The
+     * correspondence with the deployed object is established in {@link ApplicationJsonContractTest},
+     * which compares a mapper taken from a real context against this very factory.
+     *
+     * @return a mapper carrying the module's four declared serialisation settings
      */
-    private static ObjectMapper deployedEquivalentMapper() {
-        return JsonMapper.builder()
-                .defaultPropertyInclusion(JsonInclude.Value.construct(
-                        JsonInclude.Include.NON_NULL, JsonInclude.Include.NON_NULL))
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-                .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
-                .build();
+    private static ObjectMapper declaredSettingsMapper() {
+        return JsonContractSupport.declaredSettingsMapper();
     }
 
     /**
@@ -2006,7 +2002,7 @@ class FieldErrorDecoratorTest {
         @DisplayName("an entry publishes the two identifiers and the state, and omits the absent wording "
                 + "rather than rendering it as a null")
         void anEntryPublishesThreePropertiesAndOmitsTheFourth() throws JsonProcessingException {
-            final ObjectMapper mapper = deployedEquivalentMapper();
+            final ObjectMapper mapper = declaredSettingsMapper();
             final FieldErrorDecorator errors = FieldErrorDecorator.none()
                     .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK);
 
@@ -2026,7 +2022,7 @@ class FieldErrorDecoratorTest {
         @DisplayName("both states publish under their own names, so the two remedies stay distinguishable "
                 + "on the wire and neither becomes a boolean")
         void bothStatesPublishUnderTheirOwnNames() throws JsonProcessingException {
-            final ObjectMapper mapper = deployedEquivalentMapper();
+            final ObjectMapper mapper = declaredSettingsMapper();
             final FieldErrorDecorator errors = FieldErrorDecorator.none()
                     .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FieldErrorDecorator.FlagState.BLANK)
                     .mark(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT,
@@ -2046,7 +2042,7 @@ class FieldErrorDecoratorTest {
         @DisplayName("a digits-only identifier publishes as text and keeps its leading zeros, so nothing "
                 + "on the wire turns a display field into a number")
         void digitsPublishAsTextAndKeepTheirZeros() throws JsonProcessingException {
-            final ObjectMapper mapper = deployedEquivalentMapper();
+            final ObjectMapper mapper = declaredSettingsMapper();
             final FieldErrorDecorator errors = FieldErrorDecorator.none()
                     .mark(LEADING_ZERO_VALUE, LEADING_ZERO_IDENTIFIER,
                             FieldErrorDecorator.FlagState.NOT_OK);
@@ -2063,7 +2059,7 @@ class FieldErrorDecoratorTest {
         @Test
         @DisplayName("space padding survives serialization untrimmed on both identifiers")
         void paddingSurvivesSerialization() throws JsonProcessingException {
-            final ObjectMapper mapper = deployedEquivalentMapper();
+            final ObjectMapper mapper = declaredSettingsMapper();
             final String paddedIdentifier = " ACSTTUS ";
             final FieldErrorDecorator errors = FieldErrorDecorator.none()
                     .mark("  padded  ", paddedIdentifier, FieldErrorDecorator.FlagState.BLANK);
@@ -2079,7 +2075,7 @@ class FieldErrorDecoratorTest {
         @DisplayName("an unknown property on an inbound entry is tolerated rather than rejected, which is "
                 + "what the module's own deserialization setting requires")
         void anUnknownInboundPropertyIsTolerated() throws JsonProcessingException {
-            final ObjectMapper mapper = deployedEquivalentMapper();
+            final ObjectMapper mapper = declaredSettingsMapper();
             final String payload = "{\"fieldName\":\"" + PROP_ACCT_STATUS
                     + "\",\"screenFieldId\":\"" + SCREEN_ACCT_STATUS
                     + "\",\"state\":\"MISSING\",\"aPropertyNoVersionOfThisTypeDeclares\":true}";
@@ -2097,7 +2093,7 @@ class FieldErrorDecoratorTest {
         @DisplayName("all 39 entries round trip through the wire in order and with their own states, so "
                 + "the sequence and the two remedies both survive publication")
         void allThirtyNineRoundTripInOrder() throws IOException {
-            final ObjectMapper mapper = deployedEquivalentMapper();
+            final ObjectMapper mapper = declaredSettingsMapper();
             final List<String> decorated = decoratedScreenFields();
             final FieldErrorDecorator errors = markAll(decorated,
                     FieldErrorDecorator.FlagState.BLANK);
@@ -2122,7 +2118,7 @@ class FieldErrorDecoratorTest {
         @DisplayName("an empty accumulation publishes the collection as an empty array rather than "
                 + "omitting it, so a client never has to test it for absence")
         void anEmptyAccumulationPublishesAnEmptyArray() throws JsonProcessingException {
-            final ObjectMapper mapper = deployedEquivalentMapper();
+            final ObjectMapper mapper = declaredSettingsMapper();
             final FieldErrorDecorator errors = FieldErrorDecorator.none();
 
             final JsonNode payload = mapper.readTree(mapper.writeValueAsString(

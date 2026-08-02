@@ -114,10 +114,18 @@ class OpenApiConfigSecurityTest {
         }
 
         @Test
-        @DisplayName("the document carries a non-blank description, so a consumer reading it learns what the surface "
-                + "is rather than only which paths exist")
-        void theDocumentCarriesANonBlankDescription() {
-            assertThat(documentWith(null).getInfo().getDescription()).isNotBlank();
+        @DisplayName("the document description orients a consumer to the estate and to the state of the endpoint "
+                + "inventory, so a reader learns what the surface is rather than only that prose exists")
+        void theDocumentDescriptionOrientsAConsumer() {
+            // A non-blank check cannot establish what this test's name claims: a single space is non-blank
+            // and orients nobody. The two statements asserted here are the ones that do the orienting - the
+            // estate the contract was migrated from, and the fact that the path inventory is derived from
+            // the code rather than maintained by hand, which is what tells a consumer why it may be short.
+            assertThat(documentWith(null).getInfo().getDescription())
+                    .as("the estate the contract was migrated from")
+                    .contains("CardDemo z/OS estate")
+                    .as("that the inventory is derived rather than hand-maintained")
+                    .contains("derived from the code");
         }
 
         @Test
@@ -207,11 +215,19 @@ class OpenApiConfigSecurityTest {
         }
 
         @Test
-        @DisplayName("the scheme carries a non-blank description, so a consumer learns how to obtain a token rather "
-                + "than only that one is required")
-        void theSchemeCarriesANonBlankDescription() {
+        @DisplayName("the scheme description names the operation that issues a token and the address it is served "
+                + "at, so a consumer learns how to obtain one rather than only that one is required")
+        void theSchemeDescriptionSaysHowToObtainAToken() {
+            // The claim in this test's name is about obtaining a token, and only two statements can support
+            // it: that the sign-on operation is what issues them, and where that operation is. The address
+            // is taken from SecurityConfig rather than written out, so a second copy cannot agree with the
+            // description while both disagree with the rule the filter chain enforces.
             assertThat(documentWith(null).getComponents().getSecuritySchemes()
-                    .get(OpenApiConfig.BEARER_SCHEME_NAME).getDescription()).isNotBlank();
+                    .get(OpenApiConfig.BEARER_SCHEME_NAME).getDescription())
+                    .as("the operation that issues a token")
+                    .contains("token issued by the sign-on operation")
+                    .as("the address that operation is served at")
+                    .contains(SecurityConfig.SIGN_ON_PATH);
         }
 
         @Test

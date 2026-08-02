@@ -20,84 +20,51 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Immutable, sanitized REST error body for the screen-derived endpoints of the migrated
- * CardDemo application. It carries exactly one summary message alongside {@code N}
- * independent <em>per-field</em> error states.
+ * Immutable, sanitized REST error body for the screen-derived endpoints: one summary message
+ * alongside any number of independent <em>per-field</em> error states.
  *
- * <p>The 3270 presentation layer had no error object at all: it decorated the individual input
- * fields of a map in place, through the parameterized {@code PROCEDURE DIVISION} macro
- * {@code app/cpy/CSSETATY.cpy}, whose executable body is lines 18 to 27. The body fires when a
- * field's validation flag is either not-OK or blank - two different operator mistakes that the
- * legacy screen told apart - writing an error highlight into the field's indicator sub-field in
- * both states and, in the blank state only, additionally writing a marker character over the
- * displayed value. Both edits are 3270 rendering mechanisms with no REST analogue, so this type
- * exposes the two <em>states</em> ({@link FieldState#INVALID} and {@link FieldState#MISSING})
- * and discards the mechanisms entirely: it holds no highlight value, indicator byte, flag
- * character, map coordinate or terminal presentation detail of any kind.
- * {@link FieldErrorDecorator} documents the macro translation in full.
+ * <p>The 3270 layer had no error object. It decorated the individual input fields of a map in place,
+ * through the parameterized macro {@code app/cpy/CSSETATY.cpy}, which fires when a field's validation
+ * flag is either not-OK or blank &mdash; two different operator mistakes the legacy screen told apart
+ * &mdash; applying an error highlight in both states and, in the blank state only, additionally
+ * writing a marker character over the displayed value. Both edits are terminal rendering mechanisms
+ * with no REST analogue, so this type exposes the two <em>states</em> and discards the mechanisms
+ * entirely: no highlight value, indicator byte, flag character, map coordinate or presentation detail
+ * appears anywhere. {@link FieldErrorDecorator} documents the macro translation in full.
  *
- * <p>The macro is expanded exactly 39 times in {@code app/cbl/COACTUPC.cbl}, between lines 3208
- * and 3432, so 39 fields bound the universe of entries this body can carry.
- * {@code app/bms/COACTUP.bms} corroborates the set: the map defines 43 unprotected input fields,
- * all 39 decorated identifiers are among them, and the four unprotected-but-undecorated fields
- * are {@code ACCTSID}, {@code AADDGRP}, {@code ACSTNUM} and {@code ACSGOVT}, for which no entry
- * may ever be invented. Two of the 39 - the middle name (line 3345) and the second address line
- * (line 3369) - are decorated but never validated, and nothing in this type implies otherwise
- * (decision log entry D-34).
+ * <p>The macro is expanded 39 times in {@code app/cbl/COACTUPC.cbl}, so 39 fields bound the universe
+ * of entries this body can carry; the map's remaining unprotected fields are never decorated and no
+ * entry may be invented for them. Two of the 39, the middle name and the second address line, are
+ * decorated but never validated, and nothing here implies otherwise (decision log D-34).
  *
- * <p><strong>Contract rules.</strong>
- *
+ * <p>Contract rules that a maintainer must not relax:
  * <ul>
- *   <li><b>No collapse.</b> The per-field states must never be flattened into a single overall
- *       boolean, a single message string or an "is valid" flag. A client told only "this field
- *       is wrong" cannot tell the operator whether to supply a value or to correct one.</li>
+ *   <li><b>No collapse.</b> The per-field states must never be flattened into one boolean, one string
+ *       or an "is valid" flag: a client told only that a field is wrong cannot tell the operator
+ *       whether to supply a value or to correct one.</li>
  *   <li><b>The state enum is duplicated on purpose.</b> The validation-failure carrier in the
- *       {@code com.carddemo.exception} package declares its own structurally identical
- *       two-constant state type. The duplication is deliberate: the module's layering forbids
- *       {@code api.dto} from depending on the failure-carrier package, and the global failure
- *       handler one level up in {@code com.carddemo.api} owns the translation. De-duplicating
- *       the two enums would invert the dependency direction.</li>
- *   <li><b>The re-entry gate is not evaluated here.</b> Whether field errors may be populated
- *       at all is decided by the service from the re-enter condition echoed back on
- *       {@link NavigationContext}; this type only has to be constructible with no field errors
- *       whatsoever, which is what {@link #ErrorResponse(String)} is for (decision log entry
- *       D-33).</li>
- *   <li><b>Sanitized by construction.</b> No component of this type, and no component of
- *       {@link FieldError}, may ever carry stack detail, a failure class name, an internal file
- *       path, a SQL fragment, a schema or table name, a secret, a password or a password
- *       digest.</li>
- *   <li><b>This type is the error body.</b> The standard problem-detail representation is
- *       deliberately switched off for this module - {@code application.yml} declares no
- *       problem-detail setting at all - so this type is neither a wrapper for it nor a stand-in
- *       to be replaced by it.</li>
- *   <li><b>Nothing is trimmed.</b> Values are carried exactly as supplied. Legacy fixed-width
- *       screen and record fields are space-significant, so no component is trimmed, case-folded
- *       or truncated, and no length constraint is imposed - a single maximum would in any case
- *       be arbitrary, because the estate's summary message widths differ per screen and per
- *       catalog entry.</li>
+ *       exception package declares a structurally identical two-constant type. The module's layering
+ *       forbids {@code api.dto} from depending on that package, and the global failure handler owns
+ *       the translation, so de-duplicating them would invert the dependency direction.</li>
+ *   <li><b>The re-entry gate is not evaluated here.</b> Whether field errors may be populated at all
+ *       is decided by the service from the re-enter state echoed on {@link NavigationContext}; this
+ *       type only has to be constructible with none, which {@link #ErrorResponse(String)} is for
+ *       (decision log D-33).</li>
+ *   <li><b>Sanitized by construction.</b> No component here or on {@link FieldError} may carry stack
+ *       detail, a failure class name, an internal path, a SQL fragment, a schema or table name, or a
+ *       secret in any form.</li>
+ *   <li><b>This type is the error body.</b> The standard problem-detail representation is deliberately
+ *       not enabled for this module, so this type is neither a wrapper for it nor a stand-in.</li>
+ *   <li><b>Nothing is trimmed.</b> Values are carried exactly as supplied, because the legacy screen
+ *       and record fields are space-significant. No length constraint is imposed: a single maximum
+ *       would be arbitrary, since summary widths differ per screen and per catalog entry.</li>
  * </ul>
  *
- * <p><strong>Wire contract.</strong> The module configures
- * {@code jackson.default-property-inclusion: non_null} globally, which omits {@code null}
- * values and nothing else. Combined with the normalization in the canonical constructor that
- * fixes the payload shape: {@code fieldErrors} is always present and is emitted as an empty
- * array when there are none, so a client never has to test it for {@code null}, while
- * {@code message} and {@code focusScreenFieldId} are omitted when absent. Instances are deeply
- * immutable and therefore safe to share across threads.
+ * <p>The module omits {@code null} properties from the serialized form, so {@code message} and the
+ * focus hint disappear when absent while {@code fieldErrors} is always present and is emitted as an
+ * empty array when there are none, and a client never has to test it for {@code null}. Instances are
+ * deeply immutable and safe to share across threads.
  *
- * @param message            the single summary message for the whole response, or
- *                           {@code null} when there is none. The legacy screens showed one
- *                           summary line - a first-error-wins message gate - alongside any
- *                           number of independently flagged fields, and that shape is
- *                           reproduced here. Composing this text is the service's job, not
- *                           this type's.
- * @param fieldErrors        the independent per-field errors, never {@code null} and never
- *                           mutable. Empty means "no field-level error", which is also the
- *                           first-submission case, because the legacy macro was gated on
- *                           re-entry.
- * @param focusScreenFieldId the legacy screen field identifier that input focus should be
- *                           placed on, or {@code null} when the response gives no hint. It
- *                           is an opaque label only, exactly as in {@link FieldError}.
  * @since 1.0.0
  */
 public record ErrorResponse(String message,
@@ -105,30 +72,21 @@ public record ErrorResponse(String message,
                             String focusScreenFieldId) {
 
     /**
-     * Normalizes the field-error collection so that the component is never {@code null},
-     * never aliased to caller-owned state, and never mutable.
+     * Normalizes the field-error collection so the component is never {@code null}, never aliased to
+     * caller-owned state and never mutable: a {@code null} collection becomes the empty immutable list,
+     * and a supplied collection is defensively copied, which also rejects a {@code null} element -
+     * silently dropping one would hide an error the client has to show.
      *
-     * <p>A {@code null} collection becomes the empty immutable list rather than being
-     * stored, so every accessor and every serialized payload sees a usable collection. A
-     * non-{@code null} collection is defensively copied with {@link List#copyOf(java.util.Collection)},
-     * which both detaches it from the caller and rejects a {@code null} element - a field
-     * error with no state would be meaningless and silently dropping it would hide an error
-     * the client has to show.
-     *
-     * <p>{@code message} and {@code focusScreenFieldId} are deliberately left exactly as
-     * supplied, including {@code null} and including any leading or trailing space, because
-     * the legacy fields they derive from are fixed-width and space-significant.
+     * <p>The summary message and the focus hint are left exactly as supplied, including {@code null}
+     * and including any leading or trailing space.
      */
     public ErrorResponse {
         fieldErrors = (fieldErrors == null) ? List.of() : List.copyOf(fieldErrors);
     }
 
     /**
-     * Builds a response that carries a summary message and no field errors at all.
-     *
-     * <p>This is the first-submission shape. The legacy macro was gated on the
-     * program-context re-enter condition, so on a first submission the screen showed the
-     * summary line and left every input field undecorated.
+     * Builds a response carrying a summary message and no field errors: the first-submission shape,
+     * where the legacy screen showed the summary line and left every input field undecorated.
      *
      * @param message the summary message, or {@code null} when there is none
      */
@@ -137,13 +95,9 @@ public record ErrorResponse(String message,
     }
 
     /**
-     * Builds a response that carries a summary message and per-field errors, without a
-     * focus hint.
-     *
-     * <p>This is the re-entry shape: one summary line plus every field that the validation
-     * cascade flagged, in whatever sequence the caller assembled them. No sequencing and no
-     * de-duplication is applied here, because the legacy emitted one summary message and
-     * {@code N} independently set field flags and the service owns both.
+     * Builds a response carrying a summary message and per-field errors without a focus hint: the
+     * re-entry shape. No sequencing and no de-duplication is applied, because the legacy emitted one
+     * summary line and independently set field flags, and the service owns both.
      *
      * @param message     the summary message, or {@code null} when there is none
      * @param fieldErrors the per-field errors; {@code null} is treated as none
@@ -153,13 +107,9 @@ public record ErrorResponse(String message,
     }
 
     /**
-     * Tests whether this response carries any per-field error.
-     *
-     * <p>This is a convenience test over {@link #fieldErrors()} for callers that only need
-     * to branch on presence, such as a handler choosing a status code. It is <em>not</em> a
-     * substitute for inspecting the per-field states: a caller that has to tell an operator
-     * what to do must read {@link FieldError#state()} on each entry, because a blank field
-     * and a badly filled field need different remedies.
+     * Tests whether this response carries any per-field error. Not a substitute for inspecting the
+     * states: a caller that has to tell an operator what to do must read {@link FieldError#state()} on
+     * each entry, because a blank field and a badly filled field need different remedies.
      *
      * @return {@code true} when at least one {@link FieldError} is present
      */
@@ -168,64 +118,44 @@ public record ErrorResponse(String message,
     }
 
     /**
-     * The per-field error state, with exactly two constants because the legacy screen
-     * distinguished exactly two operator mistakes.
-     *
-     * <p>Both constants map to a decoration that the {@code app/cpy/CSSETATY.cpy} macro
-     * performed on the 3270 map. The <em>mechanism</em> of each decoration is discarded and
-     * only the state it signified is exposed, so nothing here names a highlight value, an
-     * indicator byte or a flag character.
-     *
-     * <p>There is deliberately no third constant. A field with no error simply has no entry
-     * in {@link ErrorResponse#fieldErrors()}, so an "OK", "none" or "unknown" constant would
-     * be unreachable state that clients would have to handle for no reason.
+     * The per-field error state, with exactly two constants because the legacy screen distinguished
+     * exactly two operator mistakes and only the state each decoration signified is exposed. There is
+     * deliberately no third constant: a field with no error simply has no entry, so an "OK" or
+     * "unknown" constant would be unreachable state that clients would have to handle for no reason.
      *
      * @since 1.0.0
      */
     public enum FieldState {
 
         /**
-         * The field was left blank when a value was needed.
-         *
-         * <p>Corresponds to the legacy blank-flag case, in which the macro applied the error
-         * highlight <em>and additionally</em> overwrote the field's displayed-value position
-         * with a single-character flag. The remedy the client must offer the operator is
-         * "supply a value".
+         * The field was left blank when a value was needed - the legacy blank-flag case, where the
+         * macro also overwrote the displayed value with a marker character. The remedy to offer the
+         * operator is "supply a value".
          */
         MISSING,
 
         /**
-         * The field was filled in, but the value failed its edit.
-         *
-         * <p>Corresponds to the legacy not-OK case, in which the macro applied the error
-         * highlight and left the operator's own keystrokes on the screen so they could be
-         * corrected. The remedy the client must offer the operator is "correct the value".
+         * The field was filled in but the value failed its edit - the legacy not-OK case, where the
+         * macro left the operator's own keystrokes on the screen. The remedy to offer the operator is
+         * "correct the value".
          */
         INVALID
     }
 
     /**
-     * One independent per-field error.
+     * One independent per-field error, standing for one firing of the {@code app/cpy/CSSETATY.cpy}
+     * macro at one of its 39 expansion sites: the validation flag becomes {@link #state()}, the screen
+     * field becomes {@link #screenFieldId()}, and the macro's map token is dropped because one REST
+     * resource replaces the single map all 39 sites decorated.
      *
-     * <p>Each instance stands for one firing of the {@code app/cpy/CSSETATY.cpy} macro at
-     * one of its 39 expansion sites in {@code app/cbl/COACTUPC.cbl}. The macro's three
-     * substitution tokens map onto this record as follows: the validation flag becomes
-     * {@link #state()}, the screen field becomes {@link #screenFieldId()}, and the map is
-     * dropped because a single REST resource replaces the single map the 39 sites all
-     * decorated.
-     *
-     * @param fieldName      the name of the field in the request contract, for example the
-     *                       property a client sent. Mandatory.
-     * @param screenFieldId  the legacy screen field identifier, carried as an opaque label
-     *                       so that a response can be correlated with the map it derives from.
-     *                       It is a label and nothing more - it is not a byte, not a
-     *                       coordinate and not a terminal presentation value - and a client
-     *                       may ignore it entirely. Mandatory.
-     * @param state          which of the two legacy states this field is in. Mandatory.
-     * @param message        an optional human-readable explanation for this one field, or
-     *                       {@code null}. It is omitted from the payload when absent, and
-     *                       it must never carry stack detail, a failure class name, an
-     *                       internal path, a SQL fragment or a secret.
+     * @param fieldName     the field's name in the request contract. Mandatory.
+     * @param screenFieldId the legacy screen field identifier, an opaque label that lets a response be
+     *                      correlated with the map it derives from - never a byte, a coordinate or a
+     *                      presentation value, and a client may ignore it. Mandatory.
+     * @param state         which of the two legacy states this field is in. Mandatory.
+     * @param message       an optional explanation for this one field, omitted from the payload when
+     *                      absent, which must never carry stack detail, a failure class name, an
+     *                      internal path, a SQL fragment or a secret.
      * @since 1.0.0
      */
     public record FieldError(String fieldName,
@@ -234,15 +164,11 @@ public record ErrorResponse(String message,
                              String message) {
 
         /**
-         * Rejects a {@code null} for any of the three mandatory components.
-         *
-         * <p>{@code fieldName}, {@code screenFieldId} and {@code state} are all load-bearing:
-         * without the name a client cannot locate the field, without the identifier the
-         * entry cannot be correlated with the legacy map, and without the state the client
-         * cannot tell the operator whether to supply a value or to correct one. Failing here
-         * is preferable to emitting an entry a client cannot act on.
-         *
-         * <p>{@code message} is optional and is stored exactly as supplied, untrimmed.
+         * Rejects a {@code null} for any of the three mandatory components: without the name a client
+         * cannot locate the field, without the screen identifier the entry cannot be correlated with
+         * the legacy map, and without the state the client cannot tell the operator whether to supply
+         * a value or correct one. Failing here is preferable to emitting an entry no client can act
+         * on. The optional explanation is stored exactly as supplied, untrimmed.
          */
         public FieldError {
             Objects.requireNonNull(fieldName, "fieldName must not be null");
@@ -251,14 +177,11 @@ public record ErrorResponse(String message,
         }
 
         /**
-         * Builds a field error with no per-field explanation.
+         * Builds a field error with no per-field explanation: the direct counterpart of the legacy
+         * macro invocation, which supplied a validation flag and a screen field and produced no text of
+         * its own, because the legacy text lived in the single summary line.
          *
-         * <p>This three-component shape is the direct counterpart of the legacy macro
-         * invocation, which supplied a validation flag and a screen field and produced no
-         * text of its own: the legacy text lived in the single summary line, not on the
-         * field.
-         *
-         * @param fieldName     the name of the field in the request contract
+         * @param fieldName     the field's name in the request contract
          * @param screenFieldId the legacy screen field identifier
          * @param state         which of the two legacy states this field is in
          */

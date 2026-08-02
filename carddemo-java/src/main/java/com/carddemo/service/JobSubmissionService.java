@@ -443,6 +443,51 @@ public final class JobSubmissionService {
     private static final int FIRST_CARD_ORDINAL = 1;
 
     /**
+     * The longest a derived diagnostic code may be.
+     *
+     * <p>The legacy response and reason codes were fixed-width display fields, so an unbounded code
+     * has no legacy antecedent. A bound also removes the last way a failure could enlarge a log
+     * record: a type name is not attacker-controlled in any deployment this module supports, but it
+     * is read from a classfile rather than written here, and a value this class writes into every
+     * failure diagnostic is bounded by this class rather than by its source.
+     */
+    private static final int MAX_DIAGNOSTIC_CODE_LENGTH = 64;
+
+    /**
+     * The substitute code recorded when a failure's type has no usable simple name.
+     *
+     * <p>An anonymous class reports the empty string as its simple name, and a synthetic or
+     * generated type may report a name that survives sanitisation as nothing at all. Neither case
+     * may leave the response code empty, because an empty response code is the published signal that
+     * <em>no</em> code was reported, and a failure that arrived always reports one.
+     */
+    private static final String UNNAMED_FAILURE_TYPE = "UnnamedType";
+
+    /**
+     * The character substituted for any byte a derived diagnostic code may not carry.
+     *
+     * <p>Chosen because it is already admissible in a Java type name, so a sanitised code is still a
+     * single unbroken token that a log reader will not split and a search will match whole.
+     */
+    private static final char DIAGNOSTIC_CODE_REPLACEMENT = '_';
+
+    /**
+     * The greatest number of causes the recorded failure chain names.
+     *
+     * <p>The chain exists because suppressing the external description costs a diagnostic something,
+     * and a bounded list of type names restores it without restoring the disclosure. The depth is
+     * capped so that a deep or self-referential cause chain cannot lengthen a log record without
+     * limit; a chain longer than this is reported as truncated rather than silently shortened.
+     */
+    private static final int MAX_FAILURE_CHAIN_DEPTH = 6;
+
+    /** Separates one type name from the cause beneath it in the recorded failure chain. */
+    private static final String FAILURE_CHAIN_SEPARATOR = "<-";
+
+    /** Appended to the recorded failure chain when it was cut short at its depth bound. */
+    private static final String FAILURE_CHAIN_TRUNCATION_MARKER = "<-...";
+
+    /**
      * The injected messaging operations bean. Declared as the operations interface rather than as a
      * concrete template so that the deployment may supply its own implementation and so that a test
      * may supply a double, and typed from the messaging library rather than from this module's
@@ -853,16 +898,27 @@ public final class JobSubmissionService {
             return true;
         } catch (final RuntimeException publishFailure) {
             // The queue is defined ignore-on-error, so every failure of the write itself is caught
-            // here. The exception is built for its diagnostic content and logged; it is never
-            // rethrown, because rethrowing would abort a request the legacy transaction completes.
+            // here. The exception is built for its diagnostic content; it is never rethrown, because
+            // rethrowing would abort a request the legacy transaction completes. It keeps the raw
+            // failure as its cause so that nothing is lost from the object, and the object does not
+            // escape this method.
             final JobSubmissionException failure = new JobSubmissionException(this.queueName,
                     responseCodeOf(publishFailure), reasonCodeOf(publishFailure), cardOrdinal,
                     publishFailure);
             // Mirrors the legacy diagnostic write of the response and reason codes, which the
-            // paragraph performs before it reports the failure to the operator.
-            LOGGER.error("{} ordinal={} submission={} queue={} messageGroup={} response={} reason={}",
+            // paragraph performs before it reports the failure to the operator, and adds the bounded
+            // chain of failure types beneath them.
+            //
+            // The raw failure is deliberately NOT passed as the logging throwable. Doing so would
+            // render its stack trace, and a stack trace carries the description of every exception in
+            // the chain - which is precisely the externally-supplied text decision DL-041 keeps out
+            // of this log. What the trace contributed to a diagnosis is the shape of the chain, and
+            // that travels here as sanitised type names instead.
+            LOGGER.error("{} ordinal={} submission={} queue={} messageGroup={} response={} reason={}"
+                            + " failureChain={}",
                     JobSubmissionException.DEFAULT_MESSAGE, cardOrdinal, submission, this.queueName,
-                    this.messageGroupId, failure.responseCode(), failure.reasonCode(), failure);
+                    this.messageGroupId, failure.responseCode(), failure.reasonCode(),
+                    failureChainOf(publishFailure));
             return false;
         }
     }
@@ -1093,10 +1149,34 @@ public final class JobSubmissionService {
      * way to write a forged line into the service log. The position and the code point tell a caller
      * exactly which character to remove, which is everything the caller needs and nothing more.
      *
+     * <p><strong>Rejecting whitespace alone is not sufficient, and this method scans for three
+     * distinct defects rather than one.</strong> Whitespace is the defect the queue service itself
+     * cares about, but it is not the only character class that can forge a diagnostic. A NUL, an
+     * escape and a delete are none of them whitespace, so a whitespace-only scan admits every one of
+     * them, and the identity is then interpolated into two places that matter: the stream-level log
+     * records that name {@code submission=}, and the deduplication identifier published to the queue.
+     * An escape sequence reaching a terminal-backed log viewer can reposition the cursor and overwrite
+     * the records already written, which forges history without ever emitting a line feed; a NUL can
+     * truncate a record for a consumer that reads a C string. The scan therefore requires the whole
+     * identity to be printable US-ASCII, which is the same restriction this class already places on
+     * every published card, for the same reason and expressed with the same two limits.
+     *
+     * <p>The three checks are ordered so that the most specific diagnostic wins. Whitespace is tested
+     * first, because a caller who supplied a space or a line terminator is best told that a
+     * deduplication identifier may not hold whitespace - a strictly more useful statement than
+     * "non-printable". Representability is tested next, then the printable range, exactly as
+     * {@code requireCardImage} orders the same pair, because the two answer different questions: one
+     * asks whether the character survives the single-byte encoding at all, the other whether it is
+     * safe once encoded. Note that the space is the one character both the whitespace test and the
+     * printable range accept, and it is refused by the former, so the effective allowlist here is the
+     * printable graphics excluding the space.
+     *
      * @param submissionId the identity to validate
      * @return {@code submissionId}, unchanged
      * @throws NullPointerException     if {@code submissionId} is {@code null}
-     * @throws IllegalArgumentException if {@code submissionId} is blank or holds whitespace
+     * @throws IllegalArgumentException if {@code submissionId} is blank, holds whitespace, holds a
+     *                                  character that is not representable as a single US-ASCII byte,
+     *                                  or holds a character outside printable US-ASCII
      */
     private static String requireSubmissionId(final String submissionId) {
         Objects.requireNonNull(submissionId, "submissionId must not be null");
@@ -1109,6 +1189,19 @@ public final class JobSubmissionService {
                 throw new IllegalArgumentException("submissionId must not hold whitespace because a"
                         + " message deduplication identifier may not; the character at zero-based"
                         + " position " + index + " is code point " + (int) character);
+            }
+            if (character > MAX_US_ASCII_CHARACTER) {
+                throw new IllegalArgumentException("submissionId must not hold a character that is"
+                        + " not representable as a single US-ASCII byte, because the bytes published"
+                        + " would not be the bytes supplied; the character at zero-based position "
+                        + index + " is code point " + (int) character);
+            }
+            if (character < MIN_PRINTABLE_US_ASCII_CHARACTER
+                    || character > MAX_PRINTABLE_US_ASCII_CHARACTER) {
+                throw new IllegalArgumentException("submissionId must not hold a non-printable"
+                        + " character because the identity is written to the service log and to the"
+                        + " message deduplication identifier; the character at zero-based position "
+                        + index + " is code point " + (int) character);
             }
         }
         return submissionId;
@@ -1194,11 +1287,19 @@ public final class JobSubmissionService {
      * is condensed, never a card, whose padding is contractual. The deviation from content-based
      * deduplication is recorded in {@code docs/decision-log.md}.
      *
+     * <p>Condensing whitespace is deliberately not the same thing as sanitising the dates. A date slot
+     * carrying a NUL, an escape or a delete still reaches {@link #requireSubmissionId(String)} intact
+     * and is refused there, because those characters are not whitespace and stripping them silently
+     * would let two distinct periods mint one identity. The minted value is therefore printable
+     * US-ASCII in whole or the call fails, which is what makes it safe to interpolate into the
+     * {@code submission=} field of every diagnostic this class emits.
+     *
      * @param startDate the start-date slot value
      * @param endDate   the end-date slot value
      * @return the derived submission identity, unique to this call
      * @throws NullPointerException     if either date is {@code null}
-     * @throws IllegalArgumentException if the minted identity is blank
+     * @throws IllegalArgumentException if the minted identity is blank, or if either date carries a
+     *                                  character outside printable US-ASCII
      */
     private static String newSubmissionId(final String startDate, final String endDate) {
         Objects.requireNonNull(startDate, "startDate must not be null");
@@ -1340,33 +1441,153 @@ public final class JobSubmissionService {
      *
      * <p>The legacy paragraph captured a numeric response code from the queue write. The messaging
      * client reports a failure as an exception instead, so the analogue recorded here is the
-     * failure's own type name, read from the object's identity. No reflective lookup is performed and
-     * no type is loaded by name.
+     * failure's own type name, read from the object's identity and then sanitised and bounded by
+     * {@link #diagnosticCodeOf(Class)}. No reflective lookup is performed and no type is loaded by
+     * name.
+     *
+     * <p>The type name is derived rather than the failure's description because this value is written
+     * into a log record. Decision DL-041 scopes its sink to "any channel a human or a tool later
+     * reads", and a log statement is such a channel; the description is supplied by the queue client
+     * rather than by this module, so echoing it would carry externally-supplied text into the service
+     * log through the one path that is not a caller-supplied value. The type is the classification
+     * the client actually offers, and it is this module's own reading of the failure rather than the
+     * failure's account of itself.
      *
      * @param publishFailure the failure the publish attempt raised
-     * @return the response code, never {@code null}
+     * @return the response code, never {@code null} and never empty
      */
     private static String responseCodeOf(final Throwable publishFailure) {
-        return publishFailure.getClass().getSimpleName();
+        return diagnosticCodeOf(publishFailure.getClass());
     }
 
     /**
      * Derives the reason code recorded for a failed publish.
      *
-     * <p>The analogue of the legacy reason code is the failure's own description. Only its first line
-     * is recorded, so the code stays a single readable value; the complete description, and the whole
-     * cause chain beneath it, reaches the log through the logged throwable.
+     * <p>The legacy reason code qualified the response code: it said <em>why</em>, beneath the
+     * <em>what</em>. The analogue is therefore the type of the deepest cause under the failure, which
+     * is the qualification a messaging client's exception chain actually carries - a send failure
+     * whose root is a socket timeout is a different operational condition from one whose root is a
+     * missing queue, and the two are distinguishable here without either failure's description being
+     * repeated.
+     *
+     * <p>The failure's description is deliberately <em>not</em> used. Decision DL-041 gives two
+     * idioms for a guard, chosen by whether it sits on a failing path already, and this one does: a
+     * guard on a value that merely <em>labels</em> another failure degrades to a substitute of the
+     * same shape rather than throwing, because throwing here would replace the operator's real
+     * diagnostic with a second, unrelated one. A sanitised type name is that substitute.
+     *
+     * <p>The walk is bounded by {@link #MAX_FAILURE_CHAIN_DEPTH} so that a self-referential or
+     * mutually-referential cause chain terminates. A chain deeper than the bound yields the deepest
+     * cause the bound reaches, which is a truthful qualification of the failure rather than a
+     * guess about what lies beneath it.
+     *
+     * <p>A failure whose {@code getCause} returns the failure itself has nothing genuinely beneath it,
+     * so it takes the no-cause path. {@link Throwable#initCause(Throwable)} forbids self-causation but
+     * the accessor is overridable, and reporting one type as both the response and the reason would
+     * describe a two-element chain where there is one. This keeps the invariant a reader relies on:
+     * the reason code is empty exactly when {@link #failureChainOf(Throwable)} names a single type.
      *
      * @param publishFailure the failure the publish attempt raised
      * @return the reason code, never {@code null}; the empty string when the failure carries no
-     *         description
+     *         cause, because there is then nothing beneath the response code to report and nothing
+     *         may be invented
      */
     private static String reasonCodeOf(final Throwable publishFailure) {
-        final String description = publishFailure.getMessage();
-        if (description == null || description.isBlank()) {
+        final Throwable beneathTheFailure = publishFailure.getCause();
+        if (beneathTheFailure == null || beneathTheFailure == publishFailure) {
             return "";
         }
-        return description.lines().findFirst().orElse("");
+        Throwable deepest = beneathTheFailure;
+        for (int depth = 1; depth < MAX_FAILURE_CHAIN_DEPTH; depth++) {
+            final Throwable beneath = deepest.getCause();
+            if (beneath == null || beneath == deepest) {
+                break;
+            }
+            deepest = beneath;
+        }
+        return diagnosticCodeOf(deepest.getClass());
+    }
+
+    /**
+     * Renders the chain of failure types recorded alongside the codes.
+     *
+     * <p>Suppressing the external description costs the diagnostic something real, and this restores
+     * it without restoring the disclosure: the shape of the chain - which type wrapped which - is
+     * frequently the whole diagnosis, and it is composed entirely of type names this module
+     * sanitises. The chain is bounded in depth and every element is bounded in length, so the field
+     * this class adds to a log record has a computable maximum size.
+     *
+     * @param publishFailure the failure the publish attempt raised
+     * @return the chain, outermost type first, never {@code null} and never empty
+     */
+    private static String failureChainOf(final Throwable publishFailure) {
+        final StringBuilder chain = new StringBuilder(diagnosticCodeOf(publishFailure.getClass()));
+        Throwable current = publishFailure;
+        for (int depth = 1; depth < MAX_FAILURE_CHAIN_DEPTH; depth++) {
+            final Throwable beneath = current.getCause();
+            if (beneath == null || beneath == current) {
+                return chain.toString();
+            }
+            chain.append(FAILURE_CHAIN_SEPARATOR).append(diagnosticCodeOf(beneath.getClass()));
+            current = beneath;
+        }
+        if (current.getCause() != null && current.getCause() != current) {
+            chain.append(FAILURE_CHAIN_TRUNCATION_MARKER);
+        }
+        return chain.toString();
+    }
+
+    /**
+     * Sanitises and bounds one type name so that it is safe to write into a log record.
+     *
+     * <p>A type's simple name is ordinarily a Java identifier and needs nothing done to it. Three
+     * cases are not ordinary and all three are handled rather than assumed away: an anonymous class
+     * reports the empty string, a synthetic or generated type may report a name carrying characters
+     * an identifier may not hold, and a generated name may be arbitrarily long. Every character
+     * outside the identifier set becomes {@value #DIAGNOSTIC_CODE_REPLACEMENT}, so no whitespace and
+     * no control byte can reach the log and the code stays one unbroken token; the result is cut to
+     * {@value #MAX_DIAGNOSTIC_CODE_LENGTH} characters; and a result that would be empty becomes
+     * {@value #UNNAMED_FAILURE_TYPE}.
+     *
+     * @param failureType the type being named; must not be {@code null}
+     * @return the sanitised code, never {@code null}, never empty, never longer than
+     *         {@value #MAX_DIAGNOSTIC_CODE_LENGTH} characters, and holding only ASCII letters,
+     *         ASCII digits, {@code $} and {@value #DIAGNOSTIC_CODE_REPLACEMENT}
+     */
+    private static String diagnosticCodeOf(final Class<?> failureType) {
+        final String declared = failureType.getSimpleName();
+        if (declared.isEmpty()) {
+            return UNNAMED_FAILURE_TYPE;
+        }
+        final int retained = Math.min(declared.length(), MAX_DIAGNOSTIC_CODE_LENGTH);
+        final StringBuilder sanitised = new StringBuilder(retained);
+        for (int index = 0; index < retained; index++) {
+            final char character = declared.charAt(index);
+            sanitised.append(isDiagnosticCodeCharacter(character)
+                    ? character
+                    : DIAGNOSTIC_CODE_REPLACEMENT);
+        }
+        return sanitised.toString();
+    }
+
+    /**
+     * Reports whether one character may appear in a derived diagnostic code.
+     *
+     * <p>The admissible set is the ASCII subset of what a Java type name may hold: ASCII letters,
+     * ASCII digits and the two connectors. It is deliberately narrower than
+     * {@link Character#isJavaIdentifierPart(char)}, which admits non-ASCII letters and, notably,
+     * several Unicode formatting and ignorable code points - none of which belong in a value written
+     * into a log record.
+     *
+     * @param character the character being examined
+     * @return {@code true} when the character may be kept, {@code false} when it must be replaced
+     */
+    private static boolean isDiagnosticCodeCharacter(final char character) {
+        return (character >= 'A' && character <= 'Z')
+                || (character >= 'a' && character <= 'z')
+                || (character >= '0' && character <= '9')
+                || character == '$'
+                || character == DIAGNOSTIC_CODE_REPLACEMENT;
     }
 
     /**

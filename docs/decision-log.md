@@ -278,27 +278,42 @@ rollback point is preserved as a transactional rollback raising that conflict.
 *Also recorded as:* D-15 — the same decision, recorded independently under the other identifier
 scheme. Both identifiers are cited from the module and both resolve here.
 
-### D-12 — Credential storage: BCrypt digest format, verifier NOT YET DELIVERED
+### D-12 — Credential storage: BCrypt digest format delivered, sign-on path NOT YET DELIVERED
 `SEC-USR-PWD PIC X(08)` in `app/cpy/CSUSR01Y.cpy` holds the credential as eight cleartext characters
 at offset 48, and `app/cbl/COSGN00C.cbl` compares it directly against the entered value.
 Reproducing that would satisfy parity and breach the no-cleartext-credential constraint at the same
 time. **Decision:** the credential column is sized 60 to hold a BCrypt digest — never the legacy
 width of 8, and never a cleartext value — and no component may store or compare a cleartext
 credential.
-**Status: the format is fixed; the control is not implemented.** No password encoder, authentication
-service, security configuration or sign-on path exists in the module yet, and no seed script exists.
-Whatever component later reads the credential table inherits the obligation stated above. This entry
-records an unmet requirement, not a delivered control.
-*Embodied in:* `src/main/resources/db/migration/V1__create_schema.sql` (column shape only),
-`domain/UserSecurity.java`, `api/dto/SignOnRequest.java`.
+**Status: the storage format, the encoder and the seed are delivered; the sign-on path is not.**
+`service/CredentialDigestService` is delivered and is the only component that turns a credential into
+a stored value: it wraps `BCryptPasswordEncoder`, produces a 60-character digest, exposes a verifying
+comparison, and refuses at the persistence boundary any value that is not digest-shaped.
+`config/SecurityConfig` is delivered and carries the filter chain and the authentication manager, and
+`config/JwtTokenProvider` is delivered. `V4__seed_user_security.sql` delivers the ten local and test
+identities, each credential an independently salted 60-character BCrypt digest at cost 12, so the
+column holds digests and no cleartext value anywhere.
+
+What is **not** delivered is the sign-on path that would consume them: `service/AuthenticationService`,
+the translation of `COSGN00C`, and `api/AuthController` do not exist, so no request is authenticated
+against the credential column yet. This entry therefore records a partially met requirement, and the
+boundary has moved since it was first written: the storage format, the encoder and the seed are
+delivered controls, while the authenticating comparison is still absent. Whatever component fills that
+gap inherits the obligation stated above — write only a digest, never store or compare a cleartext
+credential — and `CredentialDigestService.requireDigest` already exists to enforce the first half of it.
+*Embodied in:* `src/main/resources/db/migration/V1__create_schema.sql` (column shape),
+`src/main/resources/db/migration/V4__seed_user_security.sql` (digests),
+`service/CredentialDigestService.java` (encoder, verifying comparison and persistence guard),
+`config/SecurityConfig.java`, `domain/UserSecurity.java`, `api/dto/SignOnRequest.java`.
 
 *Also recorded as:* DL-001, DL-002, DL-003 and DL-004, which record the same position from the
-other side. The digest-format invariant is delivered and enforced by the credential entity; the
-encoder and the verifying comparison belong to the authentication and user-management services
-that own the create-and-update path. The two framings — "not yet delivered" here and "a scope
-boundary" in DL-003 — state one fact: no password encoder and no verifying comparison exists
-anywhere in the module as delivered, and the stored-shape invariant is what stands in for one
-until it does.
+other side. The digest-format invariant is delivered and enforced by the credential entity, and the
+encoder, the verifying comparison and the persistence-boundary guard are delivered in
+`service/CredentialDigestService`. What still belongs to the authentication and user-management
+services is the sign-on path that calls them. The two framings — "not yet delivered" here and "a
+scope boundary" in DL-003 — state one fact: no component yet authenticates a request against the
+credential column, and the stored-shape invariant plus the persistence guard are what stand in for
+one until it does.
 
 ### D-13 — Customer national identifier: encrypted at rest — CORRECTED
 
@@ -1175,7 +1190,9 @@ original diagnostic with a second, unrelated one and the real defect would be lo
 
 *Embodied in:* `util/ZonedDecimalCodec.java`, `util/FixedWidthFieldReader.java`,
 `util/StatementTextTemplates.java`, `util/StatementHtmlTemplates.java`,
-`util/ReportLineFormatter.java`, `service/JobSubmissionService.java`. The queue payload boundary that
+`util/ReportLineFormatter.java`, `service/JobSubmissionService.java`. Applying this decision to the one
+value that arrives from *outside* the module - the queue client's own exception text, which reached the
+service log until it was withdrawn - is DL-103. The queue payload boundary that
 protects the published card itself is DL-042; this decision protects everything the module *says*
 about a card, an identity or a field.
 
@@ -1424,7 +1441,7 @@ the Java-side spelling is corrected.
 |---|---|---|
 | 1 | `ACCT-EXPIRAION-DATE` in `app/cpy/CVACT01Y.cpy` and `CARD-EXPIRAION-DATE` in `app/cpy/CVACT02Y.cpy` are misspelled — a letter is dropped from EXPIRATION | Correct spelling in the Java property and the SQL column; mapper offset and width unchanged, so the record image stays byte-compatible |
 | 2 | Two identically named `0000-MAIN-EXIT` paragraphs in `app/cbl/COACTVWC.cbl` | Collapsed to a single method when that program is translated; recorded now so the paragraph count is not read as an error |
-| 3 | `app/csd/CARDDEMO.CSD` defines `PROGRAM(COCRDSEC)` with no corresponding source member | No target is generated; recorded as a dangling resource definition |
+| 3 | `app/csd/CARDDEMO.CSD` defines `PROGRAM(COCRDSEC)` with no corresponding source member, and the developer transaction `DEFINE TRANSACTION(CDV1)` is bound to exactly that definition — so the transaction was never dispatchable either | No target is generated for either the program or the transaction; recorded as a dangling resource definition and its dangling binding. This is why the navigation vocabulary derives seventeen destinations from eighteen registered transactions rather than eighteen — see DL-104 |
 | 4 | `app/jcl/DEFCUST.jcl` carries a duplicate `STEP05` and a cluster-name mismatch | Provisioning intent is served by the schema migration; the defect is not reproduced |
 | 5 | `app/jcl/READCUST.jcl` carries `NOTIFY=&SYUID`, a misspelling of the system-user symbol | No equivalent in the target; recorded only |
 | 6 | The paragraph that writes the job-submission queue in `app/cbl/CORPT00C.cbl` is named `WIRTE-JOBSUB-TDQ` | The Java method is named correctly; the original spelling is recorded here so the mapping remains findable |
@@ -1671,14 +1688,18 @@ end pairs the entries that record the same decision under both.
 |---|---|
 | `api/GlobalExceptionHandler.java` | DL-080, DL-083, DL-084, DL-085 |
 | `api/dto/AccountUpdateRequest.java` | DL-011, DL-028, DL-029, DL-031, DL-074, DL-078 |
+| `api/dto/CardUpdateRequest.java` | DL-103 |
+| `api/dto/CardUpdateResponse.java` | DL-103 |
 | `api/dto/FieldErrorDecorator.java` | DL-080 |
 | `api/dto/NavigationContext.java` | DL-087 |
 | `api/dto/PageMetadata.java` | DL-081 |
 | `api/dto/ScreenWorkArea.java` | DL-011, DL-030, DL-082 |
 | `api/dto/SignOnRequest.java` | DL-001, DL-004 |
 | `batch/step/AbstractCobolStep.java` | DL-084 |
+| `config/FlywayConfig.java` | DL-041, DL-102, DL-104 |
 | `config/JpaAuditConfig.java` | DL-089 |
 | `config/OpenApiConfig.java` | DL-088 |
+| `config/SeededIdentifierSealingCallback.java` | DL-041, DL-104 |
 | `config/WebMvcConfig.java` | DL-089 |
 | `domain/Account.java` | DL-012, anomaly register (1) |
 | `domain/Customer.java` | DL-005, DL-006 |
@@ -1692,6 +1713,7 @@ end pairs the entries that record the same decision under both.
 | `exception/ValidationException.java` | DL-080, DL-086 |
 | `service/JobSubmissionService.java` | DL-041, DL-042, DL-043 |
 | `service/AccountConcurrencyTokenService.java` | DL-074, DL-075, DL-076, DL-077 |
+| `service/CardConcurrencyTokenService.java` | DL-075, DL-103 |
 | `service/FieldErrorTranslationService.java` | DL-080 |
 | `service/SensitiveFieldEncryptionService.java` | DL-005, DL-008 |
 | `util/AccountRecordMapper.java` | DL-013, DL-017, DL-034, DL-035, anomaly register (1) |
@@ -1712,6 +1734,8 @@ end pairs the entries that record the same decision under both.
 | `exception/OptimisticLockConflictExceptionTest.java` | DL-012 |
 | `util/StatementHtmlTemplatesTest.java` | DL-037 |
 | `service/AccountConcurrencyTokenServiceTest.java` | DL-074, DL-076, DL-077 |
+| `config/FlywayConfigTest.java` | DL-041, DL-102 |
+| `config/SeededIdentifierSealingCallbackTest.java` | DL-041, DL-104 |
 | `service/FieldErrorTranslationServiceTest.java` | DL-080 |
 | `util/CobolStringUtilsTest.java` | DL-078 |
 | `util/ZonedDecimalCodecTest.java` | DL-013, DL-014, DL-015, DL-016, DL-041, DL-079 |
@@ -2264,15 +2288,607 @@ The predicate is renamed `echoesAdministratorCode()`. It is named for what it re
 
 ### DL-101 - A surface that is declared before it carries anything says so, and an assertion holds the statement to the delivered state
 
-**Context.** Several parts of this module are deliberately established before there is anything for them to hold. The seed migration location is declared and listed by the two profiles that will need it, so that the first seed script is written into a place production already cannot see. The interface description is contributed unconditionally, so the contract stays assertable under every profile. In both cases the arrangement is right and the accompanying text was wrong: it described reference rows the seed location did not yet carry and a migration reaching a version the delivered scripts do not reach, and it introduced the interface description as the description of the endpoints derived from the legacy screens while the delivered tree contains no request-mapped controller and the document therefore carries no path at all. A reader was told a thing existed and handed nothing.
+**Context.** Several parts of this module are deliberately established before there is anything for them to hold. A seed migration surface was declared and listed by the two profiles that would need it, before any seed script existed. The interface description is contributed unconditionally, so the contract stays assertable under every profile. In both cases the arrangement was right and the accompanying text was wrong: it described reference rows the seed surface did not yet carry and a migration reaching a version the delivered scripts did not reach, and it introduced the interface description as the description of the endpoints derived from the legacy screens while the delivered tree contains no request-mapped controller and the document therefore carries no path at all. A reader was told a thing existed and handed nothing.
 
-**Decision.** Where a surface is declared in advance, the declaration stays and the text states what is delivered. The migration comments name the two delivered scripts, say that the seed location carries none yet, and say how far a migration therefore reaches. The interface description says, in the served document as well as in the configuration comments, that it carries identity metadata, the reusable message shapes and the authentication rule, and no endpoint inventory. Neither correction weakens the arrangement it describes; the structural guarantee that production cannot reach the seeds, and the closed-by-default posture of the description, are both unchanged and are stated as holding in advance rather than as awaiting the thing they protect.
+**Decision.** Where a surface is declared in advance, the declaration stays and the text states what is delivered. The migration comments name the delivered scripts and say how far a migration therefore reaches. The interface description says, in the served document as well as in the configuration comments, that it carries identity metadata, the reusable message shapes and the authentication rule, and no endpoint inventory. Neither correction weakens the arrangement it describes; the guarantee that production does not apply the seeds, and the closed-by-default posture of the description, are both unchanged and are stated as holding in advance rather than as awaiting the thing they protect.
 
-**Why a corrected sentence is not enough on its own.** A statement about a state stops being true when the state changes, and the moment it changes is exactly the moment nobody is reading these comments. So each statement is asserted against the delivered artefacts rather than against a second copy of itself. The migration claim is compared with the highest version actually present under either location, so adding any migration fails the build until the sentence is updated. The description's claim is compared with the paths the document actually carries, in both directions: an unlabelled empty document fails, and so does a labelled populated one. Both assertions were confirmed to discriminate by adding the missing artefact and observing the expected failures.
+**Why a corrected sentence is not enough on its own.** A statement about a state stops being true when the state changes, and the moment it changes is exactly the moment nobody is reading these comments. So each statement is asserted against the delivered artefacts rather than against a second copy of itself. The migration claim is compared with the highest version actually delivered, so adding any migration fails the build until the sentence is updated. The description's claim is compared with the paths the document actually carries, in both directions: an unlabelled empty document fails, and so does a labelled populated one. Both assertions were confirmed to discriminate by adding the missing artefact and observing the expected failures.
 
-**What is not done.** No migration is invented to make the earlier sentence true, and no controller is added to populate the document. Both belong to work this milestone does not cover, and writing either to satisfy a comment would be feature expansion.
+**What is not done.** No controller is added to populate the document. That belongs to work this milestone does not cover, and writing one to satisfy a comment would be feature expansion.
+
+**Superseded in part.** The *mechanism* this entry described for keeping the seeds away from production — a second migration location that production does not list — was withdrawn once the seed scripts were actually delivered. See DL-102. The principle recorded here is unaffected: a surface declared in advance says what it carries, and an assertion holds the statement to the delivered state.
+
+**Superseded in part, and recorded rather than rewritten.** The half of this entry that concerns the
+seed *location* no longer describes the delivered arrangement, and the entry is corrected here rather
+than edited into silence so that a reviewer who read the earlier text can see what changed and why.
+The seed scripts are now delivered, and they sit in the same folder as the schema scripts: one flat
+`classpath:db/migration` in every profile. The consequence is that a location list can no longer be
+the exclusion mechanism, because one folder cannot be half-visible. Exclusion therefore moved from
+*path* to *version*: the shared baseline and the production overlay stop a migration after V2, and the
+two profiles that need seeded rows raise that ceiling themselves. The direction of the default is the
+point — the restrictive value is the shared one, so seeding is opt-in and a forgotten override yields
+a schema-only database that fails loudly on empty result sets rather than one that has quietly
+acquired seeded credentials. DL-102 records what the seed may and may not contain once it exists. The
+half of this entry that concerns the interface description is unaffected and still holds.
 
 *Cited by:* `application.yml`, `application-local.yml`, `config/OpenApiConfig.java`.
+
+*The migration half of this entry is superseded by DL-102: the second location it describes has been
+withdrawn, and the guarantee it provided is now expressed as a version ceiling instead. The interface
+description half stands unchanged.*
+
+
+### DL-102 - One flat migration location, and a version ceiling rather than a second directory
+
+**Context.** An earlier revision kept the schema migrations under `db/migration` and the two seed
+migrations under a second location, `db/seed`, and gave production the first location only. The
+structural guarantee was real - production could not resolve a script it never scanned - but it was
+expressed as a consequence of four profiles' location lists differing from one another, and the plan
+this module is built to names all four scripts flat under one location. Reviewing whether production
+would receive a seed therefore meant diffing four files and reasoning about which one omitted what,
+which is the least reviewable form a one-line decision can take. Separately, every profile declared
+that the framework must not create its own job-repository tables, and no migration created them -
+so the two environments able to reveal the gap had the framework quietly create them anyway, and
+production was the single environment in which the gap was fatal.
+
+**Decision.** All five migrations are flat in `classpath:db/migration`, every profile lists exactly
+that one location, and production alone declares `spring.flyway.target: "2"`. The ceiling is what
+excludes the seeds: `V1` and `V2` carry the schema and the indexes and sit at or below it, `V3` and
+`V4` carry reference data and sign-on identities and sit above it. Production applies the first three
+and stops; local and test apply all five. The job-repository tables are created by
+`V1_1__create_batch_metadata.sql`, transcribed from `spring-batch-core`'s own
+`schema-postgresql.sql`, so exactly one artefact owns them under every profile.
+
+**Why 1.1 and not 5.** The framework schema is a prerequisite of running a job, not a consequence of
+the application schema, so it belongs beside `V1` rather than after the seeds - and numbering it above
+the ceiling would have withheld it from the one environment that needs it most. A repeatable
+migration was considered and rejected: its statements are `CREATE TABLE IF NOT EXISTS`, so a framework
+upgrade that changed the schema would be applied as a silent no-op.
+
+**Why the arithmetic is asserted rather than trusted.** A ceiling of 2 protects nothing if a future
+seed is numbered `V1_2`, or a required script is numbered `V5`. So the delivered set is compared with
+the ceiling by version arithmetic: every script at or below 2 must be one of the three production
+applies, and every script above it must be a seed. Adding either kind of script in the wrong place
+fails the build rather than changing what production silently receives. The version comparison sorts
+numerically and not by name, because `V1_1__` precedes `V1__` as text while a migration applies 1
+before 1.1. The transcribed framework DDL is separately compared, statement by statement, with the
+script inside the resolved `spring-batch-core` artefact, so raising the framework version and changing
+its schema fails with the difference instead of a deployment failing later.
+
+**One-time consequence.** A database already migrated past version 2 has no record of 1.1 and will
+refuse to validate until it is recreated. That is stated in the migration's own header and in the
+local profile, because the alternative - numbering the framework schema above everything already
+applied - would have put a prerequisite after the thing that needs it.
+
+*Cited by:* `application.yml`, `application-local.yml`, `application-test.yml`,
+`application-prod.yml`, `db/migration/V1_1__create_batch_metadata.sql`,
+`db/migration/V3__seed_reference_data.sql`, `db/migration/V4__seed_user_security.sql`.
+
+
+### DL-103 - The seeded government-issued identifier is sealed, and the national identifier is still not carried at all
+
+**Context.** Three parts of this module state that `customer.govt_issued_id` holds an authenticated
+ciphertext envelope and never the twenty cleartext characters the legacy record carries at offset 288:
+`V1__create_schema.sql` says so and widens the column to make room, `domain/Customer` refuses any value
+that is not shaped like one in its constructor and both mutators, and
+`service/SensitiveFieldEncryptionService` exists to produce and read exactly that shape. All three held,
+and the seed still loaded fifty cleartext identifiers - with a comment explaining the divergence as a
+deliberate exemption on the grounds that static SQL cannot produce an envelope without committing a key.
+The reasoning was wrong on its own terms. Nothing requires the envelope to be produced *by* the SQL; and
+the key it worried about committing was already committed, twice, as a profile default.
+
+**Decision.** All fifty values are sealed. Each envelope was produced by
+`service/SensitiveFieldEncryptionService` itself, over the twenty characters at offset 288 of
+`app/data/ASCII/custdata.txt`, and embedded in `V3__seed_reference_data.sql` as a fixed 69-character
+literal. The schema's contract, the entity's guard and the service's shape therefore all hold for a
+seeded row rather than being three claims a seeded row falsifies.
+
+Two properties make that acceptable in a checked-in artefact, and both are required. The value is
+invented - a twenty-digit fixture identifier with no subject behind it. And the key is worthless: a
+self-describing throwaway that seals nothing outside a database rebuilt from these migrations. No key
+material is added to the repository by the change; what is embedded is ciphertext.
+
+**Why the national identifier is still `NULL`.** `cust_ssn` remains unseeded, and the reason is now
+stated correctly. The nine bytes the legacy record holds at offset 279 are shaped like real national
+identifiers, and sealing them would not protect them: anything sealed under a committed fixture key is
+recoverable by anyone holding the repository. The right handling of a value like that in a checked-in
+artefact is not to carry it in any form. `cust_ssn` is consequently the one nullable column in `V1`, and
+a test that needs a stored national identifier persists one through the application under its own key.
+
+**Why the three non-production profiles now share one key.** An AES-GCM envelope opens under exactly one
+key. The local profile and the two copies of the test profile previously bound three values of which two
+were different, and every one of those profiles applies `V3`. A sealed seed is therefore only coherent if
+they agree, so they bind one shared non-production fixture key,
+`carddemo-nonprod-fixture-key!!!!` in Base64. Production is untouched: it binds the same property as an
+environment reference with no fallback, and its version ceiling means it never applies `V3` at all, so no
+production row is ever sealed under a fixture key.
+
+**Why the envelopes are fixed literals, and how a rotation is caught.** Each seal draws a fresh 96-bit
+vector, so the same cleartext seals differently every time and the literals cannot be regenerated
+identically. Rotating the fixture key without resealing them therefore leaves the seeded rows unreadable.
+That is not left to be discovered later. `V3`'s own self-check refuses any row that is not
+envelope-shaped, the wrong width, a duplicate of another row, or a bare run of digits - shape only,
+because a migration holds no key. `SeededProtectedIdentifierIT` then opens all fifty through the
+application service, under the key it reads from the test profile rather than one written into the test,
+and compares each recovered value with the fixture record it came from. A rotated key, an edited literal
+and a re-ordered row each fail the build. A unit-level assertion additionally counts the complete
+envelope literals in the delivered script and requires that no quoted run of twenty digits survives.
+
+**What is not done.** Card numbers and verification codes are still seeded exactly as the fixture holds
+them: the legacy design defines no masking, tokenization or encryption for either, and inventing one here
+would be unrequested feature work. That gap is recorded rather than closed.
+
+*Cited by:* `db/migration/V1__create_schema.sql`, `db/migration/V3__seed_reference_data.sql`,
+`application-local.yml`, `application-test.yml`.
+
+
+### DL-104 - A test can neither export a trace nor reach a real account, and the two overlays cannot drift apart
+
+**Context.** Three claims the test profile made about itself were untrue, and each was untrue in the same
+way: the file described a safety property in prose while the property itself rested on a mechanism that
+does not deliver it.
+
+The first was trace export. Both copies of `application-test.yml` set
+`management.tracing.sampling.probability` to zero and stated that this switched export off. It does not.
+Boot's effective sampler is parent-based over the ratio sampler, so the probability configures only the
+ROOT decision: a request arriving with a W3C `traceparent` whose sampled flag is set is sampled whatever
+the ratio says, its spans reach the span processor, and the exporter is invoked. A suite run has no
+collector, so the failure mode was connection-refused noise on every context refresh - reachable through
+any caller that propagates a sampled context, which is exactly what a contract test for an inbound
+endpoint does.
+
+The second was the AWS endpoint. The suite overlay declared none, on the reasoning that a support base
+class supplies the emulator's address during a suite run. That is true only for a test that extends one of
+those base classes, and only for a client that base class built itself. For anything else the SDK's own
+resolution applies - and an absent endpoint does not fail closed the way an absent data-source address
+does. It resolves the REGION'S REAL PUBLIC ENDPOINT and sends the request there on whatever credentials
+the default chain finds, which on a developer machine or a build agent can be real ones. The outcome of
+forgetting was therefore not an error but a silent, authenticated request against a real account.
+
+The third was the relationship between the local and test overlays. The test overlay asserted that both
+files carried "the same forty-five leaf property paths". They carried forty-three and forty-four, and the
+number had already stopped being true of either.
+
+**Decision - export is switched off at the key that switches it off.** Both copies now set
+`management.otlp.tracing.export.enabled: false`. Boot resolves that key before
+`management.tracing.enabled` when deciding whether to create the OTLP exporter, so no exporter bean
+exists and there is nothing that could open a connection. The zero probability is retained as what it
+actually is - an optimisation that suppresses root spans and so keeps recording cost off several hundred
+context refreshes - and the comment now says so. The suite overlay additionally disables instrumentation
+outright, which the packaged copy does not, because the packaged copy is what a deployed `test`-profile
+run loads and a deployment may legitimately want a tracer wired while exporting nothing.
+
+**Decision - a floor in the files, a lift from the base classes.** Both copies declare the emulator
+endpoint for the global setting and for each of the three services. That is the floor: a client assembled
+under this profile addresses an emulator address even if no test ever started a container, and the
+per-service restatement means dropping any single key cannot leave one client pointing elsewhere.
+`AbstractPostgresIT` and `AbstractLocalStackIT` then declare `@DynamicPropertySource` methods that raise
+the floor to the ephemeral address of the container actually running, which is the only correct value and
+is unknowable ahead of the run. Neither half is redundant: without the floor a context that forgot the
+base class reaches real AWS, and without the lift a context that remembered it reaches the long-running
+emulator on the fixed port, whose queues belong to other processes.
+
+The data-source address is treated the OPPOSITE way, and the asymmetry is the point. No document declares
+it, because a reachable default there would let a test that never started a container connect to the
+developer's own database and pass. Absent, it fails during context refresh naming the missing property.
+The lift supplies it for a test that did start one. A credential is the one thing declared on both sides:
+the emulator accepts any non-empty pair and verifies neither, and declaring a throwaway pair is what keeps
+the SDK's default credential chain out of the picture entirely.
+
+**Why the precedence is demonstrated rather than asserted in prose.** The floor-and-lift design rests
+entirely on a dynamic property source outranking a property file. `ContextInheritsContainerAddressesIT`
+boots a real context under the test profile and observes the resolved environment: the data-source address
+is present although no document declares it, which can only mean the registration was discovered; and the
+AWS endpoint is the running container's ephemeral one rather than the fixed value the document declares,
+which is the precedence itself. It is the only context-booting test in the module and is deliberately
+loaded from one bare configuration class with no bean and no auto-configuration, because everything under
+test happens before the bean factory. Two further tests assert the mapping from the other end, calling
+each registration with a recording registry so that a renamed key fails immediately rather than at the
+first context boot.
+
+**Decision - the key-set agreement is asserted, not counted.** The prose count is replaced by a
+comparison in `ConfigurationProfileBaselineTest` between the leaf key set of `application-local.yml` and
+that of the packaged `application-test.yml`, permitting exactly three declared divergences: local's three
+data-source keys, the test overlay's explicit closing of the interactive description surface, and the test
+overlay's export switch. Any other addition or removal on either side fails the build. A number in a
+comment cannot survive an edit to either file; a set comparison can only be satisfied by the files
+agreeing.
+
+*Cited by:* `application-test.yml` (both copies), `AbstractPostgresIT`, `AbstractLocalStackIT`.
+
+### DL-105 - A bare `${VARIABLE}` states an intention; a guard is what enforces it
+
+**Context.** `application-prod.yml` writes every required deployment value as a bare `${VARIABLE}` with
+no fallback tail, and its own header claimed that an absent variable therefore aborted start-up "while the
+context is being refreshed". Writing the value that way is necessary - a defaulted secret puts a usable
+value in the repository exactly as a literal one does - but the claim about what follows from it was only
+partly true, and the part that was false is the part that matters.
+
+**What was measured, against the resolved Spring Boot 3.5.16 and Spring Framework 6.2.19 artifacts this
+module builds against.** Three behaviours, not one:
+
+1. **A setting bound as a configuration-properties object tolerates an unresolved reference.** The binder
+   resolves placeholders leniently. With `CARDDEMO_JWT_SECRET` unset, `JwtProperties.secret()` binds as
+   the sixteen-character literal `${CARDDEMO_JWT_SECRET}`. That text is not blank, so the `@NotBlank`
+   constraint already declared on it records **zero** violations, `hasSecret()` returns **true**, the
+   context refreshes, and the application signs bearer tokens with the text of its own placeholder -
+   which anybody who read the repository could reproduce. The data-source location, the data-source user,
+   the four key-store settings and the region all bind the same way and behave the same way.
+2. **A setting read through a value expression does fail, but late and obscurely.** That path resolves
+   strictly and raises a placeholder-resolution failure - at the moment the one bean that happens to read
+   it is created, in words describing a placeholder rather than naming a variable a deployer must set,
+   and only for whichever such bean the container reaches first. Nothing reports the other faults.
+3. **An empty variable is silent on every path.** `CARDDEMO_DB_PASSWORD` exported as an empty string
+   resolves to an empty string, binds as an empty string, and is offered to the database server as a
+   credential. Whether that is refused is the server's decision, not this module's.
+
+**Decision - a profile-scoped guard, published as a bean-factory post-processor.**
+`com.carddemo.config.ProductionConfigurationValidator` is registered by the application's own component
+scan, confined to the production profile by `@Profile`, and publishes its check from a `static` factory
+method as a `BeanFactoryPostProcessor`. Post-processors of that kind are invoked while bean definitions
+are still being processed, which is before the data source is created, before a migration opens a
+connection, before the embedded server reads a key store and before any configuration-properties object
+is bound. So an incomplete deployment stops before infrastructure is handed a placeholder.
+
+The check rejects three forms for each guarded key: the property is not declared by any active profile,
+the property is declared but the variable that supplies it is unset, and the value is blank - empty or
+whitespace only. It reports **every** fault in one message rather than the first, because a deployment
+missing four variables should learn that in one attempt and not in four, and each line names the property
+key, the environment variable a deployer must set, and which of the three faults it is.
+
+**Why the check reads the value the way it does.** An ordinary property read is strict about a nested
+reference, so it would end the sweep at the first fault and would describe the placeholder instead of
+naming the variable. The guard instead resolves an expression built from the key, which is the lenient
+path: an unsatisfied reference survives into the returned text and can be reported against the setting
+that carries it. An undeclared property is distinguished from an unset variable by testing for the key's
+own placeholder first, because the text of an undeclared key also contains placeholder syntax and
+reporting it as merely unresolved would send a deployer looking for a variable that nothing references.
+
+**What the guard deliberately does NOT judge.** It judges usability, never shape. It does not parse a
+JDBC location, decode the field-encryption key to thirty-two bytes, or check that a queue name carries
+the first-in-first-out suffix. Three of the twelve settings already carry such a check in the component
+that consumes them - `JwtProperties` constrains the signing secret, `SensitiveFieldEncryptionService`
+decodes and length-checks the key, and `JobSubmissionService` refuses a queue name without the suffix -
+and duplicating those would put one rule in two places and let them drift. What the guard adds to those
+three is timing and vocabulary: each of them fires when its own bean is constructed, and each would have
+reported an absent variable as a malformed value rather than as an absence.
+
+It also does not judge whether the document was *written* without a fallback. That is a property of the
+source text rather than of a running application, and `ConfigurationProfileBaselineTest` asserts it
+directly against the document.
+
+**Why the guarded set cannot drift from the profile.** `ProductionConfigurationValidatorTest` reads every
+declaration in `application-prod.yml`, selects those whose raw text is a bare reference with no fallback
+tail, and requires that set to equal the guard's list exactly - key for key and variable for variable. A
+thirteenth bare reference added to the profile fails the build until it is guarded, and a guarded key
+given a fallback tail fails it until one of the two is changed. No count of the set is written in prose
+anywhere, in the profile document or in the test, for the reason recorded in DL-104: a number in a comment
+cannot survive an edit to the thing it counts.
+
+**Decision - the profile test now observes what a running application observes.** The superseded
+assertion checked that the raw YAML text of three keys - later five - matched `\$\{[A-Z0-9_]+\}`. It
+therefore asserted the shape of a document and said nothing about behaviour, and it silently omitted the
+four key-store settings, the region and the trace-collector address. It is replaced by assertions driven
+from the guard's own list, so the two cannot disagree, covering all twelve keys in three ways: the
+declared text is the exact bare reference the guard watches; the value a real environment *resolves* to
+while nothing is supplied is that same reference text, observed rather than assumed; and the guard refuses
+that environment, naming every property and variable. A fourth assertion is the falsifiability control -
+it binds `JwtProperties` from that same environment and records that the literal placeholder passes both
+`hasSecret()` and `@NotBlank`. If a future framework revision ever made the bare form fail on its own,
+that assertion breaks and the guard can be reconsidered on evidence.
+
+**How the timing is proved rather than argued.** `ProductionInfrastructureIsUntouchedTest` starts a real
+application context on the production profile with the delivered documents loaded, alongside an ordinary
+eager singleton that counts its own construction and stands in for anything that would reach
+infrastructure. For each required variable, omitted and then emptied and then set to whitespace, the
+refresh fails with the guard's message and the stand-in's construction count is **zero** - which is
+direct evidence that the failure preceded the singleton phase, not an argument that it should have. The
+same class shows the complete environment starting with a count of one, so the zero is meaningful; shows
+the check published as a `BeanFactoryPostProcessor` rather than an ordinary bean, which is what carries
+the ordering guarantee; shows the guard absent from a local start, a test start and a profile-less start;
+and shows that activating `local` alongside `prod` does not smuggle the local overlay's developer defaults
+past it, because the production overlay is applied last.
+
+**Two environments are excluded on purpose.** Every environment these tests build removes both
+system-backed property sources, and every supplied value is derived from its own variable name. A build
+agent that exports `AWS_REGION` - which agents hosted in that ecosystem routinely do - would otherwise
+satisfy one of the twelve by accident and quietly turn a negative case positive; and deriving the values
+keeps anything credential-shaped out of the repository, since the guard judges usability rather than shape.
+
+**What was corrected in the profile document itself.** Every comment that credited the bare syntax with
+enforcement now credits the guard and states the three framework behaviours above. The header's claim that
+"an unresolvable placeholder is raised while the context is being refreshed" is replaced; the two required
+lists now say what aborts the start; the signing-material block carries the `@NotBlank` illustration
+because it is the clearest case; the data-source, key-store, region, trace-collector and queue blocks each
+record what would have happened without the guard and how it would have been misreported. The header's
+count of required values - which said six where the list below it named eight - is removed rather than
+corrected, for the DL-104 reason.
+
+*Cited by:* `application-prod.yml`, `ProductionConfigurationValidator`.
+
+### DL-106 - Two record mappers are deferred to their own deliverable rather than written twice, and the entities that name them say so
+
+**Context.** Eleven record layouts are mapped by eleven hand-written mappers, one per layout, because a
+zero-reflection budget rules out any annotation-driven or convention-based mapping library. Seven of the
+eleven are delivered here: the account, customer, daily-transaction, disclosure-group,
+transaction-category, transaction-type and user-security layouts. Four are not, and two of those four -
+the 150-byte card layout of `CVACT02Y` and the 50-byte category-balance layout of `CVTRA01Y` - were being
+named in the present tense by the entities they serve. `Card` stated that fixed-width offset knowledge
+lives exclusively in a card record mapper, and `TransactionCategoryBalance` said the same of a
+category-balance record mapper. Both statements described a class that was not on disk.
+
+**Decision.** The two mappers are deferred to their own deliverable rather than written here, and the
+two entities are corrected to describe the arrangement honestly instead of describing an intended end
+state as though it had arrived. Each entity keeps the citation, because naming where offset knowledge
+belongs is the point of the paragraph and remains true, and each now adds that the mapper is a separate
+deliverable of the record-mapper boundary and is not present at this checkpoint.
+
+**Why deferring is correct here rather than merely convenient.** Both files are already assigned, with
+their layouts, their round-trip bounds and their decision citations fully specified, and both
+specifications direct that no test file accompany them. Writing either one here would produce a second,
+divergent implementation of a file that is being authored elsewhere in the same pass, and writing tests
+for them here would produce tests for an implementation that is about to be replaced. The deferral is
+therefore the outcome that keeps one implementation per layout, which is the whole reason the mappers
+are hand-written and one-per-layout in the first place.
+
+**What the deferral does not excuse.** It does not reduce the eleven-layout target to nine, and it does
+not leave the seven delivered mappers untested. Each of the seven now carries a direct unit test that
+drives it from the shipped fixture record rather than from a hand-typed literal, so every offset is
+proven against the authority layout rather than against a restatement of it. Two details that only a
+direct test can catch are pinned there: the category-balance layout's key is seventeen bytes wide while
+the transaction-category layout's identically-named key is six, and the six-byte key is not a prefix of
+the seventeen-byte one, so the two must never be treated as interchangeable; and the user-security
+mapper writes its credential window blank, which makes an emitted record deliberately not
+byte-identical to the legacy record it came from and confines any round-trip claim to the two windows
+that mapper publishes for the purpose.
+
+**How it is held.** The two corrected paragraphs are plain code references rather than resolved links,
+so neither compilation nor documentation generation depends on a class that is not yet present, and the
+absence cannot masquerade as a build success that happens to tolerate a dangling link. When the two
+mappers land, the present-tense wording becomes true and the qualifying sentence is what is removed.
+
+*Cited by:* `domain/Card.java`, `domain/TransactionCategoryBalance.java`.
+
+*Develops:* DL-034, which establishes hand-written offset mapping, one mapper per layout, as the
+consequence of the zero-reflection budget.
+
+---
+
+### DL-107 - Three improvements are withdrawn, because an improvement that changes an observable outcome is a regression wearing better clothes
+
+**Context.** A review found three places where the target had replaced a legacy behaviour with a better-
+reasoned one and recorded the replacement in its own documentation as a deliberate divergence. Each
+replacement was defensible read on its own terms, and each was wrong under this migration's governing
+constraint, which is that business-logic semantics are preserved with zero behavioural regression. A
+divergence that is documented is still a divergence; documenting it establishes that it was intentional,
+not that it was authorised. Only an explicit exception can license one, and none of the three had it.
+
+**Decision.** All three are withdrawn and the legacy behaviour is restored.
+
+*The report-parameter record is truncated, not refused.* The legacy declares an eighty-byte record and
+reads it into a twenty-one-byte group — ten characters of start date, one separator, ten of end date — at
+`[app/cbl/CBTRN03C.cbl:L221]`. A group move of that shape fills the receiving group from the leading bytes
+of the sending record area and discards the remainder without diagnostic. The target had instead measured
+the record's significant width and refused anything that was not exactly twenty-one, which rejected input
+the mainframe accepted. The width is now a minimum rather than an equality: a record shorter than the
+group is still refused, because there is nothing to fill the group with, and everything beyond the leading
+twenty-one bytes is ignored exactly as the move ignores it. The helper that stripped trailing padding
+became unreachable and was removed with its two padding constants, rather than left as dead code
+attesting to a rule no longer in force.
+
+*An unresolvable transfer abends, it does not redirect.* A transfer-control statement naming a program the
+region cannot resolve abends the task. The target had logged a warning and substituted the caller's own
+default destination. The concern behind that choice was real — the name arrives echoed from a client and is
+untrusted — but substitution is the wrong answer to it: a refused navigation that silently becomes a
+different successful navigation is invisible, and invisible is worse than loud. The untrusted-input concern
+is met instead by bounding the echoed name to the eight bytes the communication-area field reserves before
+it reaches the diagnostic, which bounds what the abend *carries* without touching what the abend *decides*.
+Without that bound an overlong name would fail the abend's own width validation and report a width problem
+in place of the navigation problem. The blank-field path is untouched, because yielding the caller's default
+for a field that nominates nothing is the legacy's own behaviour rather than a substitution for a failure.
+
+*The date-validation subprogram is not a destination.* The resource definition file registers eighteen
+transactions, and an earlier revision read that as eighteen destinations, supplying the shared
+date-validation subprogram `CSUTLDTC` as the implementation of the eighteenth. That invents a destination
+the estate does not have. `CSUTLDTC` is bound to no transaction anywhere in the file, is named by no
+transfer-control statement and by no menu catalogue, and is reached only by static `CALL` from four sites:
+it is an internal callee. The eighteenth transaction is `CDV1`, and it is bound to `PROGRAM(COCRDSEC)`, a
+definition with no source member — anomaly 3 of the register above, which already recorded that no target
+is generated for it. The vocabulary is therefore seventeen destinations and an anomaly, and the route
+constant, the enumeration constant and the declared count are all corrected to say so. The same
+eighteen-into-seventeen derivation appears in the published-interface configuration, which had justified
+its correct count of seventeen with the same incorrect reason; the count stood, the reason is replaced.
+
+**What this does not license.** Withdrawing a divergence is not licence to withdraw a *documented and
+authorised* one. The parity exceptions this log records elsewhere — credential hashing, encryption at rest,
+the escaped statement half — remain in force, because each is required by a constraint that outranks
+byte-for-byte faithfulness and each is recorded as such. The distinction is whether an external constraint
+compelled the departure or whether the departure was simply the better idea.
+
+**How it is held.** Each restoration is pinned by tests that fail against the behaviour it replaced: the
+parameter record's truncation is asserted by showing that a bare group, a padded area and an area carrying
+stray content beyond the group all yield one identical window; the transfer failure is asserted as a raised
+abend carrying the offending name, with a separate assertion that an overlong name is truncated in the
+diagnostic rather than escaping as a width error; and the vocabulary is asserted as seventeen destinations
+from which the subprogram, the dangling program and the dangling transaction are all absent by name and by
+lookup. Both classes had no test at all before this work.
+
+*Cited by:* `batch/JobParameterValidators.java`, `service/NavigationService.java`,
+`config/OpenApiConfig.java`.
+
+*Develops:* DL-093, which settles the same question for an unresolvable queue name and reaches the same
+answer — refuse, rather than substitute something that makes a wrong name look like a success. Anomaly 3
+of the register above supplies the dangling binding this entry relies on.
+
+### DL-108 - The seed scripts keep the version numbers the plan gives them and move to a location production is refused, because one scanned directory cannot be both scoped and unscoped
+
+**Context.** The plan describes the migration set twice and the two descriptions cannot both be delivered literally. Its file tree lists all four scripts in one directory - `V1__create_schema.sql`, `V2__create_indexes.sql`, `V3__seed_reference_data.sql` and `V4__seed_user_security.sql` under `db/migration` - while the paragraph that justifies the same tree requires that the seed scripts be resolved from profile-scoped locations, so that a production deployment migrates schema and indexes without inheriting sample data or seeded credentials. A migration tool scans a location and applies every script it finds in version order. Two seed scripts sitting beside the schema scripts are therefore reached by any profile that migrates at all, and the scoping the paragraph requires has nowhere to act.
+
+**Decision.** The requirement is honoured and the listing is what gives way. The delivered tree splits the two sets by purpose - `db/migration` carries schema and indexes, `db/seed` carries the two seed scripts - and the location list is resolved per profile rather than declared once. Production refuses any location under the seed path. Local and test append it when it is absent, keeping the declared order and appending rather than replacing, because a seed location without the schema location would seed a database with no tables. A start with neither profile active migrates the schema alone. The version numbers and the file names are exactly the ones the plan names, so nothing a reader looks up by name has moved; only the directory differs, and it differs in order to make the plan's own scoping requirement expressible.
+
+**Why a refusal rather than a filter.** Quietly dropping a seed location when production is active would also keep the seeds out of production, and it would hide the mistake that put them in reach. An operator who added the location would get a clean start and no seeded rows, and would then look for the fault in the data. A refusal names the misconfiguration at the point it was made, and it names what is at stake: those scripts insert fifty synthetic customer rows holding regulated identity data and ten known sign-on identities whose stored credentials are digests of one well-known value. The check runs against the merged, bound location list rather than against any single document, so an inherited value, an operator override and a copied overlay block are all covered by the same test.
+
+**Why this is code and not three careful documents.** It was three careful documents, and that was the defect. The scoping was a convention held in prose by the shared baseline and the two overlays, each of which can be edited on its own, and the class the plan names to enforce it did not exist. A second gap followed from the same absence: nothing prevented production being activated *alongside* local or test, in which case the non-production overlay supplies repository-known signing and encryption material, an emulator endpoint, a relaxed transport rule and the seed location to a deployment that also reads the production overlay. That co-activation is now refused before any binding occurs, in either activation order, comparing profile names case-insensitively and ignoring surrounding whitespace because the list is commonly supplied as one comma-separated environment variable. Text is not a control.
+
+*Status.* **Superseded by DL-102.** The two-location arrangement recorded here was withdrawn: every migration now ships flat from `classpath:db/migration` and production is held below the seeds by the version ceiling instead. This entry is retained because it records why the alternative was chosen and why it did not survive review.
+
+*Cited by:* no source file. `config/FlywayConfig.java` and `config/FlywayConfigTest.java` both cite DL-102, the decision they actually implement.
+
+
+### DL-109 - The card-update transaction seals its fetched image into an opaque proof, and the two contract files that forbade any concurrency component are overruled
+
+**Context.** Stale-update parity is a frozen requirement: the card-update program abandons a write when the record it locks no longer matches the image it fetched when the screen was built. The account arm of this module already resolved that requirement in favour of a sealed proof, for the reasons recorded at DL-074 through DL-077. The card arm did not, and two contract files said so in terms that left no room. The request stated that it deliberately carries no concurrency component - no version, no entity tag, no timestamp and no fetched-image snapshot - and the response stated that no such component exists here either, both on the reasoning that the legacy compared before and after images itself, that the migrated entity carries a version column, and that the whole matter is therefore a persistence concern which reaches the client only as a message.
+
+**Decision.** That reasoning does not hold, and because it does not hold the prose is what changes. A version column cannot answer this question. It catches a change made between reading a record for update and writing it; the requirement is to catch a change made between *presenting* a screen and *confirming* it - the window the legacy work area existed to cover - and a version check cannot see into that window at all, because a confirming request that begins by loading the current row loads the current version with it and then agrees with itself. So the card arm gains the mechanism the account arm already has: a proof minted when the record is presented and verified when the change is confirmed. Both paragraphs are rewritten to describe what is now carried and why, rather than being left to forbid it. A per-file assurance does not narrow a frozen requirement; where the two disagree the requirement governs and the file is corrected.
+
+**Why the proof is sealed rather than echoed.** In the legacy the fetched image was safe to carry because the communication area belongs to the transaction manager and the terminal never sees it. Anything a REST client echoes back is under the client's control, so an echoed version, an echoed entity tag or an echoed fetched image would let the client assert that nothing had changed - which is the check being performed - and the client would be authorising its own overwrite. The token is therefore opaque and tamper-evident: sealed inside the module's authenticated-encryption envelope under a binding of its own, so it can be returned and cannot be read, edited, fabricated or replayed against a different card. It carries its own scheme marker, checked after authentication, so a payload minted for the account arm cannot be presented here and one minted here cannot be presented there.
+
+**What the digest covers, and what it deliberately does not.** One digest over the record: the two identifiers that bind the proof to a single row - the card number and the owning account identifier, neither of which the legacy compares because it holds them in the image it read by - followed by the six fields the change-detection paragraph compares, in the order it compares them and with the same folding rule, being the verification code, the upper-folded embossed name, the expiry year, the expiry month, the expiry day and the active status. The row version is deliberately not sealed in. It never needs to leave the server to do its job, and a value that never leaves cannot be echoed back wrongly; DL-075 records the same reasoning on the account arm. The two checks are kept side by side rather than merged, because they answer different questions and neither replaces the other.
+
+**Why two protected screen values travel inside the proof.** The map protects the account identifier and the day portion of the expiry date, so the terminal could not alter either one. A request body has no protected fields, so a client can send whatever it likes for both. Rather than trust them or drop them, the confirming turn recovers them from the proof it has just verified: they are sealed inside the payload and returned as carried state, so the values the transaction proceeds on are the ones the server minted and not the ones the caller echoed.
+
+**What is not done.** No version, entity tag or timestamp is exposed on either contract, and the client is given nothing it can read. The refusal still reaches the client as the single message the legacy reports, so the observable contract is unchanged by this decision even though the mechanism behind it is new.
+
+*Cited by:* `service/CardConcurrencyTokenService.java`, `api/dto/CardUpdateRequest.java`, `api/dto/CardUpdateResponse.java`.
+
+
+### DL-110 - Seeded regulated identifiers are sealed at rest after every migration of a seed-bearing profile, by a callback rather than a fifth script
+
+**Context.** The schema script states the invariant plainly: the government-issued identifier column is not nullable, and both protected customer columns are to hold an envelope produced under the deployment's own key rather than a readable value. The reference seed cannot honour that. It is static, forward-only SQL; an envelope is keyed; and committing key material to the repository to make a seed deterministic would be a worse defect than the one it closed. So the seed writes the fixture's identifiers as they stand and records the divergence in its own header.
+
+**Why nothing objected.** The customer entity refuses a non-envelope value in both its constructor and its setter, so on the face of it the invariant is enforced. Object-relational hydration assigns fields directly and consults neither. Fifty regulated identifiers therefore sat readable in every local and test database while the code that reads them was written as though they could not be. That is the shape of the defect worth naming: not a missing check, but a check that the only writer of those rows never passed through.
+
+**Decision.** An after-migrate callback converts both protected columns through the module's single field-encryption service, each value bound to the column it is being stored in so that an envelope written for one column cannot later be read as another's. It runs on the migration's own connection inside the migration's own transaction, so the conversion is atomic with the seeds it converts and complete before the application's first read; a failure half-way through would otherwise leave some identifiers sealed and some readable, and the next start would find a database no assertion describes. It is registered for the local and test profiles alone, because production lists no seed location, receives no row from either seed, and therefore should not carry a component that would put a table-wide update on its migration path for no purpose.
+
+**Why not a fifth versioned script.** One would work, and it would be wrong twice over. It would push the delivered migration set past a version no shipped script reaches - a claim the profile documents make and a test asserts against the delivered scripts - so the ledger would have to be weakened to accommodate the fix. And it would record a one-time application in the schema history, when what is wanted is an invariant that holds after *every* migration of a seed-bearing profile, including one that applied nothing because the seeds were already present.
+
+**Idempotence as a property rather than a precaution.** Each value is examined before it is converted, and one that already carries the envelope marker is left exactly as it is. A second start updates nothing, and an envelope is never wrapped inside another envelope - which matters concretely, because the encryption service refuses to protect an already-protected value and would otherwise turn the second start of a local stack into a failure. The diagnostic records counts only: no readable identifier, no envelope and no customer key is ever written to a log, which is the rule DL-041 applies to every rejection diagnostic in the module.
+
+**What this is, and is not.** Protecting these two fields at rest is a deliberate divergence from the legacy design rather than a translation of it - the legacy record holds both in the clear inside the customer record - and it is recorded here as an improvement on the baseline, not as a behaviour the source exhibits. No second encryption mechanism is introduced and no key is handled by the callback; it holds the one service and calls it.
+
+*Cited by:* `config/SeededIdentifierSealingCallback.java`, `config/FlywayConfig.java`, `config/SeededIdentifierSealingCallbackTest.java`.
+
+
+### DL-111 - Every migration ships from one location and production is held to the schema by a version pin, not by a directory split
+
+**Context.** The migration plan names `db/migration` as the location of all four migrations, `V1` through `V4`, and the delivery boundary the platform resolves for the sign-on seed is `src/main/resources/db/migration/V4__seed_user_security.sql`. An earlier revision instead split the two seeds into a second location, `db/seed`, and withheld them from production by omitting that location from the production overlay's location list. The split was defensible on its own terms - an omitted location cannot be reached by a flag left in the wrong position - but it put two of the delivered migrations somewhere no plan named, and it made the delivered tree disagree with the plan about where a migration lives.
+
+**Decision.** The second location is withdrawn. `V3__seed_reference_data.sql` and `V4__seed_user_security.sql` sit beside `V1`, `V1_1` and `V2` in `db/migration`, every profile lists that one location, and production is held to the schema by `spring.flyway.target: 2`. `V1`, `V1_1` and `V2` are applied; `V3` and `V4` are resolved, reported above the target and never executed. The behaviour was verified against PostgreSQL 16 before the change was made: a migration pinned to `2` applies exactly two scripts, reports the two seeds as above-target, and still validates successfully, so a pending above-target migration is not an error a deployment has to suppress.
+
+**Why a pin is not a weaker control than a missing location.** A location list and a target are both configuration, and either can be edited; the question is what each failure mode costs. An overlay that copied the schema location and forgot to keep the pin would seed a production database - which is exactly the hazard the split was chosen to remove. So the pin is applied twice and the second application is not configuration at all: `com.carddemo.config.FlywayConfig` publishes a migration customiser under the production profile alone, and that customiser sets the target after the resolved configuration has been bound, overriding an inherited value, an edited overlay, a merged property source or a command-line override alike. Re-enabling the seeds in production therefore requires removing the production profile itself, which a configuration edit cannot do quietly. The shared baseline also carries the pin rather than the convenience, so an overlay silent about migrations inherits the production posture; only the local profile and the test profile lift it, and each lifts it explicitly.
+
+**Why the pin is `2` and how that stays correct.** `2` is the last schema migration, so the pin is the boundary between schema and seed rather than an arbitrary ceiling. That is asserted against the delivered scripts rather than restated: the highest schema migration must be at or below the pin and the lowest seed migration strictly above it, read from the file names on the class path. Adding a schema migration above the pin, or renumbering a seed below it, fails the build instead of silently changing what production applies. The published constant `FlywayConfig.SCHEMA_ONLY_TARGET` is compared with the configured value in both directions, so neither control can drift into naming a version the other does not.
+
+**What the change cost the test suite, and what was done about it.** `AbstractPostgresIT` previously reached the head of a location list that carried no seeds; with one location that would now seed six hundred and thirty-six rows into the schema every integration test shares, changing what each of them observes. It is therefore pinned to the same schema-only target, so every integration test keeps the production-shaped, row-free baseline it was written against and inserts exactly the rows it means to. `SeedMigrationIT` migrates schemas of its own on the same server - one at the head, one at the pin, one pinned and then lifted - which is possible only because no migration script qualifies its own object names. That third schema is what makes the claim falsifiable rather than merely consistent: the same location and the same scripts, differing only in target, produce ten sign-on identities or none.
+
+**What is not done.** No seed is rewritten, no row is dropped and no credential handling changes: the seeds still store every credential as an independently salted digest and are still confined to the local and test profiles. The withdrawn location is not deleted from the assertions - it is named in a guard that fails if it returns, as a document reference or as a delivered script, so the exclusion cannot quietly revert to a directory split.
+
+*Relationship.* Restates and extends DL-102, which is the first record of this decision; the source files listed below cite DL-102.
+
+*Cited by:* `application.yml`, `application-local.yml`, `application-prod.yml`, `application-test.yml`, `config/FlywayConfig.java`, `db/migration/V3__seed_reference_data.sql`, `db/migration/V4__seed_user_security.sql`, `support/AbstractPostgresIT.java`.
+
+### DL-112 - The publish-failure response and reason codes are derived from the failure's types, never from its description, and the raw failure is not handed to the logger
+
+**Context.** DL-041 keeps a rejected value out of every diagnostic and scopes its sink honestly to "any channel a human or a tool later reads", naming a log statement as such a channel. `JobSubmissionService` honoured that scrupulously for every value a *caller* supplies - a submission identity, a card, a configured queue name - and then, on the one path where a value arrives from *outside* the module, did the opposite: the reason code recorded for a failed publish was the first line of the queue client's own exception message, and the raw failure was passed to the logger as its throwable, so the rendered stack trace carried `getMessage()` for every exception in the chain as well. A client that reports a signing failure by quoting the request it signed, or an endpoint failure by quoting the endpoint it was handed, therefore wrote deployment-supplied text - and any line terminator in it - straight into the service log.
+
+**Decision.** Neither code is derived from a description. The response code is the sanitised simple name of the failure's own type, which is the analogue of the legacy numeric response the queue write reported. The reason code is the sanitised simple name of the deepest cause beneath it, which is the analogue of the legacy reason that *qualified* that response - a send failure rooted in a socket timeout is a different operational condition from one rooted in a missing queue, and the two stay distinguishable without either failure's description being repeated. Both are bounded at sixty-four characters, because the legacy codes were fixed-width display fields and an unbounded code has no legacy antecedent. Every character outside ASCII letters, ASCII digits and the two connectors becomes an underscore, so no whitespace and no control byte can reach the record and each code stays one unbroken token that a log reader will not split and a search will match whole. A type with no usable simple name - an anonymous subclass reports the empty string - yields `UnnamedType` rather than nothing, because an empty response code is the published signal that no code was reported.
+
+**Why the rule is narrower than a Java identifier.** `Character.isJavaIdentifierPart` admits non-ASCII letters and several Unicode formatting and ignorable code points. A type may legally be named with them and a type name is read from a classfile rather than written by this module, so the admitted set is stated positively and narrowly instead of delegated.
+
+**Why the raw failure is no longer logged, and what replaced it.** Suppressing the description while still handing the throwable to the logger would have achieved nothing: a rendered trace carries every message in the chain. So the throwable argument is gone. That costs a diagnosis something real, and the loss is repaid rather than accepted: the record carries `failureChain`, the sequence of sanitised type names from the outermost failure down, which is what the trace was actually useful for. The chain is bounded in depth and marked when cut, so a deep chain cannot lengthen a record without limit, and the marker means what it says - a chain that genuinely ends at the bound is not marked. The exception object still keeps the raw failure as its cause and still never escapes the method, so nothing is destroyed; it is simply not printed.
+
+**Totality, which is not incidental here.** The walk down a cause chain is only safe if it terminates for every chain it can be handed. `Throwable.initCause` forbids self-causation but `getCause` is overridable and a pair of throwables can cause each other, so both shapes occur and both are bounded: a self-reference at the top of a chain takes the no-cause path, a self-reference part-way down stops the walk there, and a cycle or an over-deep chain is cut at the depth bound. One invariant ties the two derived fields together and is asserted rather than assumed - the reason code is empty exactly when the chain names a single type - so a reader who compares the fields is not misled by them drifting apart.
+
+**What is not changed.** The failure is still not thrown. The queue is defined ignore-on-error, the legacy transaction completes after a failed write, and the outcome still travels back as data: `writeJobSubmissionQueue` returns `false` and `SubmissionResult.failed()` reports the partial submission. The public surface is identical, the operator-facing text is still the frozen legacy literal with no diagnostic detail appended, and `JobSubmissionException` is untouched - it carries whatever codes it is given, verbatim and uninterpreted, which is why supplying it a safe code is the caller's obligation and is discharged here.
+
+*Cited by:* `service/JobSubmissionService.java`. Governed by DL-041, whose sink scope this completes; the payload boundary that protects the published card itself remains DL-042.
+
+### DL-113 - The nine named fixtures are pinned by measurement, and three properties measured from them correct or sharpen what was previously recorded about them
+
+**Context.** The nine sequential inputs are named individually, with byte counts and record counts, as the artefacts the batch pipeline is to be driven by. Those figures were carried in the test tree as literals in a table that opened no file, so every one of them would still have been reported correct with the fixtures deleted, altered, or replaced by files of another shape. The figures were also, in three places, either imprecise or an understatement of what the data actually guarantees. Both problems are addressed the same way: the fixtures are now measured, and what the measurement found is recorded here rather than left to be rediscovered.
+
+**Decision.** Each fixture is opened and its byte count, record count, per-record width, line-feed termination and SHA-256 digest are asserted, and each is additionally compared byte for byte with the legacy dataset it was copied from. The nine digests are pinned as literals so the contract holds in a checkout that carries the module without the legacy tree; the comparison against the legacy tree is additional evidence taken when that tree is present, and it is all-or-nothing - a partially present legacy tree fails rather than quietly checking whichever half exists. The two layers answer different questions and neither substitutes for the other: a digest says the fixture is the file it was meant to be, and the comparison says the file it was meant to be is still what the legacy dataset holds.
+
+**Correction one - the disclosure-group keys are ten bytes, not one and not seven.** The three groups have been recorded as keyed `A`, `DEFAULT` and `ZEROAPR`. Measured, the keys are the fixed-width field they actually occupy: `A000000000`, `DEFAULT   ` and `ZEROAPR   `, ten bytes each, seventeen records apiece and contiguous in the file. The short forms are readable shorthand and are not wrong about which groups exist, but they are not the keys, and a reader who took them literally would look for a one-byte key, fail to find it, and conclude the fixture was malformed. The measured keys are what the assertions carry, and the groups' contiguity is asserted too, because a keyed read that does not have to span the file is a property of this fixture rather than of the layout.
+
+**Correction two - the amount sign is a stronger asset than was claimed, and is now relied upon deliberately.** The daily-transaction fixture has been described as exercising both signed directions because it holds two hundred and fifty point-of-sale purchases and fifty operator returns. Measured, the relationship is exact rather than incidental: the overpunched trailing byte of the amount partitions precisely along the source marker, every purchase carrying a non-negative overpunch and every return a negative one, with the two alphabets disjoint and no record on the wrong side. That makes the sign convention of DL-011 reachable in both directions from seeded data alone, with no constructed fixture, and it is asserted in that form - as a partition, not as a pair of counts - so a fixture edit that broke the correspondence would fail rather than merely shifting a tally.
+
+**Correction three - the same fixture cannot exercise a date window, and that is now asserted rather than assumed.** All three hundred records carry a blank twenty-six-byte processing timestamp and a single shared origination timestamp. This was anticipated, and the anticipation was right, but it was recorded as a caveat about what a reporting test must supply for itself. It is now a positive assertion over the fixture: every processing timestamp is blank and the origination stamp is uniform. The value of stating it that way is that the limitation stops being a note someone has to remember and becomes a property the suite would report if it ever changed - which is the only circumstance in which the caveat would need revisiting.
+
+**Why the geometry table it replaces was not simply deleted.** The literals were not wrong; they were unanchored. They are therefore kept and made load-bearing rather than discarded, so the same nine rows now fail when the files disagree with them. The suite also asserts that the committed directory holds exactly the nine named files and nothing else, and that the enumeration it drives from names nine distinct files - because a table and a directory that drift apart is precisely how a fixture stops being checked without anyone removing a check.
+
+**One fixture had no reader at all.** `cardxref.txt` was opened by no test, because no cross-reference record mapper is delivered and nothing else needed it. It is a named artefact regardless, so it is measured and compared like the other eight, and the suite asserts that all nine are opened. The absent mapper is recorded as a delivery gap elsewhere and is not created here.
+
+*Cited by:* `support/FixtureContractTest.java`. Relies on the zoned-decimal sign convention of DL-015 and the assert-as-bytes discipline of DL-046.
+
+### DL-114 - The AWS bootstrap hook is verified both as a contract and by execution, because each tier can pass while the other fails
+
+**Context.** The hook that provisions the object store, the queue and the topic for local and test running had no test of any kind. It carries several decisions that are contractual rather than incidental - the queue is first-in-first-out with content-based deduplication explicitly off, the bucket has object versioning enabled as the generation-data-group replacement, each resource is guarded so a hook that reruns on every container start does not recreate anything - and none of them was asserted anywhere.
+
+**Decision.** Two tiers, deliberately. A contract tier reads the hook as text, strips its comments so a sentence describing a behaviour cannot stand in for the behaviour, and asserts the resource names, the attributes, the guards and the agreement between the hook and every one of the seven files that names these resources. A live tier starts an emulator, copies the actual hook into it, runs it, and reads the provisioned state back through the service clients rather than through the emulator's own command-line tool - then runs it a second time and asserts that nothing changed and that exactly one of each resource exists.
+
+**Why both, when either looks sufficient.** They fail independently, and each failure is invisible to the other. A hook whose text is impeccable can still fail at run time - a flag the emulator rejects, an ordering that leaves versioning unapplied - and the contract tier would report success. A hook that provisions correctly can still have drifted out of agreement with the overlays that name the same resources, and the live tier would never notice, because it never reads an overlay. This was not reasoned about in the abstract: a single deliberate edit to the deduplication attribute was shown to be caught by both tiers, and a single transposition of the bucket name in one overlay was caught by the contract tier alone.
+
+**What the emulator tier does not assume.** It does not rely on the hook having fired during container start-up, because a test that depends on a start-up side effect cannot distinguish the hook working from the image already containing the resources. The hook is invoked explicitly against a fresh emulator, so the create branch is the branch taken, and the already-present branch is reached only by the deliberate second run.
+
+**An asymmetry in the production overlay, confirmed as intended.** The bucket, the message group and the topic all keep a canonical default; the queue name and the region do not, and a first reading of that looks like an omission. It is not: a queue name that resolves to a well-formed default names nothing in a real account, and a submission would then report complete while the cards sat unread. The overlay says so itself, in three places. The assertions were rewritten to capture the asymmetry rather than to flatten it, and they now pin both halves - three names defaulted, two deliberately not - so neither the convenience nor its absence can change unnoticed.
+
+**A census scoped by value rather than by key.** The overlays bind an unrelated subsystem's collector address under the same property name as the client endpoints. A census keyed on the name alone therefore conflated two different things and reported an endpoint override in a profile that has none. The assertions judge each binding by what it points at, and the predicate that decides is shown to discriminate by being applied where an emulator *is* deliberately named.
+
+*Cited by:* `config/LocalStackBootstrapContractTest.java`, `config/LocalStackBootstrapIT.java`. The deduplication attribute it pins is the resource-side half of DL-043, the queue's name is DL-045, and the ignore-on-error posture of the publisher itself remains DL-044.
+
+### DL-115 - A transitive transport library calls a terminally deprecated platform method, and the disposition is tracking rather than action
+
+**Context.** Running the integration tier on the pinned Java 25 runtime emits four lines on the forked process's error stream, quoted here exactly as the build produced them:
+
+```
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::allocateMemory has been called by io.netty.util.internal.PlatformDependent0$2
+         (file:.../netty-common-4.1.136.Final.jar)
+WARNING: Please consider reporting this to the maintainers of class io.netty.util.internal.PlatformDependent0$2
+WARNING: sun.misc.Unsafe::allocateMemory will be removed in a future release
+```
+
+The caller is read from the message rather than inferred: it is `io.netty.util.internal.PlatformDependent0$2`, in `netty-common`, at the version the frozen dependency inventory names. Ten netty modules resolve into this build - buffer, codec, codec-http, codec-http2, common, handler, resolver, transport, transport-classes-epoll and transport-native-unix-common - all at 4.1.136.Final, all at runtime scope, and all by way of a single path: `io.awspring.cloud:spring-cloud-aws-starter-s3`, which supplies the object-store transport client. The warning is triggered by the queue-bridge integration tests, at the point the transport allocates its first direct buffer.
+
+**What this is not.** It is not a build warning, and the distinction is load-bearing because a zero-warning build is a gate rather than a preference. The four lines are written by the Java runtime to the forked process's error stream; they never carry the build tool's `[WARNING]` prefix, and they are not diagnostics from the compiler, so the `-Xlint:all -Werror` configuration that makes that gate mechanical neither sees them nor could act on them. This was verified rather than assumed: in a full clean build the only line carrying the build tool's warning prefix is the vulnerability scanner reporting that it needs network access it does not have. The gate is intact.
+
+**Decision. The occurrence is recorded and tracked here, and nothing in the module changes.** Three findings decide it.
+
+Nothing in this module can avoid the call. The module compiles against no netty type and names netty in no source file; the sole reference anywhere is the inventory value that pins the version. The call happens inside a library this build consumes rather than in code it owns, so there is no call site here to rewrite and no configuration here that suppresses it without also suppressing diagnostics that should be read.
+
+Moving off the line that removes the call is already refused, for reasons unrelated to this warning. The 4.2 line replaces the Unsafe path, but it also restructures the graph rather than only advancing the version: the codec module is split into separate base, compression, marshalling and protobuf artifacts and the original coordinate is left as a shell. The transport client is built and tested against the 4.1 module layout, so adopting 4.2 would assemble it from a module set it never declared. The build file records that reasoning at the pin itself, and it stands here unchanged - a runtime warning is not authority to take a risk that was declined on other grounds.
+
+Raising the version within the 4.1 line would not help either, because the call is not a defect being fixed there. It is the deliberate fast path the 4.1 line uses for direct buffers on every release of that line.
+
+**What would change the disposition, stated so the entry can be closed rather than merely carried.** Two events, either of which is observable without judgement. The transport client begins declaring the 4.2 module layout, at which point the version follows the client rather than leading it. Or the platform escalates the terminal deprecation from a warning to a hard failure, at which point the call stops being a notice and becomes a defect, and the pin has to move regardless of the module-layout cost.
+
+**Why this is recorded at all, given nothing changes.** An unrecorded warning is read twice: once by whoever sees it and wonders whether the build is clean, and again by whoever later removes something to silence it. Writing down that it is a runtime notice from a transitive library, that the compiler gate is unaffected, that the obvious remedy is already refused on stronger grounds, and what would reopen the question, is what stops both readings.
+
+*Cited by:* `pom.xml`, at the netty version pin. The pin's own rationale is DL-066, the constrained-line principle it follows is DL-062, and the zero-warning-from-a-clean-checkout guarantee this entry confirms is undisturbed is DL-063.
+
+
+### DL-116 - The seed migrations sit flat beside the schema migrations, and production is held below them by a version pin rather than by a directory
+
+**Context.** Four migrations exist: `V1__create_schema.sql` and `V2__create_indexes.sql` build the schema and its integrity layer, and `V3__seed_reference_data.sql` and `V4__seed_user_security.sql` seed 626 reference rows and ten sign-on identities. The seeds must never be applied to a production database: the reference seed inserts fifty synthetic customer rows shaped like personal data, and the sign-on seed inserts ten identities whose credentials are all digests of one well-known fixture value, five of them administrative. Hashing removes the cleartext from the database; it does not make the credential unknown.
+
+An interim arrangement placed the two seeds in a second class-path location, `db/seed`, and excluded them from production by having the production overlay list `db/migration` alone. That arrangement was withdrawn.
+
+**Decision.** Every delivered migration is physically flat in one location, `classpath:db/migration`, which every profile lists and no profile extends. The production exclusion is the version pin `spring.flyway.target=2`, declared by the shared baseline so that a profile silent about migrations inherits the production posture, and re-asserted by `application-prod.yml`: production applies V1, V1_1 and V2 and stops. The local and test overlays raise the ceiling to `latest` explicitly, and so migrate to the head of the sequence.
+
+**Why the directory split was the weaker control despite reading as the stronger one.** A directory boundary is not a boundary the migration tool enforces. A version number orders the whole migration history rather than one folder of it, so any deployment that resolved both entries — a merged location list, a wildcard location, a `filesystem:` location, or an operator running the migration tool directly against the packaged artefact — would apply V1 through V4 in ascending order whatever folder each script came from. The split therefore bought the *appearance* of isolation: it read as structural, so it invited exactly the confidence that would stop anyone from setting the pin. It also cost the property that makes a forward-only history auditable, namely one directory holding one ascending sequence with one answer to how far a migration has reached. The version pin, by contrast, is a property of the same ordering the tool already uses to decide what to apply, so it holds however the location list was assembled and however the artefact is scanned.
+
+**What is given up, stated plainly rather than glossed.** The pin is one line in one document and there is no second control behind it. That is a real and deliberate reduction in defence depth compared with a claim of two controls, and it is the honest position: the previous arrangement did not actually provide two independent controls, because the first was defeated by any generic scan. One control that holds is preferable to two that are counted and one that works, and a single reviewable line is preferable to a guarantee spread across a directory layout. The trade is recorded here so that a later reader does not "restore" the folder as belt and braces and reintroduce the same false confidence.
+
+**One migration consequence, measured rather than assumed.** Relocating the two seeds also meant rewriting the header narrative of all four scripts, which changes their Flyway checksums. A fresh database is unaffected, and that was verified twice: real Flyway against real PostgreSQL 16 applies V1 through V4 from the one location, and the packaged jar under the local profile boots and does the same. A database already migrated under the withdrawn two-location arrangement is a different case, and it was measured rather than reasoned about — running the new flat topology against such a database fails validation with `Migration checksum mismatch` on the edited versions. That is Flyway working correctly, not a defect: `validate-on-migrate` is `true` in every profile precisely so an edited script cannot diverge from what was applied. The sanctioned remedy is the one the profiles already provide: `clean-disabled` is `false` in the local and test profiles and only there, so such a database is disposable and is dropped and re-migrated. Two remedies are explicitly **not** sanctioned and must not be adopted — setting `validate-on-migrate: false`, which would suppress the check for every future divergence rather than this one, and running `flyway repair` against production, which cannot arise anyway because production is pinned at `target: 2` and never applied V3 or V4 to have a checksum for.
+
+**How it is held.** `config/ConfigurationProfileBaselineTest` asserts all of it against the shipped documents and the delivered scripts, not against a restatement: the production overlay declares `target: 2` and still resolves pinned when layered over the shared baseline; the shared baseline and the local and test overlays declare no target and resolve to none by inheritance either; every document lists exactly one location with no comma and no `classpath:db/seed`; the one location delivers exactly V1, V2, V3 and V4; the withdrawn `db/seed` folder delivers nothing; and no shipped document mentions it. The highest-delivered-version helper still reads the withdrawn folder as well as the live one, so reintroducing a script there cannot make the delivered-version claim understate the head.
+
+**Provenance.** The flat layout and the `spring.flyway.target=2` requirement are both stated by the migration specifications for V3 and V4, which require the four migrations to be flat in one directory, direct that no subdirectory be created, and name the version pin as the production control.
+
+*Relationship.* Restates DL-102, which is the first record of this decision; the source files listed below cite DL-102.
+
+*Cited by:* `application.yml`, `application-local.yml`, `application-test.yml`, `application-prod.yml`, `db/migration/V1__create_schema.sql`, `db/migration/V2__create_indexes.sql`, `db/migration/V3__seed_reference_data.sql`, `db/migration/V4__seed_user_security.sql`, `domain/UserSecurity.java`, `.dockerignore`.
 
 
 ---

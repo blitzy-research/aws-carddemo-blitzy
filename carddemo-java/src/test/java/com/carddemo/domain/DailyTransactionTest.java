@@ -74,10 +74,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <h2>What this suite deliberately does not touch</h2>
  *
  * <p>Nothing here asserts a column name, a column length or a nullability constraint. That mapping
- * layer is verified in the integration tier, where the persistence provider validates every mapping
- * against the real schema at start-up and fails loudly on any mismatch. Reaching for reflection to
- * inspect an annotation would both duplicate that check badly and undermine the module's zero-reflection
- * budget, so this file uses no reflection of any kind.
+ * layer is asserted by {@code EntityPersistenceMappingTest}, which bootstraps the persistence
+ * provider's metadata offline and compares the mapping it computes against the shipped migration
+ * {@code V1__create_schema.sql} and against an independent copybook-width oracle. The runtime
+ * configuration additionally fixes the provider at schema validation, so a divergence fails start-up
+ * in a deployed environment, though that is a property of a deployment rather than a check this build
+ * performs.
+ *
+ * <p>This file inspects no annotation because entity metadata is that suite's subject rather than this
+ * one's, and duplicating it here would restate a check that already exists. It is emphatically not
+ * because reflection is prohibited in a test: the module's zero-reflection budget is scoped to
+ * production sources under {@code src/main/java}, and the audit that records it excludes test sources
+ * by design, so a suite that reflected would not breach it.
  *
  * <p>Nothing here asserts the reject output. The 430-byte reject record, its four-digit reason code,
  * its 76-character description and the five reject reason codes belong to the reject writer and the
@@ -614,10 +622,9 @@ class DailyTransactionTest {
         @DisplayName("no surrogate identifier and no generated value exists: the persistent identity is "
                 + "the sixteen-byte business key taken verbatim from the record image")
         void noSurrogateIdentifierExists() {
-            // Proved by compile-time absence. This file never names a generic identifier accessor or a
-            // generated-identifier accessor, and it uses no reflection to look for one; if such a
-            // member were introduced, nothing here would begin to reference it. No generated value and
-            // no database sequence is declared on this entity.
+            // The entity declares no generic or generated identifier accessor, no generated value and
+            // no database sequence, so what is asserted here is the positive consequence: identity is
+            // the business key read straight from the record image.
             //
             // The business key is what the batch file descriptions treat as the leading substring of
             // the record image, so a surrogate would break the correspondence between the image and the

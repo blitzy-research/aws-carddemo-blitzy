@@ -20,7 +20,8 @@
 # itself back into the module with defaults.run.working-directory.
 #
 # WHAT THIS RUN PROVES
-# Three enforcement points, every one of which ends the run when it is not satisfied:
+# Five gates, every one of which ends the run when it is not satisfied. The first two properties
+# below are both carried by the build gate; the remaining four are a gate each:
 #
 #   zero-warning build : the compiler plugin runs javac with -Xlint:all -Werror under release
 #                        25, so any warning ends the run instead of accumulating in a report.
@@ -28,14 +29,26 @@
 #                        integration execution data - LINE counter, covered ratio, minimum
 #                        0.80, halting on failure. LINE is the enforced counter; the other
 #                        counters are produced for information only.
+#   locale hardening   : the unit tier is re-executed under two hostile default locales, which
+#                        is the only way a locale defect in a fixed-width byte format can be
+#                        observed at all, because the suite itself pins the locale.
 #   supply chain       : the vulnerability plugin runs its check goal and ends the build on any
 #                        finding at or above the configured score. It is EXECUTED here rather
 #                        than merely declared: the module build leaves the scan switched on by
 #                        default, so a developer running the build by hand gets the scan with
 #                        no command-line override.
+#   bootstrap contract : the emulator initializer that provisions the local AWS surface is
+#                        linted and then actually RUN against the pinned emulator image, and
+#                        each resource it reports is read back and compared. Nothing in the
+#                        Maven build touches that script, so without this gate the one file the
+#                        container-backed tiers and the whole local gate runbook depend on
+#                        would be the only executable artifact here that nothing verified.
+#   deployability      : the repackaged jar is started and observed to report healthy before it
+#                        is published, so the only artifact this workflow uploads is one that
+#                        was seen to run.
 #
-# Stopping at package instead of verify would run none of the three and a green run would prove
-# nothing, so the build invocation below always goes all the way to verify.
+# Stopping at package instead of verify would run none of the build-phase gates and a green run
+# would prove nothing, so the build invocation below always goes all the way to verify.
 #
 # WHY THE GATES ARE INVOKED SEPARATELY
 # The supply chain gate is invoked by itself rather than riding along inside the build. Both are
@@ -281,7 +294,7 @@ jobs:
           ./mvnw -B --version
           docker version --format 'Docker server {{.Server.Version}}'
 
-      # ---- gate 1 of 3: build, test and coverage ---------------------------------------------
+      # ---- gate 1 of 5: build, test and coverage ---------------------------------------------
       # A compiler warning, a failing test in either tier, or coverage under the floor ends this
       # step. The supply chain scan is switched off for this invocation only, because it is run
       # by itself in the next step; leaving it on here would either scan twice or, when this step
@@ -296,7 +309,7 @@ jobs:
         continue-on-error: true
         run: ./mvnw -B clean verify -Ddependency-check.skip=true
 
-      # ---- gate 2 of 3: locale-hostile re-execution -----------------------------------------
+      # ---- gate 2 of 5: locale-hostile re-execution -----------------------------------------
       # The module pins -Duser.language=en -Duser.country=US in test.jvm.args so that a test's
       # result never depends on the machine running it. That pinning is correct, and it has one
       # cost: it makes the suite structurally unable to observe a locale defect. The module emits
@@ -339,7 +352,7 @@ jobs:
             echo '::endgroup::'
           done
 
-      # ---- gate 3 of 3: supply chain --------------------------------------------------------
+      # ---- gate 3 of 5: supply chain --------------------------------------------------------
       # Invoked on its own and unconditionally. This goal needs only the resolved dependency
       # graph, not compiled output, so it produces a verdict and a report even when the step
       # above failed outright - which is the whole point of separating them. Configuration comes
@@ -351,6 +364,184 @@ jobs:
         if: always()
         continue-on-error: true
         run: ./mvnw -B dependency-check:check
+
+      # ---- gate 4 of 5: bootstrap contract --------------------------------------------------
+      # The module's local AWS surface is provisioned by a single emulator initializer,
+      # localstack/init/01-create-aws-resources.sh. Nothing in the Maven build reads that file, so
+      # every other gate here can pass while it is broken - and it is the one file the
+      # container-backed test tiers and the whole local gate runbook depend on. Left unchecked its
+      # defects surface either as a confusing failure somewhere else entirely or, worse, as a stack
+      # that starts cleanly and only comes up short on the first publish: the legacy queue write it
+      # stands in for was defined errors-ignored, so the publisher records a failure and carries on
+      # rather than raising.
+      #
+      # This gate closes that gap in two halves.
+      #
+      # The static half needs no emulator and catches the cheap failures. The file has to be
+      # present, executable, and committed as mode 100755 - a ready hook without the execute bit is
+      # silently never run rather than reported, which is the one defect that leaves no trace at
+      # all - free of carriage returns, syntactically valid, and clean under the linter. The linter
+      # is REQUIRED rather than skipped when it is absent, because a gate that quietly stops
+      # checking is worse than no gate.
+      #
+      # The behavioural half runs the hook for real against the SAME pinned emulator image the
+      # module's compose stack and integration tests pin, then reads every resource back and
+      # compares it. Reading back is the entire point: the hook reporting a resource ready is a
+      # different fact from the resource being correct, and two of these attributes fail silently.
+      # A queue that is not first-in-first-out reorders the cards of a submission, and a queue with
+      # content-based deduplication switched on discards every card whose body repeats one already
+      # accepted - three of the seventeen - so both produce a wrong result with no error anywhere.
+      #
+      # No CARDDEMO_ variable is passed in, and that is deliberate: the hook's own defaults are the
+      # canonical names, so proving the defaults is what proves the contract. No credential is
+      # passed either, because the emulator's client wrapper supplies its own throwaway values
+      # internally.
+      #
+      # The hook is then executed a second time and must exit zero and leave exactly one of each
+      # resource. The emulator re-runs its ready hooks on every container start, so an initializer
+      # that is not idempotent breaks the second start rather than the first.
+      #
+      # The step is allowed to continue for the same reason its peers are: so that it records its
+      # own real result for the verdict step below to report, rather than stopping the run before
+      # the remaining evidence has been gathered.
+      - name: Bootstrap contract gate
+        id: bootstrap_gate
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+
+          hook='localstack/init/01-create-aws-resources.sh'
+          container='carddemo-bootstrap-gate'
+
+          # Removal is written as a conditional rather than tolerated with a shell || so that
+          # nothing in this file suppresses an exit status, and it hangs off a trap so the
+          # container is removed even when an assertion below ends the step early.
+          cleanup() {
+            if docker rm -f "${container}" >/dev/null 2>&1; then
+              printf 'Removed %s.\n' "${container}"
+            else
+              printf 'No %s to remove.\n' "${container}"
+            fi
+          }
+          trap cleanup EXIT
+
+          # A comparison that names what it was checking, so a failure reads as a contract
+          # violation rather than as a bare non-zero exit status.
+          assert_equals() {
+            if [ "$2" != "$3" ]; then
+              printf 'Bootstrap contract violated: %s is %s, expected %s.\n' "$1" "$2" "$3" >&2
+              exit 1
+            fi
+            printf '  %s: %s\n' "$1" "$2"
+          }
+
+          echo '::group::static checks'
+          command -v shellcheck >/dev/null
+          test -f "${hook}"
+          test -x "${hook}"
+          assert_equals 'committed file mode' \
+            "$(git ls-files -s "${hook}" | cut -c 1-6)" '100755'
+          assert_equals 'carriage returns in the file' \
+            "$(tr -cd '\r' < "${hook}" | wc -c | tr -d ' ')" '0'
+          bash -n "${hook}"
+          shellcheck "${hook}"
+          echo '  parses under bash and lints clean under shellcheck'
+          echo '::endgroup::'
+
+          # Every attribute is read back and compared. Declared once and called after each
+          # execution, so the second run is held to exactly the same standard as the first.
+          verify_resources() {
+            queue_url="$(docker exec "${container}" \
+              awslocal sqs get-queue-url --queue-name JOBS.fifo --output text)"
+            case "${queue_url}" in
+              */JOBS.fifo) printf '  queue url: %s\n' "${queue_url}" ;;
+              *)
+                printf 'Bootstrap contract violated: queue url %s does not name JOBS.fifo.\n' \
+                  "${queue_url}" >&2
+                exit 1
+                ;;
+            esac
+            assert_equals 'queue FifoQueue attribute' \
+              "$(docker exec "${container}" awslocal sqs get-queue-attributes \
+                --queue-url "${queue_url}" --attribute-names FifoQueue \
+                --query 'Attributes.FifoQueue' --output text)" 'true'
+            assert_equals 'queue ContentBasedDeduplication attribute' \
+              "$(docker exec "${container}" awslocal sqs get-queue-attributes \
+                --queue-url "${queue_url}" --attribute-names ContentBasedDeduplication \
+                --query 'Attributes.ContentBasedDeduplication' --output text)" 'false'
+            assert_equals 'bucket object versioning' \
+              "$(docker exec "${container}" awslocal s3api get-bucket-versioning \
+                --bucket carddemo-batch-staging --query 'Status' --output text)" 'Enabled'
+            topic_arn="$(docker exec "${container}" \
+              awslocal sns list-topics --query 'Topics[0].TopicArn' --output text)"
+            case "${topic_arn}" in
+              arn:aws:sns:*:*:carddemo-job-notifications)
+                printf '  topic: %s\n' "${topic_arn}"
+                ;;
+              *)
+                printf 'Bootstrap contract violated: %s does not identify the topic.\n' \
+                  "${topic_arn}" >&2
+                exit 1
+                ;;
+            esac
+            assert_equals 'queues in the emulator' \
+              "$(docker exec "${container}" awslocal sqs list-queues \
+                --query 'length(QueueUrls)' --output text)" '1'
+            assert_equals 'buckets in the emulator' \
+              "$(docker exec "${container}" awslocal s3api list-buckets \
+                --query 'length(Buckets)' --output text)" '1'
+            assert_equals 'topics in the emulator' \
+              "$(docker exec "${container}" awslocal sns list-topics \
+                --query 'length(Topics)' --output text)" '1'
+          }
+
+          echo '::group::first execution, performed by the emulator as a ready hook'
+          docker run -d --name "${container}" \
+            -e SERVICES=s3,sqs,sns \
+            -e AWS_DEFAULT_REGION=us-east-1 \
+            -e PERSISTENCE=0 \
+            -v "${PWD}/localstack/init:/etc/localstack/init/ready.d:ro" \
+            localstack/localstack:4.14.0 >/dev/null
+
+          # The emulator publishes the outcome of every ready-stage script it ran. That is the
+          # authoritative answer to whether the hook succeeded, so it is polled for rather than
+          # guessed at from the log text. A probe failing while the edge port is still coming up
+          # is the normal case, which is why the poll tolerates it and the outcome is asserted
+          # afterwards instead.
+          state=''
+          for _ in $(seq 1 120); do
+            if payload="$(docker exec "${container}" \
+                curl -fsS http://localhost:4566/_localstack/init 2>/dev/null)"; then
+              state="$(printf '%s' "${payload}" \
+                | tr ',' '\n' \
+                | sed -n 's/.*"state": *"\([A-Z]*\)".*/\1/p')"
+              case "${state}" in
+                SUCCESSFUL|ERROR) break ;;
+              esac
+            fi
+            sleep 2
+          done
+          echo '::endgroup::'
+
+          echo '---- the initializer output, as the emulator recorded it ----'
+          docker logs "${container}" 2>&1 | grep -F '[carddemo-init]'
+
+          assert_equals 'ready-hook outcome reported by the emulator' "${state}" 'SUCCESSFUL'
+
+          echo '::group::read-back after the first execution'
+          verify_resources
+          echo '::endgroup::'
+
+          echo '::group::second execution, as the emulator performs on every restart'
+          docker exec "${container}" "/etc/localstack/init/ready.d/$(basename "${hook}")"
+          echo '::endgroup::'
+
+          echo '::group::read-back after the second execution'
+          verify_resources
+          echo '::endgroup::'
+
+          echo 'Bootstrap contract holds: linted, executed, read back, and idempotent.'
 
       # ---- evidence bundle ------------------------------------------------------------------
       # The three uploads below carry if: always() so the gate reports survive a failed gate.
@@ -402,7 +593,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      # ---- deployability --------------------------------------------------------------------
+      # ---- gate 5 of 5: deployability -------------------------------------------------------
       # A repackaged jar names a start class in its manifest, and nothing earlier in this workflow
       # proves that the class is present in the artifact or that the context it starts can reach a
       # started state. Both are proven here, before the upload, so that the only artifact this
@@ -521,15 +712,32 @@ jobs:
       # every gate passed - and then an absent file is a hard error, because a fully green run
       # that produced no artifact is a finding in its own right.
       #
-      # The condition names both gate results explicitly instead of using success(). Those steps
-      # are allowed to continue, which makes success() true even when a gate failed, so it would
-      # publish an artifact from a failing run. Reading the recorded results is what keeps this
-      # honest.
+      # The condition names each gate's recorded result explicitly instead of using success().
+      # Four of the five steps are allowed to continue, which makes success() true even when one of
+      # them failed, so success() would publish an artifact from a failing run. Reading the recorded
+      # results is what keeps this honest.
       #
-      # It also names the deployability result, so the only artifact this workflow publishes is
-      # one the smoke test above observed start and report healthy.
+      # ALL FIVE are named, and the list has to stay in step with the gates above. An earlier
+      # revision named three - the build, supply chain and deployability results - and omitted the
+      # locale gate, so a run whose only failure was a locale defect still published this artifact.
+      # That is the precise failure this condition exists to prevent: a locale defect corrupts the
+      # emitted bytes of the fixed-width records, which is a defect in the artifact itself and not
+      # merely in the evidence around it. The bootstrap result is named for the same reason - a jar
+      # whose local AWS surface was never proven to provision is not a publishable artifact - and
+      # the deployability result is named so the only artifact published is one the smoke test above
+      # observed start and report healthy.
+      #
+      # Any gate added above must be added here too. The verdict step below fails the run in that
+      # case regardless, so an omission here does not turn a red run green; it publishes an artifact
+      # from a run that was already going to fail, which is the more dangerous outcome, because the
+      # artifact outlives the run.
       - name: Upload the executable jar
-        if: steps.build_gate.outcome == 'success' && steps.supply_chain_gate.outcome == 'success' && steps.deployability_gate.outcome == 'success'
+        if: >-
+          steps.build_gate.outcome == 'success' &&
+          steps.locale_gate.outcome == 'success' &&
+          steps.supply_chain_gate.outcome == 'success' &&
+          steps.bootstrap_gate.outcome == 'success' &&
+          steps.deployability_gate.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: carddemo-java-jar
@@ -542,19 +750,19 @@ jobs:
       # the job when any one of them did not pass, and it prints all of them, so the run's summary
       # states which gate failed without a reviewer opening a log.
       #
-      # All three are read, not two. An earlier revision printed and required the build and supply
-      # chain gates only. The job still failed when the deployability gate failed, because that
-      # gate does not continue on error and its own step failure propagates - but the verdict this
-      # step printed was then incomplete, and could report that every gate passed while saying
+      # All five are read, not some of them. An earlier revision printed and required the build and
+      # supply chain gates only. The job still failed when the deployability gate failed, because
+      # that gate does not continue on error and its own step failure propagates - but the verdict
+      # this step printed was then incomplete, and could report that every gate passed while saying
       # nothing at all about the gate it had not consulted. The evidence a gate produces is the
       # point of the gate, so a verdict that omits one is not evidence even when the exit status
       # happens to be right.
       #
-      # The four gates fail differently on purpose, and reading all four is what makes that
-      # uniform here. The first three continue on error so that each publishes its evidence
-      # regardless of the others, which means their failures reach this step rather than stopping
-      # the job. The deployability gate does not continue on error, and it is skipped outright when
-      # the build gate failed, because there is then no artifact to start.
+      # The five gates fail differently on purpose, and reading all five is what makes that uniform
+      # here. The first four continue on error so that each publishes its evidence regardless of the
+      # others, which means their failures reach this step rather than stopping the job. The
+      # deployability gate does not continue on error, and it is skipped outright when the build
+      # gate failed, because there is then no artifact to start.
       #
       # It runs even on cancellation, and treats anything other than an outright pass as a
       # failure, so a cancelled or skipped gate can never be mistaken for a satisfied one - which
@@ -566,15 +774,18 @@ jobs:
           build_gate='${{ steps.build_gate.outcome }}'
           locale_gate='${{ steps.locale_gate.outcome }}'
           supply_chain_gate='${{ steps.supply_chain_gate.outcome }}'
+          bootstrap_gate='${{ steps.bootstrap_gate.outcome }}'
           deployability_gate='${{ steps.deployability_gate.outcome }}'
           printf 'build, test and coverage gate : %s\n' "$build_gate"
           printf 'locale-hostile gate           : %s\n' "$locale_gate"
           printf 'supply chain gate             : %s\n' "$supply_chain_gate"
+          printf 'bootstrap contract gate       : %s\n' "$bootstrap_gate"
           printf 'deployability gate            : %s\n' "$deployability_gate"
           failed=0
           if [ "$build_gate" != 'success' ]; then failed=1; fi
           if [ "$locale_gate" != 'success' ]; then failed=1; fi
           if [ "$supply_chain_gate" != 'success' ]; then failed=1; fi
+          if [ "$bootstrap_gate" != 'success' ]; then failed=1; fi
           if [ "$deployability_gate" != 'success' ]; then failed=1; fi
           if [ "$failed" -ne 0 ]; then
             echo 'At least one gate did not pass. Failing the run.' >&2

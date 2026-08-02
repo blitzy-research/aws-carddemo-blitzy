@@ -17,7 +17,9 @@
 --
 -- Loads the nine measured ASCII reference datasets of the legacy estate into the schema created by
 -- V1__create_schema.sql and constrained by V2__create_indexes.sql. Exactly 626 rows across exactly
--- nine tables, and nothing else:
+-- nine tables, and nothing else. This file sits beside V1, V1_1 and V2 in db/migration, which is the
+-- location the migration plan names for every migration; production excludes it by version pin
+-- rather than by directory - see PROFILE APPLICABILITY below:
 --
 --     customer                      50      account                       50
 --     card                          50      card_cross_reference          50
@@ -34,29 +36,53 @@
 -- They exist so that the eight validation gates can be executed locally against a real database with
 -- no mainframe and no production system in the loop. They are deliberately unavailable to production.
 --
--- HOW THAT IS ENFORCED - control 1, LOCATION, which is the delivered mechanism:
---   The migrations are NOT flat. They occupy two class-path locations on purpose, and this file
---   sits in the second one:
+-- HOW THAT IS ENFORCED - A VERSION CEILING IN CONFIGURATION, AND A REFUSAL IN CODE BESIDE IT.
 --
---       db/migration    V1__create_schema.sql, V2__create_indexes.sql
---                       listed by application.yml, and restated by every overlay including
---                       application-prod.yml, so a production migration reaches V2 and stops there
---       db/seed         V3__seed_reference_data.sql (this file), V4__seed_user_security.sql
---                       listed ONLY by application-local.yml and application-test.yml
+--   The migrations are FLAT. All five occupy the single class-path location classpath:db/migration,
+--   which every profile lists, and this file is separated from the schema by its VERSION:
 --
---   Production never lists db/seed, so a production migration cannot see this file at all. The
---   exclusion is structural rather than conditional: there is no flag to leave in the wrong
---   position and no version to forget to pin. Keep every seed script under db/seed and out of
---   db/migration - moving one across that line is the single edit that would defeat the control.
+--       V1__create_schema.sql             \
+--       V1_1__create_batch_metadata.sql    >  at or below the ceiling  -> EVERY profile
+--       V2__create_indexes.sql            /
+--       ----------------------------------------- spring.flyway.target: 2 (application-prod.yml)
+--       V3__seed_reference_data.sql       \
+--       V4__seed_user_security.sql         >  above the ceiling        -> local and test only
 --
--- HOW THAT IS ENFORCED - control 2, VERSION PIN, defence in depth for a deployment that builds its
--- own location list from the source tree rather than reading the shipped profiles:
+--   application-prod.yml sets spring.flyway.target: 2, so a production migration resolves versions 1,
+--   1.1 and 2 and does not resolve this file at all. Verified against Flyway 11.7.2: with target 2
+--   the applied set is exactly {1, 1.1, 2} and version 3 is not resolved. The local and test overlays
+--   raise the ceiling to latest, so they apply all five.
 --
---       spring.flyway.target=2            (applies V1 and V2, stops before this file)
+--   WHY NOT A SEPARATE db/seed DIRECTORY, which an earlier revision of this file used. Two reasons.
+--   First, it made the exclusion a property of two location lists differing from each other, which no
+--   single file states and no single review sees, whereas the ceiling is one line in the file whose
+--   posture it governs. Second, and worse, it made a version number stop describing what a profile
+--   would apply: a seed could be renumbered, or a location list could gain an entry, and production's
+--   contents would change with neither edit looking like a change to production. A ceiling cannot be
+--   defeated that way - moving, renaming or renumbering a file cannot make version 3 fall below 2.
 --
---   An equivalent version-aware or filename-aware filter is equally acceptable. This control is
---   redundant with control 1 under the shipped configuration, and is stated so that a deployment
---   which scans directories generically still has a supported way to stop at the schema.
+--   It is set in TWO places, and that pairing is the control. application-prod.yml states it
+--   explicitly, and application.yml states it as the SHARED DEFAULT so any profile that stays silent
+--   inherits it. The default deliberately points at the restrictive value: a profile that forgets the
+--   property gets a schema-only migration rather than an unnoticed seeding run. application-local.yml
+--   and application-test.yml are the two profiles that want the seeds, and each raises the ceiling to
+--   latest explicitly for itself.
+--
+--   WHAT MUST NOT CHANGE. Do not raise or remove target on the base or production profile, do not add
+--   a location that reaches these scripts by another path, and do not renumber this file to a version
+--   at or below 2 - checksum validation is on, so that attempt stops a deployment rather than passing
+--   quietly. Any further seed script must carry a version above 2. An equivalent version-aware or
+--   filename-aware filter is acceptable for a deployment that does not read these profiles; running
+--   with no ceiling at all is not.
+--
+--   AND THE CEILING IS CHECKED IN CODE, WHICH IS WHY A CONFIGURATION EDIT ALONE CANNOT REACH THIS
+--   FILE. com.carddemo.config.FlywayConfig inspects the ceiling and the location list AFTER they are
+--   bound, and under the production profile it REFUSES to start when the ceiling reaches version 3 or
+--   beyond, or when the location list reaches outside classpath:db/migration. An absent, predefined or
+--   unreadable ceiling counts as reaching version 3, because the migration tool migrates to the latest
+--   version when no ceiling is set - silence is the dangerous case. The two controls fail in the same
+--   direction and neither is relied on alone: the ceiling is visible in the profile documents and
+--   invisible in code, and the refusal is unconditional in code and invisible in the documents.
 --
 --   A deployment that applies this file has seeded sample personal data, and one that also applies
 --   V4__seed_user_security.sql has seeded ten known logins. Treat a V3 row in production as an
@@ -151,25 +177,61 @@
 --      the interest calculation down its DEFAULT-group fallback path. A direct-hit test against group
 --      'A000000000' needs a separately constructed fixture; it cannot come from this seed.
 --   2. customer.cust_ssn is seeded as SQL NULL for all fifty rows, and it is the one nullable column
---      in the schema for exactly this reason. V1 defines it to hold an application-produced
---      authenticated ciphertext envelope; static forward-only SQL cannot produce one without either
---      committing key material to the repository or inventing a second, unreviewed crypto mechanism,
---      and transcribing the cleartext national identifiers instead is not acceptable. So they are not
---      transcribed - not in a value and not in a comment. NULL here means "deliberately not seeded",
---      never "unmapped field": every other customer column is seeded. A test that needs a stored
---      identifier must persist one through the application encryption path, which is what
---      CustomerSsnEncryptionIT does.
---   3. customer.govt_issued_id is NOT NULL, so no such exemption is available to it and the fixture
---      value is seeded. This is a narrow, deliberate divergence from V1's note that the column holds
---      an envelope, and it is confined to this local-and-test-only file for the same reason given in
---      2: an envelope cannot be produced deterministically in static SQL without committing a key.
---      Production applies V1 and V2 only, receives no row from this file, and must continue to store
---      an application-produced envelope in this column.
+--      in the schema for exactly this reason. The nine bytes the legacy record holds at offset 279
+--      are shaped like real national identifiers, and the correct handling of a value like that in a
+--      checked-in artifact is not to carry it at all - not as cleartext, not as ciphertext, and not
+--      in a comment. Sealing them would not help: every envelope in this file is sealed under the one
+--      non-production fixture key, that key is itself committed as a profile default, and anything
+--      sealed under a committed key is recoverable by anyone holding the repository. So they are not
+--      carried. NULL here means "deliberately not seeded", never "unmapped field": every other
+--      customer column is seeded. A test that needs a stored identifier persists one through the
+--      application encryption path under its own key, which is what CustomerSsnEncryptionIT does.
+--   3. customer.govt_issued_id is NOT NULL, and it is seeded as an ENC1 envelope in every row - never
+--      as the cleartext the fixture record holds at offset 288. All fifty envelopes were produced by
+--      com.carddemo.service.SensitiveFieldEncryptionService itself, over the twenty characters at
+--      that offset of app/data/ASCII/custdata.txt, under the one non-production fixture key that
+--      application-local.yml and both copies of application-test.yml declare. Each is 69 characters:
+--      the ENC1: marker, then Base64 of a 96-bit initialisation vector, the ciphertext and the
+--      128-bit authentication tag. So V1's contract for this column holds here too - the schema, the
+--      Customer entity and CustomerRecordMapper all require an envelope, and a seeded row satisfies
+--      every one of them rather than being an exception to all three.
+--
+--      Two properties make that safe in a checked-in artifact, and both are needed. The value is
+--      invented: a twenty-digit fixture identifier with no subject behind it, unlike the national
+--      identifiers in 2. And the key is worthless: a self-describing throwaway that seals nothing
+--      outside a database rebuilt from these migrations. No key material is added to the repository
+--      by this file - the key was already a committed profile default, and what is stored below is
+--      ciphertext, not key material.
+--
+--      Because AES-GCM draws a fresh initialisation vector per call, the envelopes cannot be
+--      regenerated identically and are therefore fixed literals. Rotating the fixture key without
+--      resealing them leaves them unreadable, which is what rotating a key means, and it is not left
+--      to be discovered later: SeededProtectedIdentifierIT opens all fifty through the application
+--      service and compares each recovered value against the fixture record it came from, so a
+--      rotated key, an edited literal or a re-ordered row fails the build. Production never applies
+--      this file at all - spring.flyway.target caps it at version 2 - so no production row is ever
+--      sealed under a fixture key. Recorded in docs/decision-log.md DL-103.
+--
+--      One more component watches this column and is deliberately redundant here.
+--      com.carddemo.config.SeededIdentifierSealingCallback runs on the after-migrate event of this
+--      migration, inside the same transaction, and would convert any cleartext left in this column -
+--      or any non-null cust_ssn - into the envelope V1 requires. Because every value below already
+--      carries the ENC1 marker, and because cust_ssn is NULL in every row, it converts nothing: the
+--      conversion is idempotent, so a value already sealed is left exactly as it is and no envelope is
+--      ever wrapped inside another. It is retained as defence in depth against a future edit to this
+--      file, not as the mechanism that produces what is stored here. Production is unaffected either
+--      way - it applies V1 and V2 only, receives no row from this file, and does not carry the
+--      callback at all, which com.carddemo.config.FlywayConfig registers for the local and test
+--      profiles alone.
 --   4. disclosure_group.dis_acct_group_id keys are ten characters INCLUDING trailing blanks:
 --      'A000000000', 'DEFAULT   ' and 'ZEROAPR   ', seventeen rows each. The last two carry exactly
 --      three trailing spaces because the legacy fallback moves a seven-character literal into a
 --      ten-character key field, which pads it. Trimming either key, or shortening the first to 'A',
---      breaks the lookup outright. The ZEROAPR group is what makes the zero-rate branch reachable.
+--      breaks the lookup outright. The zero rates of the ZEROAPR group are genuinely seeded, but they
+--      do NOT make the accrual zero-rate branch reachable from this seed: as anomaly 1 explains, every
+--      account misses its first probe and re-probes as 'DEFAULT   ', whose rate on the (01, 0001) type
+--      and category every seeded balance uses is 15.00, so a seed-only run always computes. Covering
+--      the skip needs an account constructed with 'ZEROAPR   ' plus a matching category balance.
 --   5. daily_transaction.dalytran_orig_ts is the same instant in all three hundred records and
 --      dalytran_proc_ts is blank in all three hundred - twenty-six spaces, seeded as twenty-six
 --      spaces. The processing timestamp is written by the posting job, not by the fixture, so no
@@ -191,6 +253,13 @@
 --
 -- cust_ssn is inserted as NULL in every row - see anomaly 2 in the header. The nine bytes
 -- the record holds at offset 279 are read by nothing in this file and appear nowhere in it.
+--
+-- govt_issued_id is inserted as an ENC1 envelope in every row, never as the cleartext the
+-- record holds at offset 288 - see anomaly 3 in the header. Each literal below is 69
+-- characters and was produced by the application's own encryption service under the one
+-- non-production fixture key; each one occupies its own continuation line so that the fifty
+-- sealed values read as a column and an unsealed row is visible at a glance.
+--
 -- middle_name and addr_line_2 are stored but must never be validated downstream: the legacy
 -- update path decorates both for error display while coding no edit for either, so any
 -- constraint would reject input the legacy system accepts.
@@ -200,65 +269,119 @@
 --       [59:84] last_name        [84:134] addr_line_1      [134:184] addr_line_2
 --       [184:234] addr_line_3    [234:236] addr_state_cd   [236:239] addr_country_cd
 --       [239:249] addr_zip       [249:264] phone_num_1     [264:279] phone_num_2
---       [288:308] govt_issued_id [308:318] cust_dob        [318:328] eft_account_id
+--       [308:318] cust_dob       [318:328] eft_account_id
 --       [328:329] pri_card_holder_ind                      [329:332] fico_credit_score
+--       [279:288] cust_ssn and [288:308] govt_issued_id are NOT read - both columns are seeded
+--                 NULL, so the two regulated spans are skipped entirely
 --       [332:500] trailing filler, not a column
+--   The govt_issued_id slice is the SOURCE of the sealed literal, not the stored value: the
+--   twenty characters at [288:308] are what each envelope below opens to.
 -- -------------------------------------------------------------------------------------------------
 INSERT INTO customer (
     cust_id, first_name, middle_name, last_name, addr_line_1, addr_line_2, addr_line_3,
     addr_state_cd, addr_country_cd, addr_zip, phone_num_1, phone_num_2, cust_ssn, govt_issued_id,
     cust_dob, eft_account_id, pri_card_holder_ind, fico_credit_score
 ) VALUES
-('000000001', 'Immanuel', 'Madeline', 'Kessler', '618 Deshaun Route', 'Apt. 802', 'Altenwerthshire', 'NC', 'USA', '12546', '(908)119-8310', '(373)693-8684', NULL, '00000000000049368437', '1961-06-08', '0053581756', 'Y', '274'),
-('000000002', 'Enrico', 'April', 'Rosenbaum', '4917 Myrna Flats', 'Apt. 453', 'West Bernita', 'IN', 'USA', '22770', '(429)706-9510', '(744)950-5272', NULL, '00000000000506210371', '1961-10-08', '0069194009', 'Y', '268'),
-('000000003', 'Larry', 'Cody', 'Homenick', '362 Esta Parks', 'Apt. 390', 'New Gladys', 'GA', 'USA', '19852-6716', '(950)396-9024', '(685)168-8826', NULL, '00000000000052419303', '1987-11-30', '0006465789', 'Y', '616'),
-('000000004', 'Delbert', 'Kaia', 'Parisian', '638 Blanda Gateway', 'Apt. 076', 'Lake Virginie', 'MI', 'USA', '39035-0455', '(801)603-4121', '(156)074-6837', NULL, '00000000000068579249', '1985-01-13', '0040802739', 'Y', '776'),
-('000000005', 'Treva', 'Manley', 'Schowalter', '5653 Legros Plaza', 'Apt. 968', 'Alvinaport', 'MI', 'USA', '02251-1698', '(978)775-4633', '(439)943-7644', NULL, '00000000000639799754', '1971-09-29', '0006365573', 'Y', '529'),
-('000000006', 'Ignacio', 'Emery', 'Douglas', '3963 Yasmin Port', 'Suite 756', 'Port Josephstad', 'VI', 'USA', '46713-5148', '(277)743-4266', '(519)010-8739', NULL, '00000000000975535496', '1994-11-29', '0067163009', 'Y', '753'),
-('000000007', 'Cooper', 'Dennis', 'Mayert', '6490 Zakary Locks', 'Apt. 765', 'Madieport', 'AL', 'USA', '34206-2974', '(698)282-4096', '(458)199-0016', NULL, '00000000000959013170', '1977-05-06', '0024571415', 'Y', '499'),
-('000000008', 'Kelsie', 'Jordyn', 'Dicki', '0925 Welch Streets', 'Apt. 152', 'North Nanniestad', 'SC', 'USA', '27610', '(345)563-7159', '(443)197-1271', NULL, '00000000000109746991', '1964-03-25', '0033132723', 'Y', '051'),
-('000000009', 'Melvin', 'Regan', 'Ondricka', '87893 Samson Flats', 'Apt. 135', 'New Braden', 'VI', 'USA', '21113', '(035)456-1404', '(412)440-3130', NULL, '00000000000568299451', '1975-11-07', '0039446039', 'Y', '699'),
-('000000010', 'Maybell', 'Creola', 'Mann', '77933 Adah Dale', 'Suite 343', 'Andersonfurt', 'CT', 'USA', '44803-4279', '(614)594-2619', '(667)057-0235', NULL, '00000000000212824755', '1980-06-11', '0093803568', 'Y', '476'),
-('000000011', 'Hayden', 'Ressie', 'Pfannerstill', '14895 Everette Ridges', 'Apt. 443', 'Julianneburgh', 'WA', 'USA', '24984', '(002)533-6980', '(553)586-7718', NULL, '00000000000111190855', '1986-11-03', '0002650577', 'Y', '209'),
-('000000012', 'Maci', 'Alan', 'Robel', '80501 Isac Cliffs', 'Suite 623', 'Predovicton', 'MN', 'USA', '78861', '(584)045-5200', '(610)244-0407', NULL, '00000000000902143351', '1984-02-18', '0061317348', 'Y', '688'),
-('000000013', 'Mariane', 'Oma', 'Fadel', '2689 Derick Mission', 'Suite 055', 'Bruenfurt', 'OR', 'USA', '02322', '(875)943-7287', '(075)550-6435', NULL, '00000000000181377220', '1999-03-09', '0044807431', 'Y', '053'),
-('000000014', 'Chelsea', 'Ignacio', 'Marks', '747 Dino Lodge', 'Apt. 850', 'West Chase', 'RI', 'USA', '12914-8465', '(141)807-6571', '(284)088-9052', NULL, '00000000000525955222', '1974-11-29', '0048306401', 'Y', '243'),
-('000000015', 'Aubree', 'Elliot', 'Hermann', '36365 Ledner Drives', 'Suite 882', 'Port Efrainland', 'DE', 'USA', '63205-7014', '(769)100-7971', '(366)310-2061', NULL, '00000000000230369941', '1964-12-06', '0000634612', 'Y', '681'),
-('000000016', 'Carroll', 'Cicero', 'Bergstrom', '06988 Thiel Falls', 'Suite 148', 'Concepcionland', 'VT', 'USA', '84390', '(631)343-8667', '(938)648-3716', NULL, '00000000000293265752', '1983-04-27', '0012556599', 'Y', '326'),
-('000000017', 'Sigrid', 'Angeline', 'Mann', '95666 Dare Isle', 'Suite 286', 'New Presley', 'FM', 'USA', '56181-0584', '(087)314-2070', '(541)003-6606', NULL, '00000000000497606357', '1979-01-26', '0052356071', 'Y', '054'),
-('000000018', 'Emile', 'Jairo', 'White', '133 Bergnaum Square', 'Apt. 328', 'Hansenville', 'AP', 'USA', '96003-5867', '(303)654-3323', '(520)186-2176', NULL, '00000000000088341821', '1987-03-25', '0086459831', 'Y', '340'),
-('000000019', 'Hadley', 'Sigrid', 'Hamill', '6273 Ondricka Meadows', 'Apt. 130', 'New Arturoshire', 'RI', 'USA', '48161', '(817)452-4986', '(724)901-6019', NULL, '00000000000270176387', '1991-01-07', '0036492057', 'Y', '259'),
-('000000020', 'Carter', 'Oren', 'Veum', '5845 Allison Valleys', 'Suite 934', 'Mitchellmouth', 'MH', 'USA', '72362', '(618)994-0531', '(571)695-4136', NULL, '00000000000342661293', '1996-04-14', '0036749754', 'Y', '493'),
-('000000021', 'Jerrold', 'Adolphus', 'Maggio', '401 Haylie Crest', 'Apt. 320', 'North Myrnaton', 'CA', 'USA', '72407', '(399)526-3254', '(326)193-1118', NULL, '00000000000027656260', '1977-11-15', '0011744660', 'Y', '163'),
-('000000022', 'Allene', 'Icie', 'Brown', '4467 Donnie Crossroad', 'Apt. 437', 'Anabelton', 'MD', 'USA', '01993-9116', '(231)251-5792', '(494)652-0009', NULL, '00000000000691159853', '1994-02-20', '0024791470', 'Y', '597'),
-('000000023', 'Johnson', 'Blanca', 'Ruecker', '2433 Jacobi Forks', 'Apt. 845', 'Hendersonbury', 'KS', 'USA', '78239-9466', '(981)873-1589', '(131)638-5974', NULL, '00000000000268967122', '1998-12-07', '0075158529', 'Y', '337'),
-('000000024', 'Stefanie', 'Verla', 'Dickinson', '6367 Stracke River', 'Apt. 444', 'East Otho', 'KS', 'USA', '15414', '(617)348-9142', '(330)116-5634', NULL, '00000000000439244633', '1996-01-24', '0005459662', 'Y', '711'),
-('000000025', 'Elliott', 'Fermin', 'Howell', '9524 McKenzie Lakes', 'Suite 245', 'West Alexa', 'NH', 'USA', '75721-7382', '(092)336-8599', '(311)969-1460', NULL, '00000000000548223048', '1989-03-27', '0032297533', 'Y', '355'),
-('000000026', 'Marjory', 'Damien', 'Stracke', '30161 Bogan Canyon', 'Suite 916', 'Walshberg', 'IL', 'USA', '59945', '(584)772-2867', '(819)733-9809', NULL, '00000000000947411626', '1990-03-17', '0060808858', 'Y', '001'),
-('000000027', 'Ward', 'Henri', 'Jones', '210 Amaya Turnpike', 'Suite 180', 'Port Dwight', 'GU', 'USA', '07923-8822', '(935)027-1145', '(103)537-5007', NULL, '00000000000881558757', '1986-11-08', '0050024139', 'Y', '078'),
-('000000028', 'Hester', 'Vesta', 'Hane', '06816 Ursula Meadows', 'Suite 605', 'South Aurore', 'AS', 'USA', '77442-7954', '(122)357-7257', '(050)352-6579', NULL, '00000000000514187796', '1991-06-05', '0026946180', 'Y', '114'),
-('000000029', 'Rickie', 'Otho', 'Daugherty', '676 Funk Curve', 'Apt. 375', 'Hayesstad', 'NH', 'USA', '01226', '(418)291-9023', '(795)634-7776', NULL, '00000000000062745655', '1973-04-05', '0067736493', 'Y', '552'),
-('000000030', 'Layla', 'Dannie', 'Ullrich', '269 Eleazar Circle', 'Apt. 817', 'Kutchland', 'AK', 'USA', '64266', '(330)408-6966', '(413)347-7306', NULL, '00000000000492021686', '1965-11-28', '0050520060', 'Y', '133'),
-('000000031', 'Lucious', 'Otto', 'O''Connell', '919 Swift Valleys', 'Suite 548', 'Hermanborough', 'MS', 'USA', '56133-5636', '(259)414-9625', '(118)946-9264', NULL, '00000000000618310539', '1976-08-03', '0092999757', 'Y', '058'),
-('000000032', 'Stephany', 'Meda', 'Fisher', '63452 Kenny Streets', 'Apt. 116', 'Predovicburgh', 'AK', 'USA', '85943-7605', '(202)436-5156', '(246)296-3533', NULL, '00000000000206200341', '1980-11-19', '0035970593', 'Y', '221'),
-('000000033', 'Bernice', 'Norbert', 'Herman', '877 Kassandra Ranch', 'Suite 956', 'Haleyport', 'AR', 'USA', '19113-4329', '(836)743-5487', '(640)208-1176', NULL, '00000000000400605429', '1988-05-19', '0065245171', 'Y', '469'),
-('000000034', 'Faustino', 'Jess', 'Schmidt', '44132 Michel Square', 'Suite 007', 'South Margarettaburgh', 'ME', 'USA', '49544-2869', '(179)036-5135', '(986)905-0112', NULL, '00000000000159882533', '1994-03-21', '0067445089', 'Y', '104'),
-('000000035', 'Angelica', 'Damaris', 'Dach', '396 Pearl Loop', 'Suite 383', 'Pfefferhaven', 'LA', 'USA', '46142', '(303)480-9098', '(637)710-7367', NULL, '00000000000977144839', '1987-06-23', '0047435332', 'Y', '793'),
-('000000036', 'Toney', 'Emerald', 'Gerhold', '35943 Raleigh Harbor', 'Apt. 116', 'Lake Derekburgh', 'AL', 'USA', '10932-0480', '(034)271-9180', '(507)529-4523', NULL, '00000000000942029210', '1991-03-31', '0066461979', 'Y', '266'),
-('000000037', 'Shany', 'Darby', 'Walker', '91196 Heaney Turnpike', 'Suite 814', 'Lubowitzberg', 'NV', 'USA', '11857-8177', '(052)759-5167', '(706)896-1282', NULL, '00000000000524312632', '1984-12-09', '0066111704', 'Y', '653'),
-('000000038', 'Angela', 'Ceasar', 'Ankunding', '65482 Zoila Skyway', 'Apt. 054', 'East Malachi', 'VA', 'USA', '63928-0008', '(316)640-2650', '(148)111-1148', NULL, '00000000000335562141', '1990-05-28', '0018048939', 'Y', '446'),
-('000000039', 'Aliyah', 'Horace', 'Berge', '5761 Pasquale Trail', 'Apt. 616', 'New Sabryna', 'IA', 'USA', '74267', '(089)096-3287', '(768)959-4733', NULL, '00000000000553254403', '1972-08-26', '0061869530', 'Y', '475'),
-('000000040', 'Davon', 'Demond', 'Emmerich', '23499 Beer Views', 'Suite 816', 'Erniechester', 'TX', 'USA', '87156-8689', '(463)762-3017', '(419)414-2177', NULL, '00000000000398353299', '1992-01-26', '0087069976', 'Y', '284'),
-('000000041', 'Lucinda', 'Kiana', 'Dach', '3220 Yolanda Corner', 'Suite 649', 'East Harmonystad', 'VT', 'USA', '72971-7481', '(284)052-5831', '(091)234-2144', NULL, '00000000000919653442', '1967-02-20', '0007315287', 'Y', '725'),
-('000000042', 'Heather', 'Ericka', 'Nienow', '5523 Archibald Club', 'Apt. 358', 'Reillyland', 'FM', 'USA', '83589', '(640)954-4538', '(565)873-6897', NULL, '00000000000997029966', '1964-11-03', '0079262985', 'Y', '044'),
-('000000043', 'Britney', 'Jermain', 'Waters', '97765 Bernhard Fort', 'Apt. 666', 'South Marisaview', 'OK', 'USA', '10050-7980', '(407)042-6952', '(438)659-6397', NULL, '00000000000244555805', '1966-10-16', '0053043599', 'Y', '558'),
-('000000044', 'Irving', 'Kiera', 'Emard', '978 Fatima Stream', 'Apt. 110', 'Lake King', 'ID', 'USA', '05704-0501', '(703)484-5840', '(537)392-5569', NULL, '00000000000934420974', '1984-04-04', '0032076778', 'Y', '145'),
-('000000045', 'Dixie', 'Norris', 'Beier', '441 Levi Prairie', 'Suite 749', 'Abbottshire', 'NV', 'USA', '09048', '(697)143-3221', '(499)287-7255', NULL, '00000000000885743286', '2001-12-12', '0027833000', 'Y', '629'),
-('000000046', 'Cindy', 'Kira', 'Cremin', '494 Lang Avenue', 'Apt. 937', 'Alexandroview', 'PW', 'USA', '63082-4520', '(358)349-2574', '(077)525-9966', NULL, '00000000000762699577', '1987-12-14', '0017535749', 'Y', '514'),
-('000000047', 'Rigoberto', 'Savanna', 'Hoeger', '00097 Gleichner Spur', 'Apt. 932', 'Port Aidanborough', 'GU', 'USA', '31329-6973', '(946)322-6160', '(973)443-8438', NULL, '00000000000567601472', '1979-02-25', '0022102472', 'Y', '722'),
-('000000048', 'Lyric', 'Mackenzie', 'Pacocha', '453 Rosina Mountain', 'Apt. 011', 'Albertville', 'OR', 'USA', '83985-4937', '(950)497-1005', '(004)244-7955', NULL, '00000000000265392832', '1986-08-17', '0046317382', 'Y', '746'),
-('000000049', 'Immanuel', 'Ellie', 'Bednar', '5423 Esther Locks', 'Apt. 142', 'Langoshstad', 'GA', 'USA', '12288-3495', '(843)095-2553', '(615)988-9038', NULL, '00000000000424495981', '2000-01-05', '0058726120', 'Y', '148'),
-('000000050', 'Aniya', 'Alba', 'Von', '1588 Nienow Cape', 'Suite 187', 'New Aricchester', 'OR', 'USA', '04257', '(325)301-0827', '(493)985-9283', NULL, '00000000000030387824', '1960-12-01', '0074883577', 'Y', '623');
+('000000001', 'Immanuel', 'Madeline', 'Kessler', '618 Deshaun Route', 'Apt. 802', 'Altenwerthshire', 'NC', 'USA', '12546', '(908)119-8310', '(373)693-8684', NULL,
+    'ENC1:MyItVNBPfsSTXnF2DidQ5qEEOla5O7h+Ri0HFj/Q2SSybYo5U+7By9x8ESkDWA4Q', '1961-06-08', '0053581756', 'Y', '274'),
+('000000002', 'Enrico', 'April', 'Rosenbaum', '4917 Myrna Flats', 'Apt. 453', 'West Bernita', 'IN', 'USA', '22770', '(429)706-9510', '(744)950-5272', NULL,
+    'ENC1:geVujDCceJOwUREntn2VB/JDkKRCMtWM8DikCRalWNru9vQrLquRQJvyfnFp/OsQ', '1961-10-08', '0069194009', 'Y', '268'),
+('000000003', 'Larry', 'Cody', 'Homenick', '362 Esta Parks', 'Apt. 390', 'New Gladys', 'GA', 'USA', '19852-6716', '(950)396-9024', '(685)168-8826', NULL,
+    'ENC1:RyL+q813MDma45dkjl2zt0wCTcPfTC8txtzzD2pMtq+iAdrA7yOP/NLQu1cm99yr', '1987-11-30', '0006465789', 'Y', '616'),
+('000000004', 'Delbert', 'Kaia', 'Parisian', '638 Blanda Gateway', 'Apt. 076', 'Lake Virginie', 'MI', 'USA', '39035-0455', '(801)603-4121', '(156)074-6837', NULL,
+    'ENC1:cnaHLktX6p6pyLn9uC6xPnqX+mkyR8UYroV4naJZ3JS0kL0aiOUwjVZKSa8bgUeT', '1985-01-13', '0040802739', 'Y', '776'),
+('000000005', 'Treva', 'Manley', 'Schowalter', '5653 Legros Plaza', 'Apt. 968', 'Alvinaport', 'MI', 'USA', '02251-1698', '(978)775-4633', '(439)943-7644', NULL,
+    'ENC1:HnJB8vFQYPxO0ET5+Wzn2pgUxV0gSLlap86fUFcOZIWrx0+/+dIhzSC33tEGuxyp', '1971-09-29', '0006365573', 'Y', '529'),
+('000000006', 'Ignacio', 'Emery', 'Douglas', '3963 Yasmin Port', 'Suite 756', 'Port Josephstad', 'VI', 'USA', '46713-5148', '(277)743-4266', '(519)010-8739', NULL,
+    'ENC1:GLzlRENTFUvllG/vy86SuymSuMUKBoXhcTnycoKWCDG7WKdAnDOyTKosZAfzhLr8', '1994-11-29', '0067163009', 'Y', '753'),
+('000000007', 'Cooper', 'Dennis', 'Mayert', '6490 Zakary Locks', 'Apt. 765', 'Madieport', 'AL', 'USA', '34206-2974', '(698)282-4096', '(458)199-0016', NULL,
+    'ENC1:DLcVsPzghN9uxCZrdQ0PRpg8diSulIhF37Y/gIuZc609Jx+YwL/UuFB/POX+SZvv', '1977-05-06', '0024571415', 'Y', '499'),
+('000000008', 'Kelsie', 'Jordyn', 'Dicki', '0925 Welch Streets', 'Apt. 152', 'North Nanniestad', 'SC', 'USA', '27610', '(345)563-7159', '(443)197-1271', NULL,
+    'ENC1:0x6iFuu5AVUb2q1e2a+KuaRx0t9bxMudjQmqOAsLRPN4wr4qh4RZmIhottv5e0vY', '1964-03-25', '0033132723', 'Y', '051'),
+('000000009', 'Melvin', 'Regan', 'Ondricka', '87893 Samson Flats', 'Apt. 135', 'New Braden', 'VI', 'USA', '21113', '(035)456-1404', '(412)440-3130', NULL,
+    'ENC1:OzPlUiZY5zktXbqd5bXOyiNmdVDwQzBjRQfsV5zVitlxaFn5YtrejeaVgLfLumeJ', '1975-11-07', '0039446039', 'Y', '699'),
+('000000010', 'Maybell', 'Creola', 'Mann', '77933 Adah Dale', 'Suite 343', 'Andersonfurt', 'CT', 'USA', '44803-4279', '(614)594-2619', '(667)057-0235', NULL,
+    'ENC1:rncGPlRagOUTijXFqSyfcUt1bavkKV5y9E8A0mNMZvOEAdzYutksqWWvnwBgpTP5', '1980-06-11', '0093803568', 'Y', '476'),
+('000000011', 'Hayden', 'Ressie', 'Pfannerstill', '14895 Everette Ridges', 'Apt. 443', 'Julianneburgh', 'WA', 'USA', '24984', '(002)533-6980', '(553)586-7718', NULL,
+    'ENC1:qqBv4l4NnioX+s01emzyH35HhkpIOLFj4QDahuqxN3nfFpW63HzmBl/ZIfvterid', '1986-11-03', '0002650577', 'Y', '209'),
+('000000012', 'Maci', 'Alan', 'Robel', '80501 Isac Cliffs', 'Suite 623', 'Predovicton', 'MN', 'USA', '78861', '(584)045-5200', '(610)244-0407', NULL,
+    'ENC1:J+T9S/X98khlvq8O3yWhCm6oavFJz4sih01lvr95lTqwMXm+dH5jZ8wvmfLxVuKj', '1984-02-18', '0061317348', 'Y', '688'),
+('000000013', 'Mariane', 'Oma', 'Fadel', '2689 Derick Mission', 'Suite 055', 'Bruenfurt', 'OR', 'USA', '02322', '(875)943-7287', '(075)550-6435', NULL,
+    'ENC1:YgDa+1deNI/26ZjkBbAIeIPhPOoha16cIFNrgthjLs9P4LwAGp6LR8kPvkR6Ex7Q', '1999-03-09', '0044807431', 'Y', '053'),
+('000000014', 'Chelsea', 'Ignacio', 'Marks', '747 Dino Lodge', 'Apt. 850', 'West Chase', 'RI', 'USA', '12914-8465', '(141)807-6571', '(284)088-9052', NULL,
+    'ENC1:PUfyls6a1TKAvv+HNauSMqSWW4I+diW61OcWtxpS/HElcC30rNS0xsQZjvrI1LX6', '1974-11-29', '0048306401', 'Y', '243'),
+('000000015', 'Aubree', 'Elliot', 'Hermann', '36365 Ledner Drives', 'Suite 882', 'Port Efrainland', 'DE', 'USA', '63205-7014', '(769)100-7971', '(366)310-2061', NULL,
+    'ENC1:m+rxEmIlsSRBowUA+1HvEnibfnarfTWQELjlDd7Iif9G9hItMN1hzbREPnxyXWsf', '1964-12-06', '0000634612', 'Y', '681'),
+('000000016', 'Carroll', 'Cicero', 'Bergstrom', '06988 Thiel Falls', 'Suite 148', 'Concepcionland', 'VT', 'USA', '84390', '(631)343-8667', '(938)648-3716', NULL,
+    'ENC1:gxK00AmgSHesWuKbpQUE5KClVlsxhoKVq2twSpL5hFbYzigMcNUwO1Z7u9n/pTVt', '1983-04-27', '0012556599', 'Y', '326'),
+('000000017', 'Sigrid', 'Angeline', 'Mann', '95666 Dare Isle', 'Suite 286', 'New Presley', 'FM', 'USA', '56181-0584', '(087)314-2070', '(541)003-6606', NULL,
+    'ENC1:/y3Sf9uMTMxJO16XH+5SSgXOeboj2hOhqZXXqKChTNOgrtvtfgYgrNpNc+T1WXs2', '1979-01-26', '0052356071', 'Y', '054'),
+('000000018', 'Emile', 'Jairo', 'White', '133 Bergnaum Square', 'Apt. 328', 'Hansenville', 'AP', 'USA', '96003-5867', '(303)654-3323', '(520)186-2176', NULL,
+    'ENC1:z/w4trbX8/SJzfCwHGktZyK6GeQSn5Awab2qvjGSzJ+FJoOngAOJO6BzOSAmeb/J', '1987-03-25', '0086459831', 'Y', '340'),
+('000000019', 'Hadley', 'Sigrid', 'Hamill', '6273 Ondricka Meadows', 'Apt. 130', 'New Arturoshire', 'RI', 'USA', '48161', '(817)452-4986', '(724)901-6019', NULL,
+    'ENC1:LegFfRIG1h6ssvkF/ubHh3nnW/tn9aLTOwkrpg/V/o67QA134NxTqYlwops4PuVr', '1991-01-07', '0036492057', 'Y', '259'),
+('000000020', 'Carter', 'Oren', 'Veum', '5845 Allison Valleys', 'Suite 934', 'Mitchellmouth', 'MH', 'USA', '72362', '(618)994-0531', '(571)695-4136', NULL,
+    'ENC1:B1cnOy3AIR9dAn3XQP92Z9zLxyME0/wFUroA6Oh6ul4psEbo+nXBKdf1a6J8r9T2', '1996-04-14', '0036749754', 'Y', '493'),
+('000000021', 'Jerrold', 'Adolphus', 'Maggio', '401 Haylie Crest', 'Apt. 320', 'North Myrnaton', 'CA', 'USA', '72407', '(399)526-3254', '(326)193-1118', NULL,
+    'ENC1:SAsPO3UnQXAdb7vnd7BP/afpD3sWnW7iqOf1TAUQSVsRTGIM/FnazlPWTA3jmBje', '1977-11-15', '0011744660', 'Y', '163'),
+('000000022', 'Allene', 'Icie', 'Brown', '4467 Donnie Crossroad', 'Apt. 437', 'Anabelton', 'MD', 'USA', '01993-9116', '(231)251-5792', '(494)652-0009', NULL,
+    'ENC1:NtLEXWQ9ybaq4NhhhHYAS4cPBPk5Kvtse3pOcjk0QvIF3TSdQww0KOynbdXy8K4g', '1994-02-20', '0024791470', 'Y', '597'),
+('000000023', 'Johnson', 'Blanca', 'Ruecker', '2433 Jacobi Forks', 'Apt. 845', 'Hendersonbury', 'KS', 'USA', '78239-9466', '(981)873-1589', '(131)638-5974', NULL,
+    'ENC1:QM5LRvz0TgbhN5mXNzBngqG4fOTRZI2LOohLFbvQHTogMhP9ic6zyDaEu7g7fqWs', '1998-12-07', '0075158529', 'Y', '337'),
+('000000024', 'Stefanie', 'Verla', 'Dickinson', '6367 Stracke River', 'Apt. 444', 'East Otho', 'KS', 'USA', '15414', '(617)348-9142', '(330)116-5634', NULL,
+    'ENC1:i0dEK9eg/G7pq1WGjOIs0aY9GjydKW4SNL3WJnuRv6Hl/bSuEQMPI2rDyw0REtPD', '1996-01-24', '0005459662', 'Y', '711'),
+('000000025', 'Elliott', 'Fermin', 'Howell', '9524 McKenzie Lakes', 'Suite 245', 'West Alexa', 'NH', 'USA', '75721-7382', '(092)336-8599', '(311)969-1460', NULL,
+    'ENC1:CxalVDZnZWsBhxiFMW2BtOOycWsWZW50lMbJOno6tECa8ISIES7zZ99kyDzRIOPv', '1989-03-27', '0032297533', 'Y', '355'),
+('000000026', 'Marjory', 'Damien', 'Stracke', '30161 Bogan Canyon', 'Suite 916', 'Walshberg', 'IL', 'USA', '59945', '(584)772-2867', '(819)733-9809', NULL,
+    'ENC1:2ShaPf6HQ8IhjsZ/SHbjuSgSBUB4hdrdJ/T1YjTAlkvSiC2NJqt88HVTzvZz7zBg', '1990-03-17', '0060808858', 'Y', '001'),
+('000000027', 'Ward', 'Henri', 'Jones', '210 Amaya Turnpike', 'Suite 180', 'Port Dwight', 'GU', 'USA', '07923-8822', '(935)027-1145', '(103)537-5007', NULL,
+    'ENC1:X4nXIrF2cPTx8Xs9ssF/+qhKde7EOnk+eaW0Jt0IXs/kJVo2NfJOynBHj5/7+K5/', '1986-11-08', '0050024139', 'Y', '078'),
+('000000028', 'Hester', 'Vesta', 'Hane', '06816 Ursula Meadows', 'Suite 605', 'South Aurore', 'AS', 'USA', '77442-7954', '(122)357-7257', '(050)352-6579', NULL,
+    'ENC1:lEjg1httS2cV94oYflfWnIDweUi4RzloiFy7KfwJVZ4DqH6d1kQgToHwgRl6Az3X', '1991-06-05', '0026946180', 'Y', '114'),
+('000000029', 'Rickie', 'Otho', 'Daugherty', '676 Funk Curve', 'Apt. 375', 'Hayesstad', 'NH', 'USA', '01226', '(418)291-9023', '(795)634-7776', NULL,
+    'ENC1:oAbIbvj/pZPjeNSk0H0PqrrSJ3DNbj//nnW88rBfga1MGB8X6jmCTO8j+JjmwDJ0', '1973-04-05', '0067736493', 'Y', '552'),
+('000000030', 'Layla', 'Dannie', 'Ullrich', '269 Eleazar Circle', 'Apt. 817', 'Kutchland', 'AK', 'USA', '64266', '(330)408-6966', '(413)347-7306', NULL,
+    'ENC1:RrpaWPi5XLNH5Jhrr2vhXDwmK4guwko+5CkrCkwGCdMQIB+9tvbQ/Fv0OL5G578C', '1965-11-28', '0050520060', 'Y', '133'),
+('000000031', 'Lucious', 'Otto', 'O''Connell', '919 Swift Valleys', 'Suite 548', 'Hermanborough', 'MS', 'USA', '56133-5636', '(259)414-9625', '(118)946-9264', NULL,
+    'ENC1:vfSpSpBG91YUQ/Snvc6L7tnVGbJ6SILaD2ZMc0i2M2HyVZG4Lyrt6YCQY8CGlequ', '1976-08-03', '0092999757', 'Y', '058'),
+('000000032', 'Stephany', 'Meda', 'Fisher', '63452 Kenny Streets', 'Apt. 116', 'Predovicburgh', 'AK', 'USA', '85943-7605', '(202)436-5156', '(246)296-3533', NULL,
+    'ENC1:tJBOmowWGGUjqOx+r1mUX1pffCooa0IVMjHOEyp5ZZ+BaQVEey0VzW+ecBNgjzIQ', '1980-11-19', '0035970593', 'Y', '221'),
+('000000033', 'Bernice', 'Norbert', 'Herman', '877 Kassandra Ranch', 'Suite 956', 'Haleyport', 'AR', 'USA', '19113-4329', '(836)743-5487', '(640)208-1176', NULL,
+    'ENC1:++FvppWHqiuUNmMEozQ/ndQCm5wmIWxjsjy4urYplOb2su8EDpoAoBfI3qYY/KhH', '1988-05-19', '0065245171', 'Y', '469'),
+('000000034', 'Faustino', 'Jess', 'Schmidt', '44132 Michel Square', 'Suite 007', 'South Margarettaburgh', 'ME', 'USA', '49544-2869', '(179)036-5135', '(986)905-0112', NULL,
+    'ENC1:EOpBeNvwVrjgeoVpLCF4UL4rBcnUaQzo7H5nawt9HEEfpDcD4TG6LhmR4zbeuhrF', '1994-03-21', '0067445089', 'Y', '104'),
+('000000035', 'Angelica', 'Damaris', 'Dach', '396 Pearl Loop', 'Suite 383', 'Pfefferhaven', 'LA', 'USA', '46142', '(303)480-9098', '(637)710-7367', NULL,
+    'ENC1:PQ0biP/4DdIfYu/bF2Ucz9AcDcOK7+ITprweZemrYBIlQBUl+j/EhUBATkbKCyEn', '1987-06-23', '0047435332', 'Y', '793'),
+('000000036', 'Toney', 'Emerald', 'Gerhold', '35943 Raleigh Harbor', 'Apt. 116', 'Lake Derekburgh', 'AL', 'USA', '10932-0480', '(034)271-9180', '(507)529-4523', NULL,
+    'ENC1:HJcSZ3DfXYBy8MCYdRbliwQNHo96qjODX0L4KWTBtSEahgcEIme5MYPrBfRcevMz', '1991-03-31', '0066461979', 'Y', '266'),
+('000000037', 'Shany', 'Darby', 'Walker', '91196 Heaney Turnpike', 'Suite 814', 'Lubowitzberg', 'NV', 'USA', '11857-8177', '(052)759-5167', '(706)896-1282', NULL,
+    'ENC1:1eI1sLctE0OOI9kQ7z1DTjmnB0drucb279MgCDwMXFzHjvBj4X0AQcQVEGGmRJXQ', '1984-12-09', '0066111704', 'Y', '653'),
+('000000038', 'Angela', 'Ceasar', 'Ankunding', '65482 Zoila Skyway', 'Apt. 054', 'East Malachi', 'VA', 'USA', '63928-0008', '(316)640-2650', '(148)111-1148', NULL,
+    'ENC1:4YxjeZlJRgJBeHfSd5qEmsDu1uBDfTPjXVY0fmxU04pKlRBcgOL2bQseF8ZTO0ux', '1990-05-28', '0018048939', 'Y', '446'),
+('000000039', 'Aliyah', 'Horace', 'Berge', '5761 Pasquale Trail', 'Apt. 616', 'New Sabryna', 'IA', 'USA', '74267', '(089)096-3287', '(768)959-4733', NULL,
+    'ENC1:WL3optPCa+qjl+dNb3/Pzhf64CrFTvmztYWoxQlKPuEsZdJOTgW1aIJhwLSNbbRz', '1972-08-26', '0061869530', 'Y', '475'),
+('000000040', 'Davon', 'Demond', 'Emmerich', '23499 Beer Views', 'Suite 816', 'Erniechester', 'TX', 'USA', '87156-8689', '(463)762-3017', '(419)414-2177', NULL,
+    'ENC1:5fIld1Ph1zBHn5NLBS2aZkhss8RcHIsUdgdia9+wpMet1Yv4CRkSlmd3CeqqRmv5', '1992-01-26', '0087069976', 'Y', '284'),
+('000000041', 'Lucinda', 'Kiana', 'Dach', '3220 Yolanda Corner', 'Suite 649', 'East Harmonystad', 'VT', 'USA', '72971-7481', '(284)052-5831', '(091)234-2144', NULL,
+    'ENC1:gxdplRxy2VjOCOOCjdPFwOSgpR4MvN80To0B9Km5UqfZYo6mWJBAaNK/QFHwUFdw', '1967-02-20', '0007315287', 'Y', '725'),
+('000000042', 'Heather', 'Ericka', 'Nienow', '5523 Archibald Club', 'Apt. 358', 'Reillyland', 'FM', 'USA', '83589', '(640)954-4538', '(565)873-6897', NULL,
+    'ENC1:Tm1BD315Qv9VmCwc0jK1VALzJwN+c1wf9FVguFUyYopv6jwUmA4OPE8dr1uqMaob', '1964-11-03', '0079262985', 'Y', '044'),
+('000000043', 'Britney', 'Jermain', 'Waters', '97765 Bernhard Fort', 'Apt. 666', 'South Marisaview', 'OK', 'USA', '10050-7980', '(407)042-6952', '(438)659-6397', NULL,
+    'ENC1:oeuhSAzYXqJFqocIlaDw4GQ3QjqkeRvzxXU0T4A0uMJ8y5dI5xKp+f238Bup+zcH', '1966-10-16', '0053043599', 'Y', '558'),
+('000000044', 'Irving', 'Kiera', 'Emard', '978 Fatima Stream', 'Apt. 110', 'Lake King', 'ID', 'USA', '05704-0501', '(703)484-5840', '(537)392-5569', NULL,
+    'ENC1:CR4QS4Gq383l87FyiGadxzRzqiiUyj0+j4gtU05t+FAW8HEsiXQfF7DLQroFTCl7', '1984-04-04', '0032076778', 'Y', '145'),
+('000000045', 'Dixie', 'Norris', 'Beier', '441 Levi Prairie', 'Suite 749', 'Abbottshire', 'NV', 'USA', '09048', '(697)143-3221', '(499)287-7255', NULL,
+    'ENC1:i9XPZ24LnLoGEr7sDj5hZFeUH6CnAi58pu+VPdEujSlvnVuLQ3ixGL0GP+pzkygk', '2001-12-12', '0027833000', 'Y', '629'),
+('000000046', 'Cindy', 'Kira', 'Cremin', '494 Lang Avenue', 'Apt. 937', 'Alexandroview', 'PW', 'USA', '63082-4520', '(358)349-2574', '(077)525-9966', NULL,
+    'ENC1:pqWpBEMOn3HfUpcOCV1Nh9pd0lwXd5rEdMDafPviFGWKugUVvWymKCLdGKXUPLGs', '1987-12-14', '0017535749', 'Y', '514'),
+('000000047', 'Rigoberto', 'Savanna', 'Hoeger', '00097 Gleichner Spur', 'Apt. 932', 'Port Aidanborough', 'GU', 'USA', '31329-6973', '(946)322-6160', '(973)443-8438', NULL,
+    'ENC1:GEjkUX77Ce2hvFadxP45NMeLoC0ty8ugwktKnnmW/QyEqh9lX3rBv+/581ANWPEc', '1979-02-25', '0022102472', 'Y', '722'),
+('000000048', 'Lyric', 'Mackenzie', 'Pacocha', '453 Rosina Mountain', 'Apt. 011', 'Albertville', 'OR', 'USA', '83985-4937', '(950)497-1005', '(004)244-7955', NULL,
+    'ENC1:HeXvqbFpN6plExNtGbU4qJid8k6GjOx3IP+z7CQsUKiY9k44EpXFU/gjmddbf3N1', '1986-08-17', '0046317382', 'Y', '746'),
+('000000049', 'Immanuel', 'Ellie', 'Bednar', '5423 Esther Locks', 'Apt. 142', 'Langoshstad', 'GA', 'USA', '12288-3495', '(843)095-2553', '(615)988-9038', NULL,
+    'ENC1:zs1pKoneQ44fOkDC04jMs8yILiKs+4WZkiwF9Vrk1UcPZcc6AQJtwnJqFQX1ZASv', '2000-01-05', '0058726120', 'Y', '148'),
+('000000050', 'Aniya', 'Alba', 'Von', '1588 Nienow Cape', 'Suite 187', 'New Aricchester', 'OR', 'USA', '04257', '(325)301-0827', '(493)985-9283', NULL,
+    'ENC1:o1BTQf/8MxUznsdA20VG7SfZ8VqrY9inQlJEOiqiR3d+u4dGkhP/Ihz8ZgyOzo5S', '1960-12-01', '0074883577', 'Y', '623');
 
 -- -------------------------------------------------------------------------------------------------
 -- 2 of 9 - account: 50 rows from app/data/ASCII/acctdata.txt, 300-byte records
@@ -541,10 +664,15 @@ INSERT INTO transaction_category (
 -- 'ZEROAPR   '. The two padded keys carry exactly three trailing spaces and are NOT trimmed
 -- - see anomaly 4 in the header.
 --
--- Why the composition matters: the seeded accounts all carry a blank group identifier, so
--- the direct read misses and the interest calculation falls back to the DEFAULT group,
--- while the ZEROAPR group supplies the zero rates that exercise the skip branch. Both
--- paths are therefore reachable from seed data alone, with no synthetic fixture.
+-- Why the composition matters, stated exactly: the seeded accounts all carry a blank group
+-- identifier and none of these three keys is blank, so every direct read misses and the interest
+-- calculation falls back to the DEFAULT group. That fallback path IS reachable from seed data alone
+-- and needs no fixture. The zero-rate skip is NOT, even though the ZEROAPR group genuinely supplies
+-- zero rates: the fallback lands on DEFAULT, whose rate on the (01, 0001) type and category every
+-- seeded balance carries is 15.00, so a seed-only run always computes. Exercising the skip - and
+-- likewise the direct group hit - needs an account constructed with one of these keys plus a
+-- category balance on the matching type and category. The rows below make that fixture possible;
+-- they do not make it unnecessary.
 --
 --   Record slices used, as zero-based [start:end) byte ranges:
 --       [0:10] dis_acct_group_id (trailing blanks preserved)
@@ -1031,6 +1159,10 @@ DECLARE
     v_user_security     bigint;
     v_total             bigint;
     v_ssn_null          bigint;
+    v_govt_sealed       bigint;
+    v_govt_width        bigint;
+    v_govt_distinct     bigint;
+    v_govt_cleartext    bigint;
     v_anomaly_zip       bigint;
     v_anomaly_group     bigint;
     v_group_a           bigint;
@@ -1106,11 +1238,54 @@ BEGIN
             v_user_security;
     END IF;
 
-    -- Anomaly 2: the national identifier is deliberately not seeded, in every row.
-    SELECT count(*) INTO v_ssn_null FROM customer WHERE cust_ssn IS NULL;
+    -- Anomaly 2: the national identifier is not seeded, in any row. The fixture record carries one in
+    -- cleartext and this file declines to load it, so the column is null in all fifty rows and the
+    -- assertion below is what stops a future revision from quietly reintroducing the cleartext value.
+    -- The government-issued identifier is handled the other way round - it IS seeded, as a sealed
+    -- envelope - and is checked by the block immediately following rather than here. The two columns
+    -- are therefore asserted by opposite tests, and neither test may be applied to the other column:
+    -- a null check over the sealed column would fail on every row, and an envelope check over the
+    -- national identifier would fail on every row.
+    SELECT count(*) INTO v_ssn_null  FROM customer WHERE cust_ssn      IS NULL;
     IF v_ssn_null <> 50 THEN
         RAISE EXCEPTION 'V3 seed: % customer rows hold a null national identifier, expected 50',
             v_ssn_null;
+    END IF;
+
+    -- Anomaly 3: the government-issued identifier IS seeded, and every row must carry an envelope
+    -- rather than the cleartext the fixture record holds. Four separate things are checked, because
+    -- each catches a different way an edit could reintroduce cleartext:
+    --   sealed    - the scheme marker is present, so nothing was pasted in unsealed;
+    --   width     - every value is exactly the 69 characters a twenty-character payload produces,
+    --               so no literal was truncated by a wrapped line or a stray quote;
+    --   distinct  - fifty different envelopes, so no row was filled by copying its neighbour, which
+    --               would silently give two customers the same identifier;
+    --   cleartext - no value is a bare run of digits of the legacy width, which is exactly what the
+    --               defect this check exists to prevent looked like.
+    -- This block cannot decrypt - it holds no key and must not - so it verifies shape here and leaves
+    -- recovery to SeededProtectedIdentifierIT, which opens all fifty through the application service.
+    SELECT count(*) INTO v_govt_sealed
+      FROM customer WHERE govt_issued_id LIKE 'ENC1:%';
+    SELECT count(*) INTO v_govt_width
+      FROM customer WHERE length(govt_issued_id) = 69;
+    SELECT count(DISTINCT govt_issued_id) INTO v_govt_distinct FROM customer;
+    SELECT count(*) INTO v_govt_cleartext
+      FROM customer WHERE govt_issued_id ~ '^[0-9]{1,20}$';
+    IF v_govt_sealed <> 50 THEN
+        RAISE EXCEPTION 'V3 seed: % customer rows carry a sealed government-issued identifier,'
+            ' expected 50 - every row must hold an ENC1 envelope, never cleartext', v_govt_sealed;
+    END IF;
+    IF v_govt_width <> 50 THEN
+        RAISE EXCEPTION 'V3 seed: % sealed identifiers measure 69 characters, expected 50 - a'
+            ' different width means a literal was altered or truncated', v_govt_width;
+    END IF;
+    IF v_govt_distinct <> 50 THEN
+        RAISE EXCEPTION 'V3 seed: the fifty customer rows hold only % distinct sealed identifiers,'
+            ' expected 50', v_govt_distinct;
+    END IF;
+    IF v_govt_cleartext <> 0 THEN
+        RAISE EXCEPTION 'V3 seed: % customer rows hold a cleartext-shaped government-issued'
+            ' identifier, expected 0', v_govt_cleartext;
     END IF;
 
     -- Anomaly 1: the account address-ZIP and group-identifier fields as the fixture holds them.
@@ -1146,7 +1321,9 @@ BEGIN
             v_group_width;
     END IF;
 
-    -- Both interest branches must be reachable: a zero rate to skip and a non-zero rate to compute.
+    -- Both rate kinds must be present so that a constructed account can reach either interest
+    -- branch: a zero rate to skip and a non-zero rate to compute. Presence is what is asserted
+    -- here; which branch a seed-only run actually takes is stated in the section preamble above.
     SELECT count(*) INTO v_rate_zero     FROM disclosure_group WHERE dis_int_rate = 0.00;
     SELECT count(*) INTO v_rate_positive FROM disclosure_group WHERE dis_int_rate > 0.00;
     IF v_rate_zero = 0 OR v_rate_positive = 0 THEN
@@ -1201,6 +1378,7 @@ END
 $$;
 
 
--- End of V3. Nine tables seeded, 626 rows, from nine ASCII reference datasets. No row was written to
+-- End of V3. Nine tables seeded, 626 rows, from nine ASCII reference datasets. Fifty of those rows
+-- carry a sealed government-issued identifier and none carries a cleartext one. No row was written to
 -- transaction or user_security, no lookup table was created, and no schema object was added or
 -- altered. Local and test only: production stops at version 2.

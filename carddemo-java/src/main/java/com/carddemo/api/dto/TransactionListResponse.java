@@ -16,148 +16,90 @@
  */
 package com.carddemo.api.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 import java.util.List;
 
 /**
- * Immutable response contract for the transaction-list screen &mdash; the REST projection of legacy
- * transaction {@code CT00}, whose 3270 presentation is defined by mapset {@code COTRN00}.
+ * Immutable response contract for the transaction-list screen, legacy transaction {@code CT00}.
  *
- * <p>The legacy antecedents are the program {@code app/cbl/COTRN00C.cbl} (699 lines across sixteen
- * procedure paragraphs), the generated symbolic map {@code app/cpy-bms/COTRN00.CPY}, and the mapset
- * definition {@code app/bms/COTRN00.bms} that supplies the field lengths corroborating every width
- * declared below. The row values originate in the 350-byte transaction record declared at
- * {@code app/cpy/CVTRA05Y.cpy}. Provenance is by citation only: no source text is copied here.
- * Checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}; upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
- *
- * <h2>Five distinct page-boundary messages, not two</h2>
+ * <p>REST projection of the 3270 screen driven by {@code app/cbl/COTRN00C.cbl} and described field
+ * by field by {@code app/cpy-bms/COTRN00.CPY} and {@code app/bms/COTRN00.bms}; the row values
+ * originate in the transaction record declared at {@code app/cpy/CVTRA05Y.cpy}. It is a carrier:
+ * nothing here validates, defaults, normalises, orders, counts, formats or navigates. Every such
+ * decision belongs to {@code service/TransactionListService}.</p>
  *
  * <p><strong>The browse emits five different boundary texts, and collapsing them would be a
- * behavioural regression.</strong> Three announce the top of the browse and two announce the bottom,
- * and they are not stylistic variants of one another: they are emitted from five different
- * paragraphs at five different points in the browse, so the text an operator sees reports
- * <em>which</em> mechanism detected the boundary.
+ * behavioural regression.</strong> Three announce the top of the browse and two the bottom, and they
+ * are not stylistic variants: two come from the attention-key paths, where the operator asked to move
+ * past a boundary the screen already occupies and nothing moved, which is why those two say
+ * "already"; three come from the browse primitives themselves, where an access was attempted and the
+ * boundary was discovered by its outcome. All five are published below as separate constants, none
+ * parameterised, derived or deduplicated, because each is compared character for character, and all
+ * five are informational rather than errors. Punctuation differs between messages and is reproduced
+ * exactly as emitted: the five boundary texts attach their three dots directly to the preceding word,
+ * the not-numeric message separates its three dots by a space, and the invalid-selection message
+ * carries none. Choosing among them is the service's responsibility.</p>
  *
- * <ul>
- *   <li><strong>Two come from the attention-key paragraphs</strong>, where the operator asked to
- *       move past a boundary the screen already occupies. The backward-key paragraph begins at
- *       {@code app/cbl/COTRN00C.cbl} line 234 and reports at line 248; the forward-key paragraph
- *       begins at line 257 and reports at line 270. Both use the wording "already", because nothing
- *       moved.</li>
- *   <li><strong>Three come from the file-access paragraphs</strong>, where the browse primitive
- *       itself reached the boundary. Browse positioning begins at line 591 and reports at line 608;
- *       the forward read begins at line 624 and reports at line 642; the backward read begins at
- *       line 658 and reports at line 676. These use "at the top" and "have reached", because an
- *       access was attempted and the boundary was discovered by its outcome.</li>
- * </ul>
- *
- * <p>All five are therefore published below as five separate constants. None is parameterised, none
- * is derived from another, and none is deduplicated, because each is compared character for
- * character by the interface-contract acceptance criterion. Note the punctuation: each of the five
- * ends in three dots with no space before them, whereas the numeric-identifier message at line 214
- * carries a space before its three dots. Both patterns are reproduced exactly as emitted.
- *
- * <p>Selecting among them is the service's responsibility and not this type's. This record carries
- * exactly one summary message component and never composes, formats or chooses a message.
- *
- * <h2>Row shape, and three widths that must not be unified</h2>
- *
- * <p>The symbolic map declares ten row families, each family holding a selection indicator, a
- * transaction identifier, a date, a description and an amount. Those five values are modelled once,
- * by the nested {@link TransactionRow}, carried in a list of at most ten. The generated per-family
- * suffixes are deliberately not reproduced: they are inconsistent artefacts of the map generator
- * &mdash; four digits on the selection indicator, two on the identifier, date and description, three
- * on the amount &mdash; and they carry no meaning. Ten discrete component sets would encode that
- * artefact into the API.
- *
- * <p>Equally deliberately absent are the generated 3270 control items. Every map field is
- * accompanied by generated length, flag and attribute items, and the map begins with a
- * twelve-character terminal-buffer filler. All of it is terminal plumbing with no counterpart in a
- * REST contract, so none of it is modelled, and no screen coordinate, attribute value, colour
- * constant or marker character appears anywhere in this file.
+ * <p>The map declares ten row families, each holding a selection indicator, an identifier, a date, a
+ * description and an amount. Those five values are modelled once, by the nested
+ * {@link TransactionRow}, carried in a list. The generated per-family name suffixes are not
+ * reproduced - they are inconsistent artefacts of how the map generator forms names and carry no
+ * meaning - and neither are the generated 3270 length, flag and attribute items or the terminal-area
+ * filler, which are terminal plumbing with no counterpart in a REST contract. No screen coordinate,
+ * attribute value, colour constant or marker character appears anywhere in this file.</p>
  *
  * <p><strong>Three widths on this screen coincide with differently-sized fields elsewhere in the
- * estate and are declared independently for that reason:</strong>
+ * estate and are declared independently for that reason.</strong> The description is twenty-six
+ * characters here, a genuine truncation of the hundred-character stored value that the transaction
+ * view and add screens present at sixty. The row date is eight characters here, where those screens
+ * carry ten-character dates. The page indicator is eight characters here, where the card-list screen
+ * declares three. A shared constant across any of those pairs would silently change what this screen
+ * presents. Both the row date and the two screen-furniture timestamps are text rather than temporal
+ * types and are never parsed or reformatted, and the transaction identifier is sixteen alphanumeric
+ * characters and never numeric: an identifier of {@code "0000000000000001"} is not the number one,
+ * and coercing it would shorten the value the byte-equivalence criterion compares.</p>
  *
- * <ul>
- *   <li><strong>The description is twenty-six characters here.</strong> The stored description is a
- *       hundred characters in the transaction record at {@code app/cpy/CVTRA05Y.cpy}, and the
- *       transaction view and add screens present sixty. The row-population paragraph at
- *       {@code app/cbl/COTRN00C.cbl} line 395 moves the hundred-character value into a
- *       twenty-six-character map field, so this screen genuinely shows a truncation. A shared
- *       constant or a common base type across the three widths would silently change what this
- *       screen presents.</li>
- *   <li><strong>The row date is eight characters here</strong>, where the view and add screens carry
- *       ten-character origination and processing dates. It is text and is never a temporal type:
- *       lines 385 to 388 build it as a two-digit-year presentation string, and the work field it is
- *       built in is initialised to a value that is not a valid calendar date at all. No date library
- *       could hold that value, and parsing or reformatting it would alter what the screen shows.</li>
- *   <li><strong>The page indicator is eight characters here</strong>, where the card-list screen has
- *       a three-character indicator under a different field name. Both are alphanumeric, so the
- *       indicator crosses this API as text rather than as a number, bounded at this map's own width
- *       by this type's own constant.</li>
- * </ul>
+ * <p><strong>Nothing here scales, rounds or computes.</strong> The row amount is a
+ * {@link BigDecimal} at a contractual scale of two, because its zoned-decimal origin cannot be
+ * represented exactly by a binary floating-point type. The estate carries no rounding clause on any
+ * arithmetic statement, so every store into a two-decimal field truncates toward zero, and that
+ * truncation is applied in exactly one place in the module - the zoned-decimal codec, reached through
+ * the service layer. No scaling call, rounding mode, precision context or numeric formatter appears
+ * in this package at all, which is what prevents a second, subtly different rounding rule from
+ * appearing at a call site. The twelve-character edited form the screen displays is a rendering of
+ * the value, not the value, and is never carried here.</p>
  *
- * <p>The transaction identifier is sixteen alphanumeric characters and is never a numeric type. Its
- * leading zeros and its external width are contractual: an identifier of {@code "0000000000000001"}
- * is not the number one, and coercing it would shorten the value the byte-equivalence acceptance
- * criterion compares.
- *
- * <h2>Money discipline</h2>
- *
- * <p>The row amount is a {@link BigDecimal} at a contractual scale of two, and no other numeric
- * representation is permitted. Its origin is the zoned-decimal, display-usage field
- * {@code TRAN-AMT PIC S9(09)V99} declared at {@code app/cpy/CVTRA05Y.cpy}, persisted as a
- * fixed-scale numeric column. A binary floating-point type would not represent those values exactly.
- *
- * <p><strong>Nothing here scales, rounds or computes.</strong> The estate contains no rounding
- * clause on any arithmetic statement, so every store into a two-decimal field truncates toward zero.
- * That truncation is applied in exactly one place in the module &mdash; the zoned-decimal codec,
- * reached through the service layer &mdash; which is why no scaling call, rounding mode, precision
- * context or numeric formatter appears in this package at all. Half-up and half-even rounding are
- * excluded module-wide. Concentrating the policy in one component is what prevents a second, subtly
- * different rounding rule from appearing at a call site.
- *
- * <p>The amount also has an edited presentation form on the screen, twelve characters wide including
- * a sign, a decimal point and two decimal places, built in the work field declared at
- * {@code app/cbl/COTRN00C.cbl} line 56. That mask is a rendering of the value, not the value. This
- * contract carries the numeric value and never the mask, so no formatted or masked string is
- * produced here.
- *
- * <h2>Rows, paging and navigation</h2>
- *
- * <p><strong>A short page returns fewer rows and is never padded.</strong> The legacy screen clears
- * its row area and then fills only as many lines as the browse yields, leaving the remainder blank;
- * this contract expresses that by absence. Padding the list to the full screen depth would invent
- * rows that the browse did not return.
- *
- * <p><strong>Row order is the service's, and is never altered here.</strong> A forward page is filled
- * ascending: the row index is reset to one at {@code app/cbl/COTRN00C.cbl} line 295 and the fill loop
- * at lines 297 to 303 advances it. A backward page is filled from the bottom upward: the backward
- * paragraph begins at line 333, seeds the row index to the last screen line at line 349, and the loop
- * at lines 351 to 357 reads backward at line 352 while decrementing, so the presented order is the
- * reverse of the read order. The service performs that reversal before building this response. This
- * record sorts nothing, reverses nothing and accepts no comparator; the rows arrive in presentation
- * order and are carried in it.
+ * <p><strong>A short page returns fewer rows and is never padded</strong> - the legacy screen fills
+ * only as many lines as the browse yields and leaves the remainder blank, which this contract
+ * expresses by absence. <strong>Row order is the service's and is never altered here.</strong> A
+ * forward page is filled top-down; a backward page is filled from the last line upward, so its
+ * presented order is the reverse of its read order and the service performs that reversal before
+ * building this response. This record sorts nothing, reverses nothing and accepts no comparator.</p>
  *
  * <p><strong>No total row count or total page count exists, and none is invented.</strong> The legacy
  * browse never counts the cluster; it discovers whether a further page exists by attempting one more
- * access and observing the outcome. A total would require a counting query the original never issued.
- * The two conditions the screen actually knows travel in {@link PageMetadata} as independent flags.
+ * access. The two conditions the screen actually knows travel in {@link PageMetadata} as independent
+ * flags, alongside the browse cursor and direction. No page-size constant is declared or referenced
+ * here: the screen depth is a property of the screen's shape and is neither a fetch size, a chunk
+ * size nor any kind of limit. {@link NavigationContext} is carried as client-echoed request state,
+ * never as a server session, and the next route travels as an opaque string: this type declares no
+ * route table, route constant or dispatch method, and there is no server-side forwarding.</p>
  *
- * <p>{@link PageMetadata} is carried for the browse cursor and direction. No page-size constant is
- * declared or referenced here: the screen depth is a property of the screen's shape, it is neither a
- * fetch size, a chunk size, a batch size nor any kind of limit, and this contract neither enforces
- * nor restates it.
+ * <p>Beyond bounding the fixed-width screen fields there is nothing for validation to do. A maximum
+ * length measures and never alters, so leading and trailing spaces - which on a space-padded legacy
+ * field are contract - survive untouched. No presence, pattern, digit, range or sign constraint
+ * appears on any component: blank rows are ordinary, amounts are legitimately negative for returns,
+ * and every check the program performs is a message-bearing validation the service emits in source
+ * order, which Bean Validation's unspecified reporting order could not preserve. The general-error
+ * indicator is explicit and is never inferred from whether the message component is populated,
+ * because the legacy program sets its error flag independently of the message text and an
+ * informational boundary message is not an error.</p>
  *
- * <p>{@link NavigationContext} is carried as client-echoed request state, never as a server session.
- * The route the client should call next travels as an opaque string. This type declares no route
- * table, no route constant and no dispatch method: that vocabulary belongs to the navigation service,
- * and there is no server-side forwarding, so the client drives the next call. The screen work area
- * used by the account and card programs is deliberately absent, because the transaction programs are
- * not part of the program family that includes it.
+ * <p>Deeply immutable and safe to share between threads: the row list is defensively copied into an
+ * unmodifiable list at construction, a {@code null} list becomes empty, and every other component is
+ * a primitive, a string or an immutable value.</p>
  *
  * <h2>Nothing is validated, defaulted or normalised</h2>
  *
@@ -187,16 +129,17 @@ import java.util.List;
  *     many entries as the map declares row families. Never {@code null}: a {@code null} argument
  *     becomes an empty list. Defensively copied and unmodifiable. A short final page carries fewer
  *     rows and is never padded.
- * @param page the browse cursor and direction for this page. May be {@code null} where a caller has
+ * @param pageMetadata the browse cursor and direction for this page. May be {@code null} where a caller has
  *     no paging state to report, such as a rejected request redisplayed without a browse.
- * @param navigation the client-echoed navigation state for the next call. May be {@code null}.
+ * @param navigationContext the client-echoed navigation state for the next call. May be
+ *     {@code null}.
  * @param nextRoute the route the client should call next, opaque to this contract and deliberately
  *     unbounded because it is a service-owned identifier rather than a legacy fixed-width field.
  *     Declarative only: nothing here resolves or performs navigation. May be {@code null}.
  * @param transactionIdFilter the search key echoed back into the identifier entry field of the map,
  *     sixteen characters wide. Present so the screen can redisplay what the operator typed. Carried
  *     exactly as received and never parsed as a number. May be {@code null}.
- * @param pageNumber the page indicator the screen displays, eight characters wide and alphanumeric
+ * @param displayedPageNumber the page indicator the screen displays, eight characters wide and alphanumeric
  *     rather than numeric, which is why it is text. Display value only; the browse cursors in
  *     {@link PageMetadata} are authoritative for navigation. May be {@code null}.
  * @param message the single summary message for this response, seventy-eight characters wide to
@@ -206,12 +149,12 @@ import java.util.List;
  * @param error whether this response reports an error condition, stated explicitly rather than
  *     inferred from {@code message}. The five boundary messages are informational and are reported
  *     with this indicator clear.
- * @param focusFieldName the identity of the field the client should place the cursor in, named by its
+ * @param focusScreenFieldId the identity of the field the client should place the cursor in, named by its
  *     map field name and bounded at the widest such name in this mapset. An identity only: never a
  *     row or column position, never a sentinel index and never a terminal attribute value. May be
  *     {@code null} when no field is nominated.
- * @param screenTitleLine1 the first screen title line, forty characters wide. May be {@code null}.
- * @param screenTitleLine2 the second screen title line, forty characters wide. Declared separately
+ * @param title01 the first screen title line, forty characters wide. May be {@code null}.
+ * @param title02 the second screen title line, forty characters wide. Declared separately
  *     from the first because the map declares two independent title fields. May be {@code null}.
  * @param currentDate the current date as the screen renders it, eight characters wide. Text, not a
  *     temporal type, and never reformatted. May be {@code null}.
@@ -224,81 +167,37 @@ import java.util.List;
  */
 public record TransactionListResponse(
         List<TransactionRow> rows,
-        PageMetadata page,
-        NavigationContext navigation,
+        PageMetadata pageMetadata,
+        NavigationContext navigationContext,
         String nextRoute,
         @Size(max = TransactionListResponse.TRANSACTION_ID_LENGTH) String transactionIdFilter,
-        @Size(max = TransactionListResponse.PAGE_NUMBER_LENGTH) String pageNumber,
+        @Size(max = TransactionListResponse.DISPLAYED_PAGE_NUMBER_LENGTH) String displayedPageNumber,
         @Size(max = TransactionListResponse.MESSAGE_LENGTH) String message,
         boolean error,
-        @Size(max = TransactionListResponse.FOCUS_FIELD_NAME_LENGTH) String focusFieldName,
-        @Size(max = TransactionListResponse.SCREEN_TITLE_LENGTH) String screenTitleLine1,
-        @Size(max = TransactionListResponse.SCREEN_TITLE_LENGTH) String screenTitleLine2,
+        @Size(max = TransactionListResponse.SCREEN_FIELD_ID_LENGTH) String focusScreenFieldId,
+        @Size(max = TransactionListResponse.SCREEN_TITLE_LENGTH) String title01,
+        @Size(max = TransactionListResponse.SCREEN_TITLE_LENGTH) String title02,
         @Size(max = TransactionListResponse.CURRENT_DATE_LENGTH) String currentDate,
         @Size(max = TransactionListResponse.CURRENT_TIME_LENGTH) String currentTime,
         @Size(max = TransactionListResponse.TRANSACTION_NAME_LENGTH) String transactionName,
         @Size(max = TransactionListResponse.PROGRAM_NAME_LENGTH) String programName) {
 
-    /**
-     * Width in characters of the row selection indicator: 1.
-     *
-     * <p>The legacy width of each selection field in the ten row families of
-     * {@code app/cpy-bms/COTRN00.CPY}, corroborated by the corresponding mapset field in
-     * {@code app/bms/COTRN00.bms}. One character, because the screen accepts a single selection
-     * character per row.</p>
-     *
-     * <p>The bound measures and never alters: it reports an over-long value and leaves a blank or
-     * space-valued one exactly as received. It deliberately does not restrict the value to the one
-     * character the program accepts, because rejecting an unexpected character here would replace the
-     * program's own message-bearing validation with an unordered constraint violation.</p>
-     */
     public static final int SELECTION_LENGTH = 1;
 
-    /**
-     * Width in characters of a transaction identifier: 16.
-     *
-     * <p>The legacy width of each row identifier field and of the identifier entry field in
-     * {@code app/cpy-bms/COTRN00.CPY}, matching the identifier at the head of the 350-byte
-     * transaction record declared at {@code app/cpy/CVTRA05Y.cpy}. Both the row identifier and the
-     * echoed search key share this constant because they are the same kind of value at the same
-     * declared width, not because two widths happen to coincide.</p>
-     *
-     * <p>This is an alphanumeric identifier, never a number. Its leading zeros and its
-     * sixteen-character external width are contractual, and the width is compared directly by the
-     * byte-equivalence acceptance criterion.</p>
-     */
     public static final int TRANSACTION_ID_LENGTH = 16;
 
     /**
-     * Width in characters of the row date as this screen presents it: 8.
-     *
-     * <p>The legacy width of each row date field in {@code app/cpy-bms/COTRN00.CPY}. The value is
-     * assembled at {@code app/cbl/COTRN00C.cbl} lines 385 to 388 from the date portion of the
-     * origination timestamp of the transaction record, into a work field declared at line 57 as eight
-     * characters with a two-digit year, initialised to a value that is not a valid calendar date.</p>
-     *
-     * <p><strong>This is why the row date is text.</strong> A two-digit-year presentation string is
-     * not a date value, and the initial value could not be held by any temporal type, so the row date
-     * is carried verbatim and is never parsed, reformatted or widened. Declared separately from
-     * {@link #CURRENT_DATE_LENGTH} and {@link #CURRENT_TIME_LENGTH}: three unrelated fields whose
-     * widths coincide, none derived from another. The transaction view and add screens present
-     * ten-character dates, and that width is theirs and is not shared with this one.</p>
+     * Width in characters of the row date as this screen presents it: 8. The program builds a
+     * two-digit-year presentation string rather than a calendar value, and the work field it is built
+     * in is initialised to something that is not a valid date at all, so no temporal type could hold
+     * it and parsing or reformatting would alter what the screen shows.
      */
     public static final int DISPLAYED_DATE_LENGTH = 8;
 
     /**
-     * Width in characters of the row description as this screen presents it: 26.
-     *
-     * <p>The legacy width of each row description field in {@code app/cpy-bms/COTRN00.CPY}, and a
-     * genuine truncation rather than the stored width: the row-population paragraph at
-     * {@code app/cbl/COTRN00C.cbl} line 395 moves the hundred-character description of the
-     * transaction record declared at {@code app/cpy/CVTRA05Y.cpy} into this twenty-six-character
-     * field, discarding the remainder.</p>
-     *
-     * <p><strong>Three different widths exist for one logical value and none may be unified.</strong>
-     * A hundred characters are stored, sixty are presented by the transaction view and add screens,
-     * and twenty-six are presented here. Sharing a constant, or introducing a common base type or
-     * interface across the three, would silently change what one of the three screens presents.</p>
+     * Width in characters of the row description as this screen presents it: 26. A genuine truncation
+     * of the hundred-character stored description; neither that width nor the sixty characters the
+     * transaction view and add screens present may be substituted here.
      */
     public static final int DESCRIPTION_LENGTH = 26;
 
@@ -307,16 +206,34 @@ public record TransactionListResponse(
      * amount field {@code TRAN-AMT PIC S9(09)V99} declared at {@code app/cpy/CVTRA05Y.cpy}, matching
      * the fixed-scale numeric column the value is persisted in.
      *
-     * <p><strong>Declared as the contract, never applied here.</strong> This constant states the scale
-     * that amounts crossing this boundary carry; it is not an instruction to rescale one. No scaling
-     * call, rounding mode, precision context or numeric formatter appears anywhere in this package.
-     * The estate specifies no rounding on any arithmetic statement, so every store into a two-decimal
-     * field truncates toward zero, and that truncation is applied in exactly one component &mdash; the
-     * module's zoned-decimal codec &mdash; so that a single rounding policy governs the whole module.
-     * A value published here is already at this scale; a value that is not is a defect in the service
-     * that produced it, not something for a data-transfer type to silently correct.</p>
+     * <p><strong>Stated as the contract, and now checked - but still never applied.</strong> This
+     * constant states the scale that amounts crossing this boundary carry; it is not an instruction to
+     * rescale one. No scaling call, rounding mode, precision context or numeric formatter appears
+     * anywhere in this package. The estate specifies no rounding on any arithmetic statement, so every
+     * store into a two-decimal field truncates toward zero, and that truncation is applied in exactly
+     * one component &mdash; the module's zoned-decimal codec &mdash; so that a single rounding policy
+     * governs the whole module.</p>
+     *
+     * <p>A value published here is already at this scale, and a value that is not is a defect in the
+     * service that produced it. Where this constant previously only <em>described</em> that
+     * expectation, the row's canonical constructor now <em>refuses</em> a value that contradicts it.
+     * The distinction between refusing and correcting is the whole of the difference: a wrong scale is
+     * reported to the producer at construction, and is never quietly repaired into a value the client
+     * would then receive as though it had been published that way. A scale that is documented but
+     * unchecked is a scale a producer can break without anyone noticing, which is precisely what a
+     * published schema promising exact precision must not allow.</p>
      */
     public static final int AMOUNT_SCALE = 2;
+
+    /**
+     * The number of integer digits the row amount may carry: 9 &mdash; the nine integer digits of the
+     * same {@code TRAN-AMT PIC S9(09)V99} field. With {@link #AMOUNT_SCALE} this gives the total
+     * precision of eleven that the relational column declares.
+     *
+     * <p>Public for the same reason as the scale: a service that builds a row and a test that checks
+     * one need one authority for the figure rather than each restating it.</p>
+     */
+    public static final int AMOUNT_INTEGER_DIGITS = 9;
 
     /**
      * Width in characters of the displayed page indicator on this map: 8.
@@ -331,177 +248,82 @@ public record TransactionListResponse(
      * screen's own width keeps the two contracts independent, so a change to one map cannot silently
      * alter the other.</p>
      */
-    public static final int PAGE_NUMBER_LENGTH = 8;
+    public static final int DISPLAYED_PAGE_NUMBER_LENGTH = 8;
 
-    /**
-     * Width in characters of the summary message field on this map: 78.
-     *
-     * <p>The legacy width of the message field in {@code app/cpy-bms/COTRN00.CPY}, corroborated by the
-     * mapset definition in {@code app/bms/COTRN00.bms}.</p>
-     *
-     * <p><strong>Seventy-eight, not eighty.</strong> The card detail and card update maps declare
-     * eighty-character message fields; this map declares seventy-eight. The widths are per-map and are
-     * not shared, so no constant crosses maps. Every published message constant below fits within this
-     * width, and the bound reports an over-long value rather than truncating one, so a message is never
-     * silently shortened.</p>
-     */
     public static final int MESSAGE_LENGTH = 78;
 
     /**
-     * Width in characters of a nominated field's identity: 7.
-     *
-     * <p>Derived from the mapset definition {@code app/bms/COTRN00.bms}, in which every one of the
-     * fifty-eight named fields has a name of at most seven characters. Seven is the generator's own
-     * ceiling: it appends a one-character suffix to each field name to form the eight-character
-     * symbolic names in {@code app/cpy-bms/COTRN00.CPY}, so a longer name could not be generated.</p>
-     *
-     * <p>The nominated field is an identity and nothing more. No row or column position, no sentinel
-     * index and no terminal attribute value is modelled anywhere in this contract.</p>
+     * Width in characters of a nominated field's identity: 7 - the widest field name this mapset
+     * declares.
      */
-    public static final int FOCUS_FIELD_NAME_LENGTH = 7;
+    public static final int SCREEN_FIELD_ID_LENGTH = 7;
 
-    /**
-     * Width in characters of each screen title line: 40 &mdash; the legacy width of both title fields
-     * in {@code app/cpy-bms/COTRN00.CPY}.
-     *
-     * <p>One constant governs both title lines because they are two instances of the same field kind at
-     * the same declared width, which is a different situation from two unrelated fields whose widths
-     * coincide. Both are populated by the header paragraph at {@code app/cbl/COTRN00C.cbl} line 567.</p>
-     */
     public static final int SCREEN_TITLE_LENGTH = 40;
 
-    /**
-     * Width in characters of the displayed current date: 8 &mdash; the legacy width of the current-date
-     * field in {@code app/cpy-bms/COTRN00.CPY}, populated by the header paragraph at
-     * {@code app/cbl/COTRN00C.cbl} line 567.
-     *
-     * <p>Declared separately from {@link #DISPLAYED_DATE_LENGTH} and {@link #CURRENT_TIME_LENGTH} even
-     * though all three are eight: a screen header date, a row date and a clock time are unrelated
-     * fields whose widths coincide by accident, and deriving any one from another would couple three
-     * independent parts of the screen contract. Carried as text and never reformatted.</p>
-     */
     public static final int CURRENT_DATE_LENGTH = 8;
 
-    /**
-     * Width in characters of the displayed current time: 8 &mdash; the legacy width of the current-time
-     * field in {@code app/cpy-bms/COTRN00.CPY}, populated by the header paragraph at
-     * {@code app/cbl/COTRN00C.cbl} line 567. Declared separately from {@link #CURRENT_DATE_LENGTH} for
-     * the reason given there. Carried as text and never reformatted.
-     */
     public static final int CURRENT_TIME_LENGTH = 8;
 
-    /**
-     * Width in characters of the displayed transaction identifier: 4 &mdash; the legacy width of the
-     * transaction-name field in {@code app/cpy-bms/COTRN00.CPY}, matching the four-character CICS
-     * transaction identifier width used throughout the estate. Populated by the header paragraph at
-     * {@code app/cbl/COTRN00C.cbl} line 567.
-     */
     public static final int TRANSACTION_NAME_LENGTH = 4;
 
-    /**
-     * Width in characters of the displayed program name: 8 &mdash; the legacy width of the
-     * program-name field in {@code app/cpy-bms/COTRN00.CPY}, populated by the header paragraph at
-     * {@code app/cbl/COTRN00C.cbl} line 567.
-     *
-     * <p>Declared separately from the three eight-character date, time and page-indicator constants
-     * above: a program name is an unrelated field whose width coincides with theirs, and none of the
-     * four is derived from any other.</p>
-     */
     public static final int PROGRAM_NAME_LENGTH = 8;
 
     /**
      * Message reporting that the selection character entered against a row is not the one the screen
-     * accepts, emitted from the enter-key paragraph at {@code app/cbl/COTRN00C.cbl} line 199.
-     *
-     * <p><strong>Singular by contract.</strong> This screen accepts exactly one selection character, so
-     * the text names a single valid value. The administrative user-list screen accepts two and phrases
-     * its equivalent message in the plural. The two texts are separate external contracts and must
-     * never be unified, generalised or generated from a shared template.</p>
-     *
-     * <p>Unlike the five boundary messages below, this text carries no trailing ellipsis at all.</p>
+     * accepts. <strong>Singular by contract:</strong> this screen accepts exactly one selection
+     * character, whereas the administrative user-list screen accepts two and phrases its equivalent
+     * in the plural. The two are separate external contracts and must never be unified, generalised
+     * or generated from a shared template.
      */
     public static final String MESSAGE_INVALID_SELECTION = "Invalid selection. Valid value is S";
 
     /**
-     * Message reporting that the identifier entered in the search field is not numeric, emitted from
-     * the enter-key paragraph at {@code app/cbl/COTRN00C.cbl} line 214.
-     *
-     * <p><strong>Note the space before the ellipsis.</strong> This text alone separates its three dots
-     * from the preceding word; the five boundary messages below attach theirs directly. Both patterns
-     * are reproduced exactly as emitted, because the interface-contract acceptance criterion compares
-     * every message character for character.</p>
-     *
-     * <p>The identifier itself remains a sixteen-character alphanumeric value in this contract. That the
-     * program applies a numeric test to operator input does not make the stored identifier a number,
-     * and the test itself is a service responsibility: nothing in this file inspects a value.</p>
+     * Message reporting that the identifier entered in the search field is not numeric. That the
+     * program applies a numeric test to operator input does not make the stored identifier a number:
+     * it remains a sixteen-character alphanumeric value in this contract, and the test itself is a
+     * service responsibility.
      */
     public static final String MESSAGE_TRAN_ID_NOT_NUMERIC = "Tran ID must be Numeric ...";
 
     /**
-     * Top-of-browse message emitted when the operator requests the preceding page while the screen
-     * already shows the first one, from the backward attention-key paragraph beginning at
-     * {@code app/cbl/COTRN00C.cbl} line 234 and reporting at line 248.
-     *
-     * <p>The first of <strong>three distinct top-of-browse texts</strong>. This one is emitted before
-     * any access is attempted, which is why it says "already": the request was declined and nothing
-     * moved. It is not interchangeable with {@link #MESSAGE_AT_TOP} or {@link #MESSAGE_REACHED_TOP},
-     * which are emitted by the browse primitives themselves. Informational, not an error.</p>
+     * Top-of-browse message emitted from the backward attention-key path, before any access is
+     * attempted - which is why it says "already". The first of three distinct top-of-browse texts and
+     * interchangeable with neither of the others. Informational, not an error.
      */
     public static final String MESSAGE_ALREADY_AT_TOP = "You are already at the top of the page...";
 
     /**
-     * Bottom-of-browse message emitted when the operator requests the following page while the screen
-     * already shows the last one, from the forward attention-key paragraph beginning at
-     * {@code app/cbl/COTRN00C.cbl} line 257 and reporting at line 270.
-     *
-     * <p>The first of <strong>two distinct bottom-of-browse texts</strong>, and the counterpart of
-     * {@link #MESSAGE_ALREADY_AT_TOP} on the forward path: emitted before any access is attempted,
-     * which is why it too says "already". Not interchangeable with {@link #MESSAGE_REACHED_BOTTOM}.
-     * Informational, not an error.</p>
+     * Bottom-of-browse message emitted from the forward attention-key path, before any access is
+     * attempted. The counterpart of {@link #MESSAGE_ALREADY_AT_TOP}, and not interchangeable with
+     * {@link #MESSAGE_REACHED_BOTTOM}. Informational, not an error.
      */
     public static final String MESSAGE_ALREADY_AT_BOTTOM = "You are already at the bottom of the page...";
 
     /**
-     * Top-of-browse message emitted while positioning the browse, from the browse-positioning paragraph
-     * beginning at {@code app/cbl/COTRN00C.cbl} line 591 and reporting at line 608.
-     *
-     * <p>The second of the three top-of-browse texts, and <strong>deliberately without the word
-     * "already"</strong>. It is emitted by the access itself rather than by an attention-key check, so
-     * it reports where the browse landed rather than declining a request. Distinct from both
-     * {@link #MESSAGE_ALREADY_AT_TOP} and {@link #MESSAGE_REACHED_TOP}; the three are emitted from
-     * three different paragraphs and are never merged. Informational, not an error.</p>
+     * Top-of-browse message emitted while positioning the browse, and <strong>deliberately without
+     * the word "already"</strong>: the access itself reports where the browse landed rather than
+     * declining a request. Informational, not an error.
      */
     public static final String MESSAGE_AT_TOP = "You are at the top of the page...";
 
     /**
-     * Bottom-of-browse message emitted when a forward read reaches the end of the browse, from the
-     * forward-read paragraph beginning at {@code app/cbl/COTRN00C.cbl} line 624 and reporting at
-     * line 642.
-     *
-     * <p>The second of the two bottom-of-browse texts, phrased <strong>"have reached"</strong> because an
-     * access was attempted and the end was discovered by its outcome. Distinct from
-     * {@link #MESSAGE_ALREADY_AT_BOTTOM}, which is emitted before any access. Informational, not an
-     * error.</p>
+     * Bottom-of-browse message emitted when a forward read reaches the end of the browse, phrased
+     * "have reached" because an access was attempted and the end was discovered by its outcome.
+     * Informational, not an error.
      */
     public static final String MESSAGE_REACHED_BOTTOM = "You have reached the bottom of the page...";
 
     /**
-     * Top-of-browse message emitted when a backward read reaches the start of the browse, from the
-     * backward-read paragraph beginning at {@code app/cbl/COTRN00C.cbl} line 658 and reporting at
-     * line 676.
-     *
-     * <p>The third of the three top-of-browse texts, phrased <strong>"have reached"</strong> for the same
-     * reason as {@link #MESSAGE_REACHED_BOTTOM}: the boundary was discovered by an access outcome. The
-     * three top texts &mdash; this one, {@link #MESSAGE_ALREADY_AT_TOP} and {@link #MESSAGE_AT_TOP}
-     * &mdash; report the same physical boundary reached by three different mechanisms, and each is
-     * published separately because each is compared character for character. Informational, not an
-     * error.</p>
+     * Top-of-browse message emitted when a backward read reaches the start of the browse, phrased
+     * "have reached" for the same reason as {@link #MESSAGE_REACHED_BOTTOM}. The three top texts
+     * report the same physical boundary reached by three different mechanisms and each is published
+     * separately because each is compared character for character. Informational, not an error.
      */
     public static final String MESSAGE_REACHED_TOP = "You have reached the top of the page...";
 
     /**
-     * Canonical constructor. Makes the row list safe to publish and leaves every other component
-     * exactly as supplied.
+     * Canonical constructor. Replaces the row list with an unmodifiable copy - a {@code null} list
+     * becoming an empty one - and leaves every other component exactly as supplied.
      *
      * <p>Exactly one thing happens here: the row list is replaced by an unmodifiable copy, and a
      * {@code null} list becomes an empty list so that no caller has to distinguish "no rows" from
@@ -512,60 +334,72 @@ public record TransactionListResponse(
      * not do.</strong> The list is not padded out to the screen depth, because a short final page
      * legitimately carries fewer rows and the legacy screen simply leaves the surplus lines blank. It is
      * not sorted or reversed, because the service has already placed the rows in presentation order and
-     * a backward page is deliberately the reverse of its read order. It is not truncated or
-     * size-checked, because enforcing a depth here would silently discard data the browse returned
-     * rather than surfacing the defect. No component is trimmed, padded, case-folded or reformatted, and
-     * no amount is rescaled or rounded: legacy fixed-width values are space-significant, and rescaling
-     * belongs to the module's zoned-decimal codec alone.</p>
+     * a backward page is deliberately the reverse of its read order. It is not truncated, because
+     * discarding a row the browse returned would hide the defect rather than surface it. No component
+     * is trimmed, padded, case-folded or reformatted, and no amount is rescaled or rounded: legacy
+     * fixed-width values are space-significant, and rescaling belongs to the module's zoned-decimal
+     * codec alone.</p>
+     *
+     * <p><strong>The row count is checked, and checking is not truncating.</strong> The screen declares
+     * {@link #ROW_COUNT} row families, so a list holding more rows than that describes a screen that
+     * does not exist and could not be presented. It is <em>rejected</em>, which surfaces the defect at
+     * the boundary where it can still be attributed, rather than silently dropping the surplus - the
+     * outcome the paragraph above rules out. A <em>shorter</em> list is accepted exactly as supplied,
+     * because a short final page legitimately carries fewer rows and the legacy screen simply leaves
+     * the surplus lines blank, so this is an upper bound and never a fixed length.</p>
+     *
+     * @throws IllegalArgumentException if the row list holds more rows than the screen has row families
      */
     public TransactionListResponse {
         rows = (rows == null) ? List.of() : List.copyOf(rows);
+        if (rows.size() > ROW_COUNT) {
+            throw new IllegalArgumentException("rows may hold at most " + ROW_COUNT
+                    + " entries, because that is how many row families the transaction-list screen"
+                    + " declares, but it holds " + rows.size());
+        }
     }
+
+    /**
+     * The number of row families the transaction-list screen declares: 10.
+     *
+     * <p>Screen shape rather than a tuning figure - the number of lines the operator sees. The map
+     * declares ten row families in {@code app/cpy-bms/COTRN00.CPY}, and the program's own bounds agree:
+     * the fill loop runs while the index is not greater than ten at {@code app/cbl/COTRN00C.cbl} line
+     * 290 and the row walk stops at eleven at line 297. Stated here because it is the one thing about
+     * a page this contract can check, and left absent from the request contract's row-count reasoning
+     * for the reason recorded there.</p>
+     *
+     * <p>It is not a page size a caller may choose, not a limit a client may raise or lower, and not a
+     * performance guard; decision log entry DL-073 records that the module asserts no performance
+     * target at all.</p>
+     */
+    public static final int ROW_COUNT = 10;
 
     /**
      * One row of the transaction-list screen &mdash; the five values a single row family of
      * {@code app/cpy-bms/COTRN00.CPY} presents, modelled once instead of ten times.
      *
-     * <p>The map declares ten such families and the program fills them by an indexed cascade in the
-     * row-population paragraph at {@code app/cbl/COTRN00C.cbl} lines 381 to 449, clearing them in the
-     * companion paragraph at line 450. Because every family has an identical shape, one record type
-     * carried in a list reproduces the screen exactly while collapsing what would otherwise be fifty
-     * discrete components.</p>
+     * <p>Every family has an identical shape, so one record type carried in a list reproduces the
+     * screen exactly while collapsing what would otherwise be fifty discrete components. The
+     * generated field-name suffixes are not reproduced - they are inconsistent artefacts of how the
+     * map generator forms names and carry no meaning - and a row's position is its index in the
+     * enclosing list. The generated length, flag and attribute items and the terminal-area filler are
+     * likewise absent as terminal plumbing.</p>
      *
-     * <p><strong>The generated field-name suffixes are not reproduced.</strong> They are inconsistent
-     * &mdash; four digits on the selection indicator, two on the identifier, date and description, and
-     * three on the amount &mdash; purely as an artefact of how the map generator forms eight-character
-     * names, and they carry no meaning whatsoever. Neither the suffix scheme nor the row position appears
-     * in this type: a row's position is its index in the enclosing list, which is the presentation order
-     * the service established. The generated length, flag and attribute items that accompany each map
-     * field, and the terminal-buffer filler at the head of the map, are likewise absent as terminal
-     * plumbing with no place in a REST contract.</p>
+     * <p>Every component may be {@code null} or blank, because a row the browse did not fill is blank
+     * on the legacy screen, and none is validated beyond its declared width.</p>
      *
-     * <p>Every component may be {@code null} or blank. A row the browse did not fill is blank on the
-     * legacy screen, so nothing here is required, and no component is validated beyond its declared
-     * width.</p>
-     *
-     * @param selection the selection indicator echoed back for this row, one character wide. Echoed
-     *     only: nothing here interprets it, and choosing what a selection means is the service's
-     *     responsibility. May be {@code null} or blank, which is the ordinary state of an unselected row.
-     * @param transactionId the transaction identifier, sixteen alphanumeric characters, taken from the
-     *     head of the transaction record declared at {@code app/cpy/CVTRA05Y.cpy} and moved into the row
-     *     at {@code app/cbl/COTRN00C.cbl} line 392. Text, never a number: leading zeros and the
-     *     sixteen-character external width are contractual. May be {@code null}.
-     * @param displayedDate the date as this screen renders it, eight characters wide, assembled at
-     *     {@code app/cbl/COTRN00C.cbl} lines 385 to 388 from the date portion of the transaction's
-     *     origination timestamp into a two-digit-year presentation form. Carried verbatim and never
-     *     parsed, reformatted or widened; see {@link TransactionListResponse#DISPLAYED_DATE_LENGTH} for
-     *     why it cannot be a temporal type. May be {@code null}.
-     * @param description the description as this screen presents it, twenty-six characters wide &mdash; a
-     *     genuine truncation of the hundred-character stored description, performed at
-     *     {@code app/cbl/COTRN00C.cbl} line 395. Neither the stored width nor the sixty characters the
-     *     view and add screens present may be substituted here. May be {@code null}.
-     * @param amount the transaction amount as an exact decimal at a scale of two, from the zoned-decimal
-     *     amount field of the transaction record declared at {@code app/cpy/CVTRA05Y.cpy}. Legitimately
+     * @param selection the selection indicator echoed back for this row. Echoed only: nothing here
+     *     interprets it. Blank is the ordinary state of an unselected row.
+     * @param transactionId the transaction identifier, sixteen alphanumeric characters. Text, never a
+     *     number: leading zeros and the external width are contractual.
+     * @param displayedDate the date as this screen renders it, carried verbatim and never parsed,
+     *     reformatted or widened; see {@link TransactionListResponse#DISPLAYED_DATE_LENGTH}.
+     * @param description the description as this screen presents it - a genuine truncation of the
+     *     stored value; see {@link TransactionListResponse#DESCRIPTION_LENGTH}.
+     * @param amount the transaction amount as an exact decimal at a scale of two. Legitimately
      *     negative for returns, which is why no sign constraint applies. The numeric value only: the
-     *     twelve-character edited form the screen displays is a rendering built by the program at
-     *     {@code app/cbl/COTRN00C.cbl} line 56 and is never carried here, and nothing in this package
+     *     edited form the screen displays is never carried here, and nothing in this package
      *     rescales, rounds or formats it. May be {@code null} where the row is blank.
      */
     public record TransactionRow(
@@ -573,13 +407,148 @@ public record TransactionListResponse(
             @Size(max = TransactionListResponse.TRANSACTION_ID_LENGTH) String transactionId,
             @Size(max = TransactionListResponse.DISPLAYED_DATE_LENGTH) String displayedDate,
             @Size(max = TransactionListResponse.DESCRIPTION_LENGTH) String description,
+            @Schema(description = "Row amount. Record field TRAN-AMT of CVTRA05Y.cpy: a signed zoned "
+                    + "decimal with nine integer digits and two decimal places, so total precision 11 "
+                    + "and scale exactly 2. The twelve-character edited form the screen displays is a "
+                    + "rendering built by the program and is deliberately not carried here; this is "
+                    + "the numeric value alone.")
             BigDecimal amount) {
 
-        // The canonical constructor generated for this record is intentionally left as generated. Every
-        // component is already immutable, so there is nothing to defensively copy, and there is nothing
-        // to validate, default or normalise: blank and space-padded values are ordinary states of a
-        // legacy fixed-width screen row, and the amount must cross this boundary at exactly the scale
-        // the service published it at. Adding a compact constructor that rescaled the amount or trimmed
-        // a string would change the bytes the screen presents.
+        /**
+         * Canonical constructor. Stores every component exactly as supplied and refuses an amount whose
+         * decimal shape contradicts the record field it represents.
+         *
+         * <p>Nothing is copied, because every component is already immutable. Nothing is defaulted or
+         * normalised: blank and space-padded values are ordinary states of a legacy fixed-width screen
+         * row and cross this boundary untouched.</p>
+         *
+         * <p><strong>The amount is still not rescaled.</strong> It must cross this boundary at exactly
+         * the scale the service published it at, and it does - this constructor performs no rescaling,
+         * no rounding, no truncation and no formatting, and it changes no byte of any component. What it
+         * adds is a refusal: an amount whose scale is not {@link #AMOUNT_SCALE}, or which needs more
+         * than {@link #AMOUNT_INTEGER_DIGITS} integer digits, cannot be what the record field holds, so
+         * the producer is told at construction instead of the client receiving a payload whose precision
+         * silently contradicts the published schema. Refusing a wrong value and repairing one are
+         * different acts, and only the second would change the bytes the screen presents. A
+         * {@code null} amount is accepted untouched, because a blank row legitimately carries none.</p>
+         *
+         * @throws IllegalArgumentException if {@code amount} carries a scale other than
+         *     {@link #AMOUNT_SCALE} or needs more than {@link #AMOUNT_INTEGER_DIGITS} integer digits
+         */
+        public TransactionRow {
+            requireRecordShape(amount);
+        }
+
+        /**
+         * Returns a diagnostic representation of one row that discloses neither the transaction it
+         * identifies nor the amount it moved.
+         *
+         * <p><strong>Why the implicit record rendering could not stand.</strong> A record's generated
+         * {@code toString()} prints every component. A page holds up to ten rows, so a single
+         * stringified response would have emitted ten transaction identifiers beside their descriptions
+         * and their amounts - a complete statement extract in one log line. Any structured logger,
+         * framework diagnostic, failed assertion, exception message or string interpolation touching a
+         * row would have produced it.</p>
+         *
+         * <p><strong>Why the remainder is retained.</strong> The echoed selection character and the
+         * displayed date identify nobody on their own: the date is the screen's own rendering of when a
+         * movement was processed, and the selection is which line the operator marked. They are the part
+         * of a row worth seeing in a diagnostic.</p>
+         *
+         * <p><strong>Withholding is confined to this method.</strong> Every accessor returns its
+         * component unaltered and the serialized payload is unaffected, because the screen presents the
+         * identifier and the amount in full.</p>
+         *
+         * @return the row layout with the identifier, the description and the amount replaced by a
+         *     fixed placeholder
+         */
+        @Override
+        public String toString() {
+            return "TransactionRow["
+                    + "selection=" + selection
+                    + ", transactionId=" + REDACTION_PLACEHOLDER
+                    + ", displayedDate=" + displayedDate
+                    + ", description=" + REDACTION_PLACEHOLDER
+                    + ", amount=" + REDACTION_PLACEHOLDER
+                    + "]";
+        }
+    }
+
+    /**
+     * Confirms that a row amount has the decimal shape of the record field it represents.
+     *
+     * <p>Reads only the amount's own scale and precision. It performs no arithmetic on the value, does
+     * not re-scale it, does not round it and does not format it, so it cannot change what the client
+     * receives. The failure text names the offending scale or digit count and never the amount itself,
+     * so a rejected value cannot reach a log through the diagnostic that reports it.
+     *
+     * @param amount the amount to check, or {@code null} for a blank row
+     * @throws IllegalArgumentException if the amount does not fit the record field
+     */
+    private static void requireRecordShape(final BigDecimal amount) {
+        if (amount == null) {
+            return;
+        }
+        if (amount.scale() != AMOUNT_SCALE) {
+            throw new IllegalArgumentException("amount must carry scale " + AMOUNT_SCALE
+                    + ", because its record field stores two decimal places, but its scale is "
+                    + amount.scale());
+        }
+        final int integerDigits = amount.precision() - amount.scale();
+        if (integerDigits > AMOUNT_INTEGER_DIGITS) {
+            throw new IllegalArgumentException("amount must fit " + AMOUNT_INTEGER_DIGITS
+                    + " integer digits, because that is the width of its record field, but it needs "
+                    + integerDigits);
+        }
+    }
+
+    /** Fixed text substituted for every regulated value in the two renderings below. */
+    private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
+
+    /**
+     * Returns a diagnostic representation that mirrors the response layout and discloses no regulated
+     * value.
+     *
+     * <p><strong>Why the implicit record rendering could not stand.</strong> A record's generated
+     * {@code toString()} prints every component, and two of these carry regulated content: the row list
+     * holds up to ten transaction identifiers with their descriptions and amounts, and the browse cursor
+     * retains the boundary record keys of the displayed page. The row list is withheld whole rather than
+     * per row, as a second line of defence behind each row's own rendering, and the cursor is withheld
+     * whole because its own rendering does not withhold its keys and this type must not become the path
+     * by which they surface. The echoed search key is withheld for the same reason the rows are: it is
+     * the identifier the operator was looking for.</p>
+     *
+     * <p><strong>Why the remainder is retained.</strong> The screen furniture, the page indicator, the
+     * summary message, the error indicator and the nominated field are presentation state that
+     * identifies nobody, and they are the part of a response worth seeing in a diagnostic. The row count
+     * is reported in place of the rows, because how many rows a page carried is the useful
+     * non-identifying fact about it. The navigation state is printed by delegation because it withholds
+     * its own identifying values.</p>
+     *
+     * <p><strong>Withholding is confined to this method.</strong> Every accessor returns its component
+     * exactly as supplied and the serialized payload is unaffected.</p>
+     *
+     * @return the response layout with each regulated component replaced by a fixed placeholder
+     */
+    @Override
+    public String toString() {
+        return "TransactionListResponse["
+                + "rowCount=" + rows.size()
+                + ", rows=" + REDACTION_PLACEHOLDER
+                + ", pageMetadata=" + REDACTION_PLACEHOLDER
+                + ", navigationContext=" + navigationContext
+                + ", nextRoute=" + nextRoute
+                + ", transactionIdFilter=" + REDACTION_PLACEHOLDER
+                + ", displayedPageNumber=" + displayedPageNumber
+                + ", message=" + message
+                + ", error=" + error
+                + ", focusScreenFieldId=" + focusScreenFieldId
+                + ", title01=" + title01
+                + ", title02=" + title02
+                + ", currentDate=" + currentDate
+                + ", currentTime=" + currentTime
+                + ", transactionName=" + transactionName
+                + ", programName=" + programName
+                + "]";
     }
 }

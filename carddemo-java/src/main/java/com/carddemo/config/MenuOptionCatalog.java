@@ -23,183 +23,152 @@ import java.util.Optional;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Immutable catalog of the ten CardDemo user-menu options and the four administrator-menu options.
- *
- * <p>The two legacy authorities are {@code app/cpy/COMEN02Y.cpy}, whose group item
- * {@code CARDDEMO-MAIN-MENU-OPTIONS} on line 19 holds the <strong>user</strong> menu with a declared
- * population of <strong>10</strong> ({@code CDEMO-MENU-OPT-COUNT}, line 21) and whose redefining table
- * view on lines 87-92 names four components per entry &mdash; a two-digit option number, a 35-character
- * name, an eight-character target program name and a one-character user-type code &mdash; and
- * {@code app/cpy/COADM02Y.cpy}, whose {@code CARDDEMO-ADMIN-MENU-OPTIONS} on line 19 holds the
- * <strong>administrator</strong> menu with a declared population of <strong>4</strong>
- * ({@code CDEMO-ADMIN-OPT-COUNT}, line 20) and whose table view on lines 44-48 names only
- * <em>three</em> components. Only member names, field names, declared widths, line numbers and the menu
- * label text cross over; the label text crosses over because it is the external screen contract rather
- * than implementation detail.
+ * Immutable catalog of the ten CardDemo user-menu options and the four administrator-menu options,
+ * declared by {@code app/cpy/COMEN02Y.cpy} and {@code app/cpy/COADM02Y.cpy}. The menu label text is the
+ * only content carried across verbatim, because it is the external screen contract rather than
+ * implementation detail.
  *
  * <p><strong>Populated count, never table capacity.</strong> The legacy tables are declared larger than
  * they are filled &mdash; capacity twelve and nine against populations of ten and four &mdash; and the
- * count items are the authoritative sizes. This catalog publishes exactly
- * {@link #USER_MENU_OPTION_COUNT} and {@link #ADMIN_MENU_OPTION_COUNT} entries and never pads to
- * capacity, because modelling capacity would place two additional empty rows on the user menu and five on
- * the administrator menu &mdash; a visible behavioural regression rather than a harmless generalisation.
- * Neither capacity figure is published as a value anywhere in this class; both are named here only so a
- * reader knows the tables are bigger than their contents, and {@link #findUserOption(int)} deliberately
- * reports an empty result for the unpopulated tail positions.
+ * count items are the authoritative sizes. This catalog publishes exactly {@link #USER_MENU_OPTION_COUNT}
+ * and {@link #ADMIN_MENU_OPTION_COUNT} entries and never pads to capacity, because modelling capacity would
+ * place two additional empty rows on the user menu and five on the administrator menu &mdash; a visible
+ * behavioural regression rather than a harmless generalisation. Neither capacity figure is published as a
+ * value anywhere in this class, and {@link #findUserOption(int)} deliberately reports an empty result for
+ * the unpopulated tail positions.
  *
- * <p><strong>Two entry shapes, deliberately not unified.</strong> A user entry occupies
- * {@value #USER_MENU_ENTRY_LENGTH} bytes because it carries the one-character user-type code; an
- * administrator entry occupies {@value #ADMIN_MENU_ENTRY_LENGTH} bytes because it has no such component
- * at all. {@link UserMenuOption} and {@link AdminMenuOption} therefore stay separate record types: a
- * single shared record would have to invent a user-type value for administrator rows, and inventing a
- * value the legacy layout does not contain is a fidelity defect, not a convenience.
+ * <p><strong>Two entry shapes, deliberately not unified.</strong> A user entry carries a one-character
+ * user-type code and an administrator entry has no such component at all, so {@link UserMenuOption} and
+ * {@link AdminMenuOption} stay separate record types: a single shared record would have to invent a
+ * user-type value for administrator rows, and inventing a value the legacy layout does not contain is a
+ * fidelity defect rather than a convenience.
  *
  * <p><strong>The user-type code stays raw.</strong> {@link UserMenuOption#userType()} returns the
  * one-character code exactly as the copybook literal carries it, neither parsed into an enumeration nor
- * validated against a known set, so an unrecognised code can never make this catalog fail. Interpreting
- * the code &mdash; and deciding what an unrecognised one means &mdash; belongs to the service layer, in
- * keeping with the raw-code discipline the persistence layer applies to the security record.
+ * validated against a known set, so an unrecognised code can never make this catalog fail. Interpreting the
+ * code belongs to the service layer, in keeping with the raw-code discipline the persistence layer applies
+ * to the security record.
  *
- * <p><strong>Bean semantics.</strong> A container-managed singleton, reached by constructor injection
- * rather than static access, which mirrors how this migration treats the copybooks with wide fan-out: a
- * declaration the legacy duplicated textually in every including program becomes one injected instance.
- * The class declares no factory method, so lite mode is stated explicitly on the annotation: a full-mode
- * class is subclassed at runtime to intercept factory-method calls, which this class has none of and
- * which would forbid it from being {@code final}, and keeping it unproxied leaves the module's runtime
- * proxy and reflection surface untouched.
+ * <p>A container-managed singleton reached by constructor injection rather than static access, which mirrors
+ * how this migration treats the copybooks with wide fan-out: a declaration the legacy duplicated textually
+ * in every including program becomes one injected instance. Lite mode is stated explicitly on the
+ * annotation because the class declares no factory method: a full-mode class is subclassed at runtime to
+ * intercept factory-method calls, which would forbid it from being {@code final}, and keeping it unproxied
+ * leaves the module's runtime proxy and reflection surface untouched.
  *
- * <p><strong>This is a pure data catalog.</strong> Two closely related legacy behaviours belong to the
- * menu service that injects this bean rather than to the catalog, and are intentionally absent here so
- * that neither is implemented twice. The first is the "coming soon" rule:
- * {@code app/cbl/COMEN01C.cbl} line 138 compares the first five characters of the selected option's
- * target program name against a dummy-program literal and reports the option as not yet available when
- * they match. None of the fourteen entries published here targets a dummy program, so this catalog holds
- * no dummy entry, but the check itself must still be reproduced faithfully because the catalog is not the
- * only thing that can supply a program name to it. The second is blank-to-zero option normalisation:
- * {@code app/cbl/COADM01C.cbl} lines 45-46 and 123, and identically {@code app/cbl/COMEN01C.cbl} line
- * 123, normalise a blank in a right-justified two-character option field so that a single-digit entry
- * becomes a zero-filled two-digit value. That behaviour lives in
- * {@link com.carddemo.util.CobolStringUtils#rightJustifyZeroFill(String, int)}, which the caller applies
- * before looking an option number up here; this class performs no string normalisation of any kind.
- * Screen rendering, routing, authorisation and error decoration are likewise outside it.
+ * <p><strong>This is a pure data catalog.</strong> Two closely related legacy behaviours belong to the menu
+ * service that injects this bean, and are intentionally absent here so neither is implemented twice. The
+ * first is the "coming soon" rule: the selected option's target program name has its first five characters
+ * compared against a dummy-program literal at {@code app/cbl/COMEN01C.cbl:L146} and identically at
+ * {@code app/cbl/COADM01C.cbl:L138}, and on a match the option is reported as not available instead of
+ * being dispatched, {@code app/cbl/COMEN01C.cbl:L157-L164}. None of the fourteen entries published here
+ * targets a dummy program, so this catalog holds no dummy entry, but the check must still be reproduced
+ * faithfully because the catalog is not the only thing that can supply a program name to it. The second is
+ * blank-to-zero option normalisation, {@code app/cbl/COADM01C.cbl:L45-L46, L123} and identically
+ * {@code app/cbl/COMEN01C.cbl:L123}, which turns a single-digit entry in a right-justified two-character
+ * field into a zero-filled two-digit value; that behaviour lives in
+ * {@link com.carddemo.util.CobolStringUtils#rightJustifyZeroFill(String, int)} and the caller applies it
+ * before looking an option number up here. This class performs no string normalisation of any kind, and
+ * screen rendering, routing, authorisation and error decoration are likewise outside it.
  *
  * <p><strong>Three source anomalies are recorded rather than propagated</strong> &mdash; rows 24 to 26 of
- * the source anomaly register. The operative consequence of the first is that the commented-out
- * alternative label above user option 8 stays inactive: it is published neither as a value nor as a
- * constant nor as a conditional alternative, and option 8 is <strong>not</strong> role-gated, because
- * activating it would be feature expansion. The other two &mdash; a mislabelled title comment in both
- * copybooks and a divergent release stamp on the administrator copybook &mdash; change nothing here: the
- * data item is followed rather than the comment, and the content is migrated as found.
+ * the source anomaly register. The operative consequence of the first is that the commented-out alternative
+ * label above user option 8 stays inactive: it is published neither as a value nor as a constant nor as a
+ * conditional alternative, and option 8 is <strong>not</strong> role-gated, because activating it would be
+ * feature expansion. The other two &mdash; a mislabelled title comment in both copybooks and a divergent
+ * release stamp on the administrator copybook &mdash; change nothing here: the data item is followed rather
+ * than the comment, and the content is migrated as found.
  *
- * <p><strong>Thread safety.</strong> Stateless and deeply immutable. Both catalogs are built once with
- * the immutable {@code java.util.List} factory and held in {@code private static final} fields; both
- * element types are records whose components are {@code int} and {@code String}; there is no setter, no
- * lazily populated field and no mutable state of any kind, so the singleton is safe for unsynchronised
- * concurrent use and the published lists cannot be modified by a caller.
+ * <p>Stateless and deeply immutable. Both catalogs are built once with the immutable {@code java.util.List}
+ * factory and held in {@code private static final} fields, both element types are records of {@code int}
+ * and {@code String}, and there is no setter and no lazily populated field, so the singleton is safe for
+ * unsynchronised concurrent use and the published lists cannot be modified by a caller.
  */
 @Configuration(proxyBeanMethods = false)
 public final class MenuOptionCatalog {
 
     /**
-     * Number of populated user-menu entries, from {@code CDEMO-MENU-OPT-COUNT} in
-     * {@code app/cpy/COMEN02Y.cpy} line 21.
-     *
-     * <p>This is the populated count and not the twelve-entry capacity of the redefining table, which
-     * this class never publishes.</p>
+     * Number of populated user-menu entries declared in {@code app/cpy/COMEN02Y.cpy}. This is the
+     * populated count and not the twelve-entry capacity of the
+     * redefining table, which this class never publishes.
      */
     public static final int USER_MENU_OPTION_COUNT = 10;
 
     /**
-     * Number of populated administrator-menu entries, from {@code CDEMO-ADMIN-OPT-COUNT} in
-     * {@code app/cpy/COADM02Y.cpy} line 20.
-     *
-     * <p>This is the populated count and not the nine-entry capacity of the redefining table, which this
-     * class never publishes.</p>
+     * Number of populated administrator-menu entries declared in {@code app/cpy/COADM02Y.cpy}. This is the
+     * populated count and not the nine-entry capacity of the
+     * redefining table, which this class never publishes.
      */
     public static final int ADMIN_MENU_OPTION_COUNT = 4;
 
     /**
-     * Declared width of the option-number component in both tables, from the {@code PIC 9(02)} clauses of
-     * {@code CDEMO-MENU-OPT-NUM} and {@code CDEMO-ADMIN-OPT-NUM}. Two digits is what bounds a valid option
-     * number, which is why {@link #OPTION_NUMBER_MAXIMUM} is derived from this width rather than from the
-     * populated counts.
+     * Declared digit width of the option-number component in both tables. Two digits is what bounds a valid
+     * option number, which is why {@link #OPTION_NUMBER_MAXIMUM} is derived from this width rather than from
+     * the populated counts.
      */
     public static final int OPTION_NUMBER_WIDTH = 2;
 
     /**
-     * Highest option number that a field of {@link #OPTION_NUMBER_WIDTH} digits can hold.
-     *
-     * <p>An option number is validated against the field it occupies rather than against the current
-     * population, because the number is part of the record layout while the population is not. Requesting
-     * a number in range that no populated entry carries is an ordinary miss, not a failure.</p>
+     * Highest option number a field of {@link #OPTION_NUMBER_WIDTH} digits can hold. An option number is
+     * validated against the field it occupies rather than against the population, because the number is part
+     * of the record layout while the population is not; a number in range that no populated entry carries is
+     * an ordinary miss and not a failure.
      */
     public static final int OPTION_NUMBER_MAXIMUM = 99;
 
     /**
-     * Declared width of the option-name component in both tables, from the {@code PIC X(35)} clauses of
-     * {@code CDEMO-MENU-OPT-NAME} and {@code CDEMO-ADMIN-OPT-NAME}.
-     *
-     * <p>Every label literal in both copybooks is written out at exactly this width, space-filled on the
-     * right. The labels published by this catalog carry the visible text without that fill, because a
-     * REST payload has no fixed-width field to fill; {@link UserMenuOption#paddedLabel()} and
-     * {@link AdminMenuOption#paddedLabel()} reproduce the fixed-width form for a caller that needs the
-     * legacy field image.</p>
+     * Declared character width of the option-name component in both tables. Every label literal in both
+     * copybooks is written out at exactly this width, space-filled on the right. The labels published here
+     * carry the visible text without that fill, because a REST payload has no fixed-width field to fill;
+     * {@link UserMenuOption#paddedLabel()} and {@link AdminMenuOption#paddedLabel()} reproduce the
+     * fixed-width form for a caller that needs the legacy field image.
      */
     public static final int OPTION_LABEL_WIDTH = 35;
 
     /**
-     * Declared width of the target-program-name component in both tables, from the {@code PIC X(08)}
-     * clauses of {@code CDEMO-MENU-OPT-PGMNAME} and {@code CDEMO-ADMIN-OPT-PGMNAME}.
-     *
-     * <p>All fourteen program names occupy this width exactly, so no padding accessor is offered for
-     * them: there is nothing to pad.</p>
+     * Declared character width of the target-program-name component in both tables. All fourteen program
+     * names occupy this width exactly, so no padding accessor is offered for them: there is nothing to pad.
      */
     public static final int OPTION_PROGRAM_NAME_WIDTH = 8;
 
     /**
-     * Declared width of the user-type component, from the {@code PIC X(01)} clause of
-     * {@code CDEMO-MENU-OPT-USRTYPE} in {@code app/cpy/COMEN02Y.cpy} line 92.
-     *
-     * <p>Present in the user table only, which is why the two entry types are modelled separately.</p>
+     * Declared character width of the user-type component in {@code app/cpy/COMEN02Y.cpy}. Present in the
+     * user table only, which is why the two entry types are
+     * modelled separately.
      */
     public static final int USER_OPTION_USER_TYPE_WIDTH = 1;
 
     /**
-     * Length in bytes of one user-menu table entry: option number, option name, program name and
-     * user-type code laid end to end. Derived from the four declared widths so the figure cannot
-     * contradict them.
+     * Length in bytes of one user-menu table entry: option number, option name, program name and user-type
+     * code laid end to end. Derived from the four declared widths so the figure cannot contradict them.
      */
     public static final int USER_MENU_ENTRY_LENGTH =
             OPTION_NUMBER_WIDTH + OPTION_LABEL_WIDTH + OPTION_PROGRAM_NAME_WIDTH
                     + USER_OPTION_USER_TYPE_WIDTH;
 
     /**
-     * Length in bytes of one administrator-menu table entry: option number, option name and program name
-     * laid end to end, with no user-type component. Derived from the three declared widths, and therefore
-     * exactly {@link #USER_OPTION_USER_TYPE_WIDTH} byte shorter than {@link #USER_MENU_ENTRY_LENGTH}.
+     * Length in bytes of one administrator-menu table entry, with no user-type component. Derived from the
+     * three declared widths, and therefore exactly {@link #USER_OPTION_USER_TYPE_WIDTH} byte shorter than
+     * {@link #USER_MENU_ENTRY_LENGTH}.
      */
     public static final int ADMIN_MENU_ENTRY_LENGTH =
             OPTION_NUMBER_WIDTH + OPTION_LABEL_WIDTH + OPTION_PROGRAM_NAME_WIDTH;
 
     /**
      * The raw one-character user-type code that every one of the ten user-menu entries carries, exactly as
-     * the copybook literals write it.
-     *
-     * <p>Published as the literal code rather than an enumeration constant, so this configuration-layer
-     * catalog stays free of any dependency on the domain layer and the meaning of the code is decided in
-     * exactly one place. All ten entries carry this same code, including option 8, whose inactive
-     * commented-out variant would have suggested otherwise.</p>
+     * the copybook literals write it. Published as the literal code rather than an enumeration constant so
+     * this configuration-layer catalog stays free of any dependency on the domain layer. All ten entries
+     * carry this same code, including option 8, whose inactive commented-out variant would have suggested
+     * otherwise.
      */
     public static final String STANDARD_USER_TYPE_CODE = "U";
 
     /**
-     * The ten populated entries of {@code CDEMO-MENU-OPTIONS-DATA}, in the order the copybook declares
-     * them on lines 25 to 84 of {@code app/cpy/COMEN02Y.cpy}.
-     *
-     * <p>The order is contractual: the legacy screen renders the rows in table order and the operator
-     * selects by the number printed beside the row, so the sequence is never sorted, re-indexed or
-     * renumbered. The list is built with the immutable list factory, so it needs no defensive copy to be
-     * genuinely unmodifiable.</p>
+     * The ten populated entries the user table declares in {@code app/cpy/COMEN02Y.cpy}, in declaration
+     * order. <strong>The order is contractual:</strong> the legacy
+     * screen renders the rows in table order and the operator selects by the number printed beside the row,
+     * so the sequence is never sorted, re-indexed or renumbered. Built with the immutable list factory, so
+     * it needs no defensive copy to be genuinely unmodifiable.
      */
     private static final List<UserMenuOption> USER_MENU_OPTIONS = List.of(
             new UserMenuOption(1, "Account View", "COACTVWC", STANDARD_USER_TYPE_CODE),
@@ -216,11 +185,9 @@ public final class MenuOptionCatalog {
             new UserMenuOption(10, "Bill Payment", "COBIL00C", STANDARD_USER_TYPE_CODE));
 
     /**
-     * The four populated entries of {@code CDEMO-ADMIN-OPTIONS-DATA}, in the order the copybook declares
-     * them on lines 24 to 42 of {@code app/cpy/COADM02Y.cpy}.
-     *
-     * <p>As with the user menu the order is contractual and is never re-sorted. Each entry carries three
-     * components only; there is no user-type code to carry.</p>
+     * The four populated entries the administrator table declares in {@code app/cpy/COADM02Y.cpy}, in
+     * declaration order. As with the user menu that order is contractual and is never re-sorted. Each entry
+     * carries three components only; there is no user-type code to carry.
      */
     private static final List<AdminMenuOption> ADMIN_MENU_OPTIONS = List.of(
             new AdminMenuOption(1, "User List (Security)", "COUSR00C"),
@@ -229,87 +196,70 @@ public final class MenuOptionCatalog {
             new AdminMenuOption(4, "User Delete (Security)", "COUSR03C"));
 
     static {
-        // The copybooks state their population twice: as an explicit count item and as the number of
-        // entries actually written out. The catalogs above transcribe the entries and the count constants
-        // transcribe the count items, so their agreement is a property of the source, verified here at
-        // class initialisation. It cannot be reached while the two declarations above stay consistent.
+        // The copybooks state their population twice: as an explicit count item and as the number of entries
+        // actually written out. The catalogs transcribe the entries and the count constants transcribe the
+        // count items, so their agreement is a property of the source and is verified here at class
+        // initialisation.
         requireDeclaredPopulation(USER_MENU_OPTIONS.size(), USER_MENU_OPTION_COUNT, "CDEMO-MENU-OPT-COUNT");
         requireDeclaredPopulation(
                 ADMIN_MENU_OPTIONS.size(), ADMIN_MENU_OPTION_COUNT, "CDEMO-ADMIN-OPT-COUNT");
     }
 
     /**
-     * Creates the catalog singleton.
-     *
-     * <p>This catalog sits at the base of the dependency graph and has no collaborators, so constructor
-     * injection contributes no parameters. Declared explicitly rather than left implicit so that the
-     * absence of collaborators is a visible, reviewable property, and so that a consumer has an
-     * unambiguous single constructor to inject this bean through.</p>
+     * Creates the catalog singleton. Declared explicitly, with no parameters because this catalog sits at
+     * the base of the dependency graph and has no collaborators, so that the absence of collaborators is a
+     * visible property and a consumer has an unambiguous single constructor to inject through.
      */
     public MenuOptionCatalog() {
-        // No collaborators to inject: both catalogs are declared in this source file and are immutable.
     }
 
     /**
-     * Returns the populated user-menu options in copybook order, position 1 first.
+     * Returns the populated user-menu options in copybook order, position 1 first. The list is unmodifiable
+     * and is the same instance on every call, which is safe precisely because nothing in it can be mutated;
+     * a caller needing a different order must derive its own collection.
      *
-     * <p>The returned list is unmodifiable and is the same instance on every call, which is safe precisely
-     * because nothing in it can be mutated. Callers must not attempt to reorder or filter it in place;
-     * a caller that needs a different order must derive its own collection.</p>
-     *
-     * @return an unmodifiable list of exactly {@link #USER_MENU_OPTION_COUNT} entries, in copybook order,
-     *         never {@code null} and never empty
+     * @return an unmodifiable list of exactly {@link #USER_MENU_OPTION_COUNT} entries, in copybook order
      */
     public List<UserMenuOption> userMenuOptions() {
         return USER_MENU_OPTIONS;
     }
 
     /**
-     * Returns the populated administrator-menu options in copybook order, position 1 first.
+     * Returns the populated administrator-menu options in copybook order, position 1 first. The element type
+     * carries no user-type code, mirroring the legacy record layout.
      *
-     * <p>The returned list is unmodifiable and is the same instance on every call. Its element type
-     * carries no user-type code, mirroring the legacy record layout.</p>
-     *
-     * @return an unmodifiable list of exactly {@link #ADMIN_MENU_OPTION_COUNT} entries, in copybook order,
-     *         never {@code null} and never empty
+     * @return an unmodifiable list of exactly {@link #ADMIN_MENU_OPTION_COUNT} entries, in copybook order
      */
     public List<AdminMenuOption> adminMenuOptions() {
         return ADMIN_MENU_OPTIONS;
     }
 
     /**
-     * Returns how many user-menu options are populated, read from the catalog itself rather than restated,
-     * so that the value a caller sees can never disagree with the list it enumerates.
-     *
-     * @return {@link #USER_MENU_OPTION_COUNT}
+     * @return the populated user-menu option count, read from the catalog itself rather than restated, so it
+     *         can never disagree with the list it enumerates
      */
     public int userMenuOptionCount() {
         return USER_MENU_OPTIONS.size();
     }
 
     /**
-     * Returns how many administrator-menu options are populated, read from the catalog itself rather than
-     * restated, so that the value a caller sees can never disagree with the list it enumerates.
-     *
-     * @return {@link #ADMIN_MENU_OPTION_COUNT}
+     * @return the populated administrator-menu option count, read from the catalog itself rather than
+     *         restated, so it can never disagree with the list it enumerates
      */
     public int adminMenuOptionCount() {
         return ADMIN_MENU_OPTIONS.size();
     }
 
     /**
-     * Finds the user-menu option carrying the given option number.
+     * Finds the user-menu option carrying the given option number. Lookup walks the catalog in order and
+     * compares the number component, which is what the legacy program does when it indexes its table: there
+     * is no map, no index and no reflection behind this. An unknown number yields an empty result rather
+     * than an exception, because an operator typing an out-of-range option is ordinary input and not a
+     * programming error &mdash; and that deliberately includes the unpopulated tail positions of the legacy
+     * table, which are within its declared capacity yet carry no option.
      *
-     * <p>Lookup walks the catalog in order and compares the number component, which is the same thing the
-     * legacy program does when it indexes its table: there is no map, no index and no reflection behind
-     * this. An unknown number yields an empty result rather than an exception, because an operator typing
-     * an out-of-range option is ordinary input and not a programming error. That deliberately includes the
-     * unpopulated tail positions of the legacy table: they are within its declared capacity yet carry no
-     * option, so they are reported as absent exactly as a number far outside the range would be.</p>
-     *
-     * @param number the option number as printed beside the menu row, already normalised by the caller if
-     *               it arrived as a blank-padded field
-     * @return the matching option, or an empty {@code Optional} if no populated entry carries that number
+     * @param number the option number as printed beside the menu row, already normalised by the caller if it
+     *               arrived as a blank-padded field
      */
     public Optional<UserMenuOption> findUserOption(final int number) {
         for (final UserMenuOption option : USER_MENU_OPTIONS) {
@@ -321,15 +271,12 @@ public final class MenuOptionCatalog {
     }
 
     /**
-     * Finds the administrator-menu option carrying the given option number.
+     * Finds the administrator-menu option carrying the given option number, behaving exactly as
+     * {@link #findUserOption(int)} does over the administrator catalog: ordered comparison, no index, and an
+     * empty result for any number no populated entry carries, including the unpopulated tail positions.
      *
-     * <p>Behaves exactly as {@link #findUserOption(int)} does, over the administrator catalog: ordered
-     * comparison, no index, and an empty result for any number that no populated entry carries, including
-     * the unpopulated tail positions of the legacy table.</p>
-     *
-     * @param number the option number as printed beside the menu row, already normalised by the caller if
-     *               it arrived as a blank-padded field
-     * @return the matching option, or an empty {@code Optional} if no populated entry carries that number
+     * @param number the option number as printed beside the menu row, already normalised by the caller if it
+     *               arrived as a blank-padded field
      */
     public Optional<AdminMenuOption> findAdminOption(final int number) {
         for (final AdminMenuOption option : ADMIN_MENU_OPTIONS) {
@@ -344,10 +291,7 @@ public final class MenuOptionCatalog {
      * Verifies that a catalog's transcribed entry count matches the population its copybook count item
      * declares.
      *
-     * @param actual        number of entries actually transcribed into the catalog
-     * @param declared      population declared by the copybook count item
      * @param countItemName legacy field name of that count item, so a failure names its own authority
-     * @throws IllegalStateException if the two disagree
      */
     private static void requireDeclaredPopulation(
             final int actual, final int declared, final String countItemName) {
@@ -359,16 +303,12 @@ public final class MenuOptionCatalog {
     }
 
     /**
-     * Validates an option number against the two-digit field it occupies in the legacy table.
+     * Validates an option number against the two-digit field it occupies in the legacy table. The bound is
+     * the field's capacity rather than the population, because the number belongs to the record layout while
+     * the population does not. Zero and negatives are rejected because the legacy tables number their rows
+     * from one.
      *
-     * <p>The bound is the field's capacity rather than the current population, because the number belongs
-     * to the record layout while the population does not. Zero and negatives are rejected because the
-     * legacy tables number their rows from one.</p>
-     *
-     * @param number        the option number to validate
-     * @param componentName legacy field name of the number component, used in the failure message
      * @return {@code number}, unchanged, so the caller can validate and assign in one expression
-     * @throws IllegalArgumentException if the number cannot occupy the declared field
      */
     private static int requireOptionNumber(final int number, final String componentName) {
         if (number < 1 || number > OPTION_NUMBER_MAXIMUM) {
@@ -380,19 +320,13 @@ public final class MenuOptionCatalog {
     }
 
     /**
-     * Validates a text component against the width its {@code PIC} clause declares.
+     * Validates a text component against its declared width. The value is checked and returned unchanged:
+     * nothing here trims, pads, folds case or otherwise normalises it, because a catalog that silently
+     * rewrote its own labels would stop being a faithful transcription. A value shorter than the declared
+     * width is accepted, since COBOL space-fills a short alphanumeric value into the field rather than
+     * rejecting it.
      *
-     * <p>The value is checked and returned unchanged: nothing here trims, pads, folds case or otherwise
-     * normalises it, because a catalog that silently rewrote its own labels would stop being a faithful
-     * transcription. A value shorter than the declared width is accepted, since COBOL space-fills a short
-     * alphanumeric value into the field rather than rejecting it.</p>
-     *
-     * @param value         the component value to validate
-     * @param componentName legacy field name of the component, used in the failure message
-     * @param declaredWidth width declared by that component's {@code PIC} clause
      * @return {@code value}, unchanged
-     * @throws NullPointerException     if {@code value} is {@code null}
-     * @throws IllegalArgumentException if {@code value} is blank or wider than the declared field
      */
     private static String requireFieldText(
             final String value, final String componentName, final int declaredWidth) {
@@ -409,18 +343,13 @@ public final class MenuOptionCatalog {
     }
 
     /**
-     * Validates the one-character user-type code against the width its {@code PIC} clause declares,
-     * without interpreting the character.
+     * Validates the one-character user-type code against its declared width, without interpreting the
+     * character. Only the width is enforced; the code is not compared against any known set of values, so an
+     * unrecognised code passes through untouched and is left for the service layer to interpret. This is the
+     * same discipline the persistence layer applies to the legacy security record, and it is what prevents
+     * an unfamiliar code from turning into a startup failure.
      *
-     * <p>Only the width is enforced. The code is not compared against any known set of values, so an
-     * unrecognised code passes through untouched and is left for the service layer to interpret. This is
-     * the same discipline the persistence layer applies to the legacy security record, and it is what
-     * prevents an unfamiliar code from turning into a startup failure.</p>
-     *
-     * @param value the raw one-character code to validate
      * @return {@code value}, unchanged
-     * @throws NullPointerException     if {@code value} is {@code null}
-     * @throws IllegalArgumentException if {@code value} is not exactly one character long
      */
     private static String requireUserTypeCode(final String value) {
         Objects.requireNonNull(value, "CDEMO-MENU-OPT-USRTYPE must be supplied");
@@ -434,15 +363,8 @@ public final class MenuOptionCatalog {
 
     /**
      * Right-pads {@code text} with spaces to exactly {@code width} characters, reproducing how COBOL
-     * left-justifies a short alphanumeric value and space-fills it to its declared width.
-     *
-     * <p>The fill count is derived arithmetically so that no space in this source file is ever counted by
-     * eye, and the result is exactly {@code width} characters whenever the input fits, which the record
-     * constructors already guarantee.</p>
-     *
-     * @param text  the visible text to place in the field
-     * @param width the field's declared width
-     * @return the field image
+     * left-justifies a short alphanumeric value and space-fills it to its declared width. The fill count is
+     * derived arithmetically so that no space in this source file is ever counted by eye.
      */
     private static String padToWidth(final String text, final int width) {
         final int fill = width - text.length();
@@ -450,31 +372,21 @@ public final class MenuOptionCatalog {
     }
 
     /**
-     * One entry of the user menu, mirroring the four components the redefining table view declares on
-     * lines 87-92 of {@code app/cpy/COMEN02Y.cpy}: a two-digit number, a 35-character name, an
-     * eight-character target program name and a one-character user-type code, together occupying
-     * {@value MenuOptionCatalog#USER_MENU_ENTRY_LENGTH} bytes.
+     * One entry of the user menu, mirroring the four components the redefining table view of
+     * {@code app/cpy/COMEN02Y.cpy} declares and together occupying
+     * {@value MenuOptionCatalog#USER_MENU_ENTRY_LENGTH} bytes. Deliberately <em>not</em> shared with
+     * {@link AdminMenuOption}, which has no user-type component at all.
      *
-     * <p>This type is deliberately <em>not</em> shared with {@link AdminMenuOption}, which has no
-     * user-type component at all.</p>
-     *
-     * @param number      the option number as printed beside the menu row, from
-     *                    {@code CDEMO-MENU-OPT-NUM}; between 1 and {@link #OPTION_NUMBER_MAXIMUM}
-     * @param label       the visible option text from {@code CDEMO-MENU-OPT-NAME}, carried without the
-     *                    trailing space fill the copybook literal writes; see {@link #paddedLabel()}
-     * @param programName the target program name from {@code CDEMO-MENU-OPT-PGMNAME}, which the service
-     *                    layer also tests for the legacy dummy-program marker
-     * @param userType    the raw one-character code from {@code CDEMO-MENU-OPT-USRTYPE}, uninterpreted
+     * @param label       the visible option text, carried without the trailing space fill the copybook
+     *                    literal writes; see {@link #paddedLabel()}
+     * @param programName the target program name, which the service layer also tests for the legacy
+     *                    dummy-program marker
+     * @param userType    the raw one-character code, uninterpreted
      */
     public record UserMenuOption(int number, String label, String programName, String userType) {
 
         /**
          * Validates every component against the field it occupies, without modifying any of them.
-         *
-         * @throws NullPointerException     if any text component is {@code null}
-         * @throws IllegalArgumentException if the number cannot occupy its two-digit field, if the label
-         *                                  or program name is blank or too wide, or if the user-type code
-         *                                  is not exactly one character
          */
         public UserMenuOption {
             number = requireOptionNumber(number, "CDEMO-MENU-OPT-NUM");
@@ -485,14 +397,10 @@ public final class MenuOptionCatalog {
         }
 
         /**
-         * Returns the label as the legacy fixed-width field image: the visible text, space-filled on the
-         * right to {@link MenuOptionCatalog#OPTION_LABEL_WIDTH} characters.
-         *
-         * <p>Provided for a caller that has to reproduce the field image rather than render a payload
-         * value. It is derived on each call rather than stored, so there is exactly one authority for the
-         * text and no padded copy that could drift from it.</p>
-         *
-         * @return the label at its declared field width, never {@code null}
+         * Returns the label as the legacy fixed-width field image, space-filled on the right to
+         * {@link MenuOptionCatalog#OPTION_LABEL_WIDTH} characters, for a caller that has to reproduce the
+         * field image rather than render a payload value. Derived on each call rather than stored, so there
+         * is exactly one authority for the text and no padded copy that could drift from it.
          */
         public String paddedLabel() {
             return padToWidth(label, OPTION_LABEL_WIDTH);
@@ -500,31 +408,24 @@ public final class MenuOptionCatalog {
     }
 
     /**
-     * One entry of the administrator menu, mirroring the three components the redefining table view
-     * declares on lines 44-48 of {@code app/cpy/COADM02Y.cpy}: a two-digit number, a 35-character name and
-     * an eight-character target program name, together occupying
+     * One entry of the administrator menu, mirroring the three components the redefining table view of
+     * {@code app/cpy/COADM02Y.cpy} declares and together occupying
      * {@value MenuOptionCatalog#ADMIN_MENU_ENTRY_LENGTH} bytes.
      *
      * <p>There is no user-type component here, and none is invented. The legacy record layout carries no
-     * per-row code to copy, so who may reach these options is decided where routes are secured rather
-     * than by anything this row could say. Defaulting an administrator code into the entry would look
-     * harmless and would quietly add a field the source layout does not have.</p>
+     * per-row code to copy, so who may reach these options is decided where routes are secured rather than
+     * by anything this row could say; defaulting an administrator code into the entry would look harmless
+     * and would quietly add a field the source layout does not have.
      *
-     * @param number      the option number as printed beside the menu row, from
-     *                    {@code CDEMO-ADMIN-OPT-NUM}; between 1 and {@link #OPTION_NUMBER_MAXIMUM}
-     * @param label       the visible option text from {@code CDEMO-ADMIN-OPT-NAME}, carried without the
-     *                    trailing space fill the copybook literal writes; see {@link #paddedLabel()}
-     * @param programName the target program name from {@code CDEMO-ADMIN-OPT-PGMNAME}, which the service
-     *                    layer also tests for the legacy dummy-program marker
+     * @param label       the visible option text, carried without the trailing space fill the copybook
+     *                    literal writes; see {@link #paddedLabel()}
+     * @param programName the target program name, which the service layer also tests for the legacy
+     *                    dummy-program marker
      */
     public record AdminMenuOption(int number, String label, String programName) {
 
         /**
          * Validates every component against the field it occupies, without modifying any of them.
-         *
-         * @throws NullPointerException     if any text component is {@code null}
-         * @throws IllegalArgumentException if the number cannot occupy its two-digit field, or if the
-         *                                  label or program name is blank or too wide
          */
         public AdminMenuOption {
             number = requireOptionNumber(number, "CDEMO-ADMIN-OPT-NUM");
@@ -534,12 +435,9 @@ public final class MenuOptionCatalog {
         }
 
         /**
-         * Returns the label as the legacy fixed-width field image: the visible text, space-filled on the
-         * right to {@link MenuOptionCatalog#OPTION_LABEL_WIDTH} characters.
-         *
-         * <p>Derived on each call rather than stored, for the same reason as on the user-menu entry.</p>
-         *
-         * @return the label at its declared field width, never {@code null}
+         * Returns the label as the legacy fixed-width field image, space-filled on the right to
+         * {@link MenuOptionCatalog#OPTION_LABEL_WIDTH} characters. Derived on each call rather than stored,
+         * for the same reason as on the user-menu entry.
          */
         public String paddedLabel() {
             return padToWidth(label, OPTION_LABEL_WIDTH);

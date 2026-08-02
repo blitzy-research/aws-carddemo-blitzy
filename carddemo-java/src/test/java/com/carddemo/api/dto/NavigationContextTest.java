@@ -21,12 +21,7 @@ import java.util.List;
 
 import com.carddemo.domain.enums.UserType;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.core.StreamWriteFeature;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.databind.json.JsonMapper;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -39,66 +34,60 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * Verifies {@link NavigationContext}, the replacement for the state the legacy programs carried between
  * pseudo-conversation turns.
  *
- * <p><strong>What it replaces.</strong> {@code app/cpy/COCOM01Y.cpy} declares a communication area at
- * line 19 that all seventeen online programs included textually and passed to one another on every
- * transfer of control. Its sixteen elementary fields carry no filler and their widths sum to the area's
- * own 160 bytes, so a client echoing this object back carries exactly the state the terminal session
- * carried. The five groups the copybook declares - general information at line 20, customer information
- * at line 32, account information at line 37, card information at line 40 and the trailing screen-state
- * group at line 42 - are structural only, which is why the record is flat.
+ * <p>{@code app/cpy/COCOM01Y.cpy} declares a communication area that all seventeen online programs
+ * included textually and passed to one another on every transfer of control. Its sixteen elementary
+ * fields carry no filler and their widths sum to the area's own 160 bytes, so a client echoing this
+ * object back carries exactly the state the terminal session carried. The five groups the copybook
+ * declares are structural only, which is why the record is flat.
  *
- * <p><strong>Two components decide behaviour rather than describe it.</strong> The user-type byte decides
- * whether sign-on routes to the administrative menu or the main one, and the program-context digit decides
- * whether a screen is being shown for the first time or re-shown after a failed submission. The second of
- * those is the gate on field-level error decoration: the legacy macro that reddens a field and writes a
- * marker fires only on re-entry, so a context that reported first entry when it should report re-entry
- * would silently suppress every field error. Both are asserted here, including their behaviour when the
- * component is absent.
+ * <p>Two components decide behaviour rather than describe it. The user-type byte decides whether sign-on
+ * routes to the administrative menu or the main one, and the program-context digit decides whether a
+ * screen is being shown for the first time or re-shown after a failed submission. The second is the gate
+ * on field-level error decoration: the legacy macro that reddens a field and writes a marker fires only
+ * on re-entry, so a context reporting first entry when it should report re-entry would silently suppress
+ * every field error. Both are asserted, including their behaviour when the component is absent.
  *
- * <p><strong>Why the absent program context means first entry.</strong> The legacy field is a single digit
- * whose condition names give zero the meaning "entering" at line 30 and one the meaning "re-entering" at
- * line 31. A freshly initialised digit field therefore reads as entering, and an absent context has to
- * behave the same way or a first request would be treated as a re-submission. The suite asserts the two
- * predicates are exact complements and that an absent context reports first entry. The digit itself is
- * never surfaced: the nested two-constant enum is the whole of the exposed contract, and this suite
- * asserts that even the diagnostic rendering names the state rather than a raw {@code 0} or {@code 1}.
+ * <p>Why the absent program context means first entry: the legacy digit's condition names give zero the
+ * meaning "entering" and one the meaning "re-entering", so a freshly initialised digit field reads as
+ * entering and an absent context has to behave the same way or a first request would be treated as a
+ * re-submission. The suite asserts the two predicates are exact complements and that an absent context
+ * reports first entry. The digit itself is never surfaced: the nested two-constant enum is the whole of
+ * the exposed contract, and even the diagnostic rendering names the state rather than a raw {@code 0} or
+ * {@code 1}.
  *
- * <p><strong>The two acceptance criteria this file owns.</strong> First, that the three identifiers survive
- * verbatim. The customer identifier is nine digits at line 33, the account identifier eleven at line 38
- * and the card number sixteen at line 41; all three are declared numeric in the copybook and all three are
- * carried here as text, because they are identifiers with contractual leading zeros and fixed external
- * widths rather than quantities. A single stripped leading zero shortens the external width, and that
- * width is compared directly by the byte-equivalence criterion, so the identifiers are asserted through
- * every accessor and through a serialise-and-read-back cycle, always by string equality and never by
- * numeric comparison. Second, that an unrecognised user-type character is tolerated rather than rejected.
- * Sign-on moves the persisted character into the area at {@code app/cbl/COSGN00C.cbl} line 227, tests the
- * administrative condition at line 230 and supplies an <strong>unconditional</strong> alternative at line
- * 235 that closes at line 240; there is no third branch and no error path, so a character the estate never
- * declared reaches the main menu instead of failing. Construction with such a character must therefore
- * complete, resolution must yield nothing rather than raise, and no case fold may turn a lower-case
- * administrative character into an administrator.
+ * <p>The two acceptance criteria this file owns. First, that the three identifiers survive verbatim. The
+ * customer identifier is nine digits, the account identifier eleven and the card number sixteen; all
+ * three are declared numeric in the copybook and all three are carried here as text, because they are
+ * identifiers with contractual leading zeros and fixed external widths rather than quantities. A single
+ * stripped leading zero shortens the external width, and that width is compared directly by the
+ * byte-equivalence criterion, so the identifiers are asserted through every accessor and through a
+ * serialise-and-read-back cycle, always by string equality and never by numeric comparison. Second, that
+ * an unrecognised user-type character is tolerated rather than rejected: sign-on moves the persisted
+ * character into the area, tests the administrative condition and supplies an
+ * <strong>unconditional</strong> alternative, so there is no third branch and no error path and a
+ * character the estate never declared reaches the main menu instead of failing. Construction with such a
+ * character must complete, resolution must yield nothing rather than raise, and no case fold may turn a
+ * lower-case administrative character into an administrator.
  *
  * <p><strong>How the serialisation contract is exercised.</strong> This is a pure unit test: no framework
- * context is started, no container is used and no database is touched. The mapper is built locally, in
- * this file, configured to match the four settings the module's own {@code application.yml} declares -
- * absent properties omitted rather than sent as nulls, dates never as epoch numbers, unknown input
- * tolerated, and decimals written plainly. Building it here evidences the settings this file believes are
- * in force; {@code ApplicationJsonContractTest} supplies the other half by comparing a mapper taken from a
- * real context against one built exactly this way.
+ * context is started, no container is used and no database is touched. The mapper comes from
+ * {@link JsonContractSupport#declaredSettingsMapper()}, the single place in the test tree where the four
+ * settings the module's own {@code application.yml} declares are written out by hand - absent properties
+ * omitted rather than sent as nulls, dates never as epoch numbers, unknown input tolerated, and decimals
+ * written plainly. What that mapper evidences is the shape this type takes <em>under those settings</em>,
+ * and nothing more; it is not evidence about the mapper a deployed instance holds, and no assertion below
+ * is worded as though it were. {@code ApplicationJsonContractTest} carries that burden against a mapper
+ * taken from a real context: it compares that mapper's output with this very factory's output, and it
+ * additionally binds each covered type through the deployed object directly.
  *
- * <p><strong>Deliberately not asserted here.</strong> Nothing in this file runs a bean validator, because
- * the declared maximum lengths are enforced where a validator is actually built. Instead the absence of
- * every presence, pattern and range constraint is established behaviourally: an absent value, an empty
- * value and a blank value are all accepted, one component at a time and all sixteen at once. The depth of
- * the diagnostic redaction belongs to the security-facing suite for this type; one protective assertion
- * appears here so that a regression which un-redacts cardholder data cannot slip through this file either.
- * No token, claim or expiry is asserted, because this type carries none: only the user identifier and the
- * user-type character ever become signed claims and both travel as ordinary components here.
- *
- * <p>Legacy provenance for the traceability matrix is the checkout at commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, whose members carry the upstream stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced here; the
- * estate is cited by member name, line number, field count and code value only.
+ * <p>Deliberately not asserted: nothing runs a bean validator, because the declared maximum lengths are
+ * enforced where a validator is actually built. Instead the absence of every presence, pattern and range
+ * constraint is established behaviourally - an absent, an empty and a blank value are all accepted, one
+ * component at a time and all sixteen at once. The depth of the diagnostic redaction belongs to the
+ * security-facing suite for this type; one protective assertion appears here so a regression that
+ * un-redacts cardholder data cannot slip through this file either. No token, claim or expiry is
+ * asserted, because this type carries none: only the user identifier and the user-type character ever
+ * become signed claims, and both travel as ordinary components here.
  */
 @DisplayName("NavigationContext - the carried-over communication area")
 class NavigationContextTest {
@@ -107,7 +96,6 @@ class NavigationContextTest {
     private static final List<Integer> COPYBOOK_WIDTHS =
             List.of(4, 8, 4, 8, 8, 1, 1, 9, 25, 25, 25, 11, 1, 16, 7, 7);
 
-    /** Summed byte width of the whole communication area. */
     private static final int COMMAREA_WIDTH = 160;
 
     /** The legacy condition-name value meaning the program is being entered. */
@@ -119,42 +107,34 @@ class NavigationContextTest {
     /** Number of elementary fields the copybook declares, none of them filler. */
     private static final int COMPONENT_COUNT = 16;
 
-    /** Position of the customer identifier among the sixteen components, counting from zero. */
     private static final int CUSTOMER_ID_POSITION = 7;
 
-    /** The transaction the fixture turn arrived from, filling its four-character field exactly. */
     private static final String FROM_TRANSACTION_ID = "CC00";
 
-    /** The program the fixture turn arrived from, filling its eight-character field exactly. */
     private static final String FROM_PROGRAM = "COSGN00C";
 
-    /** The transaction the previous fixture turn nominated next, filling its field exactly. */
     private static final String TO_TRANSACTION_ID = "CAUP";
 
-    /** The program the previous fixture turn nominated next, filling its field exactly. */
     private static final String TO_PROGRAM = "COACTUPC";
 
-    /** The signed-on identifier, filling its eight-character field exactly. No credential appears here. */
+    /** The signed-on identifier. No credential of any kind appears anywhere in this file. */
     private static final String USER_ID = "ADMIN001";
 
     /**
      * A nine-character customer identifier whose leading zeros a numeric component would erase, leaving
-     * two characters where the copybook field holds nine.
+     * a value the reference data cannot be looked up by.
      */
     private static final String CUSTOMER_ID = "000000042";
 
-    /** A first name filling its twenty-five character field exactly, trailing blanks included. */
     private static final String FIRST_NAME = "Mary Ann                 ";
 
-    /** A middle name filling its twenty-five character field exactly, trailing blanks included. */
     private static final String MIDDLE_NAME = "Ann                      ";
 
-    /** A last name filling its twenty-five character field exactly, trailing blanks included. */
     private static final String LAST_NAME = "Gold                     ";
 
     /**
-     * An eleven-character account identifier that a numeric component would shorten to the single
-     * character {@code 1}.
+     * An eleven-character account identifier that a numeric component would shorten to a single
+     * character, breaking the fixed external width.
      */
     private static final String ACCOUNT_ID = "00000000001";
 
@@ -162,21 +142,19 @@ class NavigationContextTest {
     private static final String ACCOUNT_STATUS = "Y";
 
     /**
-     * A sixteen-character card number that a numeric component would shorten to the single character
-     * {@code 1}. Synthetic: it is a counted sequence of zeros and not a usable account number.
+     * A sixteen-character card number that a numeric component would shorten to a single character,
+     * breaking the fixed external width.
      */
     private static final String CARD_NUMBER = "0000000000000001";
 
-    /** The screen last presented, filling its seven-character field exactly. */
     private static final String LAST_MAP = "CACTUPA";
 
-    /** The screen group last presented, filling its seven-character field exactly. */
     private static final String LAST_MAPSET = "COACTUP";
 
-    /** The one-character code the copybook declares for an administrator, at line 27. */
+    /** The one-character code the copybook declares for an administrator. */
     private static final String ADMIN_CODE = "A";
 
-    /** The one-character code the copybook declares for a standard user, at line 28. */
+    /** The one-character code the copybook declares for a standard user. */
     private static final String USER_CODE = "U";
 
     /**
@@ -214,33 +192,32 @@ class NavigationContextTest {
             + ",\"lastMapset\":\"" + LAST_MAPSET + "\"}";
 
     /**
-     * Builds a plain mapper configured exactly as the module's shared configuration declares: absent
-     * rather than null properties, dates never as epoch numbers, unknown input tolerated, and decimals
-     * always written plainly rather than in scientific notation.
+     * Supplies a mapper carrying the four settings the module declares in its own
+     * {@code application.yml}: absent rather than null properties, dates never as epoch numbers,
+     * unknown input tolerated, and decimals always written plainly rather than in scientific notation.
      *
-     * <p>Built here rather than injected because this is a pure unit test. No context is started, so the
-     * four settings are applied directly and stay visible at the point of use.</p>
+     * <p>It is obtained from {@link JsonContractSupport#declaredSettingsMapper()} rather than built
+     * here, so those settings exist in exactly one place in the test tree and this file cannot
+     * transcribe them differently from a sibling suite. No context is started, which is what keeps
+     * this suite fast.</p>
      *
-     * @return a mapper whose behaviour matches the deployed serialisation contract
+     * <p>This mapper is not the mapper a deployed instance holds, and nothing below treats it as
+     * though it were. The correspondence between the two is established in
+     * {@code ApplicationJsonContractTest}, which obtains a mapper from a real context that has read
+     * the module's file and compares it against this very factory.</p>
+     *
+     * @return a mapper carrying the module's four declared serialisation settings
      */
     private static ObjectMapper newMapper() {
-        return JsonMapper.builder()
-                .defaultPropertyInclusion(JsonInclude.Value.construct(
-                        JsonInclude.Include.NON_NULL, JsonInclude.Include.NON_NULL))
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-                .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
-                .build();
+        return JsonContractSupport.declaredSettingsMapper();
     }
 
     /**
      * Sends a context out to JSON and reads it back through a mapper configured like the deployed one.
+     * This is the round trip a client actually performs: the server returns the state in a response body,
+     * the client holds it and sends it back on the next call. Anything the trip alters is state the legacy
+     * terminal session would have preserved.
      *
-     * <p>This is the round trip a client actually performs: the server returns the state in a response
-     * body, the client holds it and sends it back on the next call. Anything the trip alters is state the
-     * legacy terminal session would have preserved.</p>
-     *
-     * @param value the context to round-trip
      * @return the context as it survives serialisation and deserialisation
      * @throws Exception if either direction fails, which is itself a contract failure
      */
@@ -251,12 +228,11 @@ class NavigationContextTest {
 
     /**
      * Builds a fully populated context in which every component fills its copybook field exactly, so a
-     * transformation can be shown to preserve every component it is not meant to change and so the widest
+     * transformation can be shown to preserve every component it is not meant to change and the widest
      * legal value of every field is exercised.
      *
      * @param userType the raw one-character user-type code, which may be absent or undeclared
      * @param context  the program context, which may be absent
-     * @return a context with every component populated at its declared width
      */
     private static NavigationContext populated(final String userType,
             final NavigationContext.ProgramContext context) {
@@ -281,14 +257,12 @@ class NavigationContextTest {
 
     /**
      * Builds the fully populated administrative context with exactly one component replaced by an absent
-     * value, addressed by its position among the sixteen.
-     *
-     * <p>Written as sixteen explicit selections rather than by inspecting the type at run time, because
-     * run-time type inspection is forbidden in this module and because an explicit selection keeps the
-     * component order visible and checkable against the copybook.</p>
+     * value, addressed by its position among the sixteen. Written as sixteen explicit selections rather
+     * than by inspecting the type at run time, because run-time type inspection is forbidden in this
+     * module and an explicit selection keeps the component order visible and checkable against the
+     * copybook.
      *
      * @param position the zero-based position of the component to leave absent
-     * @return a context in which precisely that one component is absent
      */
     private static NavigationContext populatedWithout(final int position) {
         return new NavigationContext(
@@ -311,13 +285,11 @@ class NavigationContextTest {
     }
 
     /**
-     * Reads the sixteen components out of a context in copybook declaration order.
+     * Reads the sixteen components out of a context in copybook declaration order, using a list that
+     * admits absent entries because absence is a legitimate value for every one of the sixteen and an
+     * immutable list factory would reject it. The values are read through the record's own accessors, one
+     * call each, so nothing here inspects the type at run time.
      *
-     * <p>Uses a list that admits absent entries, because absence is a legitimate value for every one of
-     * the sixteen and an immutable list factory would reject it. The values are read through the record's
-     * own accessors, one call each, so nothing here inspects the type at run time.</p>
-     *
-     * @param context the context to read
      * @return the sixteen component values, in declaration order, absences included
      */
     private static List<Object> componentsOf(final NavigationContext context) {
@@ -342,15 +314,10 @@ class NavigationContextTest {
 
     /**
      * Counts how many of a context's sixteen components are absent.
-     *
-     * @param context the context to measure
-     * @return the number of absent components
      */
     private static long absentComponentCount(final NavigationContext context) {
         return componentsOf(context).stream().filter(value -> value == null).count();
     }
-
-    // COPYBOOK GEOMETRY
 
     /**
      * Verifies the declared widths against the communication area they reproduce.
@@ -425,8 +392,6 @@ class NavigationContextTest {
         }
     }
 
-    // THE ABSENT CONTEXT
-
     /**
      * Verifies the shared empty context, which is a real legacy state rather than a placeholder: an online
      * program entered with an empty communication area has no operator, no selection and no previous
@@ -496,8 +461,6 @@ class NavigationContextTest {
             assertThat(roundTrip(NavigationContext.empty())).isEqualTo(NavigationContext.empty());
         }
     }
-
-    // VERBATIM CARRIAGE OF ALL SIXTEEN COMPONENTS
 
     /**
      * Verifies that every component crosses the boundary byte for byte. Nothing here is trimmed, padded,
@@ -653,17 +616,13 @@ class NavigationContextTest {
         }
     }
 
-    // ACCEPTANCE CRITERION: LEADING-ZERO IDENTIFIERS SURVIVE VERBATIM
-
     /**
-     * Verifies the first of the two acceptance criteria this file owns.
-     *
-     * <p>The three identifiers are declared numeric in the copybook - nine digits at line 33, eleven at
-     * line 38 and sixteen at line 41 - and are carried here as text. Every assertion below compares
-     * strings, never numbers, because a numeric comparison would pass on exactly the value a numeric
-     * component would have produced and so could never detect the defect it exists to catch. One stripped
-     * leading zero shortens the external width, and that width is compared directly by the
-     * byte-equivalence criterion.</p>
+     * The first of the two acceptance criteria this file owns. The three identifiers are declared numeric
+     * in the copybook - nine digits, eleven and sixteen - and are carried here as text. Every assertion
+     * compares strings, never numbers, because a numeric comparison would pass on exactly the value a
+     * numeric component would have produced and so could never detect the defect it exists to catch. One
+     * stripped leading zero shortens the external width, and that width is compared directly by the
+     * byte-equivalence criterion.
      */
     @Nested
     @DisplayName("leading-zero identifiers, which a numeric component would silently destroy")
@@ -771,13 +730,11 @@ class NavigationContextTest {
         }
     }
 
-    // THE USER-TYPE DECISION
-
     /**
      * Verifies the one byte that decides which menu a signed-on operator reaches. Its two declared values
-     * are the condition names at {@code app/cpy/COCOM01Y.cpy} lines 27 and 28, and its persisted origin is
-     * the single character at byte offset 57 of the eighty-byte credential record described by
-     * {@code app/cpy/CSUSR01Y.cpy} line 22.
+     * are the condition names in {@code app/cpy/COCOM01Y.cpy}, and its persisted origin is the single
+     * character at byte offset 57 of the eighty-byte credential record described by
+     * {@code app/cpy/CSUSR01Y.cpy}.
      */
     @Nested
     @DisplayName("the user-type decision")
@@ -854,18 +811,14 @@ class NavigationContextTest {
         }
     }
 
-    // ACCEPTANCE CRITERION: AN UNRECOGNISED USER-TYPE CHARACTER IS TOLERATED
-
     /**
-     * Verifies the second of the two acceptance criteria this file owns.
-     *
-     * <p>Sign-on moves the persisted character straight into the area at {@code app/cbl/COSGN00C.cbl} line
-     * 227, tests the administrative condition at line 230 and supplies an <strong>unconditional</strong>
-     * alternative at line 235 which closes at line 240. That alternative is not a second test of the
+     * The second of the two acceptance criteria this file owns. Sign-on moves the persisted character
+     * straight into the area, tests the administrative condition and supplies an
+     * <strong>unconditional</strong> alternative. That alternative is not a second test of the
      * standard-user condition, so there is no third branch and no error path: every character other than
      * the administrative one reaches the main menu, including one the estate never declared. Tolerance is
-     * therefore the faithful behaviour and rejection would be the regression - a membership constraint or
-     * a throwing lookup would abort a sign-on the legacy program completes.</p>
+     * the faithful behaviour and rejection would be the regression - a membership constraint or a throwing
+     * lookup would abort a sign-on the legacy program completes.
      */
     @Nested
     @DisplayName("an unrecognised user-type character, which is routed rather than rejected")
@@ -968,17 +921,14 @@ class NavigationContextTest {
         }
     }
 
-    // ABSENT COMPONENTS: NOTHING HERE IS MANDATORY
-
     /**
-     * Verifies that every one of the sixteen components may be absent.
-     *
-     * <p>This is the behavioural evidence that the record declares no presence constraint. The only
-     * constraint it may carry is a maximum length, which measures and never alters, so an absent value, an
-     * empty value and a blank value all pass construction. A presence constraint would reject input the
-     * legacy area accepted - an entirely uninitialised communication area is a real state - and a
-     * declarative cascade would also report several violations at once where the legacy programs report the
-     * first one only, in source order, which is a service-layer responsibility rather than this type's.</p>
+     * Every one of the sixteen components may be absent - the behavioural evidence that the record
+     * declares no presence constraint. The only constraint it may carry is a maximum length, which
+     * measures and never alters, so an absent, an empty and a blank value all pass construction. A
+     * presence constraint would reject input the legacy area accepted, an entirely uninitialised
+     * communication area being a real state, and a declarative cascade would report several violations at
+     * once where the legacy programs report the first only, in source order - a service-layer
+     * responsibility rather than this type's.
      */
     @Nested
     @DisplayName("absent components, none of which is mandatory")
@@ -1074,12 +1024,10 @@ class NavigationContextTest {
         }
     }
 
-    // THE ENTRY DECISION
-
     /**
      * Verifies the state that gates field-level error decoration. The legacy digit's condition names are
-     * declared at {@code app/cpy/COCOM01Y.cpy} lines 30 and 31, and sign-on establishes the first-entry
-     * state at {@code app/cbl/COSGN00C.cbl} line 228 before handing control to a menu.
+     * declared in {@code app/cpy/COCOM01Y.cpy}, and sign-on establishes the first-entry state before
+     * handing control to a menu.
      */
     @Nested
     @DisplayName("the entry decision")
@@ -1171,8 +1119,6 @@ class NavigationContextTest {
             assertThat(roundTrip(populated(ADMIN_CODE, null)).firstEntry()).isTrue();
         }
     }
-
-    // ENTRY-STATE TRANSITIONS
 
     /**
      * Verifies that changing the entry state changes nothing else, and that it changes nothing in place.
@@ -1295,8 +1241,6 @@ class NavigationContextTest {
             assertThat(marked.customerFirstName()).isEqualTo(FIRST_NAME);
         }
     }
-
-    // VALUE SEMANTICS
 
     /**
      * Verifies that the context behaves as a value: equal components mean equal contexts, and the
