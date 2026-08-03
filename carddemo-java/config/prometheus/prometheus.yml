@@ -1,38 +1,117 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
 #
-# Prometheus scrape configuration for the CardDemo Java module.
-# The figures recorded here are the Gate 3 performance baseline: no COBOL baseline exists,
-# so this establishes the first Java baseline rather than testing against a threshold.
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+
+# ===========================================================================
+# CardDemo - Prometheus scrape configuration
+# ===========================================================================
+#
+# PROVENANCE
+#   Legacy estate checkout SHA : 7756d895ffeb65f7ea72aaa609e356d9899afcec
+#   Upstream release stamp     : CardDemo_v1.0-15-g27d6c6f-68 (2022-07-19)
+#
+#   This file has no legacy antecedent. Nothing in the mainframe estate
+#   corresponds to it, so it is a net-new artifact rather than the
+#   translation of a COBOL program, a copybook or a job stream. Traceability
+#   to the legacy estate is by citation only - path and line number - and no
+#   legacy source text is reproduced anywhere in this module.
+#
+# PURPOSE
+#   This is the collection half of the observability layer that replaces the
+#   legacy estate's only diagnostic channel: approximately 217 DISPLAY
+#   statements spread across the 28 COBOL programs. Those give way to
+#   structured JSON logging over SLF4J together with Spring Boot Actuator,
+#   Micrometer and OTLP tracing. The count is deliberately approximate: it
+#   varies with parse tolerance, and a raw token grep over the legacy tree
+#   reports a higher figure than a statement-context parse does.
+#
+#   The application publishes its meter registry through
+#   micrometer-registry-prometheus 1.15.12 at /actuator/prometheus. This
+#   file turns that exposition into queryable time series, which is what
+#   makes the per-endpoint and per-batch-step panels of the provisioned
+#   Grafana dashboard resolve to data.
+#
+# PERFORMANCE GATE
+#   The performance gate ESTABLISHES the first Java baseline. It asserts NO
+#   threshold. No numeric latency, throughput, availability or capacity
+#   target exists anywhere in the legacy estate - not in the COBOL, not in
+#   the job streams, not in the CICS resource definitions - so there is
+#   nothing to test against. Elapsed time, peak memory and records-per-second
+#   are measured and written up in docs/gate-evidence.md.
+#
+#   Consequently this file declares no rule files and no notification
+#   pipeline, and it states no service level of any kind. It samples, and
+#   nothing more. It also carries no credential: the metrics endpoint is
+#   deliberately reachable inside the local validation stack, and were a
+#   scrape ever refused, the fix would belong in the application's security
+#   configuration and never here.
+# ===========================================================================
 
 global:
-  scrape_interval: 10s
-  scrape_timeout: 5s
+  # Collection cadence only. This is how often Prometheus samples the target;
+  # it asserts NOTHING about application performance and is NOT a service level.
+  scrape_interval: 15s
+  # Inert in this deployment: no rule files are defined (see the header above).
   evaluation_interval: 15s
-  external_labels:
-    application: carddemo-java
-    environment: local
 
 scrape_configs:
-  # Spring Boot Actuator / Micrometer registry.
-  # host.docker.internal resolves to the host gateway (mapped in docker-compose.yml) so the
-  # application can run either on the host (./mvnw spring-boot:run) or as a container.
-  - job_name: carddemo-java
+  # -------------------------------------------------------------------------
+  # The CardDemo application - Spring Boot Actuator / Micrometer exposition.
+  #
+  # job_name is load-bearing. Prometheus stamps it onto every series it
+  # collects, as the `job` label, which makes job="carddemo-app" the only
+  # guaranteed non-empty selector available to the provisioned Grafana
+  # dashboard: the Micrometer common-tag key is pinned nowhere in the module,
+  # so a panel filtering on anything else may resolve to nothing. Renaming
+  # this string empties every dashboard panel while the stack still reports
+  # healthy - change the dashboard in lockstep, or do not change it.
+  # -------------------------------------------------------------------------
+  - job_name: carddemo-app
+    # The Actuator management base path is deliberately left at its default
+    # in every profile so that this path resolves literally. The endpoint is
+    # exposed in the shared defaults and stays exposed in the narrowed
+    # production surface; were it ever dropped, the scrape would answer 404
+    # and the performance gate would have no data whatsoever.
     metrics_path: /actuator/prometheus
-    scheme: http
     static_configs:
+      # Both endpoints belong to this one job, so every collected series
+      # carries job="carddemo-app" whichever of them happens to be live.
+      #
+      #   app:8080                    - the compose service name, reached
+      #                                 over the project network when the
+      #                                 application runs as a container
+      #                                 beside this stack.
+      #   host.docker.internal:8080   - the host gateway, mapped onto the
+      #                                 Prometheus service by the compose
+      #                                 stack, reached when the application
+      #                                 runs directly on the host.
+      #
+      # Never the loopback address: inside this container it resolves to
+      # Prometheus itself, so the scrape would succeed at the transport level
+      # and yield nothing useful - a silent failure that surfaces only as an
+      # empty performance-gate write-up. Both entries are quoted so that YAML
+      # reads them as scalars rather than as single-key mappings.
       - targets:
-          - host.docker.internal:8080
-        labels:
-          service: carddemo-java
-          tier: application
+          - "app:8080"
+          - "host.docker.internal:8080"
 
-  # Prometheus self-monitoring, so scrape health is visible on the same dashboard.
+  # -------------------------------------------------------------------------
+  # Prometheus scraping itself, so collection health is visible alongside the
+  # application metrics on the same data source. Addressed by compose service
+  # name for the same reason as above.
+  # -------------------------------------------------------------------------
   - job_name: prometheus
-    metrics_path: /metrics
     static_configs:
       - targets:
-          - localhost:9090
-        labels:
-          service: prometheus
-          tier: platform
+          - "prometheus:9090"

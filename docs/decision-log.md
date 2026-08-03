@@ -2421,7 +2421,11 @@ applied - would have put a prerequisite after the thing that needs it.
 
 *Cited by:* `application.yml`, `application-local.yml`, `application-test.yml`,
 `application-prod.yml`, `db/migration/V1_1__create_batch_metadata.sql`,
-`db/migration/V3__seed_reference_data.sql`, `db/migration/V4__seed_user_security.sql`.
+`db/migration/V3__seed_reference_data.sql`, `db/migration/V4__seed_user_security.sql`,
+`config/FlywayConfig.java` - which is where the ceiling stops being a declaration and becomes a
+control: it refuses a production ceiling that reaches version 3 or beyond, refuses a production
+location outside the one delivered directory, and lifts the inherited ceiling for the two seeding
+profiles. Its class comment records this same reconciliation, so the two read against each other.
 
 
 ### DL-103 - The seeded government-issued identifier is sealed, and the national identifier is still not carried at all

@@ -306,8 +306,12 @@ class AccountConcurrencyTokenServiceTest {
         void aCaseOnlyChangeToAFoldedCustomerFieldIsNotAChange(int position) {
             Customer stored = customer();
             String token = service.mint(account(), stored);
-            Customer foldedDifferently =
-                    customerWith(stored, position, valueAt(stored, position).toLowerCase(Locale.ROOT));
+            // Folded with an explicit root locale: the default-locale form folds ASCII I to dotless
+            // i under Turkish, which is a different character rather than the same letter in another
+            // case, so the intended case-only change would become a genuine change and the verify
+            // below would report a conflict that has nothing to do with the behaviour under test.
+            Customer foldedDifferently = customerWith(
+                    stored, position, valueAt(stored, position).toLowerCase(Locale.ROOT));
 
             assertThatCode(() -> service.verify(token, account(), foldedDifferently))
                     .as("argument %d is compared through FUNCTION UPPER-CASE on both sides", position)

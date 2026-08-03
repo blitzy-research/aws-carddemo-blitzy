@@ -1,0 +1,2048 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ */
+package com.carddemo.service;
+
+import java.time.Clock;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.UUID;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+import com.carddemo.api.dto.NavigationContext;
+import com.carddemo.domain.enums.DateFormat;
+import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.domain.enums.ReportPeriod;
+import com.carddemo.exception.JobSubmissionException;
+import com.carddemo.exception.ValidationException;
+import com.carddemo.util.CobolStringUtils;
+import com.carddemo.util.JclCardImageBuilder;
+
+/**
+ * The transaction-report request screen: the online half of the estate's only online-to-batch bridge.
+ *
+ * <p>Translation of {@code app/cbl/CORPT00C.cbl}, legacy CICS transaction {@code CR00}, 649 source
+ * lines and 10 procedure-division paragraphs. Provenance: checkout SHA
+ * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
+ *
+ * <h2>Paragraph map</h2>
+ * Every paragraph resolves to one named method, so the traceability matrix has one row per paragraph:
+ * <ul>
+ *   <li>{@code MAIN-PARA} line 163 &rarr; {@code mainPara}, reached from
+ *       {@code processReportRequest}, which also carries the terminal
+ *       {@code EXEC CICS RETURN TRANSID} at lines 199 to 202;</li>
+ *   <li>{@code PROCESS-ENTER-KEY} line 208 &rarr; {@code processEnterKey}, whose three period
+ *       branches invoke submission at lines 238 and 255 and, for the operator-supplied range, at
+ *       line 435, and whose acknowledgement is composed at line 450;</li>
+ *   <li>{@code SUBMIT-JOB-TO-INTRDR} line 462 &rarr; {@code submitJobToIntrdr};</li>
+ *   <li>{@code WIRTE-JOBSUB-TDQ} line 515 &rarr; {@code writeJobSubmissionTdq}. <strong>The
+ *       paragraph name is misspelled in the source</strong> &mdash; row 6 of the AAP source-anomaly
+ *       register. The Java method is spelled correctly and the original spelling is recorded in the
+ *       traceability row so the mapping stays findable;</li>
+ *   <li>{@code RETURN-TO-PREV-SCREEN} line 540 &rarr; {@code returnToPrevScreen};</li>
+ *   <li>{@code SEND-TRNRPT-SCREEN} line 556 &rarr; {@code sendTrnrptScreen};</li>
+ *   <li>{@code RETURN-TO-CICS} line 585 &rarr; {@code returnToCics}. This member has its own
+ *       return paragraph, which the bill-payment program does not, so it gets its own method rather
+ *       than being folded into the send;</li>
+ *   <li>{@code RECEIVE-TRNRPT-SCREEN} line 596 &rarr; {@code receiveTrnrptScreen};</li>
+ *   <li>{@code POPULATE-HEADER-INFO} line 609 &rarr; {@code populateHeaderInfo};</li>
+ *   <li>{@code INITIALIZE-ALL-FIELDS} line 633 &rarr; {@code initializeAllFields}.</li>
+ * </ul>
+ *
+ * <h2>The date-validation acceptance test is two-level, and both levels are kept</h2>
+ * The operator-supplied range is checked by two invocations of the shared date-validation subprogram,
+ * at lines 392 and 412, whose result block is declared at {@code app/cbl/CSUTLDTC.cbl} lines 42 to 57
+ * as eighty characters and overlaid by this caller at {@code app/cbl/CORPT00C.cbl} lines 129 to 136
+ * as a four-character severity, an eleven-character filler, a four-character message number and a
+ * sixty-one-character remainder. The test the source applies at lines 396 to 406 and again at 416 to
+ * 426 accepts a severity of {@code 0000} outright and <strong>otherwise still accepts silently when
+ * the message number is the tolerated one</strong>, rejecting only when it is something else. Both
+ * comparisons are four-character text comparisons, never integer comparisons, and the two levels are
+ * deliberately not collapsed into one boolean: a one-level test would reject dates the legacy
+ * accepts.
+ *
+ * <h2>The submission loop transmits the sentinel, so a complete submission is seventeen messages</h2>
+ * The emitting loop at lines 496 to 508 sets its end-of-stream flag <em>before</em> writing the card
+ * that raised it, so the end-of-stream card is itself transmitted and a complete submission publishes
+ * exactly {@code JclCardImageBuilder.CARD_COUNT} messages. The same loop guard also tests the
+ * write-error flag, so a failed publish stops the remaining cards rather than skipping one and
+ * carrying on. Both consequences are contractual and are reproduced here.
+ *
+ * <h2>A publish failure is not fatal</h2>
+ * The queue is defined {@code ERROROPTION(IGNORE)} at {@code app/csd/CARDDEMO.CSD} lines 499 to 505,
+ * alongside an eighty-byte fixed unblocked record, append disposition, output-only direction and
+ * open-at-initialisation. The write paragraph therefore reports the failure to the operator and
+ * returns control normally: there is no abend and no re-raise. Accordingly {@code
+ * JobSubmissionException} is caught and logged here and never leaves this service, and no retry,
+ * backoff, timeout or delay is applied.
+ *
+ * <h2>What this service does not do</h2>
+ * It requests a report; it does not generate one. It builds no card image &mdash; the seventeen
+ * eighty-column cards and their four ten-character substitution slots belong to {@code
+ * JclCardImageBuilder}. It knows no queue name, no message group and no endpoint &mdash; those
+ * belong to {@code JobSubmissionService}. It touches no database, holds no transaction, performs no
+ * monetary arithmetic, spawns no process and wires no abend path, because the source member is not in
+ * the five-program family and carries neither an attention-key copybook nor a CICS abend handler.
+ *
+ * <h2>Divergences raised for the decision log</h2>
+ * Every place where legacy semantics and idiomatic Java pull apart is resolved in favour of the legacy
+ * and raised as a decision-log entry. The owning document is maintained elsewhere; the entries this
+ * translation raises are:
+ * <ol>
+ *   <li>the two-level date acceptance test is kept verbatim, so a non-zero severity carrying the
+ *       tolerated message number is accepted silently, exactly as the legacy accepts it;</li>
+ *   <li>the declined-confirmation arm deliberately emits no message text, matching the legacy's silent
+ *       rejection, rather than inventing a cancellation message;</li>
+ *   <li>the end-of-stream card is transmitted, so a complete submission is exactly
+ *       {@code JclCardImageBuilder.CARD_COUNT} messages;</li>
+ *   <li>a publish failure stops the remaining cards and returns normally instead of aborting the
+ *       request, matching the queue's ignore-on-error attribute, so the submission exception is caught
+ *       and logged and never propagated;</li>
+ *   <li>the misspelled queue-write paragraph name is corrected in Java, with the original spelling
+ *       recorded in the traceability row;</li>
+ *   <li>the month-to-date end date is derived by the legacy's first-of-next-month-minus-one-day
+ *       computation rather than by a month-length helper;</li>
+ *   <li>the eighty-column job image is built by the shared card builder rather than assembled here, and
+ *       the thousand-slot bound is a defensive upper limit derived from an oversized redefinition and not
+ *       a tuning value;</li>
+ *   <li>no process invocation is used anywhere, so the module's process-execution audit count stays at
+ *       zero;</li>
+ *   <li>this member declares no clear-key arm, so the clear key reaches the catch-all and produces the
+ *       invalid-key message; no arm the source lacks was added;</li>
+ *   <li>the send paragraph populates the outbound result instead of ending the turn, so a re-submission
+ *       can report every faulted field, with the summary message and the cursor position latched at the
+ *       first failure to keep the operator-visible pair byte-identical;</li>
+ *   <li>within the operator-supplied cascade, accumulation happens inside a stage while the gate between
+ *       stages remains the legacy's, so the subprogram is never handed a date assembled from a part
+ *       already faulted;</li>
+ *   <li>the numeric conversion of an argument that is not a well-formed numeric lexeme is undefined in
+ *       the language, and the field is left as transmitted so the following numeric test fires.</li>
+ * </ol>
+ *
+ * <p>This bean is a stateless singleton. Everything the legacy held in working storage lives in a
+ * per-invocation state object, so concurrent turns cannot observe one another.
+ *
+ * @since 1.0.0
+ */
+@Service
+public final class ReportRequestService {
+
+    /** Diagnostic channel replacing the two {@code DISPLAY} statements at lines 210 and 529. */
+    private static final Logger LOG = LoggerFactory.getLogger(ReportRequestService.class);
+
+    // ==========================================================================================
+    // Program identity, from WS-VARIABLES at lines 37 and 38
+    // ==========================================================================================
+
+    /** {@code WS-PGMNAME}, {@code PIC X(08) VALUE 'CORPT00C'} at line 37. */
+    private static final String WS_PGMNAME = "CORPT00C";
+
+    /** {@code WS-TRANID}, {@code PIC X(04) VALUE 'CR00'} at line 38. */
+    private static final String WS_TRANID = "CR00";
+
+    // ==========================================================================================
+    // The 21 external-contract message literals, in source order.
+    //
+    // Casing and punctuation are contractual and are never normalised: the six emptiness texts
+    // carry a capital-N NOT, the six range texts capitalise Month, Day and Year, and the two
+    // date-validation texts use a lower-case "date". Dot counts are equally contractual.
+    // ==========================================================================================
+
+    /** Line 261. */
+    private static final String MSG_START_DATE_MONTH_EMPTY = "Start Date - Month can NOT be empty...";
+
+    /** Line 268. */
+    private static final String MSG_START_DATE_DAY_EMPTY = "Start Date - Day can NOT be empty...";
+
+    /** Line 275. */
+    private static final String MSG_START_DATE_YEAR_EMPTY = "Start Date - Year can NOT be empty...";
+
+    /** Line 282. */
+    private static final String MSG_END_DATE_MONTH_EMPTY = "End Date - Month can NOT be empty...";
+
+    /** Line 289. */
+    private static final String MSG_END_DATE_DAY_EMPTY = "End Date - Day can NOT be empty...";
+
+    /** Line 296. */
+    private static final String MSG_END_DATE_YEAR_EMPTY = "End Date - Year can NOT be empty...";
+
+    /** Line 331. */
+    private static final String MSG_START_DATE_MONTH_INVALID = "Start Date - Not a valid Month...";
+
+    /** Line 340. */
+    private static final String MSG_START_DATE_DAY_INVALID = "Start Date - Not a valid Day...";
+
+    /** Line 348. */
+    private static final String MSG_START_DATE_YEAR_INVALID = "Start Date - Not a valid Year...";
+
+    /** Line 357. */
+    private static final String MSG_END_DATE_MONTH_INVALID = "End Date - Not a valid Month...";
+
+    /** Line 366. */
+    private static final String MSG_END_DATE_DAY_INVALID = "End Date - Not a valid Day...";
+
+    /** Line 374. */
+    private static final String MSG_END_DATE_YEAR_INVALID = "End Date - Not a valid Year...";
+
+    /** Line 400. Lower-case {@code date} is deliberate and differs from the range texts above. */
+    private static final String MSG_START_DATE_INVALID = "Start Date - Not a valid date...";
+
+    /** Line 420. Lower-case {@code date} is deliberate. */
+    private static final String MSG_END_DATE_INVALID = "End Date - Not a valid date...";
+
+    /** Line 438, the catch-all arm when no report type was marked. */
+    private static final String MSG_SELECT_REPORT_TYPE = "Select a report type to print report...";
+
+    /**
+     * Line 450, appended to the space-delimited report name. Both spaces are contractual: the
+     * leading one separates it from the report name and the one before the three dots is part of
+     * the literal.
+     */
+    private static final String FRAGMENT_SUBMITTED_SUFFIX = " report submitted for printing ...";
+
+    /** Line 466, the head of the confirmation prompt. */
+    private static final String FRAGMENT_CONFIRM_PROMPT_PREFIX = "Please confirm to print the ";
+
+    /** Line 469, the tail of the confirmation prompt, appended after the report name. */
+    private static final String FRAGMENT_CONFIRM_PROMPT_SUFFIX = " report...";
+
+    /** Line 486, the opening quotation mark of the unrecognised-confirmation text. */
+    private static final String FRAGMENT_INVALID_CONFIRM_PREFIX = "\"";
+
+    /** Line 488, the tail of the unrecognised-confirmation text. */
+    private static final String FRAGMENT_INVALID_CONFIRM_SUFFIX =
+            "\" is not a valid value to confirm...";
+
+    /**
+     * Line 531. Three trailing dots, exactly as the source writes them.
+     *
+     * <p>Written out rather than referenced, so the text a reviewer reads here is the text the
+     * operator sees. It is character for character the frozen text {@code
+     * JobSubmissionException.DEFAULT_MESSAGE} publishes, because both render the same source literal;
+     * neither may be changed without the other.
+     */
+    private static final String MSG_UNABLE_TO_WRITE_TDQ = "Unable to Write TDQ (JOBS)...";
+
+    // ==========================================================================================
+    // The two four-character acceptance-test literals, lines 396 and 399 (and identically 416, 419)
+    // ==========================================================================================
+
+    /**
+     * The severity that accepts outright, compared as four characters at lines 396 and 416. Never
+     * parsed: the source compares text and so does this.
+     */
+    private static final String ACCEPTED_SEVERITY_CODE = "0000";
+
+    /**
+     * The message number that accepts <em>despite</em> a non-zero severity, compared as four
+     * characters at lines 399 and 419. This is the second level of the acceptance test and the
+     * reason it cannot be collapsed into one boolean.
+     */
+    private static final String TOLERATED_MESSAGE_NUMBER = "2513";
+
+    // ==========================================================================================
+    // Screen field identifiers and widths, from app/cpy-bms/CORPT00.CPY
+    // ==========================================================================================
+
+    /** {@code MONTHLY}, the cursor target of every {@code MOVE -1 TO MONTHLYL} in the member. */
+    private static final String FIELD_MONTHLY = "MONTHLY";
+
+    /** {@code SDTMM}, the start-month field and the cursor target at lines 264, 334 and 403. */
+    private static final String FIELD_START_MONTH = "SDTMM";
+
+    /** {@code SDTDD}, the start-day field and the cursor target at lines 271 and 343. */
+    private static final String FIELD_START_DAY = "SDTDD";
+
+    /** {@code SDTYYYY}, the start-year field and the cursor target at lines 278 and 351. */
+    private static final String FIELD_START_YEAR = "SDTYYYY";
+
+    /** {@code EDTMM}, the end-month field and the cursor target at lines 285, 360 and 423. */
+    private static final String FIELD_END_MONTH = "EDTMM";
+
+    /** {@code EDTDD}, the end-day field and the cursor target at lines 292 and 369. */
+    private static final String FIELD_END_DAY = "EDTDD";
+
+    /** {@code EDTYYYY}, the end-year field and the cursor target at lines 299 and 377. */
+    private static final String FIELD_END_YEAR = "EDTYYYY";
+
+    /** {@code CONFIRM}, the confirmation field and the cursor target at lines 472 and 492. */
+    private static final String FIELD_CONFIRM = "CONFIRM";
+
+    /** Property name reported for a whole-date failure at lines 400 and 420. */
+    private static final String PROPERTY_START_DATE = "startDate";
+
+    /** Property name reported for a whole-date failure at line 420. */
+    private static final String PROPERTY_END_DATE = "endDate";
+
+    /** Property name reported when the catch-all arm at line 438 fires. */
+    private static final String PROPERTY_REPORT_TYPE = "reportType";
+
+    /** Property name of the start-month screen part. */
+    private static final String PROPERTY_START_MONTH = "startMonth";
+
+    /** Property name of the start-day screen part. */
+    private static final String PROPERTY_START_DAY = "startDay";
+
+    /** Property name of the start-year screen part. */
+    private static final String PROPERTY_START_YEAR = "startYear";
+
+    /** Property name of the end-month screen part. */
+    private static final String PROPERTY_END_MONTH = "endMonth";
+
+    /** Property name of the end-day screen part. */
+    private static final String PROPERTY_END_DAY = "endDay";
+
+    /** Property name of the end-year screen part. */
+    private static final String PROPERTY_END_YEAR = "endYear";
+
+    /** Property name of the confirmation field. */
+    private static final String PROPERTY_CONFIRM = "confirm";
+
+    /** Width of the three report-type markers, {@code PIC X(1)} at symbolic-map lines 60, 66, 72. */
+    private static final int SELECTION_WIDTH = 1;
+
+    /** Width of a month or day screen part, {@code PIC X(2)}. */
+    private static final int MONTH_DAY_WIDTH = 2;
+
+    /** Width of a year screen part, {@code PIC X(4)}. */
+    private static final int YEAR_WIDTH = 4;
+
+    /** Width of the confirmation field, {@code PIC X(1)} at symbolic-map line 114. */
+    private static final int CONFIRM_WIDTH = 1;
+
+    /** Width of the outbound message field, {@code ERRMSGO PIC X(78)} at symbolic-map line 120. */
+    private static final int ERROR_MESSAGE_WIDTH = 78;
+
+    /** Width of {@code WS-REPORT-NAME}, {@code PIC X(10)} at line 58. */
+    private static final int REPORT_NAME_WIDTH = 10;
+
+    /** Width of the two-digit header parts assembled by the header paragraph. */
+    private static final int HEADER_PART_WIDTH = 2;
+
+    // ==========================================================================================
+    // Range-check bounds and calendar constants
+    // ==========================================================================================
+
+    /** Upper bound compared at lines 330 and 356, as the two-character literal the source uses. */
+    private static final String MONTH_UPPER_BOUND = "12";
+
+    /** Upper bound compared at lines 339 and 365, as the two-character literal the source uses. */
+    private static final String DAY_UPPER_BOUND = "31";
+
+    /** The first month, moved at line 227 after the roll and at lines 245 and 246. */
+    private static final int FIRST_MONTH = 1;
+
+    /** The last month, the threshold compared at line 225. */
+    private static final int LAST_MONTH = 12;
+
+    /** The first day of a month, moved at lines 219, 223 and 246. */
+    private static final int FIRST_DAY_OF_MONTH = 1;
+
+    /** The two-character month the yearly range ends in, moved at line 250. */
+    private static final String YEARLY_END_MONTH = "12";
+
+    /** The two-character day the yearly range ends on, moved at line 251. */
+    private static final String YEARLY_END_DAY = "31";
+
+    /** The two-character day both derived ranges start on, moved at lines 219 and 246. */
+    private static final String PERIOD_START_DAY = "01";
+
+    /** The two-character month the yearly range starts in, moved at line 245. */
+    private static final String YEARLY_START_MONTH = "01";
+
+    /** One day, subtracted from the integer date at line 230. */
+    private static final int ONE_DAY = 1;
+
+    /**
+     * Day zero of the intrinsic integer-date scale: {@code FUNCTION INTEGER-OF-DATE} numbers days
+     * from 1601-01-01 as one, so the day before that is the origin. Held as an epoch-day offset so
+     * both intrinsics can be modelled by name rather than folded away.
+     */
+    private static final long INTEGER_DATE_ORIGIN_EPOCH_DAY =
+            LocalDate.of(1600, 12, 31).toEpochDay();
+
+    /** Zero-based offset of the two-digit year within the four-character year, {@code year(3:2)}. */
+    private static final int YEAR_SHORT_FORM_OFFSET = 2;
+
+    // ==========================================================================================
+    // Submission loop constants
+    // ==========================================================================================
+
+    /** The one-based first card slot, {@code PERFORM VARYING WS-IDX FROM 1} at line 498. */
+    private static final int FIRST_CARD_SLOT = 1;
+
+    /**
+     * The legacy card-slot ceiling tested at line 498. It comes from {@code JOB-LINES OCCURS 1000
+     * TIMES} at line 127, an oversized redefinition laid over a group of only seventeen
+     * eighty-character cards, so it is a defensive upper bound and never the condition that stops a
+     * well-formed submission. It is <strong>not</strong> a tuning value and must not be treated as
+     * one.
+     */
+    private static final int OVERSIZED_REDEFINE_CARD_BOUND =
+            JclCardImageBuilder.OVERSIZED_REDEFINE_CARD_BOUND;
+
+    /**
+     * The end-of-stream card at its full record width, as the comparison at line 502 sees it: the
+     * five-character sentinel literal extended with spaces to the eighty-character record.
+     */
+    private static final String EOF_SENTINEL_RECORD = JclCardImageBuilder.EOF_SENTINEL_CARD
+            + " ".repeat(JclCardImageBuilder.CARD_IMAGE_WIDTH
+                    - JclCardImageBuilder.EOF_SENTINEL_CARD.length());
+
+    /** Accepted affirmative confirmation, upper case, compared at line 478. */
+    private static final String CONFIRM_YES_UPPER = "Y";
+
+    /** Accepted affirmative confirmation, lower case, compared at line 478. */
+    private static final String CONFIRM_YES_LOWER = "y";
+
+    /** Accepted negative confirmation, upper case, compared at line 480. */
+    private static final String CONFIRM_NO_UPPER = "N";
+
+    /** Accepted negative confirmation, lower case, compared at line 480. */
+    private static final String CONFIRM_NO_LOWER = "n";
+
+    // ==========================================================================================
+    // Character and text constants
+    // ==========================================================================================
+
+    /** The space character, the fill of every alphanumeric screen field. */
+    private static final char SPACE = ' ';
+
+    /**
+     * The low-value character. A 3270 field the terminal did not transmit arrives as low values
+     * rather than as spaces, and the source tests for both in the same breath at lines 213, 239,
+     * 256, 259, 464 and 503.
+     */
+    private static final char LOW_VALUE = '\0';
+
+    /** The hyphen separating the parts of a ten-character date, {@code FILLER} at lines 62 and 64. */
+    private static final String DATE_PART_SEPARATOR = "-";
+
+    /** The separator of the header date, {@code FILLER VALUE '/'} in {@code app/cpy/CSDAT01Y.cpy}. */
+    private static final String HEADER_DATE_SEPARATOR = "/";
+
+    /** The separator of the header time, {@code FILLER VALUE ':'} in {@code app/cpy/CSDAT01Y.cpy}. */
+    private static final String HEADER_TIME_SEPARATOR = ":";
+
+    /** The authored form of a message field holding nothing. */
+    private static final String NO_MESSAGE = "";
+
+    /** The decimal point that separates a numeric lexeme's integer and fractional parts. */
+    private static final char DECIMAL_POINT = '.';
+
+    /** The sign a plain decimal string carries when the lexeme was negative. */
+    private static final char MINUS_SIGN = '-';
+
+    /** The digit an unsupplied numeric field normalises to. */
+    private static final String ZERO_DIGIT = "0";
+
+    // ==========================================================================================
+    // Collaborators, all constructor injected
+    // ==========================================================================================
+
+    /** The shared date-validation subprogram, invoked at lines 392 and 412. */
+    private final DateValidationService dateValidationService;
+
+    /** The queue bridge that replaces {@code EXEC CICS WRITEQ TD QUEUE('JOBS')} at line 517. */
+    private final JobSubmissionService jobSubmissionService;
+
+    /** The common-message catalogue supplying the invalid-key text and the two screen titles. */
+    private final MessageCatalogService messageCatalogService;
+
+    /** The navigation rules replacing the transfer-control dispatch at lines 548 to 551. */
+    private final NavigationService navigationService;
+
+    /** The clock standing in for {@code FUNCTION CURRENT-DATE} at lines 215, 241 and 611. */
+    private final Clock clock;
+
+    /**
+     * Creates the service.
+     *
+     * @param dateValidationService the subprogram invoked for the operator-supplied range; mandatory
+     * @param jobSubmissionService  the queue bridge that publishes each card; mandatory
+     * @param messageCatalogService the common-message catalogue; mandatory
+     * @param navigationService     the navigation rules; mandatory
+     * @param clock                 the clock the derived periods and the screen header read;
+     *                              mandatory
+     * @throws NullPointerException if any collaborator is {@code null}
+     */
+    public ReportRequestService(final DateValidationService dateValidationService,
+            final JobSubmissionService jobSubmissionService,
+            final MessageCatalogService messageCatalogService,
+            final NavigationService navigationService,
+            final Clock clock) {
+        this.dateValidationService =
+                Objects.requireNonNull(dateValidationService, "dateValidationService must not be null");
+        this.jobSubmissionService =
+                Objects.requireNonNull(jobSubmissionService, "jobSubmissionService must not be null");
+        this.messageCatalogService =
+                Objects.requireNonNull(messageCatalogService, "messageCatalogService must not be null");
+        this.navigationService =
+                Objects.requireNonNull(navigationService, "navigationService must not be null");
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
+    }
+
+    // ==========================================================================================
+    // The screen contract, as values
+    // ==========================================================================================
+
+    /**
+     * One inbound turn of the report-request screen: the ten transmitted fields of the input map
+     * {@code CORPT0AI}, the attention key that arrived, and the navigation state echoed by the
+     * client in place of the legacy communication area.
+     *
+     * <p>Every field is carried verbatim and every field may be {@code null}, because a 3270 field
+     * the terminal did not transmit arrives as low values rather than as spaces and an omitted JSON
+     * component is the same state. Bounding each value to its declared screen width is the receive
+     * paragraph's job, not the caller's.
+     *
+     * <p>The attention key arrives already decoded, including the fold of the upper program-function
+     * keys onto the lower twelve, because that decoding belongs to the module's key translator. A
+     * {@code null} key means none was decoded, which the dispatch treats as an unmapped key exactly
+     * as the source's catch-all arm does.
+     *
+     * @param monthlySelection the month-to-date marker, {@code MONTHLYI}, tested first at line 213
+     * @param yearlySelection  the year-to-date marker, {@code YEARLYI}, tested second at line 239
+     * @param customSelection  the operator-range marker, {@code CUSTOMI}, tested third at line 256
+     * @param startMonth       {@code SDTMMI}, the start month
+     * @param startDay         {@code SDTDDI}, the start day
+     * @param startYear        {@code SDTYYYYI}, the start year
+     * @param endMonth         {@code EDTMMI}, the end month
+     * @param endDay           {@code EDTDDI}, the end day
+     * @param endYear          {@code EDTYYYYI}, the end year
+     * @param confirm          {@code CONFIRMI}, the confirmation field the gate at line 464 reads
+     * @param keyAction        the decoded attention key, or {@code null} when none was decoded
+     * @param navigationContext the echoed navigation state, or {@code null} for a turn carrying none
+     */
+    public record ReportScreenInput(String monthlySelection,
+                                    String yearlySelection,
+                                    String customSelection,
+                                    String startMonth,
+                                    String startDay,
+                                    String startYear,
+                                    String endMonth,
+                                    String endDay,
+                                    String endYear,
+                                    String confirm,
+                                    KeyAction keyAction,
+                                    NavigationContext navigationContext) {
+    }
+
+    /**
+     * The screen header the header paragraph populates at lines 609 to 628.
+     *
+     * <p>The two titles keep the catalogue's contractual widths and the outbound message field keeps
+     * the {@value #ERROR_MESSAGE_WIDTH}-character width of {@code ERRMSGO}, because the move at line
+     * 560 truncates the eighty-character work field into it. Nothing here is trimmed.
+     *
+     * @param title01         {@code CCDA-TITLE01}, moved at line 613
+     * @param title02         {@code CCDA-TITLE02}, moved at line 614
+     * @param transactionName the transaction identifier, moved at line 615
+     * @param programName     the program name, moved at line 616
+     * @param currentDate     the header date as {@code MM/DD/YY}, assembled at lines 618 to 622
+     * @param currentTime     the header time as {@code HH:MM:SS}, assembled at lines 624 to 628
+     * @param errorMessage    the outbound message field, {@value #ERROR_MESSAGE_WIDTH} characters,
+     *                        as moved at line 560
+     */
+    public record ScreenHeader(String title01,
+                               String title02,
+                               String transactionName,
+                               String programName,
+                               String currentDate,
+                               String currentTime,
+                               String errorMessage) {
+    }
+
+    /**
+     * The ten screen fields as they stand when the turn ends, each at its declared width.
+     *
+     * <p>This is what the operator sees echoed back. It matters because the reset paragraph at lines
+     * 633 to 646 blanks all ten, so a successful submission and a declined confirmation both return
+     * a cleared screen while every error path returns the values that were transmitted.
+     *
+     * @param monthlySelection the month-to-date marker
+     * @param yearlySelection  the year-to-date marker
+     * @param customSelection  the operator-range marker
+     * @param startMonth       the start month, after the normalisation at lines 305 to 307
+     * @param startDay         the start day, after the normalisation at lines 309 to 311
+     * @param startYear        the start year, after the normalisation at lines 313 to 315
+     * @param endMonth         the end month, after the normalisation at lines 317 to 319
+     * @param endDay           the end day, after the normalisation at lines 321 to 323
+     * @param endYear          the end year, after the normalisation at lines 325 to 327
+     * @param confirm          the confirmation field
+     */
+    public record ScreenFields(String monthlySelection,
+                               String yearlySelection,
+                               String customSelection,
+                               String startMonth,
+                               String startDay,
+                               String startYear,
+                               String endMonth,
+                               String endDay,
+                               String endYear,
+                               String confirm) {
+    }
+
+    /**
+     * The outcome of one turn of the report-request screen.
+     *
+     * <p>This is a value, not an HTTP response: it carries no status code and no response entity,
+     * because the legacy program's outcome is a screen plus a communication area and the mapping onto
+     * a transport belongs to the controller.
+     *
+     * @param route                   the destination the turn leads to. The screen's own destination
+     *                                whenever the turn re-presents the screen, since the return at
+     *                                lines 199 to 202 and again at 587 to 591 re-arms this same
+     *                                transaction; the resolved destination on the two transfer paths
+     *                                at lines 174 and 189. Never {@code null}
+     * @param navigationContext       the navigation state the turn hands back, standing in for the
+     *                                communication area the return and the transfer both carry.
+     *                                Never {@code null}
+     * @param reArmedTransactionId    the transaction identifier the turn re-armed, from {@code
+     *                                EXEC CICS RETURN TRANSID}; empty on the two transfer paths,
+     *                                which transfer control instead of returning. Never {@code null}
+     * @param reportPeriod            the period the ordered evaluation resolved, or {@code null}
+     *                                when the catch-all arm at line 437 fired because no report type
+     *                                was marked
+     * @param reportName              the report name the acknowledgement and the confirmation prompt
+     *                                are composed from, bare rather than padded to the ten
+     *                                characters of the legacy work field. Empty when no period
+     *                                resolved. Never {@code null}
+     * @param startDate               the ten-character start date, or empty when none was derived.
+     *                                A ten-character string and never a calendar object, because the
+     *                                parts are validated individually and the assembled form is what
+     *                                crosses the contract. Never {@code null}
+     * @param endDate                 the ten-character end date, or empty when none was derived.
+     *                                Never {@code null}
+     * @param cardsPublished          how many cards the queue accepted. Exactly {@code
+     *                                JclCardImageBuilder.CARD_COUNT} on a complete submission,
+     *                                because the end-of-stream card is itself transmitted; fewer when
+     *                                a publish failed; zero when the confirmation gate blocked the
+     *                                submission or no submission was attempted
+     * @param confirmationBlocked     {@code true} when the confirmation gate at lines 464 to 494
+     *                                stopped the submission, whether because the field was blank,
+     *                                because it declined, or because it held something else
+     * @param message                 the summary message, byte-exact and authored rather than padded.
+     *                                When more than one check failed this is the <em>first</em>
+     *                                failure's text, which is the text the legacy screen showed.
+     *                                Empty when there is nothing to say &mdash; notably on the
+     *                                declined-confirmation path, which sets no text at all. Never
+     *                                {@code null}
+     * @param messageHighlightedGreen {@code true} only where the source recolours the message field
+     *                                at line 448, which is the successful-submission path
+     * @param focusField              the screen field the cursor is positioned on, from the
+     *                                corresponding {@code MOVE -1} to that field's length item.
+     *                                Never {@code null}
+     * @param errorFlag               the state of {@code WS-ERR-FLG}. The explicit flag rather than
+     *                                an inference from the message, because the declined-confirmation
+     *                                path raises the flag and sets no message
+     * @param fieldErrors             one entry per field the turn faulted, in the order the source
+     *                                checks them, distinguishing a field that was not supplied from
+     *                                one supplied wrongly. Unmodifiable and never {@code null}; empty
+     *                                on a first entry, because the source's re-enter gate means field
+     *                                detail can only arise on a re-submission
+     * @param header                  the screen header, as the header paragraph populated it
+     * @param screen                  the ten screen fields as the turn leaves them
+     */
+    public record ReportRequestResult(NavigationService.Route route,
+                                      NavigationContext navigationContext,
+                                      String reArmedTransactionId,
+                                      ReportPeriod reportPeriod,
+                                      String reportName,
+                                      String startDate,
+                                      String endDate,
+                                      int cardsPublished,
+                                      boolean confirmationBlocked,
+                                      String message,
+                                      boolean messageHighlightedGreen,
+                                      String focusField,
+                                      boolean errorFlag,
+                                      List<ValidationException.FieldError> fieldErrors,
+                                      ScreenHeader header,
+                                      ScreenFields screen) {
+
+        /**
+         * Reports whether the turn published a complete card stream.
+         *
+         * @return {@code true} when no error was raised and every card of the canonical image
+         *         reached the queue
+         */
+        public boolean submissionAccepted() {
+            return !this.errorFlag && this.cardsPublished == JclCardImageBuilder.CARD_COUNT;
+        }
+    }
+
+    // ==========================================================================================
+    // Entry point: the procedure division, lines 162 to 202
+    // ==========================================================================================
+
+    /**
+     * Runs one turn of the report-request screen.
+     *
+     * <p>This is the procedure division: it establishes the working storage the legacy declares at
+     * lines 36 to 79, runs the main paragraph, and then performs the terminal
+     * {@code EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA)} at lines 199 to 202 by
+     * re-arming the transaction. Nothing is retained between calls, so two concurrent turns are
+     * wholly independent.
+     *
+     * <p>The turn always completes normally. A failed queue write is reported through the returned
+     * value rather than raised, matching the queue's ignore-on-error definition, and no exception of
+     * this service's own is thrown on any path.
+     *
+     * @param input the transmitted screen, the decoded attention key and the echoed navigation state;
+     *              must not be {@code null}
+     * @return the outcome of the turn, never {@code null}
+     * @throws NullPointerException if {@code input} is {@code null}
+     */
+    public ReportRequestResult processReportRequest(final ReportScreenInput input) {
+        Objects.requireNonNull(input, "input must not be null");
+
+        final TurnState state = new TurnState();
+        mainPara(state, input);
+
+        // EXEC CICS RETURN TRANSID(WS-TRANID) at lines 199 to 202. The main paragraph's transfer
+        // paths have already ended the turn by transferring control, and re-arming is idempotent, so
+        // this reproduces the unconditional return without overriding a transfer.
+        returnToCics(state);
+
+        LOG.debug("Report-request turn complete: route={} period={} cardsPublished={} errorFlag={}"
+                        + " confirmationBlocked={} fieldErrors={}",
+                state.route.getRouteValue(), state.reportPeriod, state.cardsPublished,
+                state.errorFlag, state.confirmationBlocked, state.fieldErrors.size());
+        return state.toResult();
+    }
+
+    // ==========================================================================================
+    // MAIN-PARA, line 163
+    // ==========================================================================================
+
+    /**
+     * The main paragraph at line 163.
+     *
+     * <p>Clears the error, end-of-file and erase flags and blanks both message fields at lines 165 to
+     * 170; routes a turn carrying no navigation state to sign-on at lines 172 to 174; otherwise takes
+     * the echoed state at line 176 and branches on the re-enter gate at line 177. A first entry sets
+     * the gate, clears the outbound map, positions the cursor on the first report-type field and
+     * sends. A re-entry receives the screen and dispatches on the attention key.
+     *
+     * <p><strong>The attention-key evaluation at lines 184 to 195 has exactly three arms</strong>
+     * &mdash; the enter key, the third program-function key, and a catch-all. This member declares
+     * <em>no</em> clear-key arm, unlike several of its siblings, so the clear key reaches the
+     * catch-all and produces the invalid-key message. Adding an arm the source does not have would
+     * change observable output and is therefore not done; the finding is recorded in the decision
+     * log.
+     *
+     * <p><strong>The re-enter gate is the decoration gate.</strong> Per-field detail can only be
+     * produced inside the re-entry branch, which is precisely the condition the source's
+     * {@code CDEMO-PGM-REENTER} test expresses, so the gate is structural here rather than a
+     * repeated runtime test.
+     *
+     * @param state the turn's working storage
+     * @param input the transmitted screen and echoed navigation state
+     */
+    private void mainPara(final TurnState state, final ReportScreenInput input) {
+        // SET ERR-FLG-OFF, TRANSACT-NOT-EOF and SEND-ERASE-YES at lines 165 to 167, and blank both
+        // WS-MESSAGE and ERRMSGO at lines 169 and 170. The state is constructed in exactly that
+        // condition, and the erase flag is never reset anywhere in the member, which is why the two
+        // arms of the send at lines 562 to 578 differ only in a 3270 attribute with no equivalent
+        // here. The end-of-file flag belongs to a file this member never opens.
+        if (navigationService.isNavigationContextAbsent(input.navigationContext())) {
+            // IF EIBCALEN = 0 at line 172, then MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM at line 173. The
+            // destination is the one the navigation rules hold for a turn carrying no state, so no
+            // program name is written here.
+            state.context = withNominatedProgram(NavigationContext.empty(),
+                    navigationService.resolveAbsentContextRoute().getLegacyProgramName());
+            returnToPrevScreen(state);
+            return;
+        }
+
+        // MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA at line 176.
+        state.context = input.navigationContext();
+
+        if (state.context.firstEntry()) {
+            // IF NOT CDEMO-PGM-REENTER at line 177: set the gate at line 178, clear the outbound map
+            // at line 179 and position the cursor at line 180. The outbound map is assembled from
+            // this state, which is blank on a first entry, so clearing it needs no separate step.
+            state.context = state.context.withReEntry();
+            state.focusField = FIELD_MONTHLY;
+            sendTrnrptScreen(state);
+            return;
+        }
+
+        receiveTrnrptScreen(state, input);
+
+        // EVALUATE EIBAID at lines 184 to 195. Clause order is preserved and the catch-all maps to
+        // the default arm. A key that was never decoded reaches the same arm, because an absent key
+        // is not one of the two the source names.
+        switch (input.keyAction()) {
+            case ENTER -> processEnterKey(state);
+            case PFK03 -> {
+                // MOVE 'COMEN01C' TO CDEMO-TO-PROGRAM at line 188: this screen's own exit
+                // destination, named through the navigation vocabulary rather than as a literal.
+                state.context = withNominatedProgram(state.context,
+                        NavigationService.Route.USER_MENU.getLegacyProgramName());
+                returnToPrevScreen(state);
+            }
+            case null, default -> {
+                // Lines 191 to 194. The catalogue message is carried at its full contractual width
+                // and is deliberately not trimmed.
+                state.raiseError(messageCatalogService.invalidKeyMessage(), FIELD_MONTHLY);
+                sendTrnrptScreen(state);
+            }
+        }
+    }
+
+    // ==========================================================================================
+    // PROCESS-ENTER-KEY, line 208
+    // ==========================================================================================
+
+    /**
+     * The enter-key paragraph at line 208.
+     *
+     * <p>An ordered, top-down evaluation over the three report-type markers whose clause order is
+     * contractual and whose branches are mutually exclusive: month-to-date at line 213, year-to-date
+     * at line 239, the operator-supplied range at line 256, and a catch-all at line 437. Only the
+     * operator-supplied range validates anything; the two derived periods compute their own dates and
+     * do not re-check them.
+     *
+     * <p>After the evaluation, lines 445 to 456 compose the acknowledgement, but only when the error
+     * flag is still clear &mdash; so a blocked confirmation, a declined confirmation, a rejected
+     * range or a failed publish all leave their own message standing instead.
+     *
+     * <p>The source construct is an evaluation of independent conditions rather than of a single
+     * selector, so its Java form is an ordered chain of tests and its catch-all is the final arm. A
+     * selector-based construct would need a selector that the source does not have, and inventing one
+     * &mdash; a derived report-type enumeration, say &mdash; would collapse three independently
+     * markable screen fields into one value and lose the first-match-wins behaviour when an operator
+     * marks more than one.
+     *
+     * @param state the turn's working storage
+     */
+    private void processEnterKey(final TurnState state) {
+        LOG.debug("Processing the enter key for the report-request screen");
+
+        if (isSupplied(state.monthlySelection)) {
+            monthToDatePeriod(state);
+        } else if (isSupplied(state.yearlySelection)) {
+            yearToDatePeriod(state);
+        } else if (isSupplied(state.customSelection)) {
+            operatorSuppliedPeriod(state);
+        } else {
+            // WHEN OTHER at lines 437 to 442.
+            state.raiseError(MSG_SELECT_REPORT_TYPE, FIELD_MONTHLY);
+            state.recordFieldError(PROPERTY_REPORT_TYPE, FIELD_MONTHLY,
+                    ValidationException.FieldState.MISSING, MSG_SELECT_REPORT_TYPE);
+            sendTrnrptScreen(state);
+        }
+
+        if (!state.errorFlag) {
+            // Lines 445 to 456: clear the screen, recolour the message field and compose the
+            // acknowledgement from the space-delimited report name.
+            initializeAllFields(state);
+            state.messageHighlightedGreen = true;
+            state.setMessage(delimitedBySpace(state.reportName) + FRAGMENT_SUBMITTED_SUFFIX);
+            state.focusField = FIELD_MONTHLY;
+            sendTrnrptScreen(state);
+        }
+    }
+
+    /**
+     * The month-to-date arm at lines 213 to 238.
+     *
+     * <p>The range opens on the first of the current month. The closing day is derived exactly as the
+     * source derives it and <strong>not</strong> by asking how long the month is: the day is forced
+     * to the first, the month is advanced by one, the year rolls when the month passes the twelfth,
+     * and one day is then subtracted on the intrinsic integer-date scale. Reproducing the derivation
+     * rather than substituting a month-length lookup keeps the December roll and the leap-year cases
+     * behaving as the source behaves.
+     *
+     * @param state the turn's working storage
+     */
+    private void monthToDatePeriod(final TurnState state) {
+        state.reportPeriod = ReportPeriod.MONTHLY;
+        state.reportName = moveToField(ReportPeriod.MONTHLY.getValue(), REPORT_NAME_WIDTH);
+
+        // MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA at line 215.
+        final LocalDate currentDate = LocalDate.now(clock);
+
+        // Lines 217 to 221: the current year and month with the first of the month as the day.
+        state.startDate = assembleDate(numericField(currentDate.getYear(), YEAR_WIDTH),
+                numericField(currentDate.getMonthValue(), MONTH_DAY_WIDTH),
+                PERIOD_START_DAY);
+        state.parmStartDate = state.startDate;
+
+        // Lines 223 to 228, applied to the same working date the source mutates in place.
+        int year = currentDate.getYear();
+        int month = currentDate.getMonthValue();
+        final int day = FIRST_DAY_OF_MONTH;
+        month = month + 1;
+        if (month > LAST_MONTH) {
+            year = year + 1;
+            month = FIRST_MONTH;
+        }
+
+        // COMPUTE WS-CURDATE-N = FUNCTION DATE-OF-INTEGER(FUNCTION INTEGER-OF-DATE(WS-CURDATE-N) - 1)
+        // at lines 229 and 230.
+        final LocalDate periodEnd =
+                dateOfInteger(integerOfDate(LocalDate.of(year, month, day)) - ONE_DAY);
+
+        // Lines 232 to 236.
+        state.endDate = assembleDate(numericField(periodEnd.getYear(), YEAR_WIDTH),
+                numericField(periodEnd.getMonthValue(), MONTH_DAY_WIDTH),
+                numericField(periodEnd.getDayOfMonth(), MONTH_DAY_WIDTH));
+        state.parmEndDate = state.endDate;
+
+        submitJobToIntrdr(state);
+    }
+
+    /**
+     * The year-to-date arm at lines 239 to 255: the whole of the current year, opening on the first
+     * of the first month and closing on the thirty-first of the twelfth, with no derivation and no
+     * validation.
+     *
+     * @param state the turn's working storage
+     */
+    private void yearToDatePeriod(final TurnState state) {
+        state.reportPeriod = ReportPeriod.YEARLY;
+        state.reportName = moveToField(ReportPeriod.YEARLY.getValue(), REPORT_NAME_WIDTH);
+
+        // MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA at line 241.
+        final String year = numericField(LocalDate.now(clock).getYear(), YEAR_WIDTH);
+
+        // Lines 243 to 253: the same year on both ends of the range.
+        state.startDate = assembleDate(year, YEARLY_START_MONTH, PERIOD_START_DAY);
+        state.parmStartDate = state.startDate;
+        state.endDate = assembleDate(year, YEARLY_END_MONTH, YEARLY_END_DAY);
+        state.parmEndDate = state.endDate;
+
+        submitJobToIntrdr(state);
+    }
+
+    /**
+     * The operator-supplied range arm at lines 256 to 436, and the only arm that validates.
+     *
+     * <p>Five stages run in source order and the order is contractual. First the six emptiness checks
+     * at lines 258 to 303, which are a single ordered evaluation, so at most one of them fires and the
+     * one that fires is the first. Then the numeric normalisation of all six parts at lines 305 to
+     * 327. Then the six range checks at lines 329 to 379, which are six independent tests, so any
+     * number of them can fire. Then the two invocations of the date-validation subprogram at lines 388
+     * to 426. Finally the four substitution slots are filled at lines 429 to 432, the report name is
+     * set at line 433, and submission is attempted only while the error flag is clear, at lines 434 to
+     * 436.
+     *
+     * <p><strong>Accumulation is within a stage; the gate between stages is the legacy's.</strong> In
+     * the source every failure sends the screen and the send jumps to the return, so the task ends and
+     * no later stage runs at all. This translation continues <em>within</em> a stage so that the six
+     * independent range tests can each report their own field, which is what the two-state field
+     * contract needs. It does not continue <em>past</em> a stage into the subprogram calls, and that
+     * restraint is deliberate: handing the subprogram a date assembled from a part the range stage has
+     * already faulted would submit an input the legacy never submitted, and would report a second,
+     * derived failure on top of the real one. The decision is recorded in the decision log.
+     *
+     * @param state the turn's working storage
+     */
+    private void operatorSuppliedPeriod(final TurnState state) {
+        editSuppliedDateParts(state);
+        normaliseSuppliedDateParts(state);
+        editDatePartRanges(state);
+
+        // Lines 381 to 386: assemble both ten-character dates from the normalised parts. Assembled
+        // unconditionally, as the source assembles them, so the turn reports back what it built.
+        state.startDate = assembleDate(state.startYear, state.startMonth, state.startDay);
+        state.endDate = assembleDate(state.endYear, state.endMonth, state.endDay);
+
+        if (!state.errorFlag) {
+            editSuppliedDates(state);
+        }
+
+        // Lines 429 to 432. Each move writes both occurrences of its slot in one statement, so the
+        // two occurrences of a date can never diverge; the card builder fills both card slots from
+        // one argument for the same reason.
+        state.parmStartDate = state.startDate;
+        state.parmEndDate = state.endDate;
+
+        state.reportPeriod = ReportPeriod.CUSTOM;
+        state.reportName = moveToField(ReportPeriod.CUSTOM.getValue(), REPORT_NAME_WIDTH);
+
+        if (!state.errorFlag) {
+            submitJobToIntrdr(state);
+        }
+    }
+
+    /**
+     * The six emptiness checks at lines 258 to 303.
+     *
+     * <p>A single ordered evaluation with an explicit no-operation catch-all at lines 301 and 302, so
+     * <strong>at most one</strong> of the six fires. Each reports the field as not supplied and each
+     * carries its own text, in which {@code NOT} is capitalised exactly as the source capitalises it.
+     *
+     * @param state the turn's working storage
+     */
+    private void editSuppliedDateParts(final TurnState state) {
+        if (isBlankField(state.startMonth)) {
+            faultField(state, MSG_START_DATE_MONTH_EMPTY, PROPERTY_START_MONTH, FIELD_START_MONTH,
+                    ValidationException.FieldState.MISSING);
+        } else if (isBlankField(state.startDay)) {
+            faultField(state, MSG_START_DATE_DAY_EMPTY, PROPERTY_START_DAY, FIELD_START_DAY,
+                    ValidationException.FieldState.MISSING);
+        } else if (isBlankField(state.startYear)) {
+            faultField(state, MSG_START_DATE_YEAR_EMPTY, PROPERTY_START_YEAR, FIELD_START_YEAR,
+                    ValidationException.FieldState.MISSING);
+        } else if (isBlankField(state.endMonth)) {
+            faultField(state, MSG_END_DATE_MONTH_EMPTY, PROPERTY_END_MONTH, FIELD_END_MONTH,
+                    ValidationException.FieldState.MISSING);
+        } else if (isBlankField(state.endDay)) {
+            faultField(state, MSG_END_DATE_DAY_EMPTY, PROPERTY_END_DAY, FIELD_END_DAY,
+                    ValidationException.FieldState.MISSING);
+        } else if (isBlankField(state.endYear)) {
+            faultField(state, MSG_END_DATE_YEAR_EMPTY, PROPERTY_END_YEAR, FIELD_END_YEAR,
+                    ValidationException.FieldState.MISSING);
+        }
+        // WHEN OTHER at lines 301 and 302 is an explicit CONTINUE, so there is nothing to do and the
+        // absence of a final else arm below is faithful rather than an omission.
+    }
+
+    /**
+     * The numeric normalisation of all six date parts at lines 305 to 327.
+     *
+     * <p>Each part is converted with the currency-tolerant numeric conversion into a two- or
+     * four-digit unsigned field and moved straight back over the screen field, which zero-fills a
+     * short value and, on overflow, keeps the low-order digits. The consequence the range checks below
+     * depend on is that a well-formed part always emerges as digits, so a part that is still
+     * non-numeric afterwards was never a well-formed numeric value.
+     *
+     * @param state the turn's working storage
+     */
+    private void normaliseSuppliedDateParts(final TurnState state) {
+        state.startMonth = numericConversion(state.startMonth, MONTH_DAY_WIDTH);
+        state.startDay = numericConversion(state.startDay, MONTH_DAY_WIDTH);
+        state.startYear = numericConversion(state.startYear, YEAR_WIDTH);
+        state.endMonth = numericConversion(state.endMonth, MONTH_DAY_WIDTH);
+        state.endDay = numericConversion(state.endDay, MONTH_DAY_WIDTH);
+        state.endYear = numericConversion(state.endYear, YEAR_WIDTH);
+    }
+
+    /**
+     * The six range checks at lines 329 to 379.
+     *
+     * <p>Six independent tests rather than an ordered evaluation, so every one that fails is
+     * reported. A month must be digits and no greater than the twelfth, a day must be digits and no
+     * greater than the thirty-first, and a year must be digits with no upper bound &mdash; the source
+     * tests no year range. The bound comparisons are text comparisons against the two-character
+     * literals the source writes, matching how it compares its fixed-width fields.
+     *
+     * @param state the turn's working storage
+     */
+    private void editDatePartRanges(final TurnState state) {
+        if (!isAllDigits(state.startMonth) || state.startMonth.compareTo(MONTH_UPPER_BOUND) > 0) {
+            faultField(state, MSG_START_DATE_MONTH_INVALID, PROPERTY_START_MONTH, FIELD_START_MONTH,
+                    ValidationException.FieldState.INVALID);
+        }
+        if (!isAllDigits(state.startDay) || state.startDay.compareTo(DAY_UPPER_BOUND) > 0) {
+            faultField(state, MSG_START_DATE_DAY_INVALID, PROPERTY_START_DAY, FIELD_START_DAY,
+                    ValidationException.FieldState.INVALID);
+        }
+        if (!isAllDigits(state.startYear)) {
+            faultField(state, MSG_START_DATE_YEAR_INVALID, PROPERTY_START_YEAR, FIELD_START_YEAR,
+                    ValidationException.FieldState.INVALID);
+        }
+        if (!isAllDigits(state.endMonth) || state.endMonth.compareTo(MONTH_UPPER_BOUND) > 0) {
+            faultField(state, MSG_END_DATE_MONTH_INVALID, PROPERTY_END_MONTH, FIELD_END_MONTH,
+                    ValidationException.FieldState.INVALID);
+        }
+        if (!isAllDigits(state.endDay) || state.endDay.compareTo(DAY_UPPER_BOUND) > 0) {
+            faultField(state, MSG_END_DATE_DAY_INVALID, PROPERTY_END_DAY, FIELD_END_DAY,
+                    ValidationException.FieldState.INVALID);
+        }
+        if (!isAllDigits(state.endYear)) {
+            faultField(state, MSG_END_DATE_YEAR_INVALID, PROPERTY_END_YEAR, FIELD_END_YEAR,
+                    ValidationException.FieldState.INVALID);
+        }
+    }
+
+    /**
+     * The two invocations of the date-validation subprogram at lines 388 to 426.
+     *
+     * <p>Each call moves the assembled ten-character date and the hyphenated ten-character format
+     * selector into the parameter group, blanks the eighty-character result block, and calls with the
+     * three arguments. Blanking is inherent here, because the result is a return value rather than an
+     * output area. The selector is the hyphenated ten-character form the work field at line 72 holds;
+     * the compact form the procedural copybook uses is a different contract and is not this caller's.
+     *
+     * <p>Both calls run, so a bad end date is reported even when the start date is also bad: the
+     * source performs them as two independent statement groups rather than as an evaluation.
+     *
+     * @param state the turn's working storage
+     */
+    private void editSuppliedDates(final TurnState state) {
+        // Lines 388 to 406.
+        if (!isDateAccepted(dateValidationService.validateDate(state.startDate,
+                DateFormat.YYYY_MM_DD))) {
+            faultField(state, MSG_START_DATE_INVALID, PROPERTY_START_DATE, FIELD_START_MONTH,
+                    ValidationException.FieldState.INVALID);
+        }
+
+        // Lines 408 to 426.
+        if (!isDateAccepted(dateValidationService.validateDate(state.endDate,
+                DateFormat.YYYY_MM_DD))) {
+            faultField(state, MSG_END_DATE_INVALID, PROPERTY_END_DATE, FIELD_END_MONTH,
+                    ValidationException.FieldState.INVALID);
+        }
+    }
+
+    /**
+     * The two-level acceptance test the source applies to the result block at lines 396 to 406 and
+     * identically at lines 416 to 426.
+     *
+     * <p><strong>Both levels are load bearing and neither may be dropped.</strong> The accepted
+     * severity passes outright. Otherwise a message number that is <em>not</em> the tolerated one is
+     * rejected. Otherwise &mdash; a non-zero severity carrying the tolerated message number &mdash;
+     * the date is accepted silently, exactly as the legacy accepts it. Collapsing the two levels into
+     * a single boolean would reject dates the legacy admits.
+     *
+     * <p>Both comparisons are four-character text comparisons. Neither field is parsed into a number,
+     * because the source compares the character fields and a numeric reading would accept forms the
+     * character comparison rejects.
+     *
+     * @param result the typed form of the eighty-character result block the subprogram returned
+     * @return {@code true} when the date is accepted by either route
+     */
+    private static boolean isDateAccepted(final DateValidationService.SubprogramResult result) {
+        // Level one, lines 396 and 416: IF CSUTLDTC-RESULT-SEV-CD = '0000' CONTINUE.
+        if (ACCEPTED_SEVERITY_CODE.equals(result.severityCode())) {
+            return true;
+        }
+        // Level two, lines 399 and 419: IF CSUTLDTC-RESULT-MSG-NUM NOT = '2513' report the error.
+        if (!TOLERATED_MESSAGE_NUMBER.equals(result.messageNumber())) {
+            return false;
+        }
+        LOG.debug("Accepting a report date on the tolerated message number [{}] despite severity [{}]",
+                result.messageNumber(), result.severityCode());
+        return true;
+    }
+
+    // ==========================================================================================
+    // SUBMIT-JOB-TO-INTRDR, line 462
+    // ==========================================================================================
+
+    /**
+     * The job-submission paragraph at lines 462 to 510, in the three parts the source declares.
+     *
+     * <p><strong>Part one, lines 464 to 474 &mdash; the confirmation prompt.</strong> A blank
+     * confirmation field raises the error flag, composes the prompt from the space-delimited report
+     * name, positions the cursor on the confirmation field and sends. Because the whole of the rest of
+     * the paragraph sits inside the {@code IF NOT ERR-FLG-ON} at line 476, this returns without
+     * submitting anything at all.
+     *
+     * <p><strong>Part two, lines 477 to 494 &mdash; the three-way gate, clause order contractual.</strong>
+     * An affirmative confirmation continues. A negative one clears the screen and raises the error
+     * flag <em>and sets no message text whatsoever</em>: the rejection is silent in the source and is
+     * silent here, because inventing a cancellation message would be output the legacy never produced.
+     * Anything else quotes the entered value back inside the unrecognised-value text.
+     *
+     * <p><strong>Part three, lines 496 to 508 &mdash; the emitting loop.</strong> The guard is
+     * evaluated before every card and tests the one-based slot against the card count and against the
+     * legacy slot ceiling, and tests the end-of-stream and error flags. Because the guard tests the
+     * error flag, a negative or unrecognised confirmation skips the loop entirely without a single
+     * write. Within a pass the end-of-stream test is applied to a card <em>before</em> that card is
+     * written, which is why the end-of-stream card is itself transmitted and a complete submission is
+     * {@code JclCardImageBuilder.CARD_COUNT} messages, and why a failed write stops the cards that
+     * would have followed.
+     *
+     * @param state the turn's working storage
+     */
+    private void submitJobToIntrdr(final TurnState state) {
+        // Part one, lines 464 to 474.
+        if (isBlankField(state.confirm)) {
+            state.confirmationBlocked = true;
+            state.raiseError(FRAGMENT_CONFIRM_PROMPT_PREFIX + delimitedBySpace(state.reportName)
+                    + FRAGMENT_CONFIRM_PROMPT_SUFFIX, FIELD_CONFIRM);
+            sendTrnrptScreen(state);
+        }
+
+        // IF NOT ERR-FLG-ON at line 476 guards both remaining parts.
+        if (state.errorFlag) {
+            return;
+        }
+
+        // Part two, lines 477 to 494: EVALUATE TRUE with its clause order preserved and its
+        // catch-all mapped to the final arm.
+        if (CONFIRM_YES_UPPER.equals(state.confirm) || CONFIRM_YES_LOWER.equals(state.confirm)) {
+            // WHEN 'Y' OR 'y' at lines 478 and 479 is an explicit CONTINUE: fall through to part
+            // three with nothing set.
+            LOG.debug("Report submission confirmed for period {}", state.reportPeriod);
+        } else if (CONFIRM_NO_UPPER.equals(state.confirm)
+                || CONFIRM_NO_LOWER.equals(state.confirm)) {
+            // WHEN 'N' OR 'n' at lines 480 to 483. No message text is set: the reset paragraph
+            // blanks the message field and nothing writes one afterwards.
+            initializeAllFields(state);
+            state.errorFlag = true;
+            state.confirmationBlocked = true;
+            sendTrnrptScreen(state);
+        } else {
+            // WHEN OTHER at lines 484 to 493.
+            state.confirmationBlocked = true;
+            state.raiseError(FRAGMENT_INVALID_CONFIRM_PREFIX + delimitedBySpace(state.confirm)
+                    + FRAGMENT_INVALID_CONFIRM_SUFFIX, FIELD_CONFIRM);
+            sendTrnrptScreen(state);
+        }
+
+        // SET END-LOOP-NO TO TRUE at line 496.
+        state.endLoop = false;
+
+        // The seventeen eighty-column cards, with the start and end dates placed into their four
+        // substitution slots. No card, no column frame and no slot is assembled here.
+        final List<String> cardImages =
+                JclCardImageBuilder.build(state.parmStartDate, state.parmEndDate);
+        final String submissionIdentity = newSubmissionIdentity();
+
+        // PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > 1000 OR END-LOOP-YES OR ERR-FLG-ON, at
+        // lines 498 and 499. The supplied card count bounds the iteration; the legacy slot ceiling is
+        // carried alongside it as the defensive bound the oversized redefinition implies.
+        for (int cardSlot = FIRST_CARD_SLOT;
+                cardSlot <= cardImages.size()
+                        && cardSlot <= OVERSIZED_REDEFINE_CARD_BOUND
+                        && !state.endLoop
+                        && !state.errorFlag;
+                cardSlot++) {
+
+            // MOVE JOB-LINES(WS-IDX) TO JCL-RECORD at line 501.
+            final String jclRecord = cardImages.get(cardSlot - FIRST_CARD_SLOT);
+
+            // Lines 502 to 505. Set before the write, which is what transmits the sentinel.
+            if (isEndOfCardStream(jclRecord)) {
+                state.endLoop = true;
+            }
+
+            writeJobSubmissionTdq(state, submissionIdentity, jclRecord, cardSlot);
+        }
+    }
+
+    // ==========================================================================================
+    // WIRTE-JOBSUB-TDQ, line 515 - misspelled in the source, spelled correctly here
+    // ==========================================================================================
+
+    /**
+     * The queue-write paragraph at lines 515 to 535.
+     *
+     * <p>The source spells this paragraph {@code WIRTE-JOBSUB-TDQ}. That misspelling is row 6 of the
+     * AAP source-anomaly register: it is recorded in the traceability matrix under its original
+     * spelling so the mapping stays findable, and it is deliberately not carried into a Java
+     * identifier.
+     *
+     * <p>The paragraph writes one eighty-character record to the queue while capturing the response
+     * and reason codes, then evaluates the response: a normal response simply continues, and anything
+     * else displays both codes, raises the error flag, sets the queue-write message, repositions the
+     * cursor on the first report-type field and sends.
+     *
+     * <p><strong>There is no abend and no re-raise.</strong> Three consequences follow and all three
+     * are reproduced. The failure is logged rather than displayed. The remaining cards are not sent,
+     * because the emitting loop's guard observes the error flag. And control returns normally, so the
+     * caller receives a result and not an exception &mdash; which is why a submission exception is
+     * caught and logged here and never leaves this service. That is the queue's own
+     * ignore-on-error definition at {@code app/csd/CARDDEMO.CSD} lines 499 to 505, so no retry,
+     * backoff, timeout or delay is applied either.
+     *
+     * @param state              the turn's working storage
+     * @param submissionIdentity the identity of this submission, combined with the slot to form the
+     *                           card's deduplication identifier
+     * @param jclRecord          the eighty-character card to write
+     * @param cardSlot           the card's one-based slot, matching the legacy card index
+     */
+    private void writeJobSubmissionTdq(final TurnState state, final String submissionIdentity,
+            final String jclRecord, final int cardSlot) {
+        boolean written;
+        try {
+            // EXEC CICS WRITEQ TD QUEUE('JOBS') FROM(JCL-RECORD) LENGTH(LENGTH OF JCL-RECORD)
+            // RESP(WS-RESP-CD) RESP2(WS-REAS-CD) at lines 517 to 523. The queue name, the record
+            // width and the message grouping all belong to the bridge, not here.
+            written = jobSubmissionService.writeJobSubmissionQueue(submissionIdentity, jclRecord,
+                    cardSlot);
+        } catch (final JobSubmissionException publishFailure) {
+            // Defensive: the bridge reports a publish failure as a value. Should it ever raise
+            // instead, the outcome must still be the legacy's - logged, non-fatal, and the write
+            // treated as refused.
+            LOG.error("Job-submission queue write raised on card slot {}: queue={} response={}"
+                            + " reason={}",
+                    cardSlot, publishFailure.queueName(), publishFailure.responseCode(),
+                    publishFailure.reasonCode(), publishFailure);
+            written = false;
+        }
+
+        // EVALUATE WS-RESP-CD at lines 525 to 535.
+        if (written) {
+            // WHEN DFHRESP(NORMAL) at lines 526 and 527: CONTINUE.
+            state.cardsPublished++;
+            return;
+        }
+
+        // WHEN OTHER at lines 528 to 534. The DISPLAY of the response and reason codes becomes a log
+        // record; nothing is written to a console stream.
+        LOG.error("Job-submission queue write refused on card slot {} after {} of {} cards;"
+                        + " the remaining cards are not sent",
+                cardSlot, state.cardsPublished, JclCardImageBuilder.CARD_COUNT);
+        state.raiseError(MSG_UNABLE_TO_WRITE_TDQ, FIELD_MONTHLY);
+        sendTrnrptScreen(state);
+    }
+
+    // ==========================================================================================
+    // RETURN-TO-PREV-SCREEN, line 540
+    // ==========================================================================================
+
+    /**
+     * The transfer paragraph at lines 540 to 551.
+     *
+     * <p>Both of its arms are modelled. When the nominated destination field holds spaces or low
+     * values the paragraph falls back to this screen's own default, sign-on, at lines 542 to 544;
+     * otherwise it honours what that field names. The resolution itself is the navigation rules'
+     * concern, so no route table is declared here &mdash; only the one per-screen default the paragraph
+     * itself hardcodes.
+     *
+     * <p>Lines 545 to 547 then stamp the originating transaction and program and reset the program
+     * context to its first-entry value, and lines 548 to 551 transfer control. A transfer carries the
+     * communication area but does not re-arm a transaction, so the turn reports no re-armed identifier.
+     *
+     * @param state the turn's working storage
+     */
+    private void returnToPrevScreen(final TurnState state) {
+        // Lines 542 to 544, both arms, resolved by the navigation rules.
+        final NavigationService.Route destination = navigationService
+                .resolveNominatedDestination(state.context, NavigationService.Route.SIGN_ON);
+
+        // Lines 545 to 547: MOVE WS-TRANID TO CDEMO-FROM-TRANID, MOVE WS-PGMNAME TO
+        // CDEMO-FROM-PROGRAM, MOVE ZEROS TO CDEMO-PGM-CONTEXT.
+        state.context = withOriginatingProgram(
+                withNominatedProgram(state.context, destination.getLegacyProgramName()))
+                .withFirstEntry();
+
+        // EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) COMMAREA(CARDDEMO-COMMAREA) at lines 548 to 551.
+        state.route = destination;
+        state.transferred = true;
+        LOG.debug("Transferring control from the report-request screen to route {}",
+                destination.getRouteValue());
+    }
+
+    // ==========================================================================================
+    // SEND-TRNRPT-SCREEN, line 556
+    // ==========================================================================================
+
+    /**
+     * The send paragraph at lines 556 to 580.
+     *
+     * <p>It populates the header, moves the eighty-character message work field into the
+     * {@value #ERROR_MESSAGE_WIDTH}-character outbound message field at line 560, and sends the map.
+     * The two arms of the send at lines 562 to 578 differ only in the 3270 erase attribute; the erase
+     * flag is set at line 167 and never reset anywhere in the member, so only the erasing arm is
+     * reachable and the attribute itself has no equivalent in a machine contract, which is why it is
+     * documented here rather than modelled.
+     *
+     * <p>The paragraph ends at line 580 with a jump to the return paragraph, so in the legacy the
+     * performing paragraph never resumes and the task ends at the first send. This translation instead
+     * <strong>populates the outbound result and lets control continue</strong>, so a re-submission can
+     * report every field it faulted rather than only the first. What the operator sees is unchanged:
+     * the summary message and the cursor position are latched at the first failure, which is exactly
+     * the pair the legacy screen carried.
+     *
+     * @param state the turn's working storage
+     */
+    private void sendTrnrptScreen(final TurnState state) {
+        populateHeaderInfo(state);
+
+        // MOVE WS-MESSAGE TO ERRMSGO OF CORPT0AO at line 560.
+        state.errorMessageField = moveToField(state.message, ERROR_MESSAGE_WIDTH);
+
+        // GO TO RETURN-TO-CICS at line 580.
+        returnToCics(state);
+    }
+
+    // ==========================================================================================
+    // RETURN-TO-CICS, line 585
+    // ==========================================================================================
+
+    /**
+     * The return paragraph at lines 585 to 591: {@code EXEC CICS RETURN TRANSID(WS-TRANID)
+     * COMMAREA(CARDDEMO-COMMAREA)}.
+     *
+     * <p>This member has its own return paragraph, reached both by the jump at the end of the send and
+     * as the terminal statement of the procedure division, so it gets its own method rather than being
+     * folded into either. Re-arming is idempotent and never overrides a transfer, because a transfer
+     * has already left the program.
+     *
+     * @param state the turn's working storage
+     */
+    private void returnToCics(final TurnState state) {
+        if (state.transferred) {
+            return;
+        }
+        state.reArmedTransactionId = WS_TRANID;
+    }
+
+    // ==========================================================================================
+    // RECEIVE-TRNRPT-SCREEN, line 596
+    // ==========================================================================================
+
+    /**
+     * The receive paragraph at lines 596 to 604.
+     *
+     * <p>Receives the input map, which is the point at which each transmitted value is bounded to the
+     * width its symbolic-map field declares: a longer value loses its excess on the right and a
+     * shorter one is space filled, so every later comparison works on a fixed-width value exactly as
+     * the source's comparisons do. A field the client omitted arrives as low values, which the
+     * blankness tests treat identically to spaces.
+     *
+     * @param state the turn's working storage
+     * @param input the transmitted screen
+     */
+    private void receiveTrnrptScreen(final TurnState state, final ReportScreenInput input) {
+        state.monthlySelection = moveToField(input.monthlySelection(), SELECTION_WIDTH);
+        state.yearlySelection = moveToField(input.yearlySelection(), SELECTION_WIDTH);
+        state.customSelection = moveToField(input.customSelection(), SELECTION_WIDTH);
+        state.startMonth = moveToField(input.startMonth(), MONTH_DAY_WIDTH);
+        state.startDay = moveToField(input.startDay(), MONTH_DAY_WIDTH);
+        state.startYear = moveToField(input.startYear(), YEAR_WIDTH);
+        state.endMonth = moveToField(input.endMonth(), MONTH_DAY_WIDTH);
+        state.endDay = moveToField(input.endDay(), MONTH_DAY_WIDTH);
+        state.endYear = moveToField(input.endYear(), YEAR_WIDTH);
+        state.confirm = moveToField(input.confirm(), CONFIRM_WIDTH);
+    }
+
+    // ==========================================================================================
+    // POPULATE-HEADER-INFO, line 609
+    // ==========================================================================================
+
+    /**
+     * The header paragraph at lines 609 to 628.
+     *
+     * <p>Reads the current date and time, then stamps the two catalogue titles, the transaction
+     * identifier and the program name, and assembles the two-digit header date and time. The header
+     * date keeps the legacy's two-digit year, taken as the last two characters of the four-character
+     * year exactly as the reference modification at line 620 takes it, and both separators are the
+     * ones the date and time work groups declare.
+     *
+     * @param state the turn's working storage
+     */
+    private void populateHeaderInfo(final TurnState state) {
+        // MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA at line 611.
+        final LocalDateTime now = LocalDateTime.now(clock);
+
+        state.title01 = messageCatalogService.screenTitle01();
+        state.title02 = messageCatalogService.screenTitle02();
+        state.transactionName = WS_TRANID;
+        state.programName = WS_PGMNAME;
+
+        // Lines 618 to 622: MM/DD/YY, the year taken as WS-CURDATE-YEAR(3:2).
+        final String year = numericField(now.getYear(), YEAR_WIDTH);
+        state.currentDate = numericField(now.getMonthValue(), HEADER_PART_WIDTH)
+                + HEADER_DATE_SEPARATOR
+                + numericField(now.getDayOfMonth(), HEADER_PART_WIDTH)
+                + HEADER_DATE_SEPARATOR
+                + year.substring(YEAR_SHORT_FORM_OFFSET);
+
+        // Lines 624 to 628: HH:MM:SS.
+        state.currentTime = numericField(now.getHour(), HEADER_PART_WIDTH)
+                + HEADER_TIME_SEPARATOR
+                + numericField(now.getMinute(), HEADER_PART_WIDTH)
+                + HEADER_TIME_SEPARATOR
+                + numericField(now.getSecond(), HEADER_PART_WIDTH);
+    }
+
+    // ==========================================================================================
+    // INITIALIZE-ALL-FIELDS, line 633
+    // ==========================================================================================
+
+    /**
+     * The reset paragraph at lines 633 to 646.
+     *
+     * <p>Positions the cursor on the first report-type field at line 635, then blanks the ten screen
+     * input fields and the message work field. Both of its call sites are terminal for the turn: the
+     * successful-submission path at line 447 and the declined-confirmation path at line 481. Clearing
+     * the message is what leaves the declined-confirmation path with no text at all.
+     *
+     * @param state the turn's working storage
+     */
+    private void initializeAllFields(final TurnState state) {
+        // MOVE -1 TO MONTHLYL OF CORPT0AI at line 635.
+        state.focusField = FIELD_MONTHLY;
+
+        // INITIALIZE the ten screen fields and WS-MESSAGE at lines 636 to 646.
+        state.monthlySelection = blankField(SELECTION_WIDTH);
+        state.yearlySelection = blankField(SELECTION_WIDTH);
+        state.customSelection = blankField(SELECTION_WIDTH);
+        state.startMonth = blankField(MONTH_DAY_WIDTH);
+        state.startDay = blankField(MONTH_DAY_WIDTH);
+        state.startYear = blankField(YEAR_WIDTH);
+        state.endMonth = blankField(MONTH_DAY_WIDTH);
+        state.endDay = blankField(MONTH_DAY_WIDTH);
+        state.endYear = blankField(YEAR_WIDTH);
+        state.confirm = blankField(CONFIRM_WIDTH);
+        state.message = NO_MESSAGE;
+    }
+
+    // ==========================================================================================
+    // Shared primitives for the constructs the source uses
+    // ==========================================================================================
+
+    /**
+     * Records one field failure: raises the error flag, latches the summary text and cursor position
+     * if this is the first failure of the turn, adds the per-field entry, and re-presents the screen.
+     *
+     * <p>Every failure site in the source does these four things in the same order, which is why they
+     * live here once rather than being restated a dozen times.
+     *
+     * @param state      the turn's working storage
+     * @param message    the failure's own text, byte exact
+     * @param property   the property name a consumer binds to
+     * @param bmsFieldId the legacy screen field name the cursor is positioned on
+     * @param fieldState whether the field was not supplied or was supplied wrongly
+     */
+    private void faultField(final TurnState state, final String message, final String property,
+            final String bmsFieldId, final ValidationException.FieldState fieldState) {
+        state.raiseError(message, bmsFieldId);
+        state.recordFieldError(property, bmsFieldId, fieldState, message);
+        sendTrnrptScreen(state);
+    }
+
+    /**
+     * Reports whether a report-type marker was supplied, reproducing the abbreviated combined
+     * relation {@code NOT = SPACES AND LOW-VALUES} at lines 213, 239 and 256, which expands to "is
+     * neither all spaces nor all low values".
+     *
+     * @param field the marker field
+     * @return {@code true} when the field carries something other than spaces and low values
+     */
+    private static boolean isSupplied(final String field) {
+        return !isBlankField(field);
+    }
+
+    /**
+     * Reports whether a fixed-width field is blank in the legacy sense, reproducing
+     * {@code = SPACES OR LOW-VALUES} at lines 259, 266, 273, 280, 287, 294, 464 and 503.
+     *
+     * <p>Blank means every character position is a space or a low value. An absent value and an empty
+     * value are both blank, because a field the terminal did not transmit arrives as low values and
+     * carries no character positions of its own.
+     *
+     * <p>The absent case is a defensive invariant rather than a live branch: every call site passes a
+     * field the receive paragraph has already bounded to its declared width, and that bounding never
+     * yields {@code null}. It is kept because the alternative to a guard here is an exception at a call
+     * site that a future edit could introduce, and because a total predicate is the contract a
+     * blankness test ought to have.
+     *
+     * @param field the field to test, which may be {@code null}
+     * @return {@code true} when the field is absent, empty, or wholly spaces and low values
+     */
+    private static boolean isBlankField(final String field) {
+        if (field == null) {
+            return true;
+        }
+        for (int index = 0; index < field.length(); index++) {
+            final char position = field.charAt(index);
+            if (position != SPACE && position != LOW_VALUE) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Reports whether every character position holds an ASCII digit, reproducing
+     * {@code IS NOT NUMERIC} at lines 329, 338, 347, 355, 364 and 373 when negated.
+     *
+     * <p>Membership is tested against the ten ASCII digits and never against a Unicode digit test,
+     * which would widen the accepted set past the single-byte characters the legacy field can hold.
+     * An empty field is not numeric, matching a field with no digit in it.
+     *
+     * <p>The empty case is a defensive invariant rather than a live branch: every screen field is at
+     * least one character position wide, so no call site can reach it. It is kept because a loop over
+     * an empty sequence would otherwise answer {@code true} by vacuity, and a numeric test that
+     * accepts nothing at all would be a real defect the moment a caller could reach it.
+     *
+     * @param field the field to test, never {@code null} at any call site here
+     * @return {@code true} when the field is non-empty and holds nothing but ASCII digits
+     */
+    private static boolean isAllDigits(final String field) {
+        if (field.isEmpty()) {
+            return false;
+        }
+        for (int index = 0; index < field.length(); index++) {
+            final char position = field.charAt(index);
+            if (position < '0' || position > '9') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Reproduces one pair of statements from lines 305 to 327: the currency-tolerant numeric
+     * conversion of a screen field into an unsigned numeric field of the given digit count, followed
+     * by the move straight back over the screen field.
+     *
+     * <p>Three outcomes, in the order they are tested:
+     * <ul>
+     *   <li>A field that was not supplied converts to zero, so the receiving numeric field zero-fills
+     *       and the move back writes all zeros. That is why a part reported as not supplied is
+     *       <em>not</em> also reported as out of range: zeros pass both range tests.</li>
+     *   <li>A well-formed numeric lexeme is converted, its integer digits are taken &mdash; the
+     *       receiving field is unsigned and has no decimal places, so a sign and a fraction are both
+     *       discarded &mdash; and the result is right justified with zero fill, which pads a short
+     *       value and, on overflow, keeps the low-order digits exactly as an unrounded store into a
+     *       fixed-width numeric field does.</li>
+     *   <li>Anything else is left exactly as it was transmitted. The conversion of an argument that is
+     *       not a well-formed numeric lexeme is undefined in the language, and leaving the field alone
+     *       is the only reading under which the three "not a valid" texts at lines 331, 340, 348, 357,
+     *       366 and 374 are reachable at all &mdash; the following test is precisely a numeric test,
+     *       and a converted field is always numeric. The divergence is recorded in the decision log.</li>
+     * </ul>
+     *
+     * @param field the screen field, already bounded to its declared width
+     * @param width the digit count of the receiving numeric field: two for a month or day, four for a
+     *              year
+     * @return the field as the move back leaves it
+     */
+    private static String numericConversion(final String field, final int width) {
+        if (isBlankField(field)) {
+            return ZERO_DIGIT.repeat(width);
+        }
+        if (!CobolStringUtils.isNumericLexeme(field)) {
+            return field;
+        }
+        return CobolStringUtils.rightJustifyZeroFill(
+                integerDigitsOf(CobolStringUtils.plainDecimalOfNumericLexeme(field)), width);
+    }
+
+    /**
+     * Takes the integer digits of a plain decimal string, discarding a leading sign and any
+     * fractional part, because the receiving field of the conversion is unsigned and has no decimal
+     * places.
+     *
+     * @param plainDecimal a plain decimal string: an optional minus sign, at least one integer digit,
+     *                     and an optional fractional part
+     * @return the integer digits, at least one character
+     */
+    private static String integerDigitsOf(final String plainDecimal) {
+        final int firstDigit = plainDecimal.charAt(0) == MINUS_SIGN ? 1 : 0;
+        final int decimalPoint = plainDecimal.indexOf(DECIMAL_POINT);
+        final int end = decimalPoint < 0 ? plainDecimal.length() : decimalPoint;
+        return plainDecimal.substring(firstDigit, end);
+    }
+
+    /**
+     * Assembles the ten-character date group declared at lines 60 to 71: a four-character year, a
+     * hyphen, a two-character month, a hyphen and a two-character day.
+     *
+     * <p>The group is assembled as text and is never held as a calendar object, because its three
+     * parts are validated individually and the assembled text is what crosses both the
+     * date-validation contract and the job-submission contract.
+     *
+     * @param year  the four-character year
+     * @param month the two-character month
+     * @param day   the two-character day
+     * @return the ten-character date
+     */
+    private static String assembleDate(final String year, final String month, final String day) {
+        return year + DATE_PART_SEPARATOR + month + DATE_PART_SEPARATOR + day;
+    }
+
+    /**
+     * Reproduces {@code FUNCTION INTEGER-OF-DATE}, which numbers 1601-01-01 as day one.
+     *
+     * <p>Modelled by name rather than folded away because the source subtracts on this scale at line
+     * 230 and the subtraction is the whole of the derivation.
+     *
+     * @param calendarDay the calendar day
+     * @return the integer date
+     */
+    private static long integerOfDate(final LocalDate calendarDay) {
+        return calendarDay.toEpochDay() - INTEGER_DATE_ORIGIN_EPOCH_DAY;
+    }
+
+    /**
+     * Reproduces {@code FUNCTION DATE-OF-INTEGER}, the inverse of {@code integerOfDate}.
+     *
+     * @param integerDate the integer date
+     * @return the calendar day it names
+     */
+    private static LocalDate dateOfInteger(final long integerDate) {
+        return LocalDate.ofEpochDay(integerDate + INTEGER_DATE_ORIGIN_EPOCH_DAY);
+    }
+
+    /**
+     * Reproduces {@code STRING ... DELIMITED BY SPACE}, which stops assembling at the first space, as
+     * used on the report name at lines 449 and 468 and on the confirmation field at line 487.
+     *
+     * @param field the fixed-width field to consume
+     * @return the part of the field before its first space, or the whole field when it holds none
+     */
+    private static String delimitedBySpace(final String field) {
+        final int firstSpace = field.indexOf(SPACE);
+        return firstSpace < 0 ? field : field.substring(0, firstSpace);
+    }
+
+    /**
+     * Reproduces a move into an alphanumeric field of the given width: left justified, space filled on
+     * the right when the sender is shorter, and truncated on the right when it is longer. An absent
+     * sender yields a blank field, because a field the terminal did not transmit holds no characters.
+     *
+     * @param value the sending value, which may be {@code null}
+     * @param width the receiving field width in character positions
+     * @return exactly {@code width} characters
+     */
+    private static String moveToField(final String value, final int width) {
+        if (value == null) {
+            return blankField(width);
+        }
+        if (value.length() >= width) {
+            return value.substring(0, width);
+        }
+        return value + blankField(width - value.length());
+    }
+
+    /**
+     * Reproduces a move of an unsigned numeric value into a display field of the given digit count:
+     * zero filled on the left, and keeping the low-order digits when the value has more digits than
+     * the field has positions, which is how an unrounded store into a fixed-width numeric field
+     * behaves.
+     *
+     * @param value the value to render; its magnitude is used, matching an unsigned receiving field
+     * @param width the digit count of the receiving field
+     * @return exactly {@code width} digits
+     */
+    private static String numericField(final int value, final int width) {
+        return CobolStringUtils.rightJustifyZeroFill(Integer.toString(Math.abs(value)), width);
+    }
+
+    /**
+     * Produces a blank field of the given width, which is what {@code INITIALIZE} writes into an
+     * alphanumeric item.
+     *
+     * @param width the field width in character positions
+     * @return exactly {@code width} spaces
+     */
+    private static String blankField(final int width) {
+        return String.valueOf(SPACE).repeat(width);
+    }
+
+    /**
+     * Reproduces the end-of-stream test at lines 502 and 503: the record is the end-of-stream card, or
+     * it is wholly spaces, or it is wholly low values.
+     *
+     * <p>The comparison against the sentinel is made at the full record width, because the source
+     * compares an eighty-character record against a five-character literal that the language extends
+     * with spaces.
+     *
+     * @param jclRecord the eighty-character record about to be written
+     * @return {@code true} when this record ends the stream
+     */
+    private static boolean isEndOfCardStream(final String jclRecord) {
+        return EOF_SENTINEL_RECORD.equals(jclRecord) || isBlankField(jclRecord);
+    }
+
+    /**
+     * Mints the identity of one submission.
+     *
+     * <p>The legacy queue had no notion of identity: a second request for the same period was appended
+     * and the job ran again. A fresh identity per call is what preserves that, because the bridge uses
+     * it, with each card's slot, to form the deduplication identifiers, so two requests for the same
+     * period enqueue two independent card streams. The value is hexadecimal, which keeps it free of
+     * whitespace and inside printable single-byte characters, as the bridge requires.
+     *
+     * @return a whitespace-free identity, distinct on every call
+     */
+    private static String newSubmissionIdentity() {
+        final UUID unique = UUID.randomUUID();
+        return Long.toHexString(unique.getMostSignificantBits())
+                + Long.toHexString(unique.getLeastSignificantBits());
+    }
+
+    /**
+     * Returns a copy of the navigation state whose nominated-destination program is the one supplied,
+     * reproducing a move into {@code CDEMO-TO-PROGRAM} at lines 173, 188 and 543.
+     *
+     * <p>Every other component is carried across unchanged. The sixteen components are restated
+     * explicitly because the state is an immutable record; the alternative, a mutable copy, would let
+     * echoed client state be altered in place.
+     *
+     * @param context     the state to copy
+     * @param programName the destination program name to nominate
+     * @return a new state differing only in its nominated-destination program
+     */
+    private static NavigationContext withNominatedProgram(final NavigationContext context,
+            final String programName) {
+        return new NavigationContext(context.fromTransactionId(),
+                context.fromProgram(),
+                context.toTransactionId(),
+                programName,
+                context.userId(),
+                context.userType(),
+                context.programContext(),
+                context.customerId(),
+                context.customerFirstName(),
+                context.customerMiddleName(),
+                context.customerLastName(),
+                context.accountId(),
+                context.accountStatus(),
+                context.cardNumber(),
+                context.lastMap(),
+                context.lastMapset());
+    }
+
+    /**
+     * Returns a copy of the navigation state stamped with this screen's transaction identifier and
+     * program name as the originator, reproducing lines 545 and 546.
+     *
+     * @param context the state to copy
+     * @return a new state differing only in its originating transaction and program
+     */
+    private static NavigationContext withOriginatingProgram(final NavigationContext context) {
+        return new NavigationContext(WS_TRANID,
+                WS_PGMNAME,
+                context.toTransactionId(),
+                context.toProgram(),
+                context.userId(),
+                context.userType(),
+                context.programContext(),
+                context.customerId(),
+                context.customerFirstName(),
+                context.customerMiddleName(),
+                context.customerLastName(),
+                context.accountId(),
+                context.accountStatus(),
+                context.cardNumber(),
+                context.lastMap(),
+                context.lastMapset());
+    }
+
+    // ==========================================================================================
+    // Per-invocation working storage
+    // ==========================================================================================
+
+    /**
+     * The working storage the legacy declares at lines 36 to 79, held per invocation so the service
+     * bean itself stays stateless and two concurrent turns cannot observe one another.
+     *
+     * <p>Package-private mutable fields rather than accessors: this is a local scratch area belonging
+     * to one call of one enclosing class, and accessors would add ceremony without adding safety.
+     */
+    private static final class TurnState {
+
+        /** {@code WS-ERR-FLG}, cleared at line 165 and raised by every failure site. */
+        private boolean errorFlag;
+
+        /** {@code WS-END-LOOP}, cleared at line 496 and raised at line 504. */
+        private boolean endLoop;
+
+        /** {@code WS-MESSAGE}, blanked at line 169, in its authored rather than padded form. */
+        private String message = NO_MESSAGE;
+
+        /** {@code WS-REPORT-NAME}, {@code PIC X(10)} at line 58. */
+        private String reportName = blankField(REPORT_NAME_WIDTH);
+
+        /** {@code WS-START-DATE}, the ten-character group at lines 60 to 65. */
+        private String startDate = NO_MESSAGE;
+
+        /** {@code WS-END-DATE}, the ten-character group at lines 66 to 71. */
+        private String endDate = NO_MESSAGE;
+
+        /**
+         * The start-date substitution value. One field rather than two, because every move writes both
+         * {@code PARM-START-DATE-1} and {@code PARM-START-DATE-2} in a single statement at lines 220,
+         * 247 and 429, so the two occurrences cannot diverge; the card builder likewise fills both of
+         * its card slots from one argument.
+         */
+        private String parmStartDate = NO_MESSAGE;
+
+        /** The end-date substitution value, written to both of its slots at lines 235, 252 and 431. */
+        private String parmEndDate = NO_MESSAGE;
+
+        /** {@code MONTHLYI}, the month-to-date marker. */
+        private String monthlySelection = blankField(SELECTION_WIDTH);
+
+        /** {@code YEARLYI}, the year-to-date marker. */
+        private String yearlySelection = blankField(SELECTION_WIDTH);
+
+        /** {@code CUSTOMI}, the operator-range marker. */
+        private String customSelection = blankField(SELECTION_WIDTH);
+
+        /** {@code SDTMMI}, the start month. */
+        private String startMonth = blankField(MONTH_DAY_WIDTH);
+
+        /** {@code SDTDDI}, the start day. */
+        private String startDay = blankField(MONTH_DAY_WIDTH);
+
+        /** {@code SDTYYYYI}, the start year. */
+        private String startYear = blankField(YEAR_WIDTH);
+
+        /** {@code EDTMMI}, the end month. */
+        private String endMonth = blankField(MONTH_DAY_WIDTH);
+
+        /** {@code EDTDDI}, the end day. */
+        private String endDay = blankField(MONTH_DAY_WIDTH);
+
+        /** {@code EDTYYYYI}, the end year. */
+        private String endYear = blankField(YEAR_WIDTH);
+
+        /** {@code CONFIRMI}, the confirmation field. */
+        private String confirm = blankField(CONFIRM_WIDTH);
+
+        /** {@code ERRMSGO}, the outbound message field at its own narrower width. */
+        private String errorMessageField = blankField(ERROR_MESSAGE_WIDTH);
+
+        /** {@code CCDA-TITLE01} as moved at line 613. */
+        private String title01 = NO_MESSAGE;
+
+        /** {@code CCDA-TITLE02} as moved at line 614. */
+        private String title02 = NO_MESSAGE;
+
+        /** {@code TRNNAMEO} as moved at line 615. */
+        private String transactionName = NO_MESSAGE;
+
+        /** {@code PGMNAMEO} as moved at line 616. */
+        private String programName = NO_MESSAGE;
+
+        /** {@code CURDATEO} as assembled at lines 618 to 622. */
+        private String currentDate = NO_MESSAGE;
+
+        /** {@code CURTIMEO} as assembled at lines 624 to 628. */
+        private String currentTime = NO_MESSAGE;
+
+        /** The cursor position, from the corresponding {@code MOVE -1} to a field's length item. */
+        private String focusField = NO_MESSAGE;
+
+        /** Whether the message field was recoloured at line 448. */
+        private boolean messageHighlightedGreen;
+
+        /** Whether the confirmation gate at lines 464 to 494 stopped the submission. */
+        private boolean confirmationBlocked;
+
+        /** How many cards the queue accepted. */
+        private int cardsPublished;
+
+        /** The transaction identifier re-armed by a return, empty when control was transferred. */
+        private String reArmedTransactionId = NO_MESSAGE;
+
+        /** Whether control was transferred, which is what makes a return unreachable for this turn. */
+        private boolean transferred;
+
+        /** {@code CARDDEMO-COMMAREA}, the navigation state the turn carries. */
+        private NavigationContext context = NavigationContext.empty();
+
+        /**
+         * The resolved period, absent until one of the three arms resolves it and left absent when the
+         * catch-all fires.
+         */
+        private ReportPeriod reportPeriod;
+
+        /**
+         * The destination the turn leads to, opening on this screen's own destination because the
+         * return at lines 199 to 202 re-arms this same transaction, and overridden only by a transfer.
+         */
+        private NavigationService.Route route = NavigationService.Route.REPORT_REQUEST;
+
+        /** The per-field detail, accumulated in the order the source checks the fields. */
+        private final List<ValidationException.FieldError> fieldErrors = new ArrayList<>();
+
+        /**
+         * Raises the error flag and latches the summary text and cursor position on the first failure
+         * of the turn.
+         *
+         * <p>Latching is what keeps the operator-visible outcome byte-identical to the legacy's. There
+         * the first send ends the task, so the screen carried the first failure's text and the first
+         * failure's cursor position; here the cascade continues so that every faulted field can be
+         * reported, and the pair stays the first failure's.
+         *
+         * @param text       the failure's text, byte exact
+         * @param cursorField the screen field the cursor is positioned on
+         */
+        private void raiseError(final String text, final String cursorField) {
+            this.errorFlag = true;
+            if (this.message.isEmpty()) {
+                this.message = text;
+                this.focusField = cursorField;
+            }
+        }
+
+        /**
+         * Sets the message unconditionally, for the one site that writes a message with no failure
+         * behind it: the acknowledgement at lines 449 to 452.
+         *
+         * @param text the message text, byte exact
+         */
+        private void setMessage(final String text) {
+            this.message = text;
+        }
+
+        /**
+         * Adds one per-field entry.
+         *
+         * @param property   the property name a consumer binds to
+         * @param bmsFieldId the legacy screen field name
+         * @param fieldState whether the field was not supplied or was supplied wrongly
+         * @param text       the field's own message
+         */
+        private void recordFieldError(final String property, final String bmsFieldId,
+                final ValidationException.FieldState fieldState, final String text) {
+            this.fieldErrors.add(
+                    new ValidationException.FieldError(property, bmsFieldId, fieldState, text));
+        }
+
+        /**
+         * Projects the working storage onto the turn's outcome.
+         *
+         * @return the outcome, with the per-field detail copied so nothing mutable escapes
+         */
+        private ReportRequestResult toResult() {
+            return new ReportRequestResult(this.route,
+                    this.context,
+                    this.reArmedTransactionId,
+                    this.reportPeriod,
+                    delimitedBySpace(this.reportName),
+                    this.startDate,
+                    this.endDate,
+                    this.cardsPublished,
+                    this.confirmationBlocked,
+                    this.message,
+                    this.messageHighlightedGreen,
+                    this.focusField,
+                    this.errorFlag,
+                    List.copyOf(this.fieldErrors),
+                    new ScreenHeader(this.title01,
+                            this.title02,
+                            this.transactionName,
+                            this.programName,
+                            this.currentDate,
+                            this.currentTime,
+                            this.errorMessageField),
+                    new ScreenFields(this.monthlySelection,
+                            this.yearlySelection,
+                            this.customSelection,
+                            this.startMonth,
+                            this.startDay,
+                            this.startYear,
+                            this.endMonth,
+                            this.endDay,
+                            this.endYear,
+                            this.confirm));
+        }
+    }
+}

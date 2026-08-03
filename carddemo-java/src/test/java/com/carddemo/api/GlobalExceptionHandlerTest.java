@@ -138,6 +138,18 @@ class GlobalExceptionHandlerTest {
     /** The validator obtained from {@link #validatorFactory}. */
     private static Validator validator;
 
+    /**
+     * Starts the validation provider with the message locale pinned.
+     *
+     * <p>Assertions below compare the interpolated constraint message character for character, and the
+     * provider interpolates in the JVM default locale, so under a localized default the same violation
+     * reports localized prose - Turkish renders the blank message as {@code boş değer olamaz}. The
+     * continuous-integration definition deliberately re-runs this tier with the default locale
+     * overridden, so the interpolation locale is fixed here rather than left to the machine. It is
+     * fixed by installing the application's own {@code FixedLocaleMessageInterpolator}, which pins
+     * {@link java.util.Locale#ROOT} and so resolves the provider's base bundle - the English text
+     * asserted below - rather than any translation of it.
+     */
     @BeforeAll
     static void startValidationProvider() {
         // Built with the SAME pinned interpolator the application installs on its own validator,

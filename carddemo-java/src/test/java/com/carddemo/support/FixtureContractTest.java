@@ -137,7 +137,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source statement is
  * reproduced here; the legacy layouts are cited by copybook and field width.</p>
  */
-@DisplayName("Named fixtures: the nine sequential inputs, measured rather than recited")
+@DisplayName("Named fixtures: the nine sequential inputs and the derived credential fixture, measured")
 final class FixtureContractTest {
 
     /** Class-loader directory holding the nine fixtures. */
@@ -168,6 +168,62 @@ final class FixtureContractTest {
     private static final List<String> FIXTURE_NAMES = List.of(
             "acctdata.txt", "carddata.txt", "cardxref.txt", "custdata.txt", "dailytran.txt",
             "discgrp.txt", "tcatbal.txt", "trancatg.txt", "trantype.txt");
+
+    // ---------------------------------------------------------------------------------------------
+    // The tenth member of the same directory, which is deliberately NOT one of the nine above.
+    //
+    // The nine are byte-verbatim copies of sequential datasets, and every assertion this suite makes
+    // about them - the recorded byte count, the record count, the digest, the line-feed terminator -
+    // holds because they are copies. The credential fixture is derived rather than copied: the
+    // provisioning job carries its ten records in stream as 57-character cards, and the record layout
+    // pads each one to 80. It therefore has a different shape from all nine, and in one respect the
+    // opposite shape: it carries no line terminator at all, so it is read on a fixed stride instead of
+    // by line. Adding it to FIXTURE_NAMES would hand it to the parameterized rows above, every one of
+    // which assumes a trailing line feed, and they would fail on it for the right reason.
+    //
+    // So it is enumerated separately, and given its own assertions below. What must NOT happen is the
+    // directory-membership check being relaxed to tolerate it: that check exists precisely to catch an
+    // unaccounted-for file, and the fix for a NEW accounted-for file is to account for it by name.
+    // ---------------------------------------------------------------------------------------------
+
+    /** The derived credential fixture: the tenth file in the directory, terminator-free. */
+    private static final String CREDENTIAL_FIXTURE = "usrsec.txt";
+
+    /** Record width of the credential fixture, from the user-security record layout. */
+    private static final int CREDENTIAL_RECORD_WIDTH = 80;
+
+    /** How many records the credential fixture carries. */
+    private static final int CREDENTIAL_RECORD_COUNT = 10;
+
+    /** Total size of the credential fixture: ten records at eighty bytes, and no terminator. */
+    private static final int CREDENTIAL_TOTAL_BYTES = CREDENTIAL_RECORD_COUNT * CREDENTIAL_RECORD_WIDTH;
+
+    /** Width of the card the credential fixture's records are derived from, before padding. */
+    private static final int CREDENTIAL_CARD_WIDTH = 57;
+
+    /** Zero-based offset of the user identifier within a credential record. */
+    private static final int CREDENTIAL_ID_OFFSET = 0;
+
+    /** Width of the user identifier. */
+    private static final int CREDENTIAL_ID_WIDTH = 8;
+
+    /** Zero-based offset of the user type within a credential record. */
+    private static final int CREDENTIAL_TYPE_OFFSET = 56;
+
+    /** How many of the ten records carry the administrative user type. */
+    private static final int ADMINISTRATOR_COUNT = 5;
+
+    /** The ten user identifiers the provisioning job seeds, in the order it writes them. */
+    private static final List<String> CREDENTIAL_USER_IDS = List.of(
+            "ADMIN001", "ADMIN002", "ADMIN003", "ADMIN004", "ADMIN005",
+            "USER0001", "USER0002", "USER0003", "USER0004", "USER0005");
+
+    /**
+     * Every file the committed fixture directory is accounted for as holding: the nine copies and the
+     * one derived fixture. Anything else in the directory is unaccounted for and is a failure.
+     */
+    private static final List<String> DIRECTORY_MEMBERS =
+            Stream.concat(FIXTURE_NAMES.stream(), Stream.of(CREDENTIAL_FIXTURE)).sorted().toList();
 
     // ---------------------------------------------------------------------------------------------
     // Daily-transaction offsets. Computed by hand from the daily-transaction copybook's field widths
@@ -491,11 +547,15 @@ final class FixtureContractTest {
     final class TheCommittedFixtureDirectory {
 
         @Test
-        @DisplayName("holds exactly the nine named files and nothing else")
-        void holdsExactlyTheNineNamedFiles() throws IOException {
+        @DisplayName("holds exactly the nine copies plus the derived credential fixture, and nothing else")
+        void holdsExactlyTheAccountedForFiles() throws IOException {
             // Both directions matter. A missing file would make some parameterized row fail already,
             // but an EXTRA file would not be noticed anywhere, and an unaccounted-for fixture is
             // exactly the thing that later gets used as an input nobody pinned.
+            //
+            // The membership is stated as a closed list of ten, not loosened to "at least the nine".
+            // Every member is named, so a file arriving in this directory without being added here is
+            // still a failure - which is the whole point of the check.
             final Path directory = Paths.get(COMMITTED_DIRECTORY);
             assertThat(Files.isDirectory(directory))
                     .as("the committed fixture directory %s must exist", COMMITTED_DIRECTORY)
@@ -507,9 +567,54 @@ final class FixtureContractTest {
             }
 
             assertThat(actual)
-                    .as("the committed fixture directory must hold exactly the nine named files")
-                    .containsExactlyInAnyOrderElementsOf(FIXTURE_NAMES)
-                    .hasSize(EXPECTED_FIXTURE_COUNT);
+                    .as("the committed fixture directory must hold exactly the files accounted for here")
+                    .containsExactlyInAnyOrderElementsOf(DIRECTORY_MEMBERS)
+                    .hasSize(EXPECTED_FIXTURE_COUNT + 1);
+
+            assertThat(actual)
+                    .as("the nine copies must all still be present alongside the derived fixture")
+                    .containsAll(FIXTURE_NAMES)
+                    .contains(CREDENTIAL_FIXTURE);
+        }
+
+        @Test
+        @DisplayName("holds no subdirectory: the fixtures are flat")
+        void holdsNoSubdirectory() throws IOException {
+            // A subdirectory here would be invisible to every other assertion in this class, all of
+            // which resolve names directly under the directory.
+            final Path directory = Paths.get(COMMITTED_DIRECTORY);
+
+            final List<String> subdirectories;
+            try (Stream<Path> entries = Files.list(directory)) {
+                subdirectories = entries.filter(Files::isDirectory)
+                        .map(path -> path.getFileName().toString())
+                        .sorted()
+                        .toList();
+            }
+
+            assertThat(subdirectories)
+                    .as("the committed fixture directory must be flat")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("carries no digest sidecar: the expectations live in this suite, not beside the data")
+        void carriesNoDigestSidecar() throws IOException {
+            // The recorded digests are literals in this class. A sidecar file would be a second,
+            // unpinned source of truth for the same thing, and would itself be an unaccounted-for file.
+            final Path directory = Paths.get(COMMITTED_DIRECTORY);
+
+            final List<String> sidecars;
+            try (Stream<Path> entries = Files.list(directory)) {
+                sidecars = entries.map(path -> path.getFileName().toString())
+                        .filter(name -> name.endsWith(".sha256") || name.startsWith("SHA256SUMS"))
+                        .sorted()
+                        .toList();
+            }
+
+            assertThat(sidecars)
+                    .as("no digest sidecar may sit beside the fixtures")
+                    .isEmpty();
         }
 
         @Test
@@ -526,6 +631,207 @@ final class FixtureContractTest {
                     .hasSize(EXPECTED_FIXTURE_COUNT)
                     .doesNotHaveDuplicates()
                     .containsExactlyInAnyOrderElementsOf(FIXTURE_NAMES);
+        }
+    }
+
+    /**
+     * The derived credential fixture, asserted on its own terms.
+     *
+     * <p>Read on a fixed eighty-byte stride rather than by line, because it carries no line
+     * terminator: a line-oriented read would see one 800-character line and every offset below would
+     * be wrong. The stride is what makes the file parseable, so asserting the stride divides the size
+     * exactly is asserting the file is usable at all.
+     *
+     * <p>Nothing here asserts on the credential itself. The eight bytes the layout reserves for it are
+     * compared between records and measured, which is enough to prove the fixture carries one real
+     * credential on every record, and never enough to reveal what it is. A failure message from this
+     * class reports a record index and a measurement, never a value.
+     */
+    @Nested
+    @DisplayName("the derived credential fixture")
+    final class TheDerivedCredentialFixture {
+
+        @Test
+        @DisplayName("measures exactly ten eighty-byte records and carries no terminator")
+        void measuresTenRecordsAndCarriesNoTerminator() throws IOException {
+            final byte[] content = fixtureBytes(CREDENTIAL_FIXTURE);
+
+            assertThat(content)
+                    .as("the credential fixture must measure ten records of eighty bytes")
+                    .hasSize(CREDENTIAL_TOTAL_BYTES);
+
+            // The deliberate divergence from the other nine, and the reason for the stride.
+            assertThat(new String(content, StandardCharsets.ISO_8859_1))
+                    .as("the credential fixture must carry no line feed and no carriage return")
+                    .doesNotContain(String.valueOf(LINE_FEED))
+                    .doesNotContain(String.valueOf(CARRIAGE_RETURN));
+
+            assertThat(content.length % CREDENTIAL_RECORD_WIDTH)
+                    .as("the stride must divide the size exactly, or no record boundary is recoverable")
+                    .isZero();
+            assertThat(content.length / CREDENTIAL_RECORD_WIDTH)
+                    .as("the stride must yield exactly ten records")
+                    .isEqualTo(CREDENTIAL_RECORD_COUNT);
+        }
+
+        @Test
+        @DisplayName("begins with data, so nothing was prefixed to it")
+        void beginsWithData() throws IOException {
+            // A licence header, a banner or a column ruler would each shift every record boundary by
+            // its own length. Asserting the first record is the first identifier catches all of them.
+            final byte[] content = fixtureBytes(CREDENTIAL_FIXTURE);
+
+            assertThat(new String(content, 0, CREDENTIAL_ID_WIDTH, StandardCharsets.ISO_8859_1))
+                    .as("the fixture must open on the first user identifier, with no prefix of any kind")
+                    .isEqualTo(CREDENTIAL_USER_IDS.get(0));
+        }
+
+        @Test
+        @DisplayName("carries the ten user identifiers in the order the provisioning job writes them")
+        void carriesTheTenUserIdentifiersInOrder() throws IOException {
+            final List<String> identifiers = new ArrayList<>();
+            for (final byte[] record : credentialRecords()) {
+                identifiers.add(new String(record, CREDENTIAL_ID_OFFSET, CREDENTIAL_ID_WIDTH,
+                        StandardCharsets.ISO_8859_1));
+            }
+
+            // Order is contractual: the administrative identifiers precede the standard ones, and the
+            // seed migration inserts them in this same order.
+            assertThat(identifiers)
+                    .as("the ten identifiers must appear in source order")
+                    .containsExactlyElementsOf(CREDENTIAL_USER_IDS);
+        }
+
+        @Test
+        @DisplayName("splits five administrators and five standard users, administrators first")
+        void splitsFiveAdministratorsAndFiveUsers() throws IOException {
+            final List<String> types = new ArrayList<>();
+            for (final byte[] record : credentialRecords()) {
+                types.add(new String(record, CREDENTIAL_TYPE_OFFSET, 1, StandardCharsets.ISO_8859_1));
+            }
+
+            // This census is what the role split is built on, so it is asserted rather than assumed.
+            assertThat(types).as("the type byte must be present on all ten records")
+                    .hasSize(CREDENTIAL_RECORD_COUNT);
+            assertThat(types.subList(0, ADMINISTRATOR_COUNT))
+                    .as("the first five records must carry the administrative type")
+                    .containsOnly("A");
+            assertThat(types.subList(ADMINISTRATOR_COUNT, CREDENTIAL_RECORD_COUNT))
+                    .as("the last five records must carry the standard type")
+                    .containsOnly("U");
+        }
+
+        @Test
+        @DisplayName("pads every record from the card width to the record width with spaces")
+        void padsEveryRecordWithSpaces() throws IOException {
+            // The provisioning job carries 57-character cards; the record layout reserves 80. The
+            // difference is filler, and it has to be blank or the trailing field would carry content
+            // the layout does not define.
+            final String expectedFiller =
+                    " ".repeat(CREDENTIAL_RECORD_WIDTH - CREDENTIAL_CARD_WIDTH);
+
+            final List<byte[]> records = credentialRecords();
+            for (int index = 0; index < records.size(); index++) {
+                final String filler = new String(records.get(index), CREDENTIAL_CARD_WIDTH,
+                        CREDENTIAL_RECORD_WIDTH - CREDENTIAL_CARD_WIDTH, StandardCharsets.ISO_8859_1);
+                assertThat(filler)
+                        .as("record %d: the filler must be blank across its full width", index)
+                        .isEqualTo(expectedFiller);
+            }
+        }
+
+        @Test
+        @DisplayName("reserves eight non-blank bytes for the credential, identical on every record")
+        void reservesTheCredentialFieldOnEveryRecord() throws IOException {
+            // Measured and compared, never read out. The seed migration digests one value ten times
+            // with ten different salts, so proving the source carries ONE value on all ten records is
+            // what makes ten distinct digests the expected outcome rather than a discrepancy.
+            final int credentialOffset = 48;
+            final int credentialWidth = 8;
+
+            final Set<String> distinct = new TreeSet<>();
+            final List<byte[]> records = credentialRecords();
+            for (int index = 0; index < records.size(); index++) {
+                final String reserved = new String(records.get(index), credentialOffset,
+                        credentialWidth, StandardCharsets.ISO_8859_1);
+                assertThat(reserved.isBlank())
+                        .as("record %d: the credential field must not be blank", index)
+                        .isFalse();
+                assertThat(reserved.length())
+                        .as("record %d: the credential field must occupy its full width", index)
+                        .isEqualTo(credentialWidth);
+                distinct.add(reserved);
+            }
+
+            assertThat(distinct)
+                    .as("all ten records must reserve the same single credential value")
+                    .hasSize(1);
+        }
+
+        @Test
+        @DisplayName("holds no control-language text: it is data, not a copy of the job that wrote it")
+        void holdsNoControlLanguageText() throws IOException {
+            // The fixture is derived from ten in-stream data cards. The job control surrounding those
+            // cards must not have come with them.
+            final String content =
+                    new String(fixtureBytes(CREDENTIAL_FIXTURE), StandardCharsets.ISO_8859_1);
+
+            assertThat(content)
+                    .as("no job-control or utility text may appear in a data fixture")
+                    .doesNotContain("//")
+                    .doesNotContain("DD ")
+                    .doesNotContain("EXEC ")
+                    .doesNotContain("DSN=")
+                    .doesNotContain("DCB=")
+                    .doesNotContain("/*")
+                    .doesNotContain("SYSUT")
+                    .doesNotContain("SYSPRINT")
+                    .doesNotContain("SYSIN")
+                    .doesNotContain("NOTIFY")
+                    .doesNotContain("IEBGENER")
+                    .doesNotContain("IEFBR14")
+                    .doesNotContain("IDCAMS")
+                    .doesNotContain("REPRO")
+                    .doesNotContain("DEFINE CLUSTER")
+                    .doesNotContain("RECORDSIZE")
+                    .doesNotContain("Ver:");
+        }
+
+        @Test
+        @DisplayName("is committed, not generated: it is present as a file on disk")
+        void isCommittedRatherThanGenerated() throws IOException {
+            // The classpath copy could in principle come from a build step. The committed copy is the
+            // one that has to exist, and the two have to agree byte for byte.
+            final Path committed = Paths.get(COMMITTED_DIRECTORY, CREDENTIAL_FIXTURE);
+
+            assertThat(Files.isRegularFile(committed))
+                    .as("%s must be committed under %s", CREDENTIAL_FIXTURE, COMMITTED_DIRECTORY)
+                    .isTrue();
+            assertThat(Files.size(committed))
+                    .as("the committed credential fixture must measure ten eighty-byte records")
+                    .isEqualTo(CREDENTIAL_TOTAL_BYTES);
+            assertThat(Files.readAllBytes(committed))
+                    .as("the classpath copy and the committed copy must agree byte for byte")
+                    .isEqualTo(fixtureBytes(CREDENTIAL_FIXTURE));
+        }
+
+        /**
+         * Splits the credential fixture into records on the fixed stride.
+         *
+         * @return the ten records, each exactly one record width long
+         * @throws IOException if the fixture cannot be read
+         */
+        private List<byte[]> credentialRecords() throws IOException {
+            final byte[] content = fixtureBytes(CREDENTIAL_FIXTURE);
+            assertThat(content)
+                    .as("the credential fixture must be whole before it can be split")
+                    .hasSize(CREDENTIAL_TOTAL_BYTES);
+
+            final List<byte[]> records = new ArrayList<>();
+            for (int offset = 0; offset < content.length; offset += CREDENTIAL_RECORD_WIDTH) {
+                records.add(Arrays.copyOfRange(content, offset, offset + CREDENTIAL_RECORD_WIDTH));
+            }
+            return records;
         }
     }
 

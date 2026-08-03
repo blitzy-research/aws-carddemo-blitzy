@@ -27,11 +27,26 @@ import org.springframework.validation.annotation.Validated;
  * The bearer-token settings this module signs and verifies with, bound from configuration and
  * validated before the container will start.
  *
- * <p>The legacy estate carried sign-on state in a communication area that every pseudo-conversational
- * turn passed back to the next program. This module carries it in a signed token instead, and the three
- * values below are the whole of what that substitution needs: the material the signature is computed
- * with, the name the token claims as its origin, and how long a token remains usable. Nothing else about
- * the substitution is configurable, because nothing else about it is a deployment decision.
+ * <p><strong>What this replaces.</strong> The legacy sign-on program, transaction {@code CC00} at
+ * {@code app/cbl/COSGN00C.cbl}, was pseudo-conversational: lines 98 to 102 of that member close every
+ * turn by returning with the next transaction identifier together with the shared communication area,
+ * so the area itself carried each fact the following turn needed. That area is
+ * {@code CARDDEMO-COMMAREA}, declared at {@code app/cpy/COCOM01Y.cpy} line 19, 160 bytes wide, and
+ * included textually by all 17 online programs. This module carries no such area. It signs the two
+ * security facts that area held into a bearer token - the 8-character {@code CDEMO-USER-ID} at
+ * {@code app/cpy/COCOM01Y.cpy} line 25 and the 1-character {@code CDEMO-USER-TYPE} at line 26, whose
+ * only permitted codes are the level-88 condition names {@code CDEMO-USRTYP-ADMIN} and
+ * {@code CDEMO-USRTYP-USER} at lines 27 and 28 - and leaves the mutable navigation remainder to
+ * {@code com.carddemo.api.dto.NavigationContext}, which the client echoes on its next call. The legacy
+ * estate is cited above by member path, field name, width and line number only; no COBOL, copybook or
+ * screen-map source text is reproduced here or anywhere else in this module.
+ *
+ * <p>These settings therefore configure that token and nothing else, and the three values below are the
+ * whole of what the substitution needs: the material the signature is computed with, the name the token
+ * claims as its origin, and how long a token remains usable. There is deliberately no component for a
+ * user identifier, a user type, a route or any other navigation concern - each of those travels in a
+ * minted token or in the context record, never in configuration. Nothing else about the substitution is
+ * configurable, because nothing else about it is a deployment decision.
  *
  * <p><strong>The signing material has no default anywhere, and that is deliberate.</strong> The shared
  * baseline declares the issuer and the lifetime but states no secret and defaults none - not an empty
@@ -63,15 +78,21 @@ import org.springframework.validation.annotation.Validated;
  * <p>The split of validation between annotations and the constructor, and the rule that no profile may
  * default the signing value, are reasoned in {@code docs/decision-log.md} DL-097.
  *
- * @param secret     material the token signature is computed with. Supplied per profile and never
- *                   defaulted; an absent or blank value stops start-up. Never logged, never serialized
+ * @param secret     material the token signature is computed with, supplied in production by the
+ *                   {@code CARDDEMO_JWT_SECRET} environment variable and resolved there with <em>no
+ *                   fallback default</em>. The shared baseline declares no value for it and no profile
+ *                   defaults one, so a deployment that has not set that variable cannot reach a running
+ *                   state; an absent or blank value stops start-up here. Never logged, never serialized
  *                   and never carried in {@link #toString()}
  * @param issuer     name a minted token claims as its origin and the value a presented token is required
- *                   to carry. It is deliberately not this module's metric service label: one identifies
- *                   the token's origin and the other labels a meter, and neither should be edited to
- *                   match the other
+ *                   to carry. Every shipped profile states it directly rather than through a variable,
+ *                   because it names this module rather than an environment. It is deliberately not this
+ *                   module's metric service label: one identifies the token's origin and the other labels
+ *                   a meter, and neither should be edited to match the other
  * @param expiration how long a minted token stays usable, as a span of time rather than a count of
- *                   units, so the configured value states its own scale
+ *                   units, so the configured value states its own scale. Supplied in production by the
+ *                   {@code CARDDEMO_JWT_EXPIRATION} environment variable over a declared fallback -
+ *                   admissible for this component precisely because a lifetime is not a credential
  */
 @ConfigurationProperties(prefix = JwtProperties.PREFIX)
 @Validated

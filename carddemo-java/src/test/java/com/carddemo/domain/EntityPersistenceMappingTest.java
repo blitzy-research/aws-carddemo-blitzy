@@ -92,9 +92,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <h2>Two facts this file records rather than merely asserts</h2>
  *
- * <p>The migration declares eleven tables and the module ships nine entities. The transaction table
- * and the card cross-reference table have no entity class. That gap is asserted explicitly below so
- * that it is a recorded, reviewable fact rather than an omission noticed by nobody.
+ * <p>The migration declares eleven tables and the module now ships eleven entities, so every declared
+ * table carries an entity class and no gap remains. The closure is asserted explicitly below, in the
+ * same form the gap itself was asserted in, so it stays a recorded and reviewable fact rather than
+ * something noticed by nobody. It was a two-table gap, narrowed when the card cross-reference entity
+ * arrived and closed when the transaction entity followed, which is the mechanism working as intended:
+ * the inventory is hand-written precisely so that an entity cannot be added without its mapping being
+ * brought under assertion at the same time.
  *
  * <p>For all three composite keys the key column <em>set</em> agrees between provider and migration
  * while the declared <em>order</em> does not: the provider orders identifier-class columns
@@ -138,9 +142,15 @@ final class EntityPersistenceMappingTest {
     /** The tables that carry an optimistic-lock counter, which is only the two updated online. */
     private static final Set<String> VERSIONED_TABLES = Set.of("account", "card");
 
-    /** Tables the migration declares for which the module ships no entity class. */
-    private static final Set<String> TABLES_WITHOUT_ENTITY =
-            Set.of("transaction", "card_cross_reference");
+    /**
+     * Tables the migration declares for which the module ships no entity class.
+     *
+     * <p>Empty: every declared table is now mapped. It is kept, rather than deleted along with the
+     * last gap it held, because the assertions below compare the computed set of unmapped tables
+     * against it in both directions - so a table added to the migration without an entity, or an
+     * entity quietly dropped, still fails here.
+     */
+    private static final Set<String> TABLES_WITHOUT_ENTITY = Set.of();
 
     /** The primary key column set of each mapped table, as the migration declares it. */
     private static final Map<String, Set<String>> EXPECTED_KEY_COLUMNS = expectedKeyColumns();
@@ -195,9 +205,11 @@ final class EntityPersistenceMappingTest {
         final Map<String, String> tables = new LinkedHashMap<>();
         tables.put("Account", "account");
         tables.put("Card", "card");
+        tables.put("CardCrossReference", "card_cross_reference");
         tables.put("Customer", "customer");
         tables.put("DailyTransaction", "daily_transaction");
         tables.put("DisclosureGroup", "disclosure_group");
+        tables.put("Transaction", "transaction");
         tables.put("TransactionCategory", "transaction_category");
         tables.put("TransactionCategoryBalance", "transaction_category_balance");
         tables.put("TransactionType", "transaction_type");
@@ -214,9 +226,11 @@ final class EntityPersistenceMappingTest {
         final Map<String, Integer> counts = new LinkedHashMap<>();
         counts.put("account", 13);
         counts.put("card", 7);
+        counts.put("card_cross_reference", 3);
         counts.put("customer", 18);
         counts.put("daily_transaction", 13);
         counts.put("disclosure_group", 4);
+        counts.put("transaction", 13);
         counts.put("transaction_category", 3);
         counts.put("transaction_category_balance", 4);
         counts.put("transaction_type", 2);
@@ -233,10 +247,12 @@ final class EntityPersistenceMappingTest {
         final Map<String, Set<String>> keys = new LinkedHashMap<>();
         keys.put("account", Set.of("acct_id"));
         keys.put("card", Set.of("card_num"));
+        keys.put("card_cross_reference", Set.of("xref_card_num"));
         keys.put("customer", Set.of("cust_id"));
         keys.put("daily_transaction", Set.of("dalytran_id"));
         keys.put("disclosure_group",
                 Set.of("dis_acct_group_id", "dis_tran_type_cd", "dis_tran_cat_cd"));
+        keys.put("transaction", Set.of("tran_id"));
         keys.put("transaction_category", Set.of("tran_type_cd", "tran_cat_cd"));
         keys.put("transaction_category_balance",
                 Set.of("trancat_acct_id", "trancat_type_cd", "trancat_cd"));
@@ -267,6 +283,12 @@ final class EntityPersistenceMappingTest {
         widths.put("card.card_embossed_name", 50);
         widths.put("card.card_expiration_date", 10);
         widths.put("card.card_active_status", 1);
+        // Card cross-reference record, app/cpy/CVACT03Y.cpy, 50 bytes of which only 36 carry data: the
+        // trailing 14 bytes are filler and are mapped by no column, which is why three widths summing
+        // to 36 account for the whole of this table.
+        widths.put("card_cross_reference.xref_card_num", 16);
+        widths.put("card_cross_reference.xref_cust_id", 9);
+        widths.put("card_cross_reference.xref_acct_id", 11);
         // Customer record, app/cpy/CVCUS01Y.cpy, 500 bytes.
         widths.put("customer.cust_id", 9);
         widths.put("customer.first_name", 25);
@@ -301,6 +323,22 @@ final class EntityPersistenceMappingTest {
         widths.put("disclosure_group.dis_acct_group_id", 10);
         widths.put("disclosure_group.dis_tran_type_cd", 2);
         widths.put("disclosure_group.dis_tran_cat_cd", 4);
+        // Posted transaction record, app/cpy/CVTRA05Y.cpy, 350 bytes. Byte-for-byte parallel to the
+        // daily transaction record above, but note the four merchant columns: this table names them
+        // for the merchant attribute alone while the daily table prefixes them, so the two blocks
+        // deliberately differ rather than one being a copy of the other.
+        widths.put("transaction.tran_id", 16);
+        widths.put("transaction.tran_type_cd", 2);
+        widths.put("transaction.tran_cat_cd", 4);
+        widths.put("transaction.tran_source", 10);
+        widths.put("transaction.tran_desc", 100);
+        widths.put("transaction.merchant_id", 9);
+        widths.put("transaction.merchant_name", 50);
+        widths.put("transaction.merchant_city", 50);
+        widths.put("transaction.merchant_zip", 10);
+        widths.put("transaction.tran_card_num", 16);
+        widths.put("transaction.tran_orig_ts", 26);
+        widths.put("transaction.tran_proc_ts", 26);
         // Transaction category record, app/cpy/CVTRA04Y.cpy, 60 bytes.
         widths.put("transaction_category.tran_type_cd", 2);
         widths.put("transaction_category.tran_cat_cd", 4);
@@ -340,6 +378,7 @@ final class EntityPersistenceMappingTest {
         types.put("account.acct_curr_cyc_credit", "NUMERIC(12,2)");
         types.put("account.acct_curr_cyc_debit", "NUMERIC(12,2)");
         types.put("daily_transaction.dalytran_amt", "NUMERIC(11,2)");
+        types.put("transaction.tran_amt", "NUMERIC(11,2)");
         types.put("transaction_category_balance.tran_cat_bal", "NUMERIC(11,2)");
         types.put("disclosure_group.dis_int_rate", "NUMERIC(6,2)");
         return Map.copyOf(types);
@@ -505,12 +544,12 @@ final class EntityPersistenceMappingTest {
             assertThat(bindingOf(entity).getTable().getName()).isEqualTo(table);
         }
 
-        /** Nine entities are mapped, and each to a table of its own. */
+        /** Eleven entities are mapped, and each to a table of its own. */
         @Test
-        @DisplayName("nine entities are mapped, each to a distinct table")
-        void nineEntitiesAreMappedEachToADistinctTable() {
-            assertThat(ENTITY_TABLES).hasSize(9);
-            assertThat(new LinkedHashSet<>(ENTITY_TABLES.values())).hasSize(9);
+        @DisplayName("eleven entities are mapped, each to a distinct table")
+        void elevenEntitiesAreMappedEachToADistinctTable() {
+            assertThat(ENTITY_TABLES).hasSize(11);
+            assertThat(new LinkedHashSet<>(ENTITY_TABLES.values())).hasSize(11);
         }
 
         /** Every mapped table is one the migration declares. */
@@ -521,27 +560,28 @@ final class EntityPersistenceMappingTest {
         }
 
         /**
-         * The migration declares two tables no entity maps, and the gap is recorded here rather than
-         * left to be noticed by nobody.
+         * Every table the migration declares is mapped by an entity, and that is recorded here rather
+         * than left to be noticed by nobody. The comparison runs in both directions, so it fails just
+         * as loudly if a table were added to the migration without an entity to map it.
          */
         @Test
-        @DisplayName("the migration declares exactly two tables that no entity maps")
-        void theMigrationDeclaresTwoTablesNoEntityMaps() {
+        @DisplayName("the migration declares no table that an entity fails to map")
+        void theMigrationDeclaresNoTableWithoutAnEntity() {
             final Set<String> unmapped = new TreeSet<>(SCHEMA.tableNames());
             unmapped.removeAll(ENTITY_TABLES.values());
 
             assertThat(unmapped)
-                    .as("an entity added for either table must be added to this suite's inventory")
+                    .as("an entity added for that table must be added to this suite's inventory")
                     .isEqualTo(new TreeSet<>(TABLES_WITHOUT_ENTITY));
         }
 
-        /** The migration declares eleven tables in total, nine of them mapped. */
+        /** The migration declares eleven tables in total, and all eleven are mapped. */
         @Test
-        @DisplayName("the migration declares eleven tables, nine of which carry an entity")
+        @DisplayName("the migration declares eleven tables, each of which carries an entity")
         void theMigrationDeclaresElevenTables() {
             assertThat(SCHEMA.tableNames()).hasSize(11);
-            assertThat(ENTITY_TABLES.values()).hasSize(9);
-            assertThat(TABLES_WITHOUT_ENTITY).hasSize(2);
+            assertThat(ENTITY_TABLES.values()).hasSize(11);
+            assertThat(TABLES_WITHOUT_ENTITY).isEmpty();
         }
     }
 
@@ -582,18 +622,18 @@ final class EntityPersistenceMappingTest {
                     .hasSize(EXPECTED_COLUMN_COUNTS.get(table));
         }
 
-        /** Sixty-nine columns are mapped across the nine entities. */
+        /** Eighty-five columns are mapped across the eleven entities. */
         @Test
-        @DisplayName("sixty-nine columns are mapped in total")
-        void sixtyNineColumnsAreMappedInTotal() {
+        @DisplayName("eighty-five columns are mapped in total")
+        void eightyFiveColumnsAreMappedInTotal() {
             int mapped = 0;
             for (final String entity : ENTITY_TABLES.keySet()) {
                 mapped += columnsOf(entity).size();
             }
 
-            assertThat(mapped).isEqualTo(69);
+            assertThat(mapped).isEqualTo(85);
             assertThat(EXPECTED_COLUMN_COUNTS.values().stream().mapToInt(Integer::intValue).sum())
-                    .isEqualTo(69);
+                    .isEqualTo(85);
         }
 
         /**
@@ -684,10 +724,10 @@ final class EntityPersistenceMappingTest {
             assertThat(SCHEMA.declaredScale(table, columnName)).isEqualTo(2);
         }
 
-        /** Eight decimal columns exist, and every one of them is covered above. */
+        /** Nine decimal columns exist, and every one of them is covered above. */
         @Test
-        @DisplayName("eight decimal columns exist, and each is asserted")
-        void eightDecimalColumnsExistAndEachIsAsserted() {
+        @DisplayName("nine decimal columns exist, and each is asserted")
+        void nineDecimalColumnsExistAndEachIsAsserted() {
             final Set<String> rendered = new TreeSet<>();
             for (final Map.Entry<String, String> entry : ENTITY_TABLES.entrySet()) {
                 for (final Column column : columnsOf(entry.getKey())) {
@@ -697,7 +737,7 @@ final class EntityPersistenceMappingTest {
                 }
             }
 
-            assertThat(rendered).isEqualTo(new TreeSet<>(DECIMAL_TYPES.keySet())).hasSize(8);
+            assertThat(rendered).isEqualTo(new TreeSet<>(DECIMAL_TYPES.keySet())).hasSize(9);
         }
 
         /**
@@ -904,10 +944,10 @@ final class EntityPersistenceMappingTest {
                     .containsAll(keyColumnNamesOf(entity));
         }
 
-        /** Six tables key on one column and three on several, matching the copybook layouts. */
+        /** Eight tables key on one column and three on several, matching the copybook layouts. */
         @Test
-        @DisplayName("six tables key on a single column and three on a composite")
-        void sixTablesKeyOnASingleColumnAndThreeOnAComposite() {
+        @DisplayName("eight tables key on a single column and three on a composite")
+        void eightTablesKeyOnASingleColumnAndThreeOnAComposite() {
             final List<String> single = new ArrayList<>();
             final List<String> composite = new ArrayList<>();
             ENTITY_TABLES.forEach((entity, table) -> {
@@ -918,9 +958,13 @@ final class EntityPersistenceMappingTest {
                 }
             });
 
-            assertThat(single).hasSize(6);
+            assertThat(single).containsExactlyInAnyOrder(
+                    "account", "card", "card_cross_reference", "customer", "daily_transaction",
+                    "transaction", "transaction_type", "user_security");
             assertThat(composite).containsExactlyInAnyOrder(
                     "disclosure_group", "transaction_category", "transaction_category_balance");
+            assertThat(single).hasSize(8);
+            assertThat(single.size() + composite.size()).isEqualTo(ENTITY_TABLES.size());
         }
 
         /**
@@ -1077,10 +1121,10 @@ final class EntityPersistenceMappingTest {
             assertThat(bindingOf(entityFor(table)).getVersion().getName()).isEqualTo("version");
         }
 
-        /** Exactly two of the nine mapped tables carry a counter. */
+        /** Exactly two of the ten mapped tables carry a counter. */
         @Test
-        @DisplayName("exactly two of the nine mapped tables carry a counter")
-        void exactlyTwoOfTheNineMappedTablesCarryACounter() {
+        @DisplayName("exactly two of the ten mapped tables carry a counter")
+        void exactlyTwoOfTheTenMappedTablesCarryACounter() {
             final Set<String> versioned = new TreeSet<>();
             ENTITY_TABLES.forEach((entity, table) -> {
                 if (bindingOf(entity).getVersion() != null) {

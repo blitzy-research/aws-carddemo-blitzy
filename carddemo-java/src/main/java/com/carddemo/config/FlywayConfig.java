@@ -83,6 +83,20 @@ import com.carddemo.service.SensitiveFieldEncryptionService;
  * a database that was seeded before this process existed, which no configuration value can reach - is
  * {@link ProductionSeedRejectionCallback}, registered below for production alone.
  *
+ * <p><strong>The reconciliation that decision settles, recorded here so it is not re-litigated:</strong>
+ * the module's target-tree description reaches for a <em>profile-scoped seed location</em>, a separate
+ * directory that production simply does not list. That mechanism is not implementable against what was
+ * actually delivered. Every script ships flat in the one directory, the seed scripts themselves forbid
+ * introducing a subdirectory, and a directory-scoped location list cannot separate {@code V3} and
+ * {@code V4} from {@code V1} and {@code V2} while all of them sit in the same folder - attempting it
+ * would either duplicate the schema scripts into a second location or ship the seeds to production.
+ * Both mechanisms aim at one outcome, that the seeds are unreachable in production, and the version
+ * ceiling is the one the delivered artefacts support. So the arrangement is <em>one flat location
+ * shared by every profile</em>, with production <em>additionally</em> constrained by a version
+ * ceiling - which is precisely what the four profile documents declare, and what this class refuses to
+ * let a merged environment undo. An earlier revision did split the directory; {@code DL-102} records
+ * why that was withdrawn.
+ *
  * <h2>Gap one: the profile list is a list, and a list can hold both</h2>
  *
  * <p>Spring resolves overlapping property sources by activation order, so the last profile that
@@ -167,11 +181,59 @@ import com.carddemo.service.SensitiveFieldEncryptionService;
  * which the profile documents state and a test asserts against the delivered scripts; a callback
  * carries no version and leaves that ledger true.
  *
- * <p>Provenance: this configuration has no single legacy antecedent. The separation it enforces
- * replaces the ten {@code DEFINE CLUSTER} provisioning job streams in {@code app/jcl} and the
- * in-stream sign-on identities of {@code app/jcl/DUSRSECJ.jcl}, taken from checkout
+ * <h2>What the scripts below the ceiling replace, and where each fact came from</h2>
+ *
+ * <p>Everything at or below version {@value #SCHEMA_ONLY_TARGET} - which is exactly what a
+ * production deployment applies - stands in for the ten {@code DEFINE CLUSTER} provisioning job
+ * streams that built the legacy indexed base clusters, one job per cluster:
+ * {@code app/jcl/ACCTFILE.jcl}, {@code app/jcl/CARDFILE.jcl}, {@code app/jcl/CUSTFILE.jcl},
+ * {@code app/jcl/XREFFILE.jcl}, {@code app/jcl/TRANFILE.jcl}, {@code app/jcl/TCATBALF.jcl},
+ * {@code app/jcl/DISCGRP.jcl}, {@code app/jcl/TRANCATG.jcl}, {@code app/jcl/TRANTYPE.jcl} and
+ * {@code app/jcl/DUSRSECJ.jcl}. Each of those states its cluster's key width and offset, and that is
+ * where every primary key in {@code V1__create_schema.sql} comes from rather than from a generated
+ * surrogate: {@code app/jcl/DUSRSECJ.jcl} lines 64-66, to take the one this class touches most
+ * directly, gives the sign-on cluster a key of length 8 at offset 0 in a fixed 80-byte record, which
+ * is why {@code user_security} is keyed on an eight-character identifier and no wider.
+ *
+ * <p>{@code V2__create_indexes.sql} holds exactly three secondary indexes, and the count is a
+ * finding rather than a choice: the legacy estate declared exactly three alternate indexes, each
+ * {@code NONUNIQUEKEY} and each {@code UPGRADE}. Every one is reproduced as one nonunique B-tree
+ * over the column its alternate key addressed, at the key length and record offset its job stream
+ * states:
+ *
+ * <ul>
+ *   <li>{@code idx_card_card_acct_id} over {@code card(card_acct_id)} - length 11 at offset 16, from
+ *       {@code app/jcl/CARDFILE.jcl} lines 83-88.</li>
+ *   <li>{@code idx_card_cross_reference_xref_acct_id} over
+ *       {@code card_cross_reference(xref_acct_id)} - length 11 at offset 25, from
+ *       {@code app/jcl/XREFFILE.jcl} lines 72-77.</li>
+ *   <li>{@code idx_transaction_tran_proc_ts} over {@code transaction(tran_proc_ts)} - length 26 at
+ *       offset 304, from {@code app/jcl/TRANIDX.jcl} lines 25-30 <em>and</em>
+ *       {@code app/jcl/TRANFILE.jcl} lines 82-87. Those two declare the <strong>same</strong>
+ *       alternate index, over the same base cluster, on the same key: it is <strong>one logical
+ *       index and is emitted once</strong>, not two. It is also the only one of the three that no
+ *       online path reads - the date-range filter of the transaction report is what needs it - so it
+ *       is a batch-only index that a production deployment nevertheless has to carry.</li>
+ * </ul>
+ *
+ * <p>Those three are named here so the ceiling can be audited by what it <em>admits</em> as well as
+ * by what it excludes. Note where the guarantee that they exist actually rests:
+ * {@link #resolveTarget(Collection, String)} refuses a ceiling only for reaching <em>up</em> into the
+ * seeds and deliberately accepts one that stops lower, so that a schema script numbered above
+ * {@value #SCHEMA_ONLY_TARGET} is never refused merely for being new. Keeping these three indexes in
+ * a production deployment is therefore the profile documents' job - they declare
+ * {@code spring.flyway.target} as {@value #SCHEMA_ONLY_TARGET}, not below it - and it is asserted
+ * against the delivered numbering by {@code FlywayConfigCoverageTest} rather than assumed here.
+ *
+ * <p>Provenance: this configuration has no single legacy antecedent, because the separation it
+ * enforces is one the legacy estate had no equivalent of - there, a provisioning job stream that was
+ * simply never submitted was the whole of the protection. The artefacts it stands over are the ten
+ * provisioning job streams named above and the in-stream sign-on identities at
+ * {@code app/jcl/DUSRSECJ.jcl} lines 35-44, read from checkout
  * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text appears here.
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Those identities are cited by position and
+ * by count alone: no job-stream text, no dataset-utility control statement and above all no
+ * credential value carried by them appears anywhere in this file.
  */
 @Configuration(proxyBeanMethods = false)
 public final class FlywayConfig {

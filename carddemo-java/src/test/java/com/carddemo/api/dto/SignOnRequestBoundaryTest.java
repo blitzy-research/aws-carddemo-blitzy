@@ -303,6 +303,16 @@ class SignOnRequestBoundaryTest {
      * <p>Obtained from the Bean Validation bootstrap directly rather than from an application
      * context, so no framework container is started and the constraint assertions observe the
      * declared constraints alone.</p>
+     *
+     * <p><strong>The message locale is pinned, and it has to be.</strong> Some assertions below
+     * compare the interpolated constraint message character for character, and the provider
+     * interpolates in the JVM default locale, so under a localized default the same violation reports
+     * localized prose - Turkish renders the size message as {@code boyut '0' ile '8' arasında olmalı}.
+     * The continuous-integration definition deliberately re-runs this tier with the default locale
+     * overridden, so the interpolation locale is fixed here rather than left to the machine. It is
+     * fixed by installing the application's own {@code FixedLocaleMessageInterpolator}, which pins
+     * {@link java.util.Locale#ROOT} and so resolves the provider's base bundle - the English text
+     * asserted below - rather than any translation of it.</p>
      */
     @BeforeAll
     static void buildValidator() {

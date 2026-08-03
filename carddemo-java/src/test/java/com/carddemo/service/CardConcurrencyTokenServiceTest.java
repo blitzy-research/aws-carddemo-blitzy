@@ -104,6 +104,19 @@ class CardConcurrencyTokenServiceTest {
     /** The day characters of {@link #EXPIRY}, which the dark protected field carries across. */
     private static final String EXPIRY_DAY = "31";
 
+    /**
+     * Mints taken when asking whether a short value is disclosed by the envelope.
+     *
+     * <p>Sized so the question is answered rather than sampled. A two-character run appears in one
+     * envelope in roughly twenty by chance, so the probability that every mint of a run this long
+     * contains one without the payload carrying it is far below any rate at which a build could
+     * observe it, while a value the payload genuinely carried would appear in every single mint.
+     */
+    private static final int MINTS_PER_DISCLOSURE_TRIAL = 24;
+
+    /** How many freshly minted tokens the substring scan inspects, each carrying a fresh body. */
+    private static final int MINTS_PER_DISCLOSURE_SCAN = 8;
+
     private final SensitiveFieldEncryptionService encryption =
             new SensitiveFieldEncryptionService(BASE64_KEY);
 
@@ -473,10 +486,56 @@ class CardConcurrencyTokenServiceTest {
         @DisplayName("no informative field value and no digestible fragment of the card appears in the "
                 + "token")
         void noFieldValueAppearsInTheToken() {
-            String token = service.mint(card());
+            // Scanned over a run of mints rather than one, because the envelope body is a fresh random
+            // rendering every time and a single sample would only ever speak for a single body.
+            for (int mint = 0; mint < MINTS_PER_DISCLOSURE_SCAN; mint++) {
+                final String token = service.mint(card());
 
-            assertThat(token).doesNotContain(CARD_NUMBER, ACCOUNT_ID, EMBOSSED_NAME, EXPIRY);
-            assertThat(token).doesNotContain("mary", "MARY", "2027", "4111");
+                // Values wide enough that a coincidental run in a base64 envelope is not a practical
+                // possibility: for these, absence from a mint is decisive on its own.
+                assertThat(token)
+                        .as("mint %d discloses no field value", mint)
+                        .doesNotContain(CARD_NUMBER, ACCOUNT_ID, EMBOSSED_NAME, EXPIRY)
+                        .doesNotContain("mary", "MARY", "2027", "4111");
+
+                // Every payload begins with the scheme marker, so if any part of it were carried in
+                // the clear the marker would be here too. Five distinctive characters make that a
+                // disclosure assertion rather than another coincidence one, and it speaks for the two
+                // short values a substring scan cannot speak for.
+                assertThat(token)
+                        .as("mint %d carries no part of the payload in the clear", mint)
+                        .doesNotContain(CardConcurrencyTokenService.PAYLOAD_SCHEME);
+                assertThat(encryption.isProtected(token))
+                        .as("mint %d is a sealed envelope", mint)
+                        .isTrue();
+            }
+
+            // The verification code and the expiry day are three and two characters wide, and the
+            // envelope is a long run drawn from a 64-symbol alphabet, so a short sequence turns up in
+            // it by chance - a two-character one in roughly one envelope in twenty. Asserting its
+            // absence from a single mint therefore fails intermittently while proving nothing, which
+            // is exactly what it did. Disclosure is separated from coincidence by counting mints
+            // instead: a value the payload actually carried would appear in every envelope, whereas a
+            // coincidence cannot survive a run of them, so one clean envelope is decisive evidence
+            // that the value is not there to be read.
+            assertThat(mintsContaining(CVV)).isLessThan(MINTS_PER_DISCLOSURE_TRIAL);
+            assertThat(mintsContaining(EXPIRY_DAY)).isLessThan(MINTS_PER_DISCLOSURE_TRIAL);
+        }
+
+        /**
+         * Counts how many of a run of freshly minted tokens contain the given fragment.
+         *
+         * @param fragment the value being looked for
+         * @return the number of mints in which it appeared, from zero to the trial size
+         */
+        private int mintsContaining(String fragment) {
+            int appearances = 0;
+            for (int mint = 0; mint < MINTS_PER_DISCLOSURE_TRIAL; mint++) {
+                if (service.mint(card()).contains(fragment)) {
+                    appearances++;
+                }
+            }
+            return appearances;
         }
 
         @Test

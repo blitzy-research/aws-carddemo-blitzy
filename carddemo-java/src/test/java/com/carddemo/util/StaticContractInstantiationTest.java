@@ -36,11 +36,11 @@ import org.junit.jupiter.params.provider.MethodSource;
  * Asserts that every static contract of the fixed-width layer refuses to become an object.
  *
  * <h2>What is under test</h2>
- * Fifteen classes in this package are static contracts rather than components: they hold the byte
+ * Sixteen classes in this package are static contracts rather than components: they hold the byte
  * offsets, literal templates, record layouts and formatting rules that reproduce the legacy record
- * images, and they hold no state of their own. Eight of the fifteen carry a record layout - the seven
+ * images, and they hold no state of their own. Nine of the sixteen carry a record layout - the eight
  * record mappers plus the protected-value codec - and the remaining seven carry templates, offsets or
- * string primitives. Every one of the fifteen is held to the accessibility rule: exactly one
+ * string primitives. Every one of the sixteen is held to the accessibility rule: exactly one
  * constructor, private, taking nothing, on a final class.
  *
  * <h2>Why the guard is asserted rather than trusted</h2>
@@ -51,16 +51,16 @@ import org.junit.jupiter.params.provider.MethodSource;
  * them would let two callers disagree about a layout that the legacy record defines exactly once.
  * Keeping them uninstantiable keeps each layout single-valued.
  *
- * <h2>The nine-and-six split, stated honestly</h2>
- * Nine of the fifteen defend the design with a constructor that raises rather than returning. The other
+ * <h2>The ten-and-six split, stated honestly</h2>
+ * Ten of the sixteen defend the design with a constructor that raises rather than returning. The other
  * six declare a private constructor that simply does nothing. That split is a real inconsistency in the
  * delivered code rather than a designed distinction, and it is recorded here as it is rather than
  * papered over: three of the six hold no layout at all, so an instance would be useless rather than
  * dangerous, but three of them - the account, daily-transaction and disclosure-group mappers - do hold
- * layouts and would be better off raising like their four siblings. This class therefore holds all
- * fifteen to the accessibility rule, the nine to the raising rule, and asserts of the six only what is
+ * layouts and would be better off raising like their five siblings. This class therefore holds all
+ * sixteen to the accessibility rule, the ten to the raising rule, and asserts of the six only what is
  * true of them, which is that their constructor is unreachable by any caller and inert when reached
- * reflectively. Aligning the six with the nine is a production change that no review finding calls for,
+ * reflectively. Aligning the six with the ten is a production change that no review finding calls for,
  * so it is documented rather than made.
  *
  * <h2>Why this test uses reflection when the module's reflection budget is zero</h2>
@@ -77,10 +77,10 @@ import org.junit.jupiter.params.provider.MethodSource;
 class StaticContractInstantiationTest {
 
     /** The number of static contracts this package declares, asserted so the list cannot silently shrink. */
-    private static final int EXPECTED_STATIC_CONTRACTS = 15;
+    private static final int EXPECTED_STATIC_CONTRACTS = 16;
 
     /** The number of those contracts whose constructor raises rather than returning. */
-    private static final int EXPECTED_GUARDED_CONTRACTS = 9;
+    private static final int EXPECTED_GUARDED_CONTRACTS = 10;
 
     /** The number whose constructor is private but inert. */
     private static final int EXPECTED_INERT_CONTRACTS = 6;
@@ -119,6 +119,8 @@ class StaticContractInstantiationTest {
                         "CustomerRecordMapper is a static utility and is not instantiable"),
                 Arguments.of(TranCatRecordMapper.class,
                         "TranCatRecordMapper is a static utility and is not instantiable"),
+                Arguments.of(TranCatBalRecordMapper.class,
+                        "TranCatBalRecordMapper is a static utility and is not instantiable"),
                 Arguments.of(TranTypeRecordMapper.class,
                         "TranTypeRecordMapper is a static contract and is not instantiable"),
                 Arguments.of(UserSecurityRecordMapper.class,
@@ -152,6 +154,7 @@ class StaticContractInstantiationTest {
                 Arguments.of(SensitiveFieldCodec.class, "SensitiveFieldCodec"),
                 Arguments.of(CustomerRecordMapper.class, "CustomerRecordMapper"),
                 Arguments.of(TranCatRecordMapper.class, "TranCatRecordMapper"),
+                Arguments.of(TranCatBalRecordMapper.class, "TranCatBalRecordMapper"),
                 Arguments.of(TranTypeRecordMapper.class, "TranTypeRecordMapper"),
                 Arguments.of(UserSecurityRecordMapper.class, "UserSecurityRecordMapper"));
     }
@@ -192,13 +195,13 @@ class StaticContractInstantiationTest {
 
         /** The two sub-lists must partition the whole list, with nothing counted twice or dropped. */
         @Test
-        @DisplayName("partitions fifteen static contracts into nine guarded and six inert")
+        @DisplayName("partitions sixteen static contracts into ten guarded and six inert")
         void theListsPartitionTheStaticContracts() {
             assertThat(staticContracts())
                     .as("every static contract in this package must appear exactly once")
                     .hasSize(EXPECTED_STATIC_CONTRACTS);
             assertThat(guardedContracts())
-                    .as("nine contracts raise from their constructor")
+                    .as("ten contracts raise from their constructor")
                     .hasSize(EXPECTED_GUARDED_CONTRACTS);
             assertThat(inertContracts())
                     .as("six contracts declare an inert private constructor")
@@ -209,10 +212,10 @@ class StaticContractInstantiationTest {
                     .isEqualTo(EXPECTED_STATIC_CONTRACTS);
         }
 
-        /** All seven delivered record mappers must be held to these rules, none omitted. */
+        /** All eight delivered record mappers must be held to these rules, none omitted. */
         @Test
-        @DisplayName("covers all seven delivered record mappers")
-        void allSevenRecordMappersAreCovered() {
+        @DisplayName("covers all eight delivered record mappers")
+        void allEightRecordMappersAreCovered() {
             assertThat(staticContracts().map(StaticContractInstantiationTest::contractName))
                     .as("a record mapper absent from this list would have an unexercised constructor "
                             + "and an unasserted instantiation contract")
@@ -221,6 +224,7 @@ class StaticContractInstantiationTest {
                             DailyTransactionRecordMapper.class.getName(),
                             DisclosureGroupRecordMapper.class.getName(),
                             TranCatRecordMapper.class.getName(),
+                            TranCatBalRecordMapper.class.getName(),
                             TranTypeRecordMapper.class.getName(),
                             UserSecurityRecordMapper.class.getName());
         }

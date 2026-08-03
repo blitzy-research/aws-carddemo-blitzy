@@ -27,10 +27,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import java.util.List;
+import java.util.Locale;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import java.util.Locale;
 
 /**
  * Verifies that neither {@link UserResponse} nor its nested {@link UserRow} can disclose a personal
@@ -438,6 +438,9 @@ class UserResponseSecurityTest {
             assertThat(payload.has("password")).isFalse();
             assertThat(payload.has("passwordHash")).isFalse();
             assertThat(UserResponse.class.getRecordComponents())
+                    // Folded with an explicit root locale: a localized default fold would map ASCII I
+                    // to a character the search text cannot contain, and the check would then pass
+                    // because it matched nothing rather than because no such component exists.
                     .noneMatch(component -> component.getName().toLowerCase(Locale.ROOT)
                             .contains("password"));
         }
