@@ -120,6 +120,43 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("MenuResponse :: response contract of legacy transactions CM00 and CA00")
 class MenuResponseCoverageTest {
 
+    /*
+     * THE CANONICAL OWNERS, READ HERE RATHER THAN RE-DECLARED.
+     *
+     * The response contract deliberately declares no title text and no option catalogue: the titles
+     * are owned by com.carddemo.service.MessageCatalogService and the rows by
+     * com.carddemo.config.MenuOptionCatalog, and a second declaration anywhere would be a second
+     * authority that can drift from the first. This suite therefore takes its expectations from those
+     * owners, which is what makes an assertion here evidence about the module rather than evidence
+     * about a copy of it. A test may read any layer; the contract under test may not.
+     */
+
+    /** The first screen title line, as its owner publishes it at its full declared width. */
+    private static final String SCREEN_TITLE_LINE_1 = MessageCatalogService.CCDA_TITLE01;
+
+    /** The second screen title line, as its owner publishes it at its full declared width. */
+    private static final String SCREEN_TITLE_LINE_2 = MessageCatalogService.CCDA_TITLE02;
+
+    /** The forty-character acknowledgement of the title copybook, as its owner publishes it. */
+    private static final String SCREEN_TITLE_THANK_YOU = MessageCatalogService.CCDA_THANK_YOU;
+
+    /**
+     * The ten user rows projected exactly as the producer projects them: number and label only.
+     *
+     * <p>The target program name and the one-character user-type code the catalogue also holds are
+     * dispatch and authorization inputs, so they stay behind and are not published on the wire.</p>
+     */
+    private static final List<MenuResponse.UserMenuOption> CANONICAL_USER_MENU_OPTIONS =
+            new MenuOptionCatalog().userMenuOptions().stream()
+                    .map(row -> new MenuResponse.UserMenuOption(row.number(), row.label()))
+                    .toList();
+
+    /** The four administrative rows projected the same way, number and label only. */
+    private static final List<MenuResponse.AdminMenuOption> CANONICAL_ADMIN_MENU_OPTIONS =
+            new MenuOptionCatalog().adminMenuOptions().stream()
+                    .map(row -> new MenuResponse.AdminMenuOption(row.number(), row.label()))
+                    .toList();
+
     /** The fifteen components, in the order the record declares them. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
             "transactionName",
@@ -306,7 +343,7 @@ class MenuResponseCoverageTest {
                 "programName".equals(component) ? value : null,
                 "title02".equals(component) ? value : null,
                 "currentTime".equals(component) ? value : null,
-                MenuResponse.CANONICAL_USER_MENU_OPTIONS,
+                CANONICAL_USER_MENU_OPTIONS,
                 null,
                 "selectedOption".equals(component) ? value : null,
                 "message".equals(component) ? value : null,
@@ -346,10 +383,9 @@ class MenuResponseCoverageTest {
      * @return a user-menu response carrying every optional component
      */
     private static MenuResponse populatedUserMenu() {
-        return MenuResponse.forUserMenu(
-                CURRENT_DATE,
+        return MenuResponse.forUserMenu(SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2, CURRENT_DATE,
                 CURRENT_TIME,
-                MenuResponse.CANONICAL_USER_MENU_OPTIONS,
+                CANONICAL_USER_MENU_OPTIONS,
                 SELECTED_OPTION,
                 MESSAGE,
                 MenuResponse.MessageSeverity.ERROR,
@@ -365,10 +401,9 @@ class MenuResponseCoverageTest {
      * @return an administrative-menu response carrying every optional component
      */
     private static MenuResponse populatedAdminMenu() {
-        return MenuResponse.forAdminMenu(
-                CURRENT_DATE,
+        return MenuResponse.forAdminMenu(SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2, CURRENT_DATE,
                 CURRENT_TIME,
-                MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS,
+                CANONICAL_ADMIN_MENU_OPTIONS,
                 SELECTED_OPTION,
                 MESSAGE,
                 MenuResponse.MessageSeverity.INFORMATIONAL,
@@ -385,10 +420,9 @@ class MenuResponseCoverageTest {
      * @return a user-menu response with no navigation state
      */
     private static MenuResponse userMenuWithoutNavigation() {
-        return MenuResponse.forUserMenu(
-                CURRENT_DATE,
+        return MenuResponse.forUserMenu(SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2, CURRENT_DATE,
                 CURRENT_TIME,
-                MenuResponse.CANONICAL_USER_MENU_OPTIONS,
+                CANONICAL_USER_MENU_OPTIONS,
                 SELECTED_OPTION,
                 MESSAGE,
                 MenuResponse.MessageSeverity.ERROR,
@@ -590,10 +624,22 @@ class MenuResponseCoverageTest {
             assertThat(boundOf(MenuResponse.AdminMenuOption.class, component)).isEqualTo(width);
         }
 
-        /** The static surface is fourteen widths, seven texts and two catalogues. */
+        /**
+         * The static surface is fourteen widths, four identity texts and no catalogue at all.
+         *
+         * <p>The four texts are the two menus' own transaction identifiers and program names, which are
+         * this response's identity and are declared nowhere else in the module. What is deliberately
+         * <em>absent</em> is every piece of legacy text that has an owner elsewhere: the two screen
+         * title lines and the forty-character acknowledgement, owned by
+         * {@code com.carddemo.service.MessageCatalogService}, and the ten user rows and four
+         * administrative rows, owned by {@code com.carddemo.config.MenuOptionCatalog}. A second
+         * declaration of any of them here would make this contract a second authority for the same
+         * text, so the count below is the guard that keeps one authority per value.</p>
+         */
         @Test
-        @DisplayName("declares fourteen widths, seven texts and two catalogues")
-        void theStaticSurfaceIsFourteenWidthsSevenTextsAndTwoCatalogues() {
+        @DisplayName("declares fourteen widths, four identity texts and no catalogue, so no legacy text "
+                + "with an owner elsewhere is re-declared here")
+        void theStaticSurfaceIsFourteenWidthsFourIdentityTextsAndNoCatalogue() {
             List<Field> statics =
                     Arrays.stream(MenuResponse.class.getDeclaredFields())
                             .filter(field -> Modifier.isStatic(field.getModifiers()))
@@ -603,16 +649,62 @@ class MenuResponseCoverageTest {
             assertThat(statics.stream().filter(field -> field.getType() == int.class).toList())
                     .hasSize(14);
             assertThat(statics.stream().filter(field -> field.getType() == String.class).toList())
-                    .hasSize(7);
+                    .as("only the two menus' own transaction identifiers and program names")
+                    .hasSize(4)
+                    .extracting(Field::getName)
+                    .containsExactlyInAnyOrder("USER_MENU_TRANSACTION_NAME", "USER_MENU_PROGRAM_NAME",
+                            "ADMIN_MENU_TRANSACTION_NAME", "ADMIN_MENU_PROGRAM_NAME");
             assertThat(statics.stream().filter(field -> field.getType() == List.class).toList())
-                    .hasSize(2);
-            assertThat(statics).hasSize(23);
+                    .as("no option catalogue is declared here; the configuration layer owns the rows")
+                    .isEmpty();
+            assertThat(statics).hasSize(18);
             assertThat(statics)
                     .allSatisfy(
                             field -> {
                                 assertThat(Modifier.isPublic(field.getModifiers())).isTrue();
                                 assertThat(Modifier.isFinal(field.getModifiers())).isTrue();
                             });
+        }
+
+        @Test
+        @DisplayName("declares no title text and no acknowledgement text, so the message catalogue stays "
+                + "the single owner of every fixed-width message value")
+        void declaresNoTitleTextAndNoAcknowledgementText() throws Exception {
+            List<String> declaredText = new ArrayList<>();
+            for (Field field : MenuResponse.class.getDeclaredFields()) {
+                if (Modifier.isStatic(field.getModifiers()) && field.getType() == String.class) {
+                    field.setAccessible(true);
+                    declaredText.add((String) field.get(null));
+                }
+            }
+
+            assertThat(declaredText)
+                    .as("no value this file declares is any of the title copybook's three values")
+                    .doesNotContain(SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2, SCREEN_TITLE_THANK_YOU);
+            assertThat(declaredText)
+                    .allSatisfy(value -> assertThat(value.length())
+                            .as("an identity text is four or eight characters, never forty or fifty")
+                            .isIn(MenuResponse.TRANSACTION_NAME_WIDTH, MenuResponse.PROGRAM_NAME_WIDTH));
+        }
+
+        @Test
+        @DisplayName("declares no option label, so the configuration catalogue stays the single owner of "
+                + "the fourteen rows and of the program and role metadata they carry")
+        void declaresNoOptionLabel() throws Exception {
+            List<String> declaredText = new ArrayList<>();
+            for (Field field : MenuResponse.class.getDeclaredFields()) {
+                if (Modifier.isStatic(field.getModifiers()) && field.getType() == String.class) {
+                    field.setAccessible(true);
+                    declaredText.add((String) field.get(null));
+                }
+            }
+
+            List<String> everyCanonicalLabel = new ArrayList<>();
+            CANONICAL_USER_MENU_OPTIONS.forEach(option -> everyCanonicalLabel.add(option.label()));
+            CANONICAL_ADMIN_MENU_OPTIONS.forEach(option -> everyCanonicalLabel.add(option.label()));
+
+            assertThat(everyCanonicalLabel).hasSize(14);
+            assertThat(declaredText).doesNotContainAnyElementsOf(everyCanonicalLabel);
         }
 
         /**
@@ -768,7 +860,7 @@ class MenuResponseCoverageTest {
         @Test
         @DisplayName("holds exactly ten user options")
         void theUserCatalogueHoldsTenEntries() {
-            assertThat(MenuResponse.CANONICAL_USER_MENU_OPTIONS)
+            assertThat(CANONICAL_USER_MENU_OPTIONS)
                     .hasSize(MenuResponse.USER_MENU_OPTION_COUNT)
                     .hasSize(10);
         }
@@ -777,7 +869,7 @@ class MenuResponseCoverageTest {
         @Test
         @DisplayName("holds exactly four administrative options")
         void theAdminCatalogueHoldsFourEntries() {
-            assertThat(MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS)
+            assertThat(CANONICAL_ADMIN_MENU_OPTIONS)
                     .hasSize(MenuResponse.ADMIN_MENU_OPTION_COUNT)
                     .hasSize(4);
         }
@@ -792,7 +884,7 @@ class MenuResponseCoverageTest {
         @DisplayName("publishes each user option exactly")
         void eachUserOptionIsExactlyAsDocumented(int index, String label, String programName) {
             MenuResponse.UserMenuOption option =
-                    MenuResponse.CANONICAL_USER_MENU_OPTIONS.get(index);
+                    CANONICAL_USER_MENU_OPTIONS.get(index);
 
             assertThat(option.number()).isEqualTo(index + 1);
             assertThat(option.label()).isEqualTo(label);
@@ -816,7 +908,7 @@ class MenuResponseCoverageTest {
         @DisplayName("publishes each administrative option exactly")
         void eachAdminOptionIsExactlyAsDocumented(int index, String label, String programName) {
             MenuResponse.AdminMenuOption option =
-                    MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS.get(index);
+                    CANONICAL_ADMIN_MENU_OPTIONS.get(index);
 
             assertThat(option.number()).isEqualTo(index + 1);
             assertThat(option.label()).isEqualTo(label);
@@ -835,10 +927,10 @@ class MenuResponseCoverageTest {
         @Test
         @DisplayName("numbers both catalogues from one with no gap")
         void bothCataloguesAreNumberedFromOneWithNoGap() {
-            assertThat(MenuResponse.CANONICAL_USER_MENU_OPTIONS)
+            assertThat(CANONICAL_USER_MENU_OPTIONS)
                     .extracting(MenuResponse.UserMenuOption::number)
                     .containsExactly(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
-            assertThat(MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS)
+            assertThat(CANONICAL_ADMIN_MENU_OPTIONS)
                     .extracting(MenuResponse.AdminMenuOption::number)
                     .containsExactly(1, 2, 3, 4);
         }
@@ -847,9 +939,9 @@ class MenuResponseCoverageTest {
         @Test
         @DisplayName("carries no blank entry in either catalogue")
         void neitherCatalogueCarriesABlankEntry() {
-            assertThat(MenuResponse.CANONICAL_USER_MENU_OPTIONS)
+            assertThat(CANONICAL_USER_MENU_OPTIONS)
                     .allSatisfy(option -> assertThat(option.label()).isNotBlank());
-            assertThat(MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS)
+            assertThat(CANONICAL_ADMIN_MENU_OPTIONS)
                     .allSatisfy(option -> assertThat(option.label()).isNotBlank());
         }
 
@@ -863,7 +955,7 @@ class MenuResponseCoverageTest {
         @DisplayName("gives option eight one active label and no role gate")
         void optionEightCarriesTheActiveLabelAndNoRoleGate() {
             MenuResponse.UserMenuOption eighth =
-                    MenuResponse.CANONICAL_USER_MENU_OPTIONS.get(7);
+                    CANONICAL_USER_MENU_OPTIONS.get(7);
 
             assertThat(eighth.number()).isEqualTo(8);
             assertThat(eighth.label()).isEqualTo("Transaction Add");
@@ -893,13 +985,13 @@ class MenuResponseCoverageTest {
         @DisplayName("keeps every label within the declared label width")
         void everyLabelFitsTheDeclaredWidth() {
             assertThat(MenuResponse.OPTION_LABEL_WIDTH).isEqualTo(35);
-            assertThat(MenuResponse.CANONICAL_USER_MENU_OPTIONS)
+            assertThat(CANONICAL_USER_MENU_OPTIONS)
                     .allSatisfy(
                             option ->
                                     assertThat(option.label().length())
                                             .isLessThanOrEqualTo(
                                                     MenuResponse.OPTION_LABEL_WIDTH));
-            assertThat(MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS)
+            assertThat(CANONICAL_ADMIN_MENU_OPTIONS)
                     .allSatisfy(
                             option ->
                                     assertThat(option.label().length())
@@ -934,7 +1026,7 @@ class MenuResponseCoverageTest {
         @Test
         @DisplayName("carries labels in display form rather than blank-filled")
         void labelsAreCarriedInDisplayForm() {
-            assertThat(MenuResponse.CANONICAL_USER_MENU_OPTIONS)
+            assertThat(CANONICAL_USER_MENU_OPTIONS)
                     .allSatisfy(
                             option -> {
                                 assertThat(option.label()).isEqualTo(option.label().strip());
@@ -950,12 +1042,12 @@ class MenuResponseCoverageTest {
             assertThatExceptionOfType(UnsupportedOperationException.class)
                     .isThrownBy(
                             () ->
-                                    MenuResponse.CANONICAL_USER_MENU_OPTIONS.add(
+                                    CANONICAL_USER_MENU_OPTIONS.add(
                                             new MenuResponse.UserMenuOption(11, "Surplus")));
             assertThatExceptionOfType(UnsupportedOperationException.class)
                     .isThrownBy(
                             () ->
-                                    MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS.add(
+                                    CANONICAL_ADMIN_MENU_OPTIONS.add(
                                             new MenuResponse.AdminMenuOption(5, "Surplus")));
         }
 
@@ -970,10 +1062,10 @@ class MenuResponseCoverageTest {
             MenuOptionCatalog catalog = new MenuOptionCatalog();
 
             assertThat(catalog.userMenuOptions()).hasSameSizeAs(
-                    MenuResponse.CANONICAL_USER_MENU_OPTIONS);
-            for (int index = 0; index < MenuResponse.CANONICAL_USER_MENU_OPTIONS.size(); index++) {
+                    CANONICAL_USER_MENU_OPTIONS);
+            for (int index = 0; index < CANONICAL_USER_MENU_OPTIONS.size(); index++) {
                 MenuResponse.UserMenuOption published =
-                        MenuResponse.CANONICAL_USER_MENU_OPTIONS.get(index);
+                        CANONICAL_USER_MENU_OPTIONS.get(index);
                 MenuOptionCatalog.UserMenuOption catalogued = catalog.userMenuOptions().get(index);
 
                 assertThat(published.number()).isEqualTo(catalogued.number());
@@ -985,10 +1077,10 @@ class MenuResponseCoverageTest {
             }
 
             assertThat(catalog.adminMenuOptions()).hasSameSizeAs(
-                    MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS);
-            for (int index = 0; index < MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS.size(); index++) {
+                    CANONICAL_ADMIN_MENU_OPTIONS);
+            for (int index = 0; index < CANONICAL_ADMIN_MENU_OPTIONS.size(); index++) {
                 MenuResponse.AdminMenuOption published =
-                        MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS.get(index);
+                        CANONICAL_ADMIN_MENU_OPTIONS.get(index);
                 MenuOptionCatalog.AdminMenuOption catalogued = catalog.adminMenuOptions().get(index);
 
                 assertThat(published.number()).isEqualTo(catalogued.number());
@@ -1010,9 +1102,9 @@ class MenuResponseCoverageTest {
         @DisplayName("gives both title lines exactly forty characters")
         void bothTitleLinesAreExactlyFortyCharacters() {
             assertThat(MenuResponse.SCREEN_TITLE_WIDTH).isEqualTo(40);
-            assertThat(MenuResponse.SCREEN_TITLE_LINE_1)
+            assertThat(SCREEN_TITLE_LINE_1)
                     .hasSize(MenuResponse.SCREEN_TITLE_WIDTH);
-            assertThat(MenuResponse.SCREEN_TITLE_LINE_2)
+            assertThat(SCREEN_TITLE_LINE_2)
                     .hasSize(MenuResponse.SCREEN_TITLE_WIDTH);
         }
 
@@ -1020,20 +1112,20 @@ class MenuResponseCoverageTest {
         @Test
         @DisplayName("keeps the significant spaces on both title lines")
         void theTitleLinesKeepTheirSignificantSpaces() {
-            assertThat(MenuResponse.SCREEN_TITLE_LINE_1).startsWith(" ").endsWith(" ");
-            assertThat(MenuResponse.SCREEN_TITLE_LINE_1.strip())
+            assertThat(SCREEN_TITLE_LINE_1).startsWith(" ").endsWith(" ");
+            assertThat(SCREEN_TITLE_LINE_1.strip())
                     .isEqualTo("AWS Mainframe Modernization");
-            assertThat(MenuResponse.SCREEN_TITLE_LINE_2).startsWith(" ").endsWith(" ");
-            assertThat(MenuResponse.SCREEN_TITLE_LINE_2.strip()).isEqualTo("CardDemo");
+            assertThat(SCREEN_TITLE_LINE_2).startsWith(" ").endsWith(" ");
+            assertThat(SCREEN_TITLE_LINE_2.strip()).isEqualTo("CardDemo");
         }
 
         /** The two title lines agree with the service-layer message catalogue. */
         @Test
         @DisplayName("agrees with the service-layer catalogue on both title lines")
         void theTitleLinesAgreeWithTheServiceCatalogue() {
-            assertThat(MenuResponse.SCREEN_TITLE_LINE_1)
+            assertThat(SCREEN_TITLE_LINE_1)
                     .isEqualTo(MessageCatalogService.CCDA_TITLE01);
-            assertThat(MenuResponse.SCREEN_TITLE_LINE_2)
+            assertThat(SCREEN_TITLE_LINE_2)
                     .isEqualTo(MessageCatalogService.CCDA_TITLE02);
         }
 
@@ -1041,10 +1133,10 @@ class MenuResponseCoverageTest {
         @Test
         @DisplayName("publishes a forty-character acknowledgement ending in a space")
         void theScreenTitleAcknowledgementIsFortyCharacters() {
-            assertThat(MenuResponse.SCREEN_TITLE_THANK_YOU)
+            assertThat(SCREEN_TITLE_THANK_YOU)
                     .hasSize(MenuResponse.SCREEN_TITLE_WIDTH);
-            assertThat(MenuResponse.SCREEN_TITLE_THANK_YOU).endsWith(" ");
-            assertThat(MenuResponse.SCREEN_TITLE_THANK_YOU.strip())
+            assertThat(SCREEN_TITLE_THANK_YOU).endsWith(" ");
+            assertThat(SCREEN_TITLE_THANK_YOU.strip())
                     .isEqualTo("Thank you for using CCDA application...");
         }
 
@@ -1055,12 +1147,12 @@ class MenuResponseCoverageTest {
         @Test
         @DisplayName("keeps the screen-title and common-message acknowledgements distinct")
         void theTwoAcknowledgementsAreDistinct() {
-            assertThat(MenuResponse.SCREEN_TITLE_THANK_YOU)
+            assertThat(SCREEN_TITLE_THANK_YOU)
                     .as("substituting one for the other is a byte-equivalence failure")
                     .isNotEqualTo(MessageCatalogService.CCDA_MSG_THANK_YOU);
-            assertThat(MenuResponse.SCREEN_TITLE_THANK_YOU.length())
+            assertThat(SCREEN_TITLE_THANK_YOU.length())
                     .isNotEqualTo(MessageCatalogService.CCDA_MSG_THANK_YOU.length());
-            assertThat(MenuResponse.SCREEN_TITLE_THANK_YOU).contains("CCDA");
+            assertThat(SCREEN_TITLE_THANK_YOU).contains("CCDA");
             assertThat(MessageCatalogService.CCDA_MSG_THANK_YOU).contains("CardDemo");
         }
 
@@ -1068,7 +1160,7 @@ class MenuResponseCoverageTest {
         @Test
         @DisplayName("matches the catalogue's title-width acknowledgement")
         void theScreenTitleAcknowledgementMatchesTheCatalogueVariant() {
-            assertThat(MenuResponse.SCREEN_TITLE_THANK_YOU)
+            assertThat(SCREEN_TITLE_THANK_YOU)
                     .isEqualTo(MessageCatalogService.CCDA_THANK_YOU);
         }
 
@@ -1169,8 +1261,8 @@ class MenuResponseCoverageTest {
         void theUserFactoryFillsEveryFixedHeaderItem() {
             MenuResponse response = populatedUserMenu();
 
-            assertThat(response.title01()).isEqualTo(MenuResponse.SCREEN_TITLE_LINE_1);
-            assertThat(response.title02()).isEqualTo(MenuResponse.SCREEN_TITLE_LINE_2);
+            assertThat(response.title01()).isEqualTo(SCREEN_TITLE_LINE_1);
+            assertThat(response.title02()).isEqualTo(SCREEN_TITLE_LINE_2);
             assertThat(response.transactionName())
                     .isEqualTo(MenuResponse.USER_MENU_TRANSACTION_NAME)
                     .isEqualTo("CM00");
@@ -1190,8 +1282,8 @@ class MenuResponseCoverageTest {
         void theAdminFactoryFillsEveryFixedHeaderItem() {
             MenuResponse response = populatedAdminMenu();
 
-            assertThat(response.title01()).isEqualTo(MenuResponse.SCREEN_TITLE_LINE_1);
-            assertThat(response.title02()).isEqualTo(MenuResponse.SCREEN_TITLE_LINE_2);
+            assertThat(response.title01()).isEqualTo(SCREEN_TITLE_LINE_1);
+            assertThat(response.title02()).isEqualTo(SCREEN_TITLE_LINE_2);
             assertThat(response.transactionName())
                     .isEqualTo(MenuResponse.ADMIN_MENU_TRANSACTION_NAME)
                     .isEqualTo("CA00")
@@ -1209,13 +1301,13 @@ class MenuResponseCoverageTest {
         @DisplayName("fills no title line with the acknowledgement text")
         void neitherFactoryFillsATitleWithTheAcknowledgement() {
             assertThat(populatedUserMenu().title01())
-                    .isNotEqualTo(MenuResponse.SCREEN_TITLE_THANK_YOU);
+                    .isNotEqualTo(SCREEN_TITLE_THANK_YOU);
             assertThat(populatedUserMenu().title02())
-                    .isNotEqualTo(MenuResponse.SCREEN_TITLE_THANK_YOU);
+                    .isNotEqualTo(SCREEN_TITLE_THANK_YOU);
             assertThat(populatedAdminMenu().title01())
-                    .isNotEqualTo(MenuResponse.SCREEN_TITLE_THANK_YOU);
+                    .isNotEqualTo(SCREEN_TITLE_THANK_YOU);
             assertThat(populatedAdminMenu().title02())
-                    .isNotEqualTo(MenuResponse.SCREEN_TITLE_THANK_YOU);
+                    .isNotEqualTo(SCREEN_TITLE_THANK_YOU);
         }
 
         /** The user factory populates the user collection and leaves the administrative absent. */
@@ -1225,7 +1317,7 @@ class MenuResponseCoverageTest {
             MenuResponse response = populatedUserMenu();
 
             assertThat(response.userMenuOptions())
-                    .containsExactlyElementsOf(MenuResponse.CANONICAL_USER_MENU_OPTIONS);
+                    .containsExactlyElementsOf(CANONICAL_USER_MENU_OPTIONS);
             assertThat(response.adminMenuOptions()).isNull();
         }
 
@@ -1236,7 +1328,7 @@ class MenuResponseCoverageTest {
             MenuResponse response = populatedAdminMenu();
 
             assertThat(response.adminMenuOptions())
-                    .containsExactlyElementsOf(MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS);
+                    .containsExactlyElementsOf(CANONICAL_ADMIN_MENU_OPTIONS);
             assertThat(response.userMenuOptions()).isNull();
         }
 
@@ -1290,6 +1382,7 @@ class MenuResponseCoverageTest {
                     .isThrownBy(
                             () ->
                                     MenuResponse.forUserMenu(
+                                            SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
                                             CURRENT_DATE, CURRENT_TIME, List.of(), null, null, null,
                                             false, null, null, null))
                     .withMessageContaining(String.valueOf(MenuResponse.USER_MENU_OPTION_COUNT))
@@ -1299,6 +1392,7 @@ class MenuResponseCoverageTest {
                     .isThrownBy(
                             () ->
                                     MenuResponse.forUserMenu(
+                                            SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
                                             CURRENT_DATE, CURRENT_TIME, null, null, null, null,
                                             false, null, null, null))
                     .withMessageContaining("neither was supplied");
@@ -1358,9 +1452,10 @@ class MenuResponseCoverageTest {
         @DisplayName("copies a supplied collection at construction")
         void aSuppliedCollectionIsCopied() {
             List<MenuResponse.UserMenuOption> mutable =
-                    new ArrayList<>(MenuResponse.CANONICAL_USER_MENU_OPTIONS);
+                    new ArrayList<>(CANONICAL_USER_MENU_OPTIONS);
             MenuResponse response =
                     MenuResponse.forUserMenu(
+                            SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
                             CURRENT_DATE, CURRENT_TIME, mutable, null, null, null, false, null,
                             null, null);
 
@@ -1368,7 +1463,7 @@ class MenuResponseCoverageTest {
 
             assertThat(response.userMenuOptions())
                     .hasSize(MenuResponse.USER_MENU_OPTION_COUNT)
-                    .containsExactlyElementsOf(MenuResponse.CANONICAL_USER_MENU_OPTIONS);
+                    .containsExactlyElementsOf(CANONICAL_USER_MENU_OPTIONS);
         }
 
         /** A published collection is unmodifiable. */
@@ -1389,24 +1484,26 @@ class MenuResponseCoverageTest {
         @DisplayName("rejects a null option element")
         void aNullOptionElementIsRejected() {
             List<MenuResponse.UserMenuOption> withNull =
-                    new ArrayList<>(MenuResponse.CANONICAL_USER_MENU_OPTIONS);
+                    new ArrayList<>(CANONICAL_USER_MENU_OPTIONS);
             withNull.set(4, null);
 
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(
                             () ->
                                     MenuResponse.forUserMenu(
+                                            SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
                                             CURRENT_DATE, CURRENT_TIME, withNull, null, null, null,
                                             false, null, null, null));
 
             List<MenuResponse.AdminMenuOption> adminWithNull =
-                    new ArrayList<>(MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS);
+                    new ArrayList<>(CANONICAL_ADMIN_MENU_OPTIONS);
             adminWithNull.set(0, null);
 
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(
                             () ->
                                     MenuResponse.forAdminMenu(
+                                            SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
                                             CURRENT_DATE, CURRENT_TIME, adminWithNull, null, null,
                                             null, false, null, null, null));
         }
@@ -1421,12 +1518,13 @@ class MenuResponseCoverageTest {
         @DisplayName("refuses a shorter collection")
         void aShorterCollectionIsRefused() {
             List<MenuResponse.UserMenuOption> shorter =
-                    MenuResponse.CANONICAL_USER_MENU_OPTIONS.subList(0, 3);
+                    CANONICAL_USER_MENU_OPTIONS.subList(0, 3);
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(
                             () ->
                                     MenuResponse.forUserMenu(
+                                            SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
                                             CURRENT_DATE, CURRENT_TIME, shorter, null, null, null,
                                             false, null, null, null))
                     .withMessageContaining(String.valueOf(MenuResponse.USER_MENU_OPTION_COUNT))
@@ -1438,13 +1536,14 @@ class MenuResponseCoverageTest {
         @DisplayName("refuses a longer collection")
         void aLongerCollectionIsRefused() {
             List<MenuResponse.UserMenuOption> longer =
-                    new ArrayList<>(MenuResponse.CANONICAL_USER_MENU_OPTIONS);
+                    new ArrayList<>(CANONICAL_USER_MENU_OPTIONS);
             longer.add(new MenuResponse.UserMenuOption(11, "Surplus"));
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(
                             () ->
                                     MenuResponse.forUserMenu(
+                                            SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
                                             CURRENT_DATE, CURRENT_TIME, longer, null, null, null,
                                             false, null, null, null))
                     .withMessageContaining(
@@ -1457,12 +1556,13 @@ class MenuResponseCoverageTest {
         @DisplayName("refuses an administrative collection of any size but four")
         void anAdministrativeCollectionOfTheWrongSizeIsRefused() {
             List<MenuResponse.AdminMenuOption> shorter =
-                    MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS.subList(0, 2);
+                    CANONICAL_ADMIN_MENU_OPTIONS.subList(0, 2);
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(
                             () ->
                                     MenuResponse.forAdminMenu(
+                                            SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
                                             CURRENT_DATE, CURRENT_TIME, shorter, null, null, null,
                                             false, null, null, null))
                     .withMessageContaining(String.valueOf(MenuResponse.ADMIN_MENU_OPTION_COUNT))
@@ -1474,11 +1574,12 @@ class MenuResponseCoverageTest {
         @DisplayName("carries option order verbatim")
         void optionOrderIsCarriedVerbatim() {
             List<MenuResponse.UserMenuOption> reversed =
-                    new ArrayList<>(MenuResponse.CANONICAL_USER_MENU_OPTIONS);
+                    new ArrayList<>(CANONICAL_USER_MENU_OPTIONS);
             java.util.Collections.reverse(reversed);
 
             MenuResponse response =
                     MenuResponse.forUserMenu(
+                            SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
                             CURRENT_DATE, CURRENT_TIME, reversed, null, null, null, false, null,
                             null, null);
 
@@ -1501,13 +1602,13 @@ class MenuResponseCoverageTest {
                             () ->
                                     new MenuResponse(
                                             MenuResponse.USER_MENU_TRANSACTION_NAME,
-                                            MenuResponse.SCREEN_TITLE_LINE_1,
+                                            SCREEN_TITLE_LINE_1,
                                             CURRENT_DATE,
                                             MenuResponse.USER_MENU_PROGRAM_NAME,
-                                            MenuResponse.SCREEN_TITLE_LINE_2,
+                                            SCREEN_TITLE_LINE_2,
                                             CURRENT_TIME,
-                                            MenuResponse.CANONICAL_USER_MENU_OPTIONS,
-                                            MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS,
+                                            CANONICAL_USER_MENU_OPTIONS,
+                                            CANONICAL_ADMIN_MENU_OPTIONS,
                                             null,
                                             null,
                                             null,
@@ -1643,7 +1744,8 @@ class MenuResponseCoverageTest {
                 throws JsonProcessingException {
             MenuResponse response =
                     MenuResponse.forUserMenu(
-                            CURRENT_DATE, CURRENT_TIME, MenuResponse.CANONICAL_USER_MENU_OPTIONS,
+                            SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
+                            CURRENT_DATE, CURRENT_TIME, CANONICAL_USER_MENU_OPTIONS,
                             null, MESSAGE, severity, false, null, null, null);
 
             assertThat(payloadOf(response))
@@ -1680,7 +1782,7 @@ class MenuResponseCoverageTest {
             MenuResponse minimal =
                     new MenuResponse(
                             null, null, null, null, null, null,
-                            MenuResponse.CANONICAL_USER_MENU_OPTIONS, null, null, null, null, false,
+                            CANONICAL_USER_MENU_OPTIONS, null, null, null, null, false,
                             null, null, null);
             JsonNode tree =
                     JsonContractSupport.declaredSettingsMapper().readTree(payloadOf(minimal));
@@ -1761,7 +1863,7 @@ class MenuResponseCoverageTest {
                             validator.validate(
                                     new MenuResponse(
                                             null, null, null, null, null, null,
-                                            MenuResponse.CANONICAL_USER_MENU_OPTIONS, null, null,
+                                            CANONICAL_USER_MENU_OPTIONS, null, null,
                                             null, null, false, null, null, null)))
                     .isEmpty();
         }
@@ -1841,11 +1943,10 @@ class MenuResponseCoverageTest {
         @DisplayName("does not cascade an option bound from the enclosing response")
         void anOptionBoundIsNotCascadedFromTheEnclosingResponse() {
             List<MenuResponse.UserMenuOption> withOverLongRow =
-                    new ArrayList<>(MenuResponse.CANONICAL_USER_MENU_OPTIONS);
+                    new ArrayList<>(CANONICAL_USER_MENU_OPTIONS);
             withOverLongRow.set(0, userOptionCarrying("label", "A".repeat(36)));
             MenuResponse response =
-                    MenuResponse.forUserMenu(
-                            CURRENT_DATE,
+                    MenuResponse.forUserMenu(SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2, CURRENT_DATE,
                             CURRENT_TIME,
                             withOverLongRow,
                             null,
@@ -1919,9 +2020,9 @@ class MenuResponseCoverageTest {
         @Test
         @DisplayName("accepts every canonical option as published")
         void everyCanonicalOptionPassesValidation() {
-            assertThat(MenuResponse.CANONICAL_USER_MENU_OPTIONS)
+            assertThat(CANONICAL_USER_MENU_OPTIONS)
                     .allSatisfy(option -> assertThat(validator.validate(option)).isEmpty());
-            assertThat(MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS)
+            assertThat(CANONICAL_ADMIN_MENU_OPTIONS)
                     .allSatisfy(option -> assertThat(validator.validate(option)).isEmpty());
         }
 
@@ -1947,8 +2048,7 @@ class MenuResponseCoverageTest {
         @DisplayName("renders exactly the generated record form")
         void theRenderingIsExactlyTheGeneratedForm() {
             MenuResponse response =
-                    MenuResponse.forAdminMenu(
-                            CURRENT_DATE,
+                    MenuResponse.forAdminMenu(SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2, CURRENT_DATE,
                             CURRENT_TIME,
                             List.of(
                                     new MenuResponse.AdminMenuOption(1, "User List (Security)"),
@@ -1966,10 +2066,10 @@ class MenuResponseCoverageTest {
             List<String> renderedValues =
                     List.of(
                             MenuResponse.ADMIN_MENU_TRANSACTION_NAME,
-                            MenuResponse.SCREEN_TITLE_LINE_1,
+                            SCREEN_TITLE_LINE_1,
                             CURRENT_DATE,
                             MenuResponse.ADMIN_MENU_PROGRAM_NAME,
-                            MenuResponse.SCREEN_TITLE_LINE_2,
+                            SCREEN_TITLE_LINE_2,
                             CURRENT_TIME,
                             "null",
                             "[AdminMenuOption[number=1, label=User List (Security)],"
@@ -2115,19 +2215,20 @@ class MenuResponseCoverageTest {
         void twoResponsesDifferingOnlyInAHeaderItemAreNotEqual() {
             MenuResponse earlier =
                     MenuResponse.forUserMenu(
-                            CURRENT_DATE, CURRENT_TIME, MenuResponse.CANONICAL_USER_MENU_OPTIONS,
+                            SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
+                            CURRENT_DATE, CURRENT_TIME, CANONICAL_USER_MENU_OPTIONS,
                             null, null, null, false, null, null, null);
             MenuResponse later =
                     MenuResponse.forUserMenu(
-                            CURRENT_DATE, "10:15:31", MenuResponse.CANONICAL_USER_MENU_OPTIONS,
+                            SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
+                            CURRENT_DATE, "10:15:31", CANONICAL_USER_MENU_OPTIONS,
                             null, null, null, false, null, null, null);
 
             assertThat(earlier).isNotEqualTo(later);
             assertThat(earlier)
                     .isNotEqualTo(
-                            MenuResponse.forUserMenu(
-                                    "02/01/24", CURRENT_TIME,
-                                    MenuResponse.CANONICAL_USER_MENU_OPTIONS, null, null, null,
+                            MenuResponse.forUserMenu(SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2, "02/01/24", CURRENT_TIME,
+                                    CANONICAL_USER_MENU_OPTIONS, null, null, null,
                                     false, null, null, null));
         }
 
@@ -2136,10 +2237,9 @@ class MenuResponseCoverageTest {
         @DisplayName("observes a difference in the severity or the indicator")
         void aDifferenceInTheSeverityOrIndicatorIsObserved() {
             MenuResponse informational =
-                    MenuResponse.forUserMenu(
-                            CURRENT_DATE,
+                    MenuResponse.forUserMenu(SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2, CURRENT_DATE,
                             CURRENT_TIME,
-                            MenuResponse.CANONICAL_USER_MENU_OPTIONS,
+                            CANONICAL_USER_MENU_OPTIONS,
                             null,
                             MESSAGE,
                             MenuResponse.MessageSeverity.INFORMATIONAL,
@@ -2148,10 +2248,9 @@ class MenuResponseCoverageTest {
                             null,
                             null);
             MenuResponse error =
-                    MenuResponse.forUserMenu(
-                            CURRENT_DATE,
+                    MenuResponse.forUserMenu(SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2, CURRENT_DATE,
                             CURRENT_TIME,
-                            MenuResponse.CANONICAL_USER_MENU_OPTIONS,
+                            CANONICAL_USER_MENU_OPTIONS,
                             null,
                             MESSAGE,
                             MenuResponse.MessageSeverity.ERROR,
@@ -2160,10 +2259,9 @@ class MenuResponseCoverageTest {
                             null,
                             null);
             MenuResponse flagged =
-                    MenuResponse.forUserMenu(
-                            CURRENT_DATE,
+                    MenuResponse.forUserMenu(SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2, CURRENT_DATE,
                             CURRENT_TIME,
-                            MenuResponse.CANONICAL_USER_MENU_OPTIONS,
+                            CANONICAL_USER_MENU_OPTIONS,
                             null,
                             MESSAGE,
                             MenuResponse.MessageSeverity.INFORMATIONAL,
@@ -2198,12 +2296,12 @@ class MenuResponseCoverageTest {
             MenuResponse response =
                     new MenuResponse(
                             MenuResponse.USER_MENU_TRANSACTION_NAME,
-                            MenuResponse.SCREEN_TITLE_LINE_1,
+                            SCREEN_TITLE_LINE_1,
                             CURRENT_DATE,
                             MenuResponse.USER_MENU_PROGRAM_NAME,
-                            MenuResponse.SCREEN_TITLE_LINE_2,
+                            SCREEN_TITLE_LINE_2,
                             CURRENT_TIME,
-                            MenuResponse.CANONICAL_USER_MENU_OPTIONS,
+                            CANONICAL_USER_MENU_OPTIONS,
                             null,
                             SELECTED_OPTION,
                             MESSAGE,
@@ -2215,13 +2313,13 @@ class MenuResponseCoverageTest {
 
             assertThat(response.transactionName())
                     .isEqualTo(MenuResponse.USER_MENU_TRANSACTION_NAME);
-            assertThat(response.title01()).isEqualTo(MenuResponse.SCREEN_TITLE_LINE_1);
+            assertThat(response.title01()).isEqualTo(SCREEN_TITLE_LINE_1);
             assertThat(response.currentDate()).isEqualTo(CURRENT_DATE);
             assertThat(response.programName()).isEqualTo(MenuResponse.USER_MENU_PROGRAM_NAME);
-            assertThat(response.title02()).isEqualTo(MenuResponse.SCREEN_TITLE_LINE_2);
+            assertThat(response.title02()).isEqualTo(SCREEN_TITLE_LINE_2);
             assertThat(response.currentTime()).isEqualTo(CURRENT_TIME);
             assertThat(response.userMenuOptions())
-                    .containsExactlyElementsOf(MenuResponse.CANONICAL_USER_MENU_OPTIONS);
+                    .containsExactlyElementsOf(CANONICAL_USER_MENU_OPTIONS);
             assertThat(response.adminMenuOptions()).isNull();
             assertThat(response.selectedOption()).isEqualTo(SELECTED_OPTION);
             assertThat(response.message()).isEqualTo(MESSAGE);

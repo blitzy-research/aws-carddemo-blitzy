@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.Set;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.carddemo.domain.enums.KeyAction;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -42,6 +43,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -244,6 +246,9 @@ class SignOnRequestBoundaryTest {
     /** JSON property name carrying the submitted credential. */
     private static final String CREDENTIAL_PROPERTY = "password";
 
+    /** Wire name of the attention-key component, spelled as the whole package spells it. */
+    private static final String KEY_ACTION_PROPERTY = "keyAction";
+
     /**
      * Type token for reading a JSON document back as a plain property map.
      *
@@ -419,7 +424,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("a user id of exactly eight characters raises no violation at all")
         void userIdOfExactlyEightCharactersIsAccepted() {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, null);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, null, null);
 
             assertThat(USER_ID_AT_WIDTH).hasSize(USER_ID_WIDTH);
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
@@ -429,7 +434,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("a user id of nine characters violates the width bound and nothing else")
         void userIdOfNineCharactersViolatesTheWidthBound() {
-            SignOnRequest request = new SignOnRequest(USER_ID_OVER_WIDTH, null);
+            SignOnRequest request = new SignOnRequest(USER_ID_OVER_WIDTH, null, null);
 
             assertThat(USER_ID_OVER_WIDTH).hasSize(USER_ID_WIDTH + 1);
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
@@ -445,7 +450,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("a password of exactly eight characters raises no violation at all")
         void passwordOfExactlyEightCharactersIsAccepted() {
-            SignOnRequest request = new SignOnRequest(null, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(null, SYNTHETIC_CREDENTIAL, null);
 
             assertThat(SYNTHETIC_CREDENTIAL).hasSize(CREDENTIAL_WIDTH);
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
@@ -455,7 +460,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("a password of nine characters violates the width bound and nothing else")
         void passwordOfNineCharactersViolatesTheWidthBound() {
-            SignOnRequest request = new SignOnRequest(null, CREDENTIAL_OVER_WIDTH);
+            SignOnRequest request = new SignOnRequest(null, CREDENTIAL_OVER_WIDTH, null);
 
             assertThat(CREDENTIAL_OVER_WIDTH).hasSize(CREDENTIAL_WIDTH + 1);
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
@@ -470,7 +475,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("both values at the bound together are accepted, so the bounds are independent")
         void bothValuesAtTheBoundAreAccepted() {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
             assertThat(violations).isEmpty();
@@ -479,7 +484,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("both values over the bound together produce exactly two violations, one each")
         void bothValuesOverTheBoundProduceExactlyTwoViolations() {
-            SignOnRequest request = new SignOnRequest(USER_ID_OVER_WIDTH, CREDENTIAL_OVER_WIDTH);
+            SignOnRequest request = new SignOnRequest(USER_ID_OVER_WIDTH, CREDENTIAL_OVER_WIDTH, null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
             assertThat(violations).hasSize(2);
@@ -491,7 +496,7 @@ class SignOnRequestBoundaryTest {
         @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7, 8})
         @DisplayName("every length from zero up to and including eight is accepted for the user id")
         void everyLengthUpToTheBoundIsAcceptedForTheUserId(int length) {
-            SignOnRequest request = new SignOnRequest(valueOfLength(length), null);
+            SignOnRequest request = new SignOnRequest(valueOfLength(length), null, null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
             assertThat(violations).isEmpty();
@@ -501,7 +506,7 @@ class SignOnRequestBoundaryTest {
         @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7, 8})
         @DisplayName("every length from zero up to and including eight is accepted for the password")
         void everyLengthUpToTheBoundIsAcceptedForThePassword(int length) {
-            SignOnRequest request = new SignOnRequest(null, valueOfLength(length));
+            SignOnRequest request = new SignOnRequest(null, valueOfLength(length), null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
             assertThat(violations).isEmpty();
@@ -511,7 +516,7 @@ class SignOnRequestBoundaryTest {
         @ValueSource(ints = {9, 10, 16, 32, 80})
         @DisplayName("every length above eight is rejected for the user id")
         void everyLengthAboveTheBoundIsRejectedForTheUserId(int length) {
-            SignOnRequest request = new SignOnRequest(valueOfLength(length), null);
+            SignOnRequest request = new SignOnRequest(valueOfLength(length), null, null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
             assertThat(violations).hasSize(1);
@@ -522,7 +527,7 @@ class SignOnRequestBoundaryTest {
         @ValueSource(ints = {9, 10, 16, 32, 80})
         @DisplayName("every length above eight is rejected for the password")
         void everyLengthAboveTheBoundIsRejectedForThePassword(int length) {
-            SignOnRequest request = new SignOnRequest(null, valueOfLength(length));
+            SignOnRequest request = new SignOnRequest(null, valueOfLength(length), null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
             assertThat(violations).hasSize(1);
@@ -533,7 +538,7 @@ class SignOnRequestBoundaryTest {
         @DisplayName("the bound measures characters and never trims, so eight spaces are accepted")
         void theBoundNeverTrimsBeforeMeasuring() {
             String eightSpaces = " ".repeat(USER_ID_WIDTH);
-            SignOnRequest request = new SignOnRequest(eightSpaces, eightSpaces);
+            SignOnRequest request = new SignOnRequest(eightSpaces, eightSpaces, null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
             assertThat(violations).isEmpty();
@@ -545,7 +550,7 @@ class SignOnRequestBoundaryTest {
         @DisplayName("the bound measures characters and never trims, so nine spaces are rejected")
         void theBoundRejectsNineSpacesRatherThanTrimmingThemAway() {
             String nineSpaces = " ".repeat(USER_ID_WIDTH + 1);
-            SignOnRequest request = new SignOnRequest(nineSpaces, nineSpaces);
+            SignOnRequest request = new SignOnRequest(nineSpaces, nineSpaces, null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
             assertThat(violations).hasSize(2);
@@ -578,7 +583,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("two nulls raise no violation, so no presence constraint is declared")
         void twoNullsRaiseNoViolation() {
-            SignOnRequest request = new SignOnRequest(null, null);
+            SignOnRequest request = new SignOnRequest(null, null, null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
             assertThat(violations).isEmpty();
@@ -587,7 +592,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("two empty strings raise no violation, so no emptiness constraint is declared")
         void twoEmptyStringsRaiseNoViolation() {
-            SignOnRequest request = new SignOnRequest("", "");
+            SignOnRequest request = new SignOnRequest("", "", null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
             assertThat(violations).isEmpty();
@@ -596,7 +601,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("two all-space values raise no violation, so no blankness constraint is declared")
         void twoAllSpaceValuesRaiseNoViolation() {
-            SignOnRequest request = new SignOnRequest("    ", "  ");
+            SignOnRequest request = new SignOnRequest("    ", "  ", null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
             assertThat(violations).isEmpty();
@@ -605,7 +610,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("a null user id beside a present password raises no violation")
         void aNullUserIdBesideAPresentPasswordRaisesNoViolation() {
-            SignOnRequest request = new SignOnRequest(null, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(null, SYNTHETIC_CREDENTIAL, null);
 
             assertThat(violationsOf(request)).isEmpty();
         }
@@ -613,7 +618,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("a null password beside a present user id raises no violation")
         void aNullPasswordBesideAPresentUserIdRaisesNoViolation() {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, null);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
         }
@@ -621,7 +626,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("an over-length user id beside a null password yields exactly one violation")
         void anOverLengthUserIdBesideANullPasswordYieldsExactlyOneViolation() {
-            SignOnRequest request = new SignOnRequest(USER_ID_OVER_WIDTH, null);
+            SignOnRequest request = new SignOnRequest(USER_ID_OVER_WIDTH, null, null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
             assertThat(violations).hasSize(1);
@@ -631,7 +636,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("an over-length password beside a null user id yields exactly one violation")
         void anOverLengthPasswordBesideANullUserIdYieldsExactlyOneViolation() {
-            SignOnRequest request = new SignOnRequest(null, CREDENTIAL_OVER_WIDTH);
+            SignOnRequest request = new SignOnRequest(null, CREDENTIAL_OVER_WIDTH, null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
             assertThat(violations).hasSize(1);
@@ -641,7 +646,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("every violation that ever fires is a size violation, never any other kind")
         void everyViolationThatFiresIsASizeViolation() {
-            SignOnRequest request = new SignOnRequest(USER_ID_OVER_WIDTH, CREDENTIAL_OVER_WIDTH);
+            SignOnRequest request = new SignOnRequest(USER_ID_OVER_WIDTH, CREDENTIAL_OVER_WIDTH, null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
             assertThat(violations).isNotEmpty();
@@ -656,7 +661,7 @@ class SignOnRequestBoundaryTest {
             "AB CD", " AB", "AB ", "A.B-C_D", "@#$%^&*(", "12345678"})
         @DisplayName("no character-class, case or format rule fires on any value the screen accepts")
         void noCharacterClassRuleFiresOnAnyValueTheScreenAccepts(String value) {
-            SignOnRequest request = new SignOnRequest(value, value);
+            SignOnRequest request = new SignOnRequest(value, value, null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
             assertThat(violations).isEmpty();
@@ -666,7 +671,7 @@ class SignOnRequestBoundaryTest {
         @DisplayName("a value carrying an embedded space is accepted, matching the legacy editor")
         void aValueCarryingAnEmbeddedSpaceIsAccepted() {
             String withEmbeddedSpace = "AB CD EF";
-            SignOnRequest request = new SignOnRequest(withEmbeddedSpace, withEmbeddedSpace);
+            SignOnRequest request = new SignOnRequest(withEmbeddedSpace, withEmbeddedSpace, null);
 
             assertThat(withEmbeddedSpace).hasSize(USER_ID_WIDTH);
             assertThat(violationsOf(request)).isEmpty();
@@ -675,7 +680,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("no minimum-length rule fires, so a one-character value is accepted")
         void noMinimumLengthRuleFires() {
-            SignOnRequest request = new SignOnRequest("A", "B");
+            SignOnRequest request = new SignOnRequest("A", "B", null);
 
             assertThat(violationsOf(request)).isEmpty();
         }
@@ -683,7 +688,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("no numeric or digit rule fires, so a purely alphabetic value is accepted")
         void noDigitRuleFires() {
-            SignOnRequest request = new SignOnRequest("ABCDEFGH", "ZYXWVUTS");
+            SignOnRequest request = new SignOnRequest("ABCDEFGH", "ZYXWVUTS", null);
 
             assertThat(violationsOf(request)).isEmpty();
         }
@@ -691,7 +696,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("validating an all-null instance never throws, so nothing cascades into a null")
         void validatingAnAllNullInstanceNeverThrows() {
-            SignOnRequest request = new SignOnRequest(null, null);
+            SignOnRequest request = new SignOnRequest(null, null, null);
 
             assertThatCode(() -> violationsOf(request)).doesNotThrowAnyException();
         }
@@ -713,7 +718,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("the credential does not appear anywhere in the diagnostic representation")
         void theCredentialDoesNotAppearInTheDiagnosticRepresentation() {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             String rendered = request.toString();
 
@@ -723,7 +728,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("the placeholder appears exactly once, standing where the credential would be")
         void thePlaceholderAppearsExactlyOnce() {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             String rendered = request.toString();
 
@@ -734,7 +739,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("the user id is retained, because an account identifier is not a secret")
         void theUserIdIsRetained() {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             String rendered = request.toString();
 
@@ -744,7 +749,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("no four-character run of the credential survives into the output")
         void noFourCharacterRunOfTheCredentialSurvives() {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             String rendered = request.toString();
 
@@ -760,8 +765,8 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("the credential length is not disclosed, because the placeholder is fixed")
         void theCredentialLengthIsNotDisclosed() {
-            SignOnRequest shortCredential = new SignOnRequest(USER_ID_AT_WIDTH, "A");
-            SignOnRequest widthCredential = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest shortCredential = new SignOnRequest(USER_ID_AT_WIDTH, "A", null);
+            SignOnRequest widthCredential = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             assertThat(shortCredential.toString()).isEqualTo(widthCredential.toString());
         }
@@ -769,8 +774,8 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("a differing credential yields identical output, so nothing about it leaks")
         void aDifferingCredentialYieldsIdenticalOutput() {
-            SignOnRequest first = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
-            SignOnRequest second = new SignOnRequest(USER_ID_AT_WIDTH, OTHER_SYNTHETIC_CREDENTIAL);
+            SignOnRequest first = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
+            SignOnRequest second = new SignOnRequest(USER_ID_AT_WIDTH, OTHER_SYNTHETIC_CREDENTIAL, null);
 
             assertThat(first.toString()).isEqualTo(second.toString());
             assertThat(first.toString()).doesNotContain(OTHER_SYNTHETIC_CREDENTIAL);
@@ -779,7 +784,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("an absent credential still yields the placeholder rather than a null marker")
         void anAbsentCredentialStillYieldsThePlaceholder() {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, null);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, null, null);
 
             String rendered = request.toString();
 
@@ -790,19 +795,21 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("an all-space credential is redacted too, so whitespace never hints at a value")
         void anAllSpaceCredentialIsRedactedToo() {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, "        ");
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, "        ", null);
 
             String rendered = request.toString();
 
             assertThat(occurrencesOf(rendered, REDACTION_PLACEHOLDER_TEXT)).isEqualTo(1);
             assertThat(rendered).isEqualTo(
-                    new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL).toString());
+                    new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null).toString());
         }
 
         @Test
-        @DisplayName("the output names the type and both properties, so it stays readable as a diagnostic")
-        void theOutputNamesTheTypeAndBothProperties() {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+        @DisplayName("the output names the type and every property in declaration order, so it stays "
+                + "readable as a diagnostic")
+        void theOutputNamesTheTypeAndEveryProperty() {
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL,
+                    KeyAction.PFK03);
 
             String rendered = request.toString();
 
@@ -810,15 +817,41 @@ class SignOnRequestBoundaryTest {
                     .startsWith("SignOnRequest[")
                     .endsWith("]")
                     .contains(USER_ID_PROPERTY + "=")
-                    .contains(CREDENTIAL_PROPERTY + "=");
+                    .contains(CREDENTIAL_PROPERTY + "=")
+                    .contains(KEY_ACTION_PROPERTY + "=");
             assertThat(rendered.indexOf(USER_ID_PROPERTY + "="))
                     .isLessThan(rendered.indexOf(CREDENTIAL_PROPERTY + "="));
+            assertThat(rendered.indexOf(CREDENTIAL_PROPERTY + "="))
+                    .as("the attention key renders after the redacted credential, mirroring the "
+                            + "declaration order of the record")
+                    .isLessThan(rendered.indexOf(KEY_ACTION_PROPERTY + "="));
+        }
+
+        @Test
+        @DisplayName("the attention key is rendered by name, because a keystroke drawn from a published "
+                + "vocabulary is a diagnostic aid rather than a secret")
+        void theAttentionKeyIsRenderedByName() {
+            String rendered = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL,
+                    KeyAction.PFK03).toString();
+
+            assertThat(rendered).contains(KEY_ACTION_PROPERTY + "=" + KeyAction.PFK03.name());
+        }
+
+        @Test
+        @DisplayName("an absent attention key renders as an absence rather than as a substituted key, "
+                + "because the legacy evaluation substitutes none")
+        void anAbsentAttentionKeyRendersAsAnAbsence() {
+            String rendered = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null)
+                    .toString();
+
+            assertThat(rendered).contains(KEY_ACTION_PROPERTY + "=null");
+            assertThat(rendered).doesNotContain(KeyAction.ENTER.name());
         }
 
         @Test
         @DisplayName("the override is honoured through string concatenation, the usual accidental leak")
         void theOverrideIsHonouredThroughStringConcatenation() {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             String interpolated = "sign-on attempt: " + request;
 
@@ -829,7 +862,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("the override is honoured by String.valueOf, another accidental leak route")
         void theOverrideIsHonouredByStringValueOf() {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             assertThat(String.valueOf(request)).doesNotContain(SYNTHETIC_CREDENTIAL);
         }
@@ -854,9 +887,10 @@ class SignOnRequestBoundaryTest {
         void thePlaceholderIsAConstantForEveryCredential(String credential) {
             String credentialIndependentExpectation = "SignOnRequest["
                     + USER_ID_PROPERTY + "=" + USER_ID_AT_WIDTH
-                    + ", " + CREDENTIAL_PROPERTY + "=" + REDACTION_PLACEHOLDER_TEXT + "]";
+                    + ", " + CREDENTIAL_PROPERTY + "=" + REDACTION_PLACEHOLDER_TEXT
+                    + ", " + KEY_ACTION_PROPERTY + "=null]";
 
-            String rendered = new SignOnRequest(USER_ID_AT_WIDTH, credential).toString();
+            String rendered = new SignOnRequest(USER_ID_AT_WIDTH, credential, null).toString();
 
             assertThat(rendered).isEqualTo(credentialIndependentExpectation);
         }
@@ -864,9 +898,11 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("the rendered length never varies with the credential length")
         void theRenderedLengthNeverVariesWithTheCredentialLength() {
-            int rendered = new SignOnRequest(USER_ID_AT_WIDTH, "A").toString().length();
-            int renderedAtWidth = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL).toString().length();
-            int renderedOverWidth = new SignOnRequest(USER_ID_AT_WIDTH, CREDENTIAL_OVER_WIDTH).toString().length();
+            int rendered = new SignOnRequest(USER_ID_AT_WIDTH, "A", null).toString().length();
+            int renderedAtWidth =
+                    new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null).toString().length();
+            int renderedOverWidth =
+                    new SignOnRequest(USER_ID_AT_WIDTH, CREDENTIAL_OVER_WIDTH, null).toString().length();
 
             assertThat(rendered).isEqualTo(renderedAtWidth).isEqualTo(renderedOverWidth);
         }
@@ -888,8 +924,8 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("two separately built instances carrying the same values are equal")
         void twoSeparatelyBuiltInstancesCarryingTheSameValuesAreEqual() {
-            SignOnRequest first = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
-            SignOnRequest second = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest first = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
+            SignOnRequest second = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             assertThat(first).isNotSameAs(second).isEqualTo(second);
             assertThat(second).isEqualTo(first);
@@ -898,8 +934,8 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("equal instances agree on their hash code")
         void equalInstancesAgreeOnTheirHashCode() {
-            SignOnRequest first = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
-            SignOnRequest second = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest first = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
+            SignOnRequest second = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             assertThat(first).hasSameHashCodeAs(second);
         }
@@ -907,8 +943,8 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("instances differing only in the credential are not equal")
         void instancesDifferingOnlyInTheCredentialAreNotEqual() {
-            SignOnRequest first = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
-            SignOnRequest second = new SignOnRequest(USER_ID_AT_WIDTH, OTHER_SYNTHETIC_CREDENTIAL);
+            SignOnRequest first = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
+            SignOnRequest second = new SignOnRequest(USER_ID_AT_WIDTH, OTHER_SYNTHETIC_CREDENTIAL, null);
 
             assertThat(first).isNotEqualTo(second);
         }
@@ -916,8 +952,8 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("instances differing only in the user id are not equal")
         void instancesDifferingOnlyInTheUserIdAreNotEqual() {
-            SignOnRequest first = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
-            SignOnRequest second = new SignOnRequest("USER0002", SYNTHETIC_CREDENTIAL);
+            SignOnRequest first = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
+            SignOnRequest second = new SignOnRequest("USER0002", SYNTHETIC_CREDENTIAL, null);
 
             assertThat(first).isNotEqualTo(second);
         }
@@ -925,8 +961,8 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("equality distinguishes an absent value from an empty one")
         void equalityDistinguishesAnAbsentValueFromAnEmptyOne() {
-            SignOnRequest absent = new SignOnRequest(null, null);
-            SignOnRequest empty = new SignOnRequest("", "");
+            SignOnRequest absent = new SignOnRequest(null, null, null);
+            SignOnRequest empty = new SignOnRequest("", "", null);
 
             assertThat(absent).isNotEqualTo(empty);
         }
@@ -934,8 +970,8 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("equality distinguishes a trailing space, because nothing is trimmed first")
         void equalityDistinguishesATrailingSpace() {
-            SignOnRequest padded = new SignOnRequest("USER1   ", SYNTHETIC_CREDENTIAL);
-            SignOnRequest bare = new SignOnRequest("USER1", SYNTHETIC_CREDENTIAL);
+            SignOnRequest padded = new SignOnRequest("USER1   ", SYNTHETIC_CREDENTIAL, null);
+            SignOnRequest bare = new SignOnRequest("USER1", SYNTHETIC_CREDENTIAL, null);
 
             assertThat(padded).isNotEqualTo(bare);
         }
@@ -943,8 +979,8 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("equality distinguishes case, because nothing is folded first")
         void equalityDistinguishesCase() {
-            SignOnRequest lower = new SignOnRequest("admin001", SYNTHETIC_CREDENTIAL);
-            SignOnRequest upper = new SignOnRequest("ADMIN001", SYNTHETIC_CREDENTIAL);
+            SignOnRequest lower = new SignOnRequest("admin001", SYNTHETIC_CREDENTIAL, null);
+            SignOnRequest upper = new SignOnRequest("ADMIN001", SYNTHETIC_CREDENTIAL, null);
 
             assertThat(lower).isNotEqualTo(upper);
         }
@@ -952,7 +988,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("equality is reflexive, null-safe and type-safe")
         void equalityIsReflexiveNullSafeAndTypeSafe() {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             assertThat(request).isEqualTo(request);
             assertThat(request).isNotEqualTo(null);
@@ -962,8 +998,8 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("an all-null instance equals another all-null instance and hashes alike")
         void anAllNullInstanceEqualsAnotherAllNullInstance() {
-            SignOnRequest first = new SignOnRequest(null, null);
-            SignOnRequest second = new SignOnRequest(null, null);
+            SignOnRequest first = new SignOnRequest(null, null, null);
+            SignOnRequest second = new SignOnRequest(null, null, null);
 
             assertThat(first).isEqualTo(second).hasSameHashCodeAs(second);
         }
@@ -1001,7 +1037,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("only the user id is emitted when both are populated, the credential being write-only")
         void onlyTheUserIdIsEmittedWhenBothArePopulated() throws JsonProcessingException {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             Map<String, Object> properties = propertiesOf(jsonOf(request));
 
@@ -1012,7 +1048,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("the emitted document carries exactly the one outbound-eligible property")
         void theEmittedDocumentCarriesExactlyTheOneOutboundProperty() throws JsonProcessingException {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             Map<String, Object> properties = propertiesOf(jsonOf(request));
 
@@ -1022,7 +1058,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("an absent value is omitted from the document under non-null inclusion")
         void anAbsentValueIsOmittedFromTheDocument() throws JsonProcessingException {
-            SignOnRequest onlyUserId = new SignOnRequest(USER_ID_AT_WIDTH, null);
+            SignOnRequest onlyUserId = new SignOnRequest(USER_ID_AT_WIDTH, null, null);
 
             Map<String, Object> properties = propertiesOf(jsonOf(onlyUserId));
 
@@ -1033,7 +1069,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("an all-absent instance emits an empty object rather than two null members")
         void anAllAbsentInstanceEmitsAnEmptyObject() throws JsonProcessingException {
-            SignOnRequest empty = new SignOnRequest(null, null);
+            SignOnRequest empty = new SignOnRequest(null, null, null);
 
             assertThat(jsonOf(empty)).isEqualTo("{}");
             assertThat(propertiesOf(jsonOf(empty))).isEmpty();
@@ -1042,7 +1078,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("an empty user id is emitted, because only an absent value is omitted")
         void anEmptyStringIsEmitted() throws JsonProcessingException {
-            SignOnRequest request = new SignOnRequest("", "");
+            SignOnRequest request = new SignOnRequest("", "", null);
 
             Map<String, Object> properties = propertiesOf(jsonOf(request));
 
@@ -1052,7 +1088,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("an empty credential is omitted too, because the suppression is not value-dependent")
         void anEmptyCredentialIsOmittedAsWell() throws JsonProcessingException {
-            SignOnRequest request = new SignOnRequest("", "");
+            SignOnRequest request = new SignOnRequest("", "", null);
 
             Map<String, Object> properties = propertiesOf(jsonOf(request));
 
@@ -1102,7 +1138,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("a serialize and deserialize cycle keeps the user id and drops the credential")
         void aRoundTripKeepsTheUserIdAndDropsTheCredential() throws JsonProcessingException {
-            SignOnRequest original = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest original = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             SignOnRequest restored = parse(jsonOf(original));
 
@@ -1119,13 +1155,13 @@ class SignOnRequestBoundaryTest {
 
             SignOnRequest bound = parse(document);
 
-            assertThat(bound).isEqualTo(new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL));
+            assertThat(bound).isEqualTo(new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null));
         }
 
         @Test
         @DisplayName("the emitted document carries neither the credential nor a stand-in for it")
         void theEmittedDocumentCarriesNeitherTheCredentialNorAStandIn() throws JsonProcessingException {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             String document = jsonOf(request);
 
@@ -1166,7 +1202,7 @@ class SignOnRequestBoundaryTest {
             "ABCD1234", "abcd1234", "aBcD1234", "00001234", "  ABCD  ", "MARY ANN", "A", "        "})
         @DisplayName("no value shape reaches the emitted document")
         void noValueShapeReachesTheEmittedDocument(String candidate) throws JsonProcessingException {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, candidate);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, candidate, null);
 
             String document = jsonOf(request);
 
@@ -1189,7 +1225,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("the strict mapper withholds the credential as well, so the suppression is not a setting")
         void theStrictMapperWithholdsTheCredentialAsWell() throws JsonProcessingException {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             String document = STRICT_MAPPER.writeValueAsString(request);
 
@@ -1199,7 +1235,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("the credential is withheld when the request is nested inside another object")
         void theCredentialIsWithheldWhenNestedInsideAnotherObject() throws JsonProcessingException {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             String document = SHARED_SETTINGS_MAPPER.writeValueAsString(Map.of("attempt", request));
 
@@ -1209,8 +1245,8 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("the credential is withheld when the request is nested inside a collection")
         void theCredentialIsWithheldWhenNestedInsideACollection() throws JsonProcessingException {
-            SignOnRequest first = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
-            SignOnRequest second = new SignOnRequest("USER0002", OTHER_SYNTHETIC_CREDENTIAL);
+            SignOnRequest first = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
+            SignOnRequest second = new SignOnRequest("USER0002", OTHER_SYNTHETIC_CREDENTIAL, null);
 
             String document = SHARED_SETTINGS_MAPPER.writeValueAsString(List.of(first, second));
 
@@ -1284,7 +1320,7 @@ class SignOnRequestBoundaryTest {
                     .getDeclaredMethod(CREDENTIAL_PROPERTY)
                     .getAnnotation(JsonProperty.class);
             JsonProperty onParameter = SignOnRequest.class
-                    .getDeclaredConstructor(String.class, String.class)
+                    .getDeclaredConstructor(String.class, String.class, KeyAction.class)
                     .getParameters()[1]
                     .getAnnotation(JsonProperty.class);
 
@@ -1308,7 +1344,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("the diagnostic representation stays redacted, so neither outbound path leaks")
         void theDiagnosticRepresentationStaysRedacted() throws JsonProcessingException {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             assertThat(request.toString()).doesNotContain(SYNTHETIC_CREDENTIAL);
             assertThat(jsonOf(request)).doesNotContain(SYNTHETIC_CREDENTIAL);
@@ -1389,7 +1425,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("a lower-case user id survives the serialize direction, the credential being withheld")
         void aLowerCaseValueSurvivesTheSerializeDirection() throws JsonProcessingException {
-            SignOnRequest request = new SignOnRequest("admin001", "abcd1234");
+            SignOnRequest request = new SignOnRequest("admin001", "abcd1234", null);
 
             Map<String, Object> properties = propertiesOf(jsonOf(request));
 
@@ -1408,7 +1444,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("a padded user id survives the serialize direction, still untrimmed")
         void aPaddedValueSurvivesTheSerializeDirection() throws JsonProcessingException {
-            SignOnRequest request = new SignOnRequest("USER1   ", "  ABCD  ");
+            SignOnRequest request = new SignOnRequest("USER1   ", "  ABCD  ", null);
 
             Map<String, Object> properties = propertiesOf(jsonOf(request));
 
@@ -1460,7 +1496,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("both accessors hand back character data, which the compiler settles at build time")
         void bothAccessorsHandBackCharacterData() {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             String carriedUserId = request.userId();
             String carriedPassword = request.password();
@@ -1482,7 +1518,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("a numeric-looking user id is emitted as a quoted string, never as a JSON number")
         void aNumericLookingValueIsEmittedAsAQuotedString() throws JsonProcessingException {
-            SignOnRequest request = new SignOnRequest("00000042", "00001234");
+            SignOnRequest request = new SignOnRequest("00000042", "00001234", null);
 
             String document = jsonOf(request);
             Map<String, Object> properties = propertiesOf(document);
@@ -1514,7 +1550,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("the user id tolerates an absent value on its own")
         void theUserIdToleratesAnAbsentValueOnItsOwn() {
-            SignOnRequest request = new SignOnRequest(null, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(null, SYNTHETIC_CREDENTIAL, null);
 
             assertThat(request.userId()).isNull();
             assertThat(request.password()).isEqualTo(SYNTHETIC_CREDENTIAL);
@@ -1523,7 +1559,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("the credential tolerates an absent value on its own")
         void theCredentialToleratesAnAbsentValueOnItsOwn() {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, null);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, null, null);
 
             assertThat(request.userId()).isEqualTo(USER_ID_AT_WIDTH);
             assertThat(request.password()).isNull();
@@ -1532,13 +1568,13 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("constructing an all-absent instance never throws")
         void constructingAnAllAbsentInstanceNeverThrows() {
-            assertThatCode(() -> new SignOnRequest(null, null)).doesNotThrowAnyException();
+            assertThatCode(() -> new SignOnRequest(null, null, null)).doesNotThrowAnyException();
         }
 
         @Test
         @DisplayName("repeated reads return the same values, so nothing is computed or consumed lazily")
         void repeatedReadsReturnTheSameValues() {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             assertThat(request.userId()).isSameAs(request.userId());
             assertThat(request.password()).isSameAs(request.password());
@@ -1549,7 +1585,7 @@ class SignOnRequestBoundaryTest {
         void theAccessorsHandBackTheVeryReferencesConstructionWasGiven() {
             String suppliedUserId = new String(USER_ID_AT_WIDTH.toCharArray());
             String suppliedCredential = new String(SYNTHETIC_CREDENTIAL.toCharArray());
-            SignOnRequest request = new SignOnRequest(suppliedUserId, suppliedCredential);
+            SignOnRequest request = new SignOnRequest(suppliedUserId, suppliedCredential, null);
 
             assertThat(request.userId()).isSameAs(suppliedUserId);
             assertThat(request.password()).isSameAs(suppliedCredential);
@@ -1558,8 +1594,8 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("construction is the only way to set a value, so an instance cannot be altered")
         void constructionIsTheOnlyWayToSetAValue() {
-            SignOnRequest first = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
-            SignOnRequest second = new SignOnRequest("USER0002", OTHER_SYNTHETIC_CREDENTIAL);
+            SignOnRequest first = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
+            SignOnRequest second = new SignOnRequest("USER0002", OTHER_SYNTHETIC_CREDENTIAL, null);
 
             assertThat(first.userId()).isEqualTo(USER_ID_AT_WIDTH);
             assertThat(first.password()).isEqualTo(SYNTHETIC_CREDENTIAL);
@@ -1571,7 +1607,7 @@ class SignOnRequestBoundaryTest {
         @Test
         @DisplayName("a value is not shared between instances, so building one cannot disturb another")
         void aValueIsNotSharedBetweenInstances() throws JsonProcessingException {
-            SignOnRequest first = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+            SignOnRequest first = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
             String firstDocument = jsonOf(first);
 
             SignOnRequest second = parse("{\"userId\":\"USER0002\",\"password\":\""
@@ -1656,7 +1692,7 @@ class SignOnRequestBoundaryTest {
         @ParameterizedTest(name = "{0} is not part of the request contract")
         @ValueSource(strings = {"transactionName", "title01", "title02", "currentDate", "currentTime",
             "programName", "applicationId", "systemId", "errorMessage", "navigationContext",
-            "userType", "route", "errorFlag", "screenTitle", "message", "pageNumber", "keyAction"})
+            "userType", "route", "errorFlag", "screenTitle", "message", "pageNumber"})
         @DisplayName("each omitted member is refused by a strict reader, proving it is not bound")
         void eachOmittedMemberIsRefusedByAStrictReader(String omittedMember) {
             String document = "{\"" + omittedMember + "\":\"x\"}";
@@ -1677,15 +1713,20 @@ class SignOnRequestBoundaryTest {
         }
 
         @Test
-        @DisplayName("the contract is exactly two members wide, matching the two operator-typed items")
-        void theContractIsExactlyTwoMembersWide() {
-            assertThat(SignOnRequest.class.getRecordComponents()).hasSize(2);
+        @DisplayName("the contract is exactly three members wide: the two operator-typed items and the "
+                + "attention key the program evaluates before either of them")
+        void theContractIsExactlyThreeMembersWide() {
+            assertThat(SignOnRequest.class.getRecordComponents()).hasSize(3);
+            assertThat(SignOnRequest.class.getRecordComponents())
+                    .extracting(java.lang.reflect.RecordComponent::getName)
+                    .containsExactly(USER_ID_PROPERTY, CREDENTIAL_PROPERTY, KEY_ACTION_PROPERTY);
         }
 
         @Test
-        @DisplayName("only one of those two members is outbound-eligible, so the document has one entry")
-        void onlyOneOfTheTwoMembersIsOutboundEligible() throws JsonProcessingException {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+        @DisplayName("only one of those three members is emitted when the key is absent, so the "
+                + "document has one entry")
+        void onlyOneOfTheThreeMembersIsOutboundEligible() throws JsonProcessingException {
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             Map<String, Object> properties = propertiesOf(jsonOf(request));
 
@@ -1693,15 +1734,141 @@ class SignOnRequestBoundaryTest {
         }
 
         @Test
-        @DisplayName("the diagnostic representation names no member beyond the two inputs")
-        void theDiagnosticRepresentationNamesNoMemberBeyondTheTwoInputs() {
-            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL);
+        @DisplayName("the diagnostic representation names no member beyond the two inputs and the "
+                + "attention key")
+        void theDiagnosticRepresentationNamesNoMemberBeyondTheContract() {
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             String rendered = request.toString();
 
-            assertThat(occurrencesOf(rendered, "=")).isEqualTo(2);
+            assertThat(occurrencesOf(rendered, "=")).isEqualTo(3);
             assertThat(rendered).doesNotContain("navigationContext", "userType", "route",
                     "errorFlag", "currentDate", "currentTime", "title");
+        }
+    }
+
+
+    // THE ATTENTION KEY
+
+    /**
+     * The operator's attention key, which the legacy program evaluates before it reads either field.
+     *
+     * <p>On a continuation turn {@code app/cbl/COSGN00C.cbl} evaluates the terminal's attention
+     * identifier at lines 86 to 95 and takes exactly one of three paths in that source order: the enter
+     * key runs the credential path, program-function key 3 emits the common acknowledgement, and any
+     * other key raises the error switch and emits the common invalid-key notice. Two of the
+     * transaction's seven message texts exist only on the second and third path, so the key is part of
+     * the request contract rather than an implementation detail of whatever performs authentication.
+     * The rules below assert only that this contract carries it faithfully: it is typed, never
+     * defaulted, never normalised, never constrained, and it survives a round trip.</p>
+     */
+    @Nested
+    @DisplayName("the attention key")
+    class TheAttentionKey {
+
+        @ParameterizedTest(name = "{0} is carried verbatim")
+        @EnumSource(KeyAction.class)
+        @DisplayName("every value of the published vocabulary is carried through unchanged, so the "
+                + "service sees the key the operator actually pressed")
+        void everyValueIsCarriedVerbatim(KeyAction action) {
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, action);
+
+            assertThat(request.keyAction()).isSameAs(action);
+        }
+
+        @Test
+        @DisplayName("an absent key stays absent, because the legacy evaluation has no clause that "
+                + "substitutes one and its any-other-key path already covers an absence")
+        void anAbsentKeyStaysAbsent() {
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
+
+            assertThat(request.keyAction()).isNull();
+        }
+
+        @Test
+        @DisplayName("an absent key is not a violation, so the ordered service-tier evaluation keeps "
+                + "deciding the single message the legacy emits")
+        void anAbsentKeyIsNotAViolation() {
+            assertThat(violationsOf(new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null)))
+                    .isEmpty();
+        }
+
+        @ParameterizedTest(name = "{0} raises no violation")
+        @EnumSource(KeyAction.class)
+        @DisplayName("no value of the vocabulary raises a violation, because the component declares no "
+                + "constraint at all")
+        void noValueRaisesAViolation(KeyAction action) {
+            assertThat(violationsOf(new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, action)))
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the component declares no annotation whatever, so nothing bounds, requires or "
+                + "reshapes the key at the boundary")
+        void theComponentDeclaresNoAnnotationWhatever() throws NoSuchFieldException {
+            assertThat(SignOnRequest.class.getDeclaredField(KEY_ACTION_PROPERTY).getAnnotations())
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the component is typed as the domain vocabulary rather than as loose text, so an "
+                + "unmapped keystroke cannot reach the service disguised as a mapped one")
+        void theComponentIsTypedAsTheDomainVocabulary() throws NoSuchFieldException {
+            assertThat(SignOnRequest.class.getDeclaredField(KEY_ACTION_PROPERTY).getType())
+                    .isEqualTo(KeyAction.class);
+        }
+
+        @ParameterizedTest(name = "{0} survives a round trip")
+        @EnumSource(KeyAction.class)
+        @DisplayName("every value survives a serialize-and-read round trip by name, so a client and the "
+                + "service agree on the keystroke")
+        void everyValueSurvivesARoundTrip(KeyAction action) throws JsonProcessingException {
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, action);
+
+            SignOnRequest back = parse(jsonOf(request));
+
+            assertThat(back.keyAction()).isSameAs(action);
+        }
+
+        @Test
+        @DisplayName("the key binds inbound from a document, which is what makes the three-way branch "
+                + "reachable over the wire at all")
+        void theKeyBindsInboundFromADocument() throws JsonProcessingException {
+            SignOnRequest request = parse("{\"" + KEY_ACTION_PROPERTY + "\":\""
+                    + KeyAction.PFK03.name() + "\"}");
+
+            assertThat(request.keyAction()).isSameAs(KeyAction.PFK03);
+        }
+
+        @Test
+        @DisplayName("an absent key is omitted from the emitted document rather than emitted as a null, "
+                + "so an absence is not confused with a value")
+        void anAbsentKeyIsOmittedFromTheEmittedDocument() throws JsonProcessingException {
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
+
+            assertThat(propertiesOf(jsonOf(request))).doesNotContainKey(KEY_ACTION_PROPERTY);
+        }
+
+        @Test
+        @DisplayName("a present key is emitted by name alongside the user id, and the credential is "
+                + "still absent from that document")
+        void aPresentKeyIsEmittedByName() throws JsonProcessingException {
+            SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL,
+                    KeyAction.ENTER);
+
+            Map<String, Object> properties = propertiesOf(jsonOf(request));
+
+            assertThat(properties)
+                    .containsEntry(KEY_ACTION_PROPERTY, KeyAction.ENTER.name())
+                    .containsKey(USER_ID_PROPERTY)
+                    .doesNotContainKey(CREDENTIAL_PROPERTY);
+        }
+
+        @Test
+        @DisplayName("the key takes no part in the ordered blank cascade, so a submission carrying only "
+                + "a key still reports nothing at the boundary")
+        void theKeyTakesNoPartInTheOrderedBlankCascade() {
+            assertThat(violationsOf(new SignOnRequest(null, null, KeyAction.ENTER))).isEmpty();
         }
     }
 

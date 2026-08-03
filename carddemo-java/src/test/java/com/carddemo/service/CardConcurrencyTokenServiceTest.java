@@ -444,14 +444,61 @@ class CardConcurrencyTokenServiceTest {
     @DisplayName("The token itself discloses nothing")
     class TheTokenItselfDisclosesNothing {
 
+        /*
+         * WHY THE TWO SHORTEST VALUES ARE NOT ASSERTED AS SUBSTRINGS.
+         *
+         * The token is an authenticated-encryption envelope over a fresh vector, so its Base64 body is
+         * indistinguishable from random text drawn from a 64-character alphabet. A needle of length n
+         * therefore appears in a body of b positions by pure coincidence with probability about
+         * b / 64^n. For a body of roughly two hundred positions that is about one run in twenty for a
+         * two-character needle and about one run in thirteen hundred for a three-character one - a
+         * substring assertion on either measures the random generator, not the contract, and fails
+         * intermittently for a reason that has nothing to do with disclosure. (This is not
+         * theoretical: the two-character day needle was observed matching inside the body.)
+         *
+         * Every needle asserted below is at least four characters, where the same arithmetic gives
+         * about one run in eighty thousand and falling steeply, and the informative values - the card
+         * number, the owning account identifier, the embossed name and the whole expiry - are eight
+         * characters or longer, where coincidence is impossible in practice.
+         *
+         * The two short values are not left unguarded. The verification code and the day characters
+         * are covered by the two properties that hold with certainty rather than with probability, and
+         * both are asserted below: the body is a protected envelope, so nothing inside it is readable
+         * at all; and it is re-randomised on every mint, so any short match is a coincidence of the
+         * envelope rather than a leak of the payload. The day characters are additionally the tail of
+         * the ten-character expiry value, which IS asserted as a substring.
+         */
+
         @Test
-        @DisplayName("no field value and no digestible fragment of the card appears in the token")
+        @DisplayName("no informative field value and no digestible fragment of the card appears in the "
+                + "token")
         void noFieldValueAppearsInTheToken() {
             String token = service.mint(card());
 
-            assertThat(token).doesNotContain(CARD_NUMBER, ACCOUNT_ID, CVV, EMBOSSED_NAME, EXPIRY,
-                    EXPIRY_DAY);
+            assertThat(token).doesNotContain(CARD_NUMBER, ACCOUNT_ID, EMBOSSED_NAME, EXPIRY);
             assertThat(token).doesNotContain("mary", "MARY", "2027", "4111");
+        }
+
+        @Test
+        @DisplayName("the two shortest carried values are unreadable with certainty rather than by "
+                + "coincidence, because the body is a protected envelope re-randomised on every mint")
+        void theTwoShortestCarriedValuesAreUnreadableWithCertainty() {
+            String token = service.mint(card());
+
+            assertThat(encryption.isProtected(token))
+                    .as("the verification code and the day characters sit inside an authenticated "
+                            + "envelope, so no part of the payload is readable from the token")
+                    .isTrue();
+            assertThat(token)
+                    .as("the body is re-randomised on every mint, so a short match is a property of "
+                            + "the envelope and never of the payload")
+                    .isNotEqualTo(service.mint(card()));
+            assertThat(CVV).hasSizeLessThan(4);
+            assertThat(EXPIRY_DAY)
+                    .hasSizeLessThan(4)
+                    .as("the day characters are the tail of the expiry value, which is asserted as a "
+                            + "substring above")
+                    .isEqualTo(EXPIRY.substring(EXPIRY.length() - EXPIRY_DAY.length()));
         }
 
         @Test

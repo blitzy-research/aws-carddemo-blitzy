@@ -16,6 +16,8 @@
  */
 package com.carddemo.api.dto;
 
+import com.carddemo.domain.enums.KeyAction;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -66,8 +68,34 @@ import jakarta.validation.constraints.Size;
  * arithmetic statement, so every legacy store into a two-decimal field truncates toward zero. This file
  * performs no arithmetic, rounding, scaling, negation, parsing or formatting.
  *
- * <p><strong>The concurrency token, and why one component is not a map field.</strong> The
- * forty-fourth component is a concurrency token, present because the legacy transaction carried state
+ * <p><strong>Three of the forty-six components are not map fields.</strong> The forty-three above are
+ * the screen; the last three are conversation state the map never showed but the program depended on
+ * every turn - the attention key, the carried navigation state and the concurrency token. Each is
+ * described below, none is a decoration target, and none carries a presence constraint.
+ *
+ * <p><strong>The attention key, and the ENTER-or-RE-ENTER state that gates decoration.</strong> The
+ * program does not begin with the fields. It stores the attention key, then at
+ * {@code app/cbl/COACTUPC.cbl} lines 898 to 916 marks the key invalid and re-marks it valid only for
+ * the enter key, program-function key 3, program-function key 5 while changes are validated but not yet
+ * confirmed, and program-function key 12 once details have been fetched - and, when the key is still
+ * invalid, substitutes the enter key so an unrecognised keystroke behaves as a plain resubmission.
+ * Lines 921 to 1003 then dispatch on those actions together with the first-entry or re-entry state:
+ * program-function key 3 exits to the calling program or the main menu, a fresh entry or an arrival
+ * from the menu re-presents the empty search screen, a completed or failed update resets the search
+ * keys, and every other case runs the input, decision and send sequence. Without the key and that
+ * state on the request, exit, save, cancel and re-entry all collapse into the last case.
+ *
+ * <p>The carried state matters a second time, and this is the more easily lost of the two. The
+ * error-decoration macro {@code app/cpy/CSSETATY.cpy} colours a field and writes its marker character
+ * only when the field's flag is set <em>and</em> the conversation is a re-entry - the condition on line
+ * 20 of that copybook. Field-level {@code MISSING} and {@code INVALID} states therefore appear on a
+ * resubmission of the same screen and never on a first presentation, and the service applies
+ * {@link NavigationContext#reEntry()} as that precondition. Both components are carried and never
+ * interpreted here: this record neither validates the key, nor dispatches on it, nor decides whether
+ * decoration applies.
+ *
+ * <p><strong>The concurrency token, and why it is not a map field either.</strong> The last component
+ * is a concurrency token, present because the legacy transaction carried state
  * across its turns that the map never showed. The program appended the complete old image of the
  * account and customer records - as they stood when the screen was presented - to the shared
  * communication area, returned it with the screen, sliced it back off on the following turn, and on
@@ -155,6 +183,24 @@ import jakarta.validation.constraints.Size;
  * @param primaryCardHolderIndicator the customer primary-card-holder indicator, restricted to yes or no
  *        by the service. Its decoration site is emitted before the transfer-account id, inverting map
  *        declaration order, and its adjacent source comment is transposed.
+ * @param keyAction the attention key the operator pressed, as one of the sixteen values the shared work
+ *        area {@code app/cpy/CVCRD01Y.cpy} declares (line 3). Not a map field. Carried, never
+ *        interpreted: the validation at {@code app/cbl/COACTUPC.cbl} lines 898 to 916 and the dispatch
+ *        at lines 921 to 1003 both belong to the service, and the resolution of a raw terminal
+ *        identifier into one of these values - including the fold of program-function keys 13 through 24
+ *        onto keys 1 through 12 - belongs to the utility layer, which this file does not depend on.
+ *        <strong>Deliberately never defaulted</strong>: the legacy key mapping has no catch-all branch,
+ *        so an unrecognised or unreported key stays absent and the service applies the enter-key
+ *        substitution its own way. May be {@code null}.
+ * @param navigationContext the client-echoed navigation state for this turn - echoed request state and
+ *        never a server session. Not a map field. It carries, among the rest, the first-entry or
+ *        re-entry flag that decides whether field-level error decoration applies at all, so per-field
+ *        {@code MISSING} and {@code INVALID} states appear only on a resubmission of the same screen;
+ *        the service reads {@link NavigationContext#reEntry()} as that precondition and nothing here
+ *        evaluates it. Its own component constraints are cascaded into, so an echoed value that could
+ *        not have occupied its legacy field is reported at the boundary instead of reaching the service.
+ *        Cascading an existing bound adds no new constraint and leaves the ordered service-tier cascade
+ *        untouched. May be {@code null}, and an absent context is not a violation.
  * @param concurrencyToken the opaque, integrity-protected description of the account and customer
  *        records as they stood when this screen was presented, minted and verified by
  *        {@code com.carddemo.service.AccountConcurrencyTokenService} and returned here unchanged by the
@@ -253,6 +299,20 @@ public record AccountUpdateRequest(
 
         @Size(max = 1) String primaryCardHolderIndicator,
 
+        /* Not a map field: CCARD-AID, width 5, CVCRD01Y line 3 - typed as the enum of its 16 condition
+         * names. Nullable on purpose: the key validation at COACTUPC lines 898 to 916 has no clause that
+         * accepts an unrecognised key, and substituting the enter key for one is the service's decision
+         * rather than this contract's. Carries no width bound and no presence constraint because the
+         * single summary message the legacy emits is chosen by the ordered service-tier cascade. */
+        KeyAction keyAction,
+
+        /* Not a map field: the client-echoed navigation state, carrying the enter-or-re-enter flag that
+         * gates field decoration at CSSETATY line 20. @Valid so the bounds the nested contract declares
+         * are actually evaluated: Bean Validation does not descend into a nested object unless it is
+         * told to, so without the cascade every bound inside it is decorative and an over-long echoed
+         * identifier reaches the service unreported. Cascading a bound is not adding one. */
+        @Valid NavigationContext navigationContext,
+
         /* Not a map field: the echoed counterpart of the state the program carried across the
          * pseudo-conversational turn, described on the type above. Opaque and unbounded by design, and
          * deliberately unannotated - its absence is a conflict for the service to report, not a binding
@@ -282,6 +342,13 @@ public record AccountUpdateRequest(
      * two lines. The correlation need is met properly by the request-scoped trace identifier the
      * observability configuration attaches to every log event, rather than by carrying a business key
      * out of a request body.</p>
+     *
+     * <p>The three non-map components are covered by the same wholesale placeholder rather than being
+     * exempted from it. Neither the attention key nor the navigation state is itself sensitive - and the
+     * sibling card-update contract, which carries exactly the same three, redacts wholesale for the same
+     * reason - but a placeholder that stands for the entire component set cannot be weakened by a later
+     * component being added without thought, whereas a per-component rendering can. The concurrency
+     * token is additionally an integrity-protected value that no diagnostic needs to see.</p>
      *
      * <p>{@code equals} and {@code hashCode} are deliberately left as the record contract generates
      * them: they compare every component by value, which is what a request contract requires, and

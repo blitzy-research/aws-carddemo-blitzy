@@ -16,6 +16,8 @@
  */
 package com.carddemo.api.dto;
 
+import com.carddemo.config.MenuOptionCatalog;
+import com.carddemo.service.MessageCatalogService;
 import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -79,6 +81,43 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 @DisplayName("MenuResponse - the shared outbound menu contract")
 class MenuResponseTest {
+
+    /*
+     * THE CANONICAL OWNERS, READ HERE RATHER THAN RE-DECLARED.
+     *
+     * The response contract deliberately declares no title text and no option catalogue: the titles
+     * are owned by com.carddemo.service.MessageCatalogService and the rows by
+     * com.carddemo.config.MenuOptionCatalog, and a second declaration anywhere would be a second
+     * authority that can drift from the first. This suite therefore takes its expectations from those
+     * owners, which is what makes an assertion here evidence about the module rather than evidence
+     * about a copy of it. A test may read any layer; the contract under test may not.
+     */
+
+    /** The first screen title line, as its owner publishes it at its full declared width. */
+    private static final String SCREEN_TITLE_LINE_1 = MessageCatalogService.CCDA_TITLE01;
+
+    /** The second screen title line, as its owner publishes it at its full declared width. */
+    private static final String SCREEN_TITLE_LINE_2 = MessageCatalogService.CCDA_TITLE02;
+
+    /** The forty-character acknowledgement of the title copybook, as its owner publishes it. */
+    private static final String SCREEN_TITLE_THANK_YOU = MessageCatalogService.CCDA_THANK_YOU;
+
+    /**
+     * The ten user rows projected exactly as the producer projects them: number and label only.
+     *
+     * <p>The target program name and the one-character user-type code the catalogue also holds are
+     * dispatch and authorization inputs, so they stay behind and are not published on the wire.</p>
+     */
+    private static final List<MenuResponse.UserMenuOption> CANONICAL_USER_MENU_OPTIONS =
+            new MenuOptionCatalog().userMenuOptions().stream()
+                    .map(row -> new MenuResponse.UserMenuOption(row.number(), row.label()))
+                    .toList();
+
+    /** The four administrative rows projected the same way, number and label only. */
+    private static final List<MenuResponse.AdminMenuOption> CANONICAL_ADMIN_MENU_OPTIONS =
+            new MenuOptionCatalog().adminMenuOptions().stream()
+                    .map(row -> new MenuResponse.AdminMenuOption(row.number(), row.label()))
+                    .toList();
 
     /** The fifteen components, in the order the record declares them. */
     private static final List<String> COMPONENTS_IN_DECLARED_ORDER = List.of(
@@ -157,14 +196,14 @@ class MenuResponseTest {
     }
 
     private static MenuResponse userMenu() {
-        return MenuResponse.forUserMenu(CURRENT_DATE, CURRENT_TIME,
-                MenuResponse.CANONICAL_USER_MENU_OPTIONS, "01", null, null, false, null,
+        return MenuResponse.forUserMenu(SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2, CURRENT_DATE, CURRENT_TIME,
+                CANONICAL_USER_MENU_OPTIONS, "01", null, null, false, null,
                 ROUTE_ACCOUNT_VIEW, NavigationContext.empty());
     }
 
     private static MenuResponse adminMenu() {
-        return MenuResponse.forAdminMenu(CURRENT_DATE, CURRENT_TIME,
-                MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS, "  ", "Please enter a valid option ...",
+        return MenuResponse.forAdminMenu(SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2, CURRENT_DATE, CURRENT_TIME,
+                CANONICAL_ADMIN_MENU_OPTIONS, "  ", "Please enter a valid option ...",
                 MenuResponse.MessageSeverity.ERROR, true, "OPTION", null,
                 NavigationContext.empty());
     }
@@ -298,8 +337,10 @@ class MenuResponseTest {
         @Test
         @DisplayName("bound the focus hint at seven characters")
         void boundTheFocusHintAtSeven() {
-            MenuResponse overTheBound = MenuResponse.forUserMenu(CURRENT_DATE, CURRENT_TIME,
-                    MenuResponse.CANONICAL_USER_MENU_OPTIONS, null, null, null, false, "EIGHTLET",
+            MenuResponse overTheBound = MenuResponse.forUserMenu(
+                    SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
+                    CURRENT_DATE, CURRENT_TIME,
+                    CANONICAL_USER_MENU_OPTIONS, null, null, null, false, "EIGHTLET",
                     null, null);
 
             assertThat(violationsOf(overTheBound)).hasSize(1);
@@ -311,7 +352,7 @@ class MenuResponseTest {
         @DisplayName("bound each header item at the map's own width")
         void boundEachHeaderItemAtTheMapWidth() {
             MenuResponse tooWide = new MenuResponse("CM000", null, "010101010", null, null,
-                    "101530999", MenuResponse.CANONICAL_USER_MENU_OPTIONS, null, null, null, null,
+                    "101530999", CANONICAL_USER_MENU_OPTIONS, null, null, null, null,
                     false, null, null, null);
 
             assertThat(violationsOf(tooWide)).extracting(violation -> violation.getPropertyPath()
@@ -416,19 +457,19 @@ class MenuResponseTest {
             assertThat(MenuResponse.ADMIN_MENU_OPTION_COUNT)
                     .isEqualTo(ORACLE_ADMIN_MENU_OPTION_COUNT);
 
-            assertThat(MenuResponse.CANONICAL_USER_MENU_OPTIONS)
+            assertThat(CANONICAL_USER_MENU_OPTIONS)
                     .hasSize(ORACLE_USER_MENU_OPTION_COUNT)
                     .extracting(MenuResponse.UserMenuOption::label)
                     .containsExactlyElementsOf(ORACLE_USER_LABELS);
-            assertThat(MenuResponse.CANONICAL_USER_MENU_OPTIONS)
+            assertThat(CANONICAL_USER_MENU_OPTIONS)
                     .extracting(MenuResponse.UserMenuOption::number)
                     .containsExactly(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
 
-            assertThat(MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS)
+            assertThat(CANONICAL_ADMIN_MENU_OPTIONS)
                     .hasSize(ORACLE_ADMIN_MENU_OPTION_COUNT)
                     .extracting(MenuResponse.AdminMenuOption::label)
                     .containsExactlyElementsOf(ORACLE_ADMIN_LABELS);
-            assertThat(MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS)
+            assertThat(CANONICAL_ADMIN_MENU_OPTIONS)
                     .extracting(MenuResponse.AdminMenuOption::number)
                     .containsExactly(1, 2, 3, 4);
         }
@@ -436,10 +477,10 @@ class MenuResponseTest {
         @Test
         @DisplayName("carry the active label for option eight and never the commented-out alternative")
         void carryTheActiveLabelForOptionEight() {
-            assertThat(MenuResponse.CANONICAL_USER_MENU_OPTIONS.get(7).label())
+            assertThat(CANONICAL_USER_MENU_OPTIONS.get(7).label())
                     .isEqualTo("Transaction Add")
                     .isNotEqualTo(INACTIVE_OPTION_EIGHT_LABEL);
-            assertThat(MenuResponse.CANONICAL_USER_MENU_OPTIONS)
+            assertThat(CANONICAL_USER_MENU_OPTIONS)
                     .extracting(MenuResponse.UserMenuOption::label)
                     .doesNotContain(INACTIVE_OPTION_EIGHT_LABEL);
         }
@@ -447,21 +488,21 @@ class MenuResponseTest {
         @Test
         @DisplayName("exclude the copybook's surplus table capacity entirely")
         void excludeTheSurplusTableCapacity() {
-            assertThat(MenuResponse.CANONICAL_USER_MENU_OPTIONS).hasSizeLessThan(12);
-            assertThat(MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS).hasSizeLessThan(9);
-            assertThat(MenuResponse.CANONICAL_USER_MENU_OPTIONS)
+            assertThat(CANONICAL_USER_MENU_OPTIONS).hasSizeLessThan(12);
+            assertThat(CANONICAL_ADMIN_MENU_OPTIONS).hasSizeLessThan(9);
+            assertThat(CANONICAL_USER_MENU_OPTIONS)
                     .noneMatch(option -> option.label() == null || option.label().isBlank());
-            assertThat(MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS)
+            assertThat(CANONICAL_ADMIN_MENU_OPTIONS)
                     .noneMatch(option -> option.label() == null || option.label().isBlank());
         }
 
         @Test
         @DisplayName("are immutable and safe to share")
         void areImmutableAndSafeToShare() {
-            assertThatThrownBy(() -> MenuResponse.CANONICAL_USER_MENU_OPTIONS
+            assertThatThrownBy(() -> CANONICAL_USER_MENU_OPTIONS
                     .add(new MenuResponse.UserMenuOption(11, "Injected")))
                     .isInstanceOf(UnsupportedOperationException.class);
-            assertThatThrownBy(() -> MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS
+            assertThatThrownBy(() -> CANONICAL_ADMIN_MENU_OPTIONS
                     .add(new MenuResponse.AdminMenuOption(5, "Injected")))
                     .isInstanceOf(UnsupportedOperationException.class);
         }
@@ -475,8 +516,8 @@ class MenuResponseTest {
         @DisplayName("reject a response that carries both option collections")
         void rejectBothCollections() {
             assertThatThrownBy(() -> new MenuResponse(null, null, null, null, null, null,
-                    MenuResponse.CANONICAL_USER_MENU_OPTIONS,
-                    MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS, null, null, null, false, null, null,
+                    CANONICAL_USER_MENU_OPTIONS,
+                    CANONICAL_ADMIN_MENU_OPTIONS, null, null, null, false, null, null,
                     null))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("exactly one option collection")
@@ -535,7 +576,7 @@ class MenuResponseTest {
         @DisplayName("detach the supplied collection from the caller")
         void detachTheSuppliedCollection() {
             List<MenuResponse.UserMenuOption> mutable =
-                    new ArrayList<>(MenuResponse.CANONICAL_USER_MENU_OPTIONS);
+                    new ArrayList<>(CANONICAL_USER_MENU_OPTIONS);
 
             MenuResponse response = new MenuResponse(null, null, null, null, null, null, mutable,
                     null, null, null, null, false, null, null, null);
@@ -594,17 +635,17 @@ class MenuResponseTest {
         @Test
         @DisplayName("fill both title lines identically on both menus, at their full declared width")
         void fillBothTitleLinesIdenticallyOnBothMenus() {
-            assertThat(MenuResponse.SCREEN_TITLE_LINE_1).hasSize(ORACLE_SCREEN_TITLE_WIDTH)
+            assertThat(SCREEN_TITLE_LINE_1).hasSize(ORACLE_SCREEN_TITLE_WIDTH)
                     .startsWith("      ")
                     .endsWith("       ")
                     .contains("AWS Mainframe Modernization");
-            assertThat(MenuResponse.SCREEN_TITLE_LINE_2).hasSize(ORACLE_SCREEN_TITLE_WIDTH)
+            assertThat(SCREEN_TITLE_LINE_2).hasSize(ORACLE_SCREEN_TITLE_WIDTH)
                     .contains("CardDemo");
 
-            assertThat(userMenu().title01()).isEqualTo(MenuResponse.SCREEN_TITLE_LINE_1);
-            assertThat(userMenu().title02()).isEqualTo(MenuResponse.SCREEN_TITLE_LINE_2);
-            assertThat(adminMenu().title01()).isEqualTo(MenuResponse.SCREEN_TITLE_LINE_1);
-            assertThat(adminMenu().title02()).isEqualTo(MenuResponse.SCREEN_TITLE_LINE_2);
+            assertThat(userMenu().title01()).isEqualTo(SCREEN_TITLE_LINE_1);
+            assertThat(userMenu().title02()).isEqualTo(SCREEN_TITLE_LINE_2);
+            assertThat(adminMenu().title01()).isEqualTo(SCREEN_TITLE_LINE_1);
+            assertThat(adminMenu().title02()).isEqualTo(SCREEN_TITLE_LINE_2);
         }
 
         @Test
@@ -626,10 +667,14 @@ class MenuResponseTest {
         @Test
         @DisplayName("reject a collection of the wrong size just as the canonical constructor does")
         void rejectAWrongSizedCollection() {
-            assertThatThrownBy(() -> MenuResponse.forUserMenu(CURRENT_DATE, CURRENT_TIME, null, null,
+            assertThatThrownBy(() -> MenuResponse.forUserMenu(
+                    SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
+                    CURRENT_DATE, CURRENT_TIME, null, null,
                     null, null, false, null, null, null))
                     .isInstanceOf(IllegalArgumentException.class);
-            assertThatThrownBy(() -> MenuResponse.forAdminMenu(CURRENT_DATE, CURRENT_TIME,
+            assertThatThrownBy(() -> MenuResponse.forAdminMenu(
+                    SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
+                    CURRENT_DATE, CURRENT_TIME,
                     adminOptionsOfSize(2), null, null, null, false, null, null, null))
                     .isInstanceOf(IllegalArgumentException.class);
         }
@@ -646,11 +691,11 @@ class MenuResponseTest {
 
             assertThat(payload.get("transactionName").asText()).isEqualTo("CM00");
             assertThat(payload.get("title01").asText())
-                    .isEqualTo(MenuResponse.SCREEN_TITLE_LINE_1);
+                    .isEqualTo(SCREEN_TITLE_LINE_1);
             assertThat(payload.get("currentDate").asText()).isEqualTo(CURRENT_DATE);
             assertThat(payload.get("programName").asText()).isEqualTo("COMEN01C");
             assertThat(payload.get("title02").asText())
-                    .isEqualTo(MenuResponse.SCREEN_TITLE_LINE_2);
+                    .isEqualTo(SCREEN_TITLE_LINE_2);
             assertThat(payload.get("currentTime").asText()).isEqualTo(CURRENT_TIME);
             assertThat(payload.has("userMenuOptions")).isTrue();
             assertThat(payload.has("adminMenuOptions")).isFalse();
@@ -731,7 +776,7 @@ class MenuResponseTest {
 
             assertThat(back).isEqualTo(original).hasSameHashCodeAs(original);
             assertThat(back.userMenuOptions())
-                    .containsExactlyElementsOf(MenuResponse.CANONICAL_USER_MENU_OPTIONS);
+                    .containsExactlyElementsOf(CANONICAL_USER_MENU_OPTIONS);
             assertThat(back.carriesUserMenu()).isTrue();
         }
 
@@ -756,11 +801,11 @@ class MenuResponseTest {
         @DisplayName("keep the forty-character courtesy title distinct from the fifty-character "
                 + "common message width")
         void keepTheCourtesyTitleDistinctFromTheCommonMessage() {
-            assertThat(MenuResponse.SCREEN_TITLE_THANK_YOU)
+            assertThat(SCREEN_TITLE_THANK_YOU)
                     .hasSize(ORACLE_SCREEN_TITLE_WIDTH)
                     .endsWith(" ")
                     .contains("CCDA");
-            assertThat(MenuResponse.SCREEN_TITLE_THANK_YOU.length())
+            assertThat(SCREEN_TITLE_THANK_YOU.length())
                     .isNotEqualTo(ORACLE_COMMON_MESSAGE_WIDTH);
             assertThat(MenuResponse.COMMON_MESSAGE_WIDTH)
                     .isNotEqualTo(MenuResponse.SCREEN_TITLE_WIDTH);

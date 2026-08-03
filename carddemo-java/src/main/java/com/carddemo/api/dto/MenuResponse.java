@@ -60,18 +60,18 @@ import java.util.List;
  * sequence, never sorted or re-indexed.
  *
  * <p><strong>Three fixed-width message values exist in this estate and all three must stay
- * separate.</strong> The title copybook declares three forty-character values, all published below:
- * the two title lines and a forty-character acknowledgement exposed as
- * {@link #SCREEN_TITLE_THANK_YOU}. The common-message copybook separately declares two
+ * separate.</strong> The title copybook declares three forty-character values - the two title lines
+ * and a forty-character acknowledgement - and the common-message copybook separately declares two
  * <em>fifty</em>-character messages. The acknowledgement in the title copybook and the one in the
  * common-message copybook look interchangeable and are not: they carry different product tokens at
- * different declared widths. The two fifty-character values are deliberately not declared in this
- * file - they belong to the message catalog in the service layer, and keeping them out makes
- * confusing them with {@link #SCREEN_TITLE_THANK_YOU} structurally impossible. Each of those two is
- * forty-nine characters as written in its copybook literal yet occupies a fifty-character field, so
- * one trailing space completes it and a caller must supply the fifty-character form; measuring the
- * literal instead of the field is how a byte-equivalence comparison silently loses its last
- * character.
+ * different declared widths. <strong>None of the five is declared in this file</strong>; all five
+ * belong to the message catalog in the service layer, and keeping every one of them out is what makes
+ * confusing the forty-character acknowledgement with the fifty-character one structurally impossible
+ * here. Each of the two fifty-character values is forty-nine characters as written in its copybook
+ * literal yet occupies a fifty-character field, so one trailing space completes it and a caller must
+ * supply the fifty-character form; measuring the literal instead of the field is how a
+ * byte-equivalence comparison silently loses its last character. Only the widths are recorded below,
+ * so that a caller supplying a value can be held to the right one.
  *
  * <p><strong>What the message line carries.</strong> Both programs hold the outgoing message in an
  * eighty-character working-storage field and then place it into a seventy-eight-character screen
@@ -93,13 +93,29 @@ import java.util.List;
  * observable contract, so the two texts are two distinct behaviours and are never reconciled into
  * one. Assembling either is the menu service's work; this response carries the result unaltered.
  *
- * <p><strong>Deliberate duplication with the configuration-layer option catalog.</strong> The
- * configuration layer holds a catalog bean declaring its own pair of nested option records with these
- * same two shapes, and that duplication must not be removed: this package sits above the configuration
- * layer in the dependency direction, so importing the catalog here would invert the layering and drag
- * a framework-managed singleton into a data-transfer type. The menu service bridges the two, and the
- * canonical lists published below exist independently so this contract can be read, asserted against
- * and serialized without reaching into another layer for the text of its own screens.
+ * <p><strong>One authority per piece of legacy text, and it is never this type.</strong> Two bodies of
+ * legacy text appear on a menu screen and both are owned elsewhere. The option rows are owned by
+ * {@code com.carddemo.config.MenuOptionCatalog}, which holds every item of every entry - the number,
+ * the label, the target program name and, on the user rows, the one-character user-type code. The
+ * screen titles are owned by {@code com.carddemo.service.MessageCatalogService}, which publishes them
+ * at their full declared width and keeps the forty-character acknowledgement of
+ * {@code app/cpy/COTTL01Y.cpy} distinct from the two fifty-character common messages of
+ * {@code app/cpy/CSMSG01Y.cpy}. <strong>This type declares neither.</strong> It receives the projected
+ * rows and the title lines from its producer and carries them verbatim, so there is exactly one place
+ * where a row can be added, a label corrected or a title changed. A response that also declared its
+ * own copy would be a second authority that can drift from the first, and the two consequences are not
+ * symmetrical: a stale copy here misreports a screen, while a stale copy there misroutes a dispatch or
+ * misjudges an authorization.
+ *
+ * <p>The nested option shapes below are the exception that proves the rule, and they are a shape
+ * rather than a body of text. The catalog declares its own pair of nested records because this package
+ * sits above both the configuration layer and the service layer in the dependency direction, so no
+ * import of {@code com.carddemo.config} or {@code com.carddemo.service} may appear in this file. The
+ * two declarations are deliberately <em>not</em> the same shape: the catalog's rows carry the target
+ * program name and the user-type code, and the projections here carry only the number and the label,
+ * because that is all either screen renders and publishing the rest would tell a client which internal
+ * program answers a row and which role gates it. {@code com.carddemo.service.MenuService} is the one
+ * component that may read both owners, and narrowing a catalog row to a screen projection is its work.
  *
  * <p><strong>No behaviour lives here.</strong> This type does not normalise the operator's entry
  * &mdash; the legacy blank-to-zero fill, applied to the right-justified two-character work field
@@ -195,8 +211,10 @@ import java.util.List;
  * @param title01            the first screen title line, from {@code CCDA-TITLE01} at
  *                           {@code app/cpy/COTTL01Y.cpy} line 19, at exactly
  *                           {@link #SCREEN_TITLE_WIDTH} characters with its leading and trailing
- *                           spaces intact. Both menu screens show the same value; see
- *                           {@link #SCREEN_TITLE_LINE_1}. May be {@code null}.
+ *                           spaces intact. Both menu screens show the same value. Supplied by the
+ *                           producer from {@code com.carddemo.service.MessageCatalogService}, which
+ *                           owns the text, and carried here verbatim - never trimmed, padded or
+ *                           re-cased. May be {@code null}.
  * @param currentDate        the current date exactly as the screen rendered it, assembled by
  *                           {@code app/cbl/COMEN01C.cbl} lines 221 to 226 and written into
  *                           {@code CURDATE}. {@link #CURRENT_DATE_WIDTH} characters of text and never
@@ -211,25 +229,28 @@ import java.util.List;
  * @param title02            the second screen title line, from the <em>active</em> value of
  *                           {@code CCDA-TITLE02} at {@code app/cpy/COTTL01Y.cpy} line 22, at exactly
  *                           {@link #SCREEN_TITLE_WIDTH} characters. The alternative value commented
- *                           out at line 21 of that copybook stays inactive and is not published
- *                           anywhere in this type; see {@link #SCREEN_TITLE_LINE_2}. May be
- *                           {@code null}.
+ *                           out at line 21 of that copybook stays inactive and appears nowhere in this
+ *                           module. Supplied by the producer from the same owner as {@code title01}
+ *                           and carried here verbatim. May be {@code null}.
  * @param currentTime        the current time exactly as the screen rendered it, assembled by
  *                           {@code app/cbl/COMEN01C.cbl} lines 227 to 231 and written into
  *                           {@code CURTIME}. {@link #CURRENT_TIME_WIDTH} characters of text &mdash;
  *                           eight here, not the nine the sign-on map uses. May be {@code null}.
  * @param userMenuOptions    the populated user-menu options in copybook order, or {@code null} when
  *                           this response is an administrative-menu response. Never blank-entry
- *                           filler and never dimensioned to the table capacity; see
- *                           {@link #CANONICAL_USER_MENU_OPTIONS}. When present it holds exactly
- *                           {@link #USER_MENU_OPTION_COUNT} entries, which construction enforces.
- *                           Defensively copied on construction and always immutable when present.
+ *                           filler and never dimensioned to the table capacity. Projected by the
+ *                           producer from {@code com.carddemo.config.MenuOptionCatalog}, which owns
+ *                           the rows, down to the number and label the screen renders. When present it
+ *                           holds exactly {@link #USER_MENU_OPTION_COUNT} entries, which construction
+ *                           enforces. Defensively copied on construction and always immutable when
+ *                           present.
  * @param adminMenuOptions   the populated administrative-menu options in copybook order, or
  *                           {@code null} when this response is a user-menu response. Exactly one of
  *                           the two option components is populated on every response, which
- *                           construction enforces; see {@link #CANONICAL_ADMIN_MENU_OPTIONS}. When
- *                           present it holds exactly {@link #ADMIN_MENU_OPTION_COUNT} entries.
- *                           Defensively copied on construction and always immutable when present.
+ *                           construction enforces. Projected by the producer from the same owner as
+ *                           the user rows. When present it holds exactly
+ *                           {@link #ADMIN_MENU_OPTION_COUNT} entries. Defensively copied on
+ *                           construction and always immutable when present.
  * @param selectedOption     the operator's option entry echoed back, from {@code OPTIONO} at
  *                           {@code app/cpy-bms/COMEN01.CPY} line 254 and
  *                           {@code app/cpy-bms/COADM01.CPY} line 254, at most
@@ -379,9 +400,10 @@ public record MenuResponse(
      * field, so one trailing space completes it and a caller must supply that fifty-character form.
      *
      * <p>The two values themselves are deliberately absent from this file - they belong to the message
-     * catalog in the service layer. Only their width is recorded, and only so that the fifty-character
-     * acknowledgement can never be mistaken for the forty-character {@link #SCREEN_TITLE_THANK_YOU}
-     * below, which is a different text at a different width.</p>
+     * catalog in the service layer, as does the forty-character acknowledgement of the title copybook.
+     * Only the widths are recorded here, and only so that the fifty-character acknowledgement can
+     * never be mistaken for the forty-character one: they are different texts at different widths, and
+     * a caller supplying either must supply it at its own width.</p>
      */
     public static final int COMMON_MESSAGE_WIDTH = 50;
 
@@ -431,87 +453,31 @@ public record MenuResponse(
      */
     public static final String ADMIN_MENU_PROGRAM_NAME = "COADM01C";
 
-    /**
-     * The first screen title line at its full declared width. The six leading and seven trailing
-     * spaces are content: the legacy value is centred within its field and those spaces are what
-     * centre it, so a comparison that discards them compares a different value. Written out in full
-     * rather than assembled from a shorter literal, so nothing computes it.
+    /*
+     * NO TITLE TEXT AND NO OPTION CATALOG IS DECLARED IN THIS FILE, DELIBERATELY.
+     *
+     * The two forty-character title lines and the forty-character acknowledgement declared in
+     * app/cpy/COTTL01Y.cpy have exactly one owner in this module, com.carddemo.service.
+     * MessageCatalogService, which publishes them at their full padded width and keeps the
+     * forty-character acknowledgement distinct from the two fifty-character common messages of
+     * app/cpy/CSMSG01Y.cpy. The ten user rows of app/cpy/COMEN02Y.cpy and the four administrative
+     * rows of app/cpy/COADM02Y.cpy likewise have exactly one owner, com.carddemo.config.
+     * MenuOptionCatalog, which holds every item of every entry including the target program name and
+     * the user-type code that dispatch and authorization need.
+     *
+     * Declaring either here as well would make this contract a second authority for the same text.
+     * Two authorities drift: a row added to the catalog would not reach the screen, a label corrected
+     * on the screen would not reach dispatch, and an authorization decision could be taken against a
+     * different row set than the one the operator saw. The response therefore receives the title
+     * lines and the option projections from its producer and declares neither - see the factory
+     * methods below, which take both as parameters rather than substituting a hidden default.
+     *
+     * This is not a layering workaround. This package sits above both the configuration layer and the
+     * service layer in the dependency direction, so importing either owner here is forbidden and no
+     * import of com.carddemo.config or com.carddemo.service appears in this file. The producer -
+     * com.carddemo.service.MenuService - is the one component that may read both owners, and it is
+     * where the narrowing of a four-item catalog row to a two-item screen projection belongs.
      */
-    public static final String SCREEN_TITLE_LINE_1 = "      AWS Mainframe Modernization       ";
-
-    /**
-     * The second screen title line at its full declared width - the <em>active</em> copybook value.
-     * The alternative commented out beside it is inactive in the legacy source, is therefore not the
-     * screen contract, and is deliberately declared nowhere in this file. Its fourteen leading and
-     * eighteen trailing spaces are content, as for {@link #SCREEN_TITLE_LINE_1}.
-     */
-    public static final String SCREEN_TITLE_LINE_2 = "              CardDemo                  ";
-
-    /**
-     * The forty-character acknowledgement declared in the <em>title</em> copybook, at its full declared
-     * width and ending in one significant trailing space.
-     *
-     * <p><strong>This is not the acknowledgement from the common-message copybook.</strong> That one
-     * differs in two ways at once: it names the product differently and it occupies a
-     * {@link #COMMON_MESSAGE_WIDTH}-character field rather than a forty-character one. The two are
-     * separate values with separate owners, and merging them or substituting one for the other is a
-     * byte-equivalence failure. This constant's name says {@code SCREEN_TITLE} precisely so the
-     * distinction survives a careless edit.</p>
-     */
-    public static final String SCREEN_TITLE_THANK_YOU = "Thank you for using CCDA application... ";
-
-    /**
-     * The ten populated user-menu options, in copybook declaration order.
-     *
-     * <p>The order is contractual, not incidental: the legacy screen renders the rows in table order
-     * and the operator selects a row by the number printed beside it, so this list is never sorted,
-     * re-indexed or re-numbered. Exactly {@link #USER_MENU_OPTION_COUNT} entries are present and
-     * every one is populated; the surplus capacity of the copybook's table view contributes nothing
-     * here and no blank entry exists to be rendered.</p>
-     *
-     * <p>Labels appear in display form, matching the trimmed label the configuration-layer catalog
-     * publishes, with {@link #OPTION_LABEL_WIDTH} recorded above as the declared width they occupy in
-     * the copybook. Option 8 carries the active label from line 70 of the copybook; the inactive
-     * commented-out alternative at line 69 is not the screen contract and appears nowhere here.</p>
-     *
-     * <p>Each entry carries only what the screen renders &mdash; the number and the label. The
-     * program name and user-type code the copybook also declares are dispatch and authorization
-     * inputs rather than screen content, and they stay with
-     * {@code com.carddemo.config.MenuOptionCatalog}, which holds all four items of every entry.</p>
-     *
-     * <p>Immutable and safe to share: the list is unmodifiable and every element is a record whose
-     * components are immutable values.</p>
-     */
-    public static final List<UserMenuOption> CANONICAL_USER_MENU_OPTIONS = List.of(
-            new UserMenuOption(1, "Account View"),
-            new UserMenuOption(2, "Account Update"),
-            new UserMenuOption(3, "Credit Card List"),
-            new UserMenuOption(4, "Credit Card View"),
-            new UserMenuOption(5, "Credit Card Update"),
-            new UserMenuOption(6, "Transaction List"),
-            new UserMenuOption(7, "Transaction View"),
-            new UserMenuOption(8, "Transaction Add"),
-            new UserMenuOption(9, "Transaction Reports"),
-            new UserMenuOption(10, "Bill Payment"));
-
-    /**
-     * The four populated administrative-menu options, in the order
-     * {@code CDEMO-ADMIN-OPTIONS-DATA} declares them across {@code app/cpy/COADM02Y.cpy} lines 24 to
-     * 42.
-     *
-     * <p>Exactly {@link #ADMIN_MENU_OPTION_COUNT} entries are present, in screen order, with no blank
-     * entry and no surplus capacity, for the reasons given on
-     * {@link #CANONICAL_USER_MENU_OPTIONS}. Each entry carries the number and the label the screen
-     * renders and nothing else; the program name the copybook also declares stays with
-     * {@code com.carddemo.config.MenuOptionCatalog}, as it does for the user menu.</p>
-     *
-     * <p>Immutable and safe to share.</p>
-     */
-    public static final List<AdminMenuOption> CANONICAL_ADMIN_MENU_OPTIONS = List.of(
-            new AdminMenuOption(1, "User List (Security)"),
-            new AdminMenuOption(2, "User Add (Security)"),
-            new AdminMenuOption(3, "User Update (Security)"),
-            new AdminMenuOption(4, "User Delete (Security)"));
 
     /**
      * Detaches both option collections from the caller and enforces the menu invariants, without
@@ -589,29 +555,43 @@ public record MenuResponse(
 
     /**
      * Builds a user-menu response, the reply to legacy transaction {@code CM00}: populates the user
-     * option collection, leaves the administrative collection absent, and fills both title lines from
-     * {@link #SCREEN_TITLE_LINE_1} and {@link #SCREEN_TITLE_LINE_2}. Filling the titles here is
-     * faithful rather than convenient - both menu screens display the same two values from the same
-     * copybook, so there is no case in which a menu response carries different ones.
+     * option collection and leaves the administrative collection absent.
      *
-     * <p>Populates the user option collection, leaves the administrative collection absent, and fills
-     * every fixed header item the user menu displays: the transaction identifier and program name
-     * from {@link #USER_MENU_TRANSACTION_NAME} and {@link #USER_MENU_PROGRAM_NAME}, and both title
-     * lines from {@link #SCREEN_TITLE_LINE_1} and {@link #SCREEN_TITLE_LINE_2}. Filling those here is
-     * faithful rather than convenient: {@code app/cbl/COMEN01C.cbl} lines 216 to 219 move exactly
-     * those four values into the header on every send, so there is no case in which a user-menu
-     * response carries different ones.
+     * <p>Two of the header items the user menu displays are this response's own identity and are
+     * therefore filled here, from {@link #USER_MENU_TRANSACTION_NAME} and
+     * {@link #USER_MENU_PROGRAM_NAME}: {@code app/cbl/COMEN01C.cbl} lines 216 to 219 move the
+     * responding program's own transaction identifier and program name into the header on every send,
+     * and no other value can correctly appear there on a user-menu response. Those two are not
+     * duplicated anywhere else in the module.
      *
-     * <p>The rendered date and time are parameters rather than constants because they are the only
-     * header items the program computes per interaction, at lines 214 and 221 to 231 of the same
-     * program. They arrive already assembled and are carried unchanged.
+     * <p><strong>The two title lines and the option rows are supplied by the caller, never defaulted
+     * here.</strong> Both are legacy text owned elsewhere - the titles by
+     * {@code com.carddemo.service.MessageCatalogService} and the rows by
+     * {@code com.carddemo.config.MenuOptionCatalog} - and a factory that quietly substituted its own
+     * copy would make this contract a second authority for that text, which is the failure mode this
+     * type is written to avoid. Passing them in keeps a single owner for each and keeps the producer
+     * honest: {@code com.carddemo.service.MenuService} reads both owners, narrows a catalog row to the
+     * number and label the screen renders, and hands the results here. The titles are the same two
+     * values on both menu screens, but sameness is a property of the source text rather than a licence
+     * for this type to hold it.
      *
+     * <p>The rendered date and time are parameters for a different reason: they are the only header
+     * items the program computes per interaction, at lines 214 and 221 to 231 of the same program.
+     * Everything this method receives is carried through unchanged - no value is trimmed, padded,
+     * re-cased or normalised.
+     *
+     * @param title01            the first screen title line as its owner publishes it, at exactly
+     *                           {@link #SCREEN_TITLE_WIDTH} characters with its leading and trailing
+     *                           spaces intact, or {@code null}. Carried verbatim
+     * @param title02            the second screen title line as its owner publishes it, at exactly
+     *                           {@link #SCREEN_TITLE_WIDTH} characters, or {@code null}. Carried
+     *                           verbatim
      * @param currentDate        the rendered current date, at most {@link #CURRENT_DATE_WIDTH}
      *                           characters, or {@code null}
      * @param currentTime        the rendered current time, at most {@link #CURRENT_TIME_WIDTH}
      *                           characters, or {@code null}
-     * @param userMenuOptions    the populated user options in screen order, ordinarily
-     *                           {@link #CANONICAL_USER_MENU_OPTIONS}. Must hold exactly
+     * @param userMenuOptions    the populated user options in screen order, projected by the producer
+     *                           from the configuration-layer catalog. Must hold exactly
      *                           {@link #USER_MENU_OPTION_COUNT} entries; {@code null} is rejected,
      *                           because a user-menu response with no user menu describes no screen
      * @param selectedOption     the echoed option entry, or {@code null}
@@ -625,7 +605,9 @@ public record MenuResponse(
      * @throws IllegalArgumentException when {@code userMenuOptions} is absent or does not hold
      *                                  exactly {@link #USER_MENU_OPTION_COUNT} entries
      */
-    public static MenuResponse forUserMenu(String currentDate,
+    public static MenuResponse forUserMenu(String title01,
+                                           String title02,
+                                           String currentDate,
                                            String currentTime,
                                            List<UserMenuOption> userMenuOptions,
                                            String selectedOption,
@@ -635,29 +617,40 @@ public record MenuResponse(
                                            String focusScreenFieldId,
                                            String nextRoute,
                                            NavigationContext navigationContext) {
-        return new MenuResponse(USER_MENU_TRANSACTION_NAME, SCREEN_TITLE_LINE_1, currentDate,
-                USER_MENU_PROGRAM_NAME, SCREEN_TITLE_LINE_2, currentTime, userMenuOptions, null,
+        return new MenuResponse(USER_MENU_TRANSACTION_NAME, title01, currentDate,
+                USER_MENU_PROGRAM_NAME, title02, currentTime, userMenuOptions, null,
                 selectedOption, message, messageSeverity, errorFlag, focusScreenFieldId, nextRoute,
                 navigationContext);
     }
 
     /**
      * Builds an administrative-menu response, the reply to legacy transaction {@code CA00}: populates
-     * the administrative option collection, leaves the user collection absent, and fills both title
-     * lines exactly as {@link #forUserMenu} does, for the same reason.
+     * the administrative option collection and leaves the user collection absent.
      *
-     * <p>Populates the administrative option collection, leaves the user collection absent, and fills
-     * the fixed header items exactly as {@link #forUserMenu} does and for the same reason &mdash; but
-     * from {@link #ADMIN_MENU_TRANSACTION_NAME} and {@link #ADMIN_MENU_PROGRAM_NAME}, because
-     * {@code app/cbl/COADM01C.cbl} lines 206 to 209 identify a different transaction and a different
-     * program. The two title lines are the same on both screens.
+     * <p>Fills the two identity header items exactly as {@link #forUserMenu} does and for the same
+     * reason, but from {@link #ADMIN_MENU_TRANSACTION_NAME} and {@link #ADMIN_MENU_PROGRAM_NAME},
+     * because {@code app/cbl/COADM01C.cbl} lines 206 to 209 identify a different transaction and a
+     * different program.
      *
+     * <p>The two title lines and the option rows are supplied by the caller here too, and for the
+     * reason given on {@link #forUserMenu}: their owners are
+     * {@code com.carddemo.service.MessageCatalogService} and
+     * {@code com.carddemo.config.MenuOptionCatalog}, and this contract is not a second one. The titles
+     * happen to be the same two values the user menu shows, which is a property of the source text
+     * rather than a reason for this type to hold a copy of it.
+     *
+     * @param title01            the first screen title line as its owner publishes it, at exactly
+     *                           {@link #SCREEN_TITLE_WIDTH} characters with its leading and trailing
+     *                           spaces intact, or {@code null}. Carried verbatim
+     * @param title02            the second screen title line as its owner publishes it, at exactly
+     *                           {@link #SCREEN_TITLE_WIDTH} characters, or {@code null}. Carried
+     *                           verbatim
      * @param currentDate        the rendered current date, at most {@link #CURRENT_DATE_WIDTH}
      *                           characters, or {@code null}
      * @param currentTime        the rendered current time, at most {@link #CURRENT_TIME_WIDTH}
      *                           characters, or {@code null}
-     * @param adminMenuOptions   the populated administrative options in screen order, ordinarily
-     *                           {@link #CANONICAL_ADMIN_MENU_OPTIONS}. Must hold exactly
+     * @param adminMenuOptions   the populated administrative options in screen order, projected by the
+     *                           producer from the configuration-layer catalog. Must hold exactly
      *                           {@link #ADMIN_MENU_OPTION_COUNT} entries; {@code null} is rejected
      * @param selectedOption     the echoed option entry, or {@code null}
      * @param message            the message line, or {@code null} when the screen shows none
@@ -670,7 +663,9 @@ public record MenuResponse(
      * @throws IllegalArgumentException when {@code adminMenuOptions} is absent or does not hold
      *                                  exactly {@link #ADMIN_MENU_OPTION_COUNT} entries
      */
-    public static MenuResponse forAdminMenu(String currentDate,
+    public static MenuResponse forAdminMenu(String title01,
+                                            String title02,
+                                            String currentDate,
                                             String currentTime,
                                             List<AdminMenuOption> adminMenuOptions,
                                             String selectedOption,
@@ -680,8 +675,8 @@ public record MenuResponse(
                                             String focusScreenFieldId,
                                             String nextRoute,
                                             NavigationContext navigationContext) {
-        return new MenuResponse(ADMIN_MENU_TRANSACTION_NAME, SCREEN_TITLE_LINE_1, currentDate,
-                ADMIN_MENU_PROGRAM_NAME, SCREEN_TITLE_LINE_2, currentTime, null, adminMenuOptions,
+        return new MenuResponse(ADMIN_MENU_TRANSACTION_NAME, title01, currentDate,
+                ADMIN_MENU_PROGRAM_NAME, title02, currentTime, null, adminMenuOptions,
                 selectedOption, message, messageSeverity, errorFlag, focusScreenFieldId, nextRoute,
                 navigationContext);
     }

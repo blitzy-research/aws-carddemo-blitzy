@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.carddemo.config.MenuOptionCatalog;
+import com.carddemo.service.MessageCatalogService;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.StreamWriteFeature;
@@ -76,6 +77,43 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  */
 @DisplayName("MenuResponse - the CM00 and CA00 menu response contract")
 class MenuResponseRuleComplianceTest {
+
+    /*
+     * THE CANONICAL OWNERS, READ HERE RATHER THAN RE-DECLARED.
+     *
+     * The response contract deliberately declares no title text and no option catalogue: the titles
+     * are owned by com.carddemo.service.MessageCatalogService and the rows by
+     * com.carddemo.config.MenuOptionCatalog, and a second declaration anywhere would be a second
+     * authority that can drift from the first. This suite therefore takes its expectations from those
+     * owners, which is what makes an assertion here evidence about the module rather than evidence
+     * about a copy of it. A test may read any layer; the contract under test may not.
+     */
+
+    /** The first screen title line, as its owner publishes it at its full declared width. */
+    private static final String SCREEN_TITLE_LINE_1 = MessageCatalogService.CCDA_TITLE01;
+
+    /** The second screen title line, as its owner publishes it at its full declared width. */
+    private static final String SCREEN_TITLE_LINE_2 = MessageCatalogService.CCDA_TITLE02;
+
+    /** The forty-character acknowledgement of the title copybook, as its owner publishes it. */
+    private static final String SCREEN_TITLE_THANK_YOU = MessageCatalogService.CCDA_THANK_YOU;
+
+    /**
+     * The ten user rows projected exactly as the producer projects them: number and label only.
+     *
+     * <p>The target program name and the one-character user-type code the catalogue also holds are
+     * dispatch and authorization inputs, so they stay behind and are not published on the wire.</p>
+     */
+    private static final List<MenuResponse.UserMenuOption> CANONICAL_USER_MENU_OPTIONS =
+            new MenuOptionCatalog().userMenuOptions().stream()
+                    .map(row -> new MenuResponse.UserMenuOption(row.number(), row.label()))
+                    .toList();
+
+    /** The four administrative rows projected the same way, number and label only. */
+    private static final List<MenuResponse.AdminMenuOption> CANONICAL_ADMIN_MENU_OPTIONS =
+            new MenuOptionCatalog().adminMenuOptions().stream()
+                    .map(row -> new MenuResponse.AdminMenuOption(row.number(), row.label()))
+                    .toList();
 
     /**
      * A mapper configured exactly as {@code application.yml} configures the application's own.
@@ -153,7 +191,9 @@ class MenuResponseRuleComplianceTest {
                                         final String focusScreenFieldId,
                                         final String nextRoute,
                                         final NavigationContext navigationContext) {
-        return MenuResponse.forUserMenu(RENDERED_DATE, RENDERED_TIME, options, selectedOption,
+        return MenuResponse.forUserMenu(
+                SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
+                RENDERED_DATE, RENDERED_TIME, options, selectedOption,
                 message, messageSeverity, errorFlag, focusScreenFieldId, nextRoute,
                 navigationContext);
     }
@@ -179,7 +219,9 @@ class MenuResponseRuleComplianceTest {
                                           final String focusScreenFieldId,
                                           final String nextRoute,
                                           final NavigationContext navigationContext) {
-        return MenuResponse.forAdminMenu(RENDERED_DATE, RENDERED_TIME, options, selectedOption,
+        return MenuResponse.forAdminMenu(
+                SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
+                RENDERED_DATE, RENDERED_TIME, options, selectedOption,
                 message, messageSeverity, errorFlag, focusScreenFieldId, nextRoute,
                 navigationContext);
     }
@@ -268,19 +310,19 @@ class MenuResponseRuleComplianceTest {
         @DisplayName("the three screen titles are each exactly the declared title width, because the "
                 + "legacy literals are space-filled to it and the padding is contract")
         void theThreeScreenTitlesAreExactlyTheTitleWidth() {
-            assertThat(MenuResponse.SCREEN_TITLE_LINE_1).hasSize(MenuResponse.SCREEN_TITLE_WIDTH);
-            assertThat(MenuResponse.SCREEN_TITLE_LINE_2).hasSize(MenuResponse.SCREEN_TITLE_WIDTH);
-            assertThat(MenuResponse.SCREEN_TITLE_THANK_YOU).hasSize(MenuResponse.SCREEN_TITLE_WIDTH);
+            assertThat(SCREEN_TITLE_LINE_1).hasSize(MenuResponse.SCREEN_TITLE_WIDTH);
+            assertThat(SCREEN_TITLE_LINE_2).hasSize(MenuResponse.SCREEN_TITLE_WIDTH);
+            assertThat(SCREEN_TITLE_THANK_YOU).hasSize(MenuResponse.SCREEN_TITLE_WIDTH);
         }
 
         @Test
         @DisplayName("the three screen titles carry the legacy text, padding included")
         void theThreeScreenTitlesCarryTheLegacyText() {
-            assertThat(MenuResponse.SCREEN_TITLE_LINE_1).isEqualTo(
+            assertThat(SCREEN_TITLE_LINE_1).isEqualTo(
                     "      AWS Mainframe Modernization       ");
-            assertThat(MenuResponse.SCREEN_TITLE_LINE_2).isEqualTo(
+            assertThat(SCREEN_TITLE_LINE_2).isEqualTo(
                     "              CardDemo                  ");
-            assertThat(MenuResponse.SCREEN_TITLE_THANK_YOU).isEqualTo(
+            assertThat(SCREEN_TITLE_THANK_YOU).isEqualTo(
                     "Thank you for using CCDA application... ");
         }
     }
@@ -295,7 +337,7 @@ class MenuResponseRuleComplianceTest {
         @DisplayName("the user catalogue holds exactly ten entries, numbered one to ten in order")
         void theUserCatalogueHoldsTenEntriesInOrder() {
             final List<MenuResponse.UserMenuOption> options =
-                    MenuResponse.CANONICAL_USER_MENU_OPTIONS;
+                    CANONICAL_USER_MENU_OPTIONS;
 
             assertThat(options).hasSize(MenuResponse.USER_MENU_OPTION_COUNT);
             for (int index = 0; index < options.size(); index++) {
@@ -338,19 +380,19 @@ class MenuResponseRuleComplianceTest {
         @DisplayName("the response catalogue and the option catalogue carry the same numbers and the "
                 + "same labels, in the same order")
         void theTwoCataloguesAgreeOnWhatTheyBothPublish() {
-            assertThat(MenuResponse.CANONICAL_USER_MENU_OPTIONS.stream()
+            assertThat(CANONICAL_USER_MENU_OPTIONS.stream()
                     .map(MenuResponse.UserMenuOption::number).toList())
                     .isEqualTo(CATALOG.userMenuOptions().stream()
                             .map(MenuOptionCatalog.UserMenuOption::number).toList());
-            assertThat(MenuResponse.CANONICAL_USER_MENU_OPTIONS.stream()
+            assertThat(CANONICAL_USER_MENU_OPTIONS.stream()
                     .map(MenuResponse.UserMenuOption::label).toList())
                     .isEqualTo(CATALOG.userMenuOptions().stream()
                             .map(MenuOptionCatalog.UserMenuOption::label).toList());
-            assertThat(MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS.stream()
+            assertThat(CANONICAL_ADMIN_MENU_OPTIONS.stream()
                     .map(MenuResponse.AdminMenuOption::number).toList())
                     .isEqualTo(CATALOG.adminMenuOptions().stream()
                             .map(MenuOptionCatalog.AdminMenuOption::number).toList());
-            assertThat(MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS.stream()
+            assertThat(CANONICAL_ADMIN_MENU_OPTIONS.stream()
                     .map(MenuResponse.AdminMenuOption::label).toList())
                     .isEqualTo(CATALOG.adminMenuOptions().stream()
                             .map(MenuOptionCatalog.AdminMenuOption::label).toList());
@@ -359,7 +401,7 @@ class MenuResponseRuleComplianceTest {
         @Test
         @DisplayName("the user catalogue carries the legacy labels in catalogue order")
         void theUserCatalogueCarriesTheLegacyLabels() {
-            assertThat(MenuResponse.CANONICAL_USER_MENU_OPTIONS.stream()
+            assertThat(CANONICAL_USER_MENU_OPTIONS.stream()
                     .map(MenuResponse.UserMenuOption::label).toList())
                     .containsExactly("Account View", "Account Update", "Credit Card List",
                             "Credit Card View", "Credit Card Update", "Transaction List",
@@ -383,7 +425,7 @@ class MenuResponseRuleComplianceTest {
                 + "commented-out administrator-only alternative")
         void theEighthUserEntryCarriesTheActiveLabel() {
             final MenuResponse.UserMenuOption rendered =
-                    MenuResponse.CANONICAL_USER_MENU_OPTIONS.get(7);
+                    CANONICAL_USER_MENU_OPTIONS.get(7);
             final MenuOptionCatalog.UserMenuOption dispatched = CATALOG.userMenuOptions().get(7);
 
             assertThat(rendered.number()).isEqualTo(8);
@@ -403,7 +445,7 @@ class MenuResponseRuleComplianceTest {
                 + "naming the four user-maintenance programs")
         void theAdministrativeCatalogueHoldsFourEntries() {
             final List<MenuResponse.AdminMenuOption> options =
-                    MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS;
+                    CANONICAL_ADMIN_MENU_OPTIONS;
 
             assertThat(options).hasSize(MenuResponse.ADMIN_MENU_OPTION_COUNT);
             assertThat(options.stream().map(MenuResponse.AdminMenuOption::number).toList())
@@ -434,12 +476,12 @@ class MenuResponseRuleComplianceTest {
         @Test
         @DisplayName("every catalogued label and program name fits its declared width")
         void everyCataloguedValueFitsItsDeclaredWidth() {
-            for (final MenuResponse.UserMenuOption option : MenuResponse.CANONICAL_USER_MENU_OPTIONS) {
+            for (final MenuResponse.UserMenuOption option : CANONICAL_USER_MENU_OPTIONS) {
                 assertThat(option.label().length())
                         .isLessThanOrEqualTo(MenuResponse.OPTION_LABEL_WIDTH);
             }
             for (final MenuResponse.AdminMenuOption option
-                    : MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS) {
+                    : CANONICAL_ADMIN_MENU_OPTIONS) {
                 assertThat(option.label().length())
                         .isLessThanOrEqualTo(MenuResponse.OPTION_LABEL_WIDTH);
             }
@@ -459,9 +501,9 @@ class MenuResponseRuleComplianceTest {
         @DisplayName("both catalogues are immutable, so a caller can hold either without copying it")
         void bothCataloguesAreImmutable() {
             assertThatExceptionOfType(UnsupportedOperationException.class)
-                    .isThrownBy(() -> MenuResponse.CANONICAL_USER_MENU_OPTIONS.clear());
+                    .isThrownBy(() -> CANONICAL_USER_MENU_OPTIONS.clear());
             assertThatExceptionOfType(UnsupportedOperationException.class)
-                    .isThrownBy(() -> MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS.clear());
+                    .isThrownBy(() -> CANONICAL_ADMIN_MENU_OPTIONS.clear());
             assertThatExceptionOfType(UnsupportedOperationException.class)
                     .isThrownBy(() -> CATALOG.userMenuOptions().clear());
             assertThatExceptionOfType(UnsupportedOperationException.class)
@@ -488,16 +530,18 @@ class MenuResponseRuleComplianceTest {
     class TheTwoFactoriesAndPredicates {
 
         @Test
-        @DisplayName("the user-menu factory sets both screen titles and leaves the administrative "
-                + "catalogue absent")
-        void theUserMenuFactorySetsBothTitles() {
-            final MenuResponse response = MenuResponse.forUserMenu(RENDERED_DATE, RENDERED_TIME,
-                    MenuResponse.CANONICAL_USER_MENU_OPTIONS, "01", "Ready",
+        @DisplayName("the user-menu factory carries both producer-supplied screen titles and leaves "
+                + "the administrative catalogue absent")
+        void theUserMenuFactoryCarriesBothTitles() {
+            final MenuResponse response = MenuResponse.forUserMenu(
+                    SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
+                    RENDERED_DATE, RENDERED_TIME,
+                    CANONICAL_USER_MENU_OPTIONS, "01", "Ready",
                     MenuResponse.MessageSeverity.INFORMATIONAL, false, "OPTIONI", "account-view",
                     NavigationContext.empty());
 
-            assertThat(response.title01()).isEqualTo(MenuResponse.SCREEN_TITLE_LINE_1);
-            assertThat(response.title02()).isEqualTo(MenuResponse.SCREEN_TITLE_LINE_2);
+            assertThat(response.title01()).isEqualTo(SCREEN_TITLE_LINE_1);
+            assertThat(response.title02()).isEqualTo(SCREEN_TITLE_LINE_2);
             assertThat(response.transactionName())
                     .isEqualTo(MenuResponse.USER_MENU_TRANSACTION_NAME);
             assertThat(response.programName()).isEqualTo(MenuResponse.USER_MENU_PROGRAM_NAME);
@@ -518,16 +562,18 @@ class MenuResponseRuleComplianceTest {
         }
 
         @Test
-        @DisplayName("the administrative-menu factory sets both screen titles and leaves the user "
-                + "catalogue absent")
-        void theAdminMenuFactorySetsBothTitles() {
-            final MenuResponse response = MenuResponse.forAdminMenu(RENDERED_DATE, RENDERED_TIME,
-                    MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS, "02", "Denied",
+        @DisplayName("the administrative-menu factory carries both producer-supplied screen titles "
+                + "and leaves the user catalogue absent")
+        void theAdminMenuFactoryCarriesBothTitles() {
+            final MenuResponse response = MenuResponse.forAdminMenu(
+                    SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
+                    RENDERED_DATE, RENDERED_TIME,
+                    CANONICAL_ADMIN_MENU_OPTIONS, "02", "Denied",
                     MenuResponse.MessageSeverity.ERROR, true, "OPTIONI", "user-add",
                     NavigationContext.empty());
 
-            assertThat(response.title01()).isEqualTo(MenuResponse.SCREEN_TITLE_LINE_1);
-            assertThat(response.title02()).isEqualTo(MenuResponse.SCREEN_TITLE_LINE_2);
+            assertThat(response.title01()).isEqualTo(SCREEN_TITLE_LINE_1);
+            assertThat(response.title02()).isEqualTo(SCREEN_TITLE_LINE_2);
             assertThat(response.transactionName())
                     .as("the two menus differ in transaction and program, and agree on both titles")
                     .isEqualTo(MenuResponse.ADMIN_MENU_TRANSACTION_NAME);
@@ -541,14 +587,71 @@ class MenuResponseRuleComplianceTest {
         }
 
         @Test
+        @DisplayName("the factories take both titles from the producer and default neither, so this "
+                + "contract cannot become a second authority for the title text")
+        void theFactoriesTakeBothTitlesFromTheProducer() {
+            final String firstSentinel = "<<<title-one-supplied-by-the-producer>>>";
+            final String secondSentinel = "<<<title-two-supplied-by-the-producer>>>";
+
+            final MenuResponse user = MenuResponse.forUserMenu(firstSentinel, secondSentinel,
+                    RENDERED_DATE, RENDERED_TIME, CANONICAL_USER_MENU_OPTIONS, null, null, null,
+                    false, null, null, null);
+            final MenuResponse admin = MenuResponse.forAdminMenu(firstSentinel, secondSentinel,
+                    RENDERED_DATE, RENDERED_TIME, CANONICAL_ADMIN_MENU_OPTIONS, null, null, null,
+                    false, null, null, null);
+
+            assertThat(user.title01()).isEqualTo(firstSentinel);
+            assertThat(user.title02()).isEqualTo(secondSentinel);
+            assertThat(admin.title01()).isEqualTo(firstSentinel);
+            assertThat(admin.title02()).isEqualTo(secondSentinel);
+        }
+
+        @Test
+        @DisplayName("both factories accept an absent title rather than substituting the owner's value, "
+                + "which is the observable difference between a parameter and a hidden default")
+        void bothFactoriesAcceptAnAbsentTitle() {
+            final MenuResponse user = MenuResponse.forUserMenu(null, null, RENDERED_DATE,
+                    RENDERED_TIME, CANONICAL_USER_MENU_OPTIONS, null, null, null, false, null, null,
+                    null);
+            final MenuResponse admin = MenuResponse.forAdminMenu(null, null, RENDERED_DATE,
+                    RENDERED_TIME, CANONICAL_ADMIN_MENU_OPTIONS, null, null, null, false, null, null,
+                    null);
+
+            assertThat(user.title01()).isNull();
+            assertThat(user.title02()).isNull();
+            assertThat(admin.title01()).isNull();
+            assertThat(admin.title02()).isNull();
+        }
+
+        @Test
+        @DisplayName("both factories declare the two titles as their first two parameters, so a producer "
+                + "cannot omit them by accident")
+        void bothFactoriesDeclareTheTitlesFirst() throws NoSuchMethodException {
+            assertThat(MenuResponse.class
+                    .getDeclaredMethod("forUserMenu", String.class, String.class, String.class,
+                            String.class, List.class, String.class, String.class,
+                            MenuResponse.MessageSeverity.class, boolean.class, String.class,
+                            String.class, NavigationContext.class)
+                    .getParameterCount())
+                    .isEqualTo(12);
+            assertThat(MenuResponse.class
+                    .getDeclaredMethod("forAdminMenu", String.class, String.class, String.class,
+                            String.class, List.class, String.class, String.class,
+                            MenuResponse.MessageSeverity.class, boolean.class, String.class,
+                            String.class, NavigationContext.class)
+                    .getParameterCount())
+                    .isEqualTo(12);
+        }
+
+        @Test
         @DisplayName("the two predicates report which catalogue the response carries, and exactly one is "
                 + "true for each factory")
         void thePredicatesReportWhichCatalogueIsCarried() {
             final MenuResponse userMenu = userMenu(
-                    MenuResponse.CANONICAL_USER_MENU_OPTIONS, null, null, null, false, null, null,
+                    CANONICAL_USER_MENU_OPTIONS, null, null, null, false, null, null,
                     null);
             final MenuResponse adminMenu = adminMenu(
-                    MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS, null, null, null, false, null, null,
+                    CANONICAL_ADMIN_MENU_OPTIONS, null, null, null, false, null, null,
                     null);
 
             assertThat(userMenu.carriesUserMenu()).isTrue();
@@ -603,18 +706,18 @@ class MenuResponseRuleComplianceTest {
         void aResponseCarryingNeitherOrBothCataloguesIsRefused() {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new MenuResponse(MenuResponse.USER_MENU_TRANSACTION_NAME,
-                            MenuResponse.SCREEN_TITLE_THANK_YOU, RENDERED_DATE,
-                            MenuResponse.USER_MENU_PROGRAM_NAME, MenuResponse.SCREEN_TITLE_LINE_2,
+                            SCREEN_TITLE_THANK_YOU, RENDERED_DATE,
+                            MenuResponse.USER_MENU_PROGRAM_NAME, SCREEN_TITLE_LINE_2,
                             RENDERED_TIME, null, null, null, null, null, false, null, "sign-on",
                             NavigationContext.empty()))
                     .withMessageContaining("a menu response carries exactly one option collection")
                     .withMessageContaining("neither was supplied");
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new MenuResponse(MenuResponse.USER_MENU_TRANSACTION_NAME,
-                            MenuResponse.SCREEN_TITLE_LINE_1, RENDERED_DATE,
-                            MenuResponse.USER_MENU_PROGRAM_NAME, MenuResponse.SCREEN_TITLE_LINE_2,
-                            RENDERED_TIME, MenuResponse.CANONICAL_USER_MENU_OPTIONS,
-                            MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS, null, null, null, false, null,
+                            SCREEN_TITLE_LINE_1, RENDERED_DATE,
+                            MenuResponse.USER_MENU_PROGRAM_NAME, SCREEN_TITLE_LINE_2,
+                            RENDERED_TIME, CANONICAL_USER_MENU_OPTIONS,
+                            CANONICAL_ADMIN_MENU_OPTIONS, null, null, null, false, null,
                             null, NavigationContext.empty()))
                     .withMessageContaining("both were supplied");
         }
@@ -631,7 +734,7 @@ class MenuResponseRuleComplianceTest {
                 + "reach inside the response")
         void aSuppliedUserCatalogueIsCopied() {
             final List<MenuResponse.UserMenuOption> mutable = new ArrayList<>(
-                    MenuResponse.CANONICAL_USER_MENU_OPTIONS);
+                    CANONICAL_USER_MENU_OPTIONS);
 
             final MenuResponse response = userMenu(mutable, null, null, null, false,
                     null, null, null);
@@ -639,14 +742,14 @@ class MenuResponseRuleComplianceTest {
 
             assertThat(response.userMenuOptions())
                     .hasSize(MenuResponse.USER_MENU_OPTION_COUNT)
-                    .containsExactlyElementsOf(MenuResponse.CANONICAL_USER_MENU_OPTIONS);
+                    .containsExactlyElementsOf(CANONICAL_USER_MENU_OPTIONS);
         }
 
         @Test
         @DisplayName("a supplied administrative catalogue is copied too")
         void aSuppliedAdminCatalogueIsCopied() {
             final List<MenuResponse.AdminMenuOption> mutable = new ArrayList<>(
-                    MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS);
+                    CANONICAL_ADMIN_MENU_OPTIONS);
 
             final MenuResponse response = adminMenu(mutable, null, null, null, false,
                     null, null, null);
@@ -660,7 +763,7 @@ class MenuResponseRuleComplianceTest {
         @DisplayName("the copy is unmodifiable, so nothing downstream can alter a published catalogue")
         void theCopyIsUnmodifiable() {
             final MenuResponse response = userMenu(
-                    new ArrayList<>(MenuResponse.CANONICAL_USER_MENU_OPTIONS), null, null, null,
+                    new ArrayList<>(CANONICAL_USER_MENU_OPTIONS), null, null, null,
                     false, null, null, null);
 
             assertThatExceptionOfType(UnsupportedOperationException.class)
@@ -684,9 +787,9 @@ class MenuResponseRuleComplianceTest {
         @DisplayName("the collection a response does not carry is left absent rather than replaced with "
                 + "an empty one")
         void theUncarriedCatalogueIsLeftAbsent() {
-            final MenuResponse user = userMenu(MenuResponse.CANONICAL_USER_MENU_OPTIONS, null, null,
+            final MenuResponse user = userMenu(CANONICAL_USER_MENU_OPTIONS, null, null,
                     null, false, null, null, null);
-            final MenuResponse admin = adminMenu(MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS, null,
+            final MenuResponse admin = adminMenu(CANONICAL_ADMIN_MENU_OPTIONS, null,
                     null, null, false, null, null, null);
 
             assertThat(user.adminMenuOptions()).isNull();
@@ -700,7 +803,7 @@ class MenuResponseRuleComplianceTest {
                 + "client could not render")
         void aCatalogueContainingAnAbsentEntryIsRejected() {
             final List<MenuResponse.UserMenuOption> withNull =
-                    new ArrayList<>(MenuResponse.CANONICAL_USER_MENU_OPTIONS);
+                    new ArrayList<>(CANONICAL_USER_MENU_OPTIONS);
             withNull.set(4, null);
 
             assertThat(withNull).hasSize(MenuResponse.USER_MENU_OPTION_COUNT);
@@ -733,7 +836,7 @@ class MenuResponseRuleComplianceTest {
                 throws JsonProcessingException {
 
             final MenuResponse response = userMenu(
-                    MenuResponse.CANONICAL_USER_MENU_OPTIONS, null, "Message", severity, false, null,
+                    CANONICAL_USER_MENU_OPTIONS, null, "Message", severity, false, null,
                     null, null);
 
             assertThat(response.messageSeverity()).isEqualTo(severity);
@@ -747,7 +850,7 @@ class MenuResponseRuleComplianceTest {
                 + "decoration and the severity drives message rendering")
         void theSeverityIsIndependentOfTheErrorFlag() {
             final MenuResponse response = userMenu(
-                    MenuResponse.CANONICAL_USER_MENU_OPTIONS, null, "Message",
+                    CANONICAL_USER_MENU_OPTIONS, null, "Message",
                     MenuResponse.MessageSeverity.ERROR, false, null, null, null);
 
             assertThat(response.messageSeverity()).isEqualTo(MenuResponse.MessageSeverity.ERROR);
@@ -765,11 +868,11 @@ class MenuResponseRuleComplianceTest {
         @DisplayName("two responses built the same way are equal and share a hash code")
         void twoIdenticalResponsesAreEqual() {
             final MenuResponse first = userMenu(
-                    MenuResponse.CANONICAL_USER_MENU_OPTIONS, "01", "Ready",
+                    CANONICAL_USER_MENU_OPTIONS, "01", "Ready",
                     MenuResponse.MessageSeverity.INFORMATIONAL, false, "OPTIONI", "account-view",
                     NavigationContext.empty());
             final MenuResponse second = userMenu(
-                    MenuResponse.CANONICAL_USER_MENU_OPTIONS, "01", "Ready",
+                    CANONICAL_USER_MENU_OPTIONS, "01", "Ready",
                     MenuResponse.MessageSeverity.INFORMATIONAL, false, "OPTIONI", "account-view",
                     NavigationContext.empty());
 
@@ -780,19 +883,19 @@ class MenuResponseRuleComplianceTest {
         @DisplayName("a user-menu response and an administrative-menu response are never equal, even "
                 + "when every other component agrees")
         void theTwoMenusAreNeverEqual() {
-            assertThat(userMenu(MenuResponse.CANONICAL_USER_MENU_OPTIONS, null, null, null, false,
+            assertThat(userMenu(CANONICAL_USER_MENU_OPTIONS, null, null, null, false,
                     null, null, null))
-                    .isNotEqualTo(adminMenu(MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS, null, null,
+                    .isNotEqualTo(adminMenu(CANONICAL_ADMIN_MENU_OPTIONS, null, null,
                             null, false, null, null, null));
         }
 
         @Test
         @DisplayName("a value at its declared width passes validation and one character over is reported")
         void aValueAtItsWidthPassesAndOneOverIsReported() {
-            final MenuResponse atBound = userMenu(MenuResponse.CANONICAL_USER_MENU_OPTIONS,
+            final MenuResponse atBound = userMenu(CANONICAL_USER_MENU_OPTIONS,
                     "X".repeat(MenuResponse.SELECTED_OPTION_WIDTH), null, null, false, null, null,
                     null);
-            final MenuResponse overBound = userMenu(MenuResponse.CANONICAL_USER_MENU_OPTIONS,
+            final MenuResponse overBound = userMenu(CANONICAL_USER_MENU_OPTIONS,
                     "X".repeat(MenuResponse.SELECTED_OPTION_WIDTH + 1), null, null, false, null,
                     null, null);
 
@@ -810,11 +913,11 @@ class MenuResponseRuleComplianceTest {
         void theCanonicalCataloguesPassValidation() {
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(userMenu(
-                        MenuResponse.CANONICAL_USER_MENU_OPTIONS, "01",
-                        MenuResponse.SCREEN_TITLE_THANK_YOU, null, false, null, null, null)))
+                        CANONICAL_USER_MENU_OPTIONS, "01",
+                        SCREEN_TITLE_THANK_YOU, null, false, null, null, null)))
                         .isEmpty();
                 assertThat(factory.getValidator().validate(adminMenu(
-                        MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS, "01", null, null, false, null,
+                        CANONICAL_ADMIN_MENU_OPTIONS, "01", null, null, false, null,
                         null, null)))
                         .isEmpty();
             }
@@ -825,7 +928,7 @@ class MenuResponseRuleComplianceTest {
                 + "key behind")
         void anAbsentComponentIsOmittedFromThePayload() throws JsonProcessingException {
             final JsonNode payload = payloadOf(userMenu(
-                    MenuResponse.CANONICAL_USER_MENU_OPTIONS, null, null, null, false, null,
+                    CANONICAL_USER_MENU_OPTIONS, null, null, null, false, null,
                     "user-menu", null));
 
             assertThat(payload.has("adminMenuOptions")).isFalse();
@@ -856,7 +959,7 @@ class MenuResponseRuleComplianceTest {
                 + "user-type code appear nowhere in the payload")
         void eachCatalogueEntryRendersItsOwnComponents() throws JsonProcessingException {
             final JsonNode payload = payloadOf(userMenu(
-                    MenuResponse.CANONICAL_USER_MENU_OPTIONS, null, null, null, false, null, null,
+                    CANONICAL_USER_MENU_OPTIONS, null, null, null, false, null, null,
                     null));
             final JsonNode firstUserEntry = payload.get("userMenuOptions").get(0);
 
@@ -883,7 +986,7 @@ class MenuResponseRuleComplianceTest {
         void aResponseSurvivesARoundTrip() throws JsonProcessingException {
             final ObjectMapper mapper = moduleEquivalentMapper();
             final MenuResponse original = adminMenu(
-                    MenuResponse.CANONICAL_ADMIN_MENU_OPTIONS, "03", "Denied",
+                    CANONICAL_ADMIN_MENU_OPTIONS, "03", "Denied",
                     MenuResponse.MessageSeverity.ERROR, true, "OPTIONI", "user-update",
                     NavigationContext.empty());
 

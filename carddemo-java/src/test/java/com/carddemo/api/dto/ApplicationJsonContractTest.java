@@ -753,7 +753,7 @@ class ApplicationJsonContractTest {
             // would silently change the value being verified.
             DEPLOYED_CONTEXT.run(context -> {
                 ObjectMapper mapper = context.getBean(ObjectMapper.class);
-                SignOnRequest request = new SignOnRequest("ADMIN001", "unset   ");
+                SignOnRequest request = new SignOnRequest("ADMIN001", "unset   ", null);
 
                 // Inbound: the padded credential arrives byte for byte.
                 SignOnRequest inbound = mapper.readValue(

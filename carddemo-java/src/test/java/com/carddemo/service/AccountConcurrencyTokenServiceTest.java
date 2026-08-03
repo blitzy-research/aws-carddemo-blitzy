@@ -586,13 +586,24 @@ class AccountConcurrencyTokenServiceTest {
 
             String token = service.mint(account, stored);
 
+            // Every needle here is at least four characters. The token is an authenticated-encryption
+            // envelope over a fresh vector, so its Base64 body is indistinguishable from random text
+            // drawn from a 64-character alphabet: a needle of length n coincides with a body of b
+            // positions with probability about b / 64^n, which for four characters is about one run in
+            // eighty thousand and falls steeply from there. A shorter needle would measure the random
+            // generator rather than the contract - the three-character credit score is therefore
+            // asserted below by the properties that hold with certainty, not as a substring.
             assertThat(token)
                     .as("the token is a sealed digest pair; a client that could read it could plan "
                             + "an overwrite around it")
                     .doesNotContain("00000000011", "000000011", "5000.00", "1500.00", "-250.75",
                             "1234567890.12", "2020", "2027", "2024", "48226", "DEFAULT", "default",
                             "MARY", "Aniya", "Woodward", "Detroit", "3135550100", "2485550199",
-                            "999887777", "FICTIONAL", "1985", "EFT0000001", "742");
+                            "999887777", "FICTIONAL", "1985", "EFT0000001");
+            assertThat(token)
+                    .as("the body is re-randomised on every mint, so nothing short enough to coincide "
+                            + "with it can be read out of it either")
+                    .isNotEqualTo(service.mint(account, stored));
         }
 
         @Test
@@ -834,7 +845,8 @@ class AccountConcurrencyTokenServiceTest {
 
         /**
          * Builds the confirmation request, populating only the component under test. The other
-         * forty-three are the map fields, which this check does not look at.
+         * forty-five are the forty-three map fields plus the attention key and the carried navigation
+         * state, none of which this check looks at.
          *
          * @param concurrencyToken the token the client echoes back, or {@code null} when it sends none
          * @return the request
@@ -844,7 +856,7 @@ class AccountConcurrencyTokenServiceTest {
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, concurrencyToken);
+                    null, null, null, null, null, null, concurrencyToken);
         }
     }
 

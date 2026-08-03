@@ -16,6 +16,7 @@
  */
 package com.carddemo.api.dto;
 
+import com.carddemo.domain.enums.KeyAction;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Size;
@@ -26,20 +27,53 @@ import jakarta.validation.constraints.Size;
  * <p>The REST-era replacement for the two operator-entered fields of the 3270 sign-on screen driven
  * by {@code COSGN00C}. Both the screen field definitions and the persisted credential record declare
  * the user id and the password as eight-character <em>alphanumeric</em> fields - never numeric -
- * which is why both components below are {@link String}.
+ * which is why both screen components below are {@link String}.
  *
  * <p><strong>Only two of the map's eleven input items are genuine user input.</strong> The symbolic
  * map declares eleven value items, but nine are screen metadata the legacy program writes outbound
  * rather than reads inbound - the transaction name, two title lines, the current date, the program
  * name, the current time, the application id, the system id and the error message. Those belong to
  * the response contract and are deliberately absent here. Only the user-id and password items are
- * typed by the operator, so this request carries exactly those two values and nothing more: no
- * navigation context, no terminal identity, no remember-me flag and no second factor, because the
- * legacy transaction has none and adding one would be feature expansion. The map's per-field length,
+ * typed by the operator, so this request carries exactly those two <em>map</em> values and nothing
+ * more from the screen: no navigation context, no terminal identity, no remember-me flag and no
+ * second factor, because the legacy transaction has none and adding one would be feature expansion.
+ * The one further value it carries is not a map item at all but the attention key described in the
+ * next paragraph, which the legacy program reads before it reads any field. The map's per-field
+ * length,
  * flag and attribute items, and its leading twelve-byte terminal input/output area filler, are
  * generated 3270 plumbing rather than contract. The password field is additionally defined with the
  * non-display attribute in the mapset, so the legacy terminal never echoed it - a property
  * {@link #toString()} honours.
+ *
+ * <p><strong>The operator's attention key is carried, because the legacy program branches on it
+ * before it looks at either field.</strong> On a continuation turn {@code COSGN00C} evaluates the
+ * terminal's attention identifier at lines 86 to 95 and takes exactly one of three paths in that
+ * source order: the enter key runs the credential path, program-function key 3 emits the common
+ * acknowledgement and sends plain text without redisplaying the screen, and <em>any other key</em>
+ * raises the error switch, emits the common invalid-key notice and redisplays the sign-on screen.
+ * Those three outcomes are externally observable - two of the transaction's seven message texts exist
+ * only on the second and third path - so without the key on the request no service could reproduce
+ * them, and a submission would collapse into the credential path alone. The key therefore crosses the
+ * wire as {@link KeyAction}, the enumeration of the sixteen condition names the shared work area
+ * declares, rather than as loose text or a raw terminal byte.
+ *
+ * <p>It is <strong>carried and never interpreted here</strong>. The three-way branch, in that source
+ * order, belongs to {@code AuthenticationService}; the resolution of a raw terminal identifier into
+ * one of the enumerated actions - including the fold of program-function keys 13 through 24 onto keys
+ * 1 through 12 - belongs to the utility layer, which this contract does not depend on. The component
+ * is <strong>deliberately never defaulted</strong>: the legacy evaluation has no catch-all that
+ * substitutes a key, so an unrecognised or unreported key must stay unreported and reach the service
+ * as an absent value, which the third path already accounts for. It carries no presence constraint
+ * and no width bound for the same reason every other value here carries none - the single message the
+ * legacy emits is chosen by an ordered service-tier evaluation, not by a validator.
+ *
+ * <p><strong>No navigation context accompanies it, and that asymmetry is deliberate.</strong> Sign-on
+ * is the one transaction in the estate that legitimately begins with no carried conversation state:
+ * line 80 of {@code COSGN00C} tests the communication-area length for zero and, on that first entry,
+ * sends the screen with the cursor on the user-id field without evaluating any key at all. Adding a
+ * navigation context here would invent state the first entry cannot have. What the legacy program
+ * does carry forward is re-armed by the pseudo-conversational return at line 96, and in the REST-era
+ * shape that re-arm is simply the client's next call rather than server-held state.
  *
  * <p><strong>Both values are carried verbatim; nothing is normalized here.</strong> The legacy
  * program folds both the user id and the password to upper case in two statements that sit outside
@@ -90,9 +124,8 @@ import jakarta.validation.constraints.Size;
  * into any log line, exception message, debugger view, diagnostic dump or test-failure report that
  * stringifies the object. {@link #toString()} is therefore overridden and substitutes a fixed
  * placeholder - never the value, never its length, never a hash and never a partial mask.
- * {@code equals} and {@code hashCode} are intentionally not overridden, so they keep comparing both
- * components as record semantics require, and the password component carries no serialization
- * annotation because it must still deserialize from the request body for sign-on to work.
+ * {@code equals} and {@code hashCode} are intentionally not overridden, so they keep comparing all
+ * three components as record semantics require.
  *
  * <p><strong>Credential verification is out of scope for this type.</strong> The legacy comparison is
  * a direct equality test against a stored cleartext password. Replacing it with hashed verification is
@@ -148,8 +181,8 @@ import jakarta.validation.constraints.Size;
  * appears nowhere in it.
  *
  * <p>{@code equals} and {@code hashCode} are intentionally <em>not</em> overridden, so they
- * keep comparing both components as the record semantics require; equality is an in-memory
- * operation that emits nothing.
+ * keep comparing all three components as the record semantics require; equality is an
+ * in-memory operation that emits nothing.
  *
  * <p>The same access mode is declared on the published OpenAPI schema, together with the
  * password format, so that generated documentation and client tooling treat the property as a
@@ -185,6 +218,19 @@ import jakarta.validation.constraints.Size;
  *                 is excluded from {@link #toString()}, excluded from every serialized
  *                 document by {@link JsonProperty.Access#WRITE_ONLY}, and must never be
  *                 logged.
+ * @param keyAction the attention key the operator pressed, as one of the sixteen values the
+ *                 shared work area {@code app/cpy/CVCRD01Y.cpy} declares (line 3). Not a map
+ *                 item: it is the terminal's attention identifier, which lines 86 to 95 of
+ *                 {@code COSGN00C} evaluate before either field is read, taking the enter key,
+ *                 program-function key 3 and any other key in exactly that source order.
+ *                 Carried, never interpreted - the three-way branch belongs to
+ *                 {@code AuthenticationService} and the resolution of a raw terminal
+ *                 identifier into one of these values belongs to the utility layer.
+ *                 <strong>Deliberately never defaulted</strong> and carrying no presence
+ *                 constraint: the legacy evaluation has no catch-all that substitutes a key, so
+ *                 an unrecognised or unreported key stays absent and reaches the service as
+ *                 {@code null}, which the any-other-key path already accounts for. May be
+ *                 {@code null}.
  */
 public record SignOnRequest(
         @Size(max = 8) String userId,
@@ -193,7 +239,14 @@ public record SignOnRequest(
         @Schema(accessMode = Schema.AccessMode.WRITE_ONLY, format = "password",
                 description = "Operator-entered sign-on password, at most eight characters. "
                         + "Accepted on request only and never returned in any response.")
-        String password) {
+        String password,
+
+        /* CCARD-AID, width 5, CVCRD01Y line 3 - typed as the enum of its 16 condition names.
+         * Nullable on purpose: the key evaluation at COSGN00C lines 86 to 95 has no clause that
+         * substitutes a key, and its any-other-key path already covers an absent one. Carries no
+         * width bound and no presence constraint because the single message the legacy emits is
+         * chosen by an ordered service-tier evaluation rather than by a validator. */
+        KeyAction keyAction) {
 
     /**
      * Fixed stand-in emitted by {@link #toString()} in place of the password.
@@ -212,14 +265,22 @@ public record SignOnRequest(
      *
      * <p>The user id is retained because it is an account identifier rather than a secret
      * and is required to correlate a sign-on attempt; the password is replaced by
-     * {@code ***REDACTED***}. This override exists solely to prevent credential leakage
-     * through logging, diagnostics and test output, and it deliberately performs no
-     * validation, normalisation or comparison.
+     * {@code ***REDACTED***}. The attention key is retained for the same reason as the user
+     * id and for one more: it names which of the three branches a failed attempt took, which
+     * is the first thing a diagnostic reader needs and is not a secret in any sense - it is a
+     * keystroke drawn from a published sixteen-value vocabulary. This override exists solely
+     * to prevent credential leakage through logging, diagnostics and test output, and it
+     * deliberately performs no validation, normalisation or comparison.
      *
-     * @return a representation carrying the user id and a fixed password placeholder
+     * <p>The rendered length therefore varies with the user id and with the attention key but
+     * never with the password, which contributes a constant regardless of what it holds.
+     *
+     * @return a representation carrying the user id, a fixed password placeholder and the
+     *         attention key
      */
     @Override
     public String toString() {
-        return "SignOnRequest[userId=" + userId + ", password=" + REDACTION_PLACEHOLDER + "]";
+        return "SignOnRequest[userId=" + userId + ", password=" + REDACTION_PLACEHOLDER
+                + ", keyAction=" + keyAction + "]";
     }
 }

@@ -26,6 +26,7 @@ import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 
+import com.carddemo.domain.enums.KeyAction;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -159,6 +160,12 @@ class AccountUpdateRequestTest {
     /** Wire property name of the concurrency token, which is the one component that is not a map field. */
     private static final String CONCURRENCY_TOKEN_PROPERTY = "concurrencyToken";
 
+    /** Wire name of the attention-key component, spelled as the whole package spells it. */
+    private static final String KEY_ACTION_PROPERTY = "keyAction";
+
+    /** Wire name of the carried navigation state, spelled as the whole package spells it. */
+    private static final String NAVIGATION_CONTEXT_PROPERTY = "navigationContext";
+
     /**
      * Right-pads with spaces to an exact screen width. A 3270 field is always transmitted at its
      * declared width, so this builds realistic <em>input</em>; it never touches a value being
@@ -222,13 +229,17 @@ class AccountUpdateRequestTest {
         String phone2LineNumber;
         String eftAccountId;
         String primaryCardHolderIndicator;
+        KeyAction keyAction;
+        NavigationContext navigationContext;
         String concurrencyToken;
 
         /**
          * The one and only invocation of the canonical constructor - the 43 map components plus the
+         * three that are not map fields: the attention key, the carried navigation state and the
          * concurrency token. Argument order follows the symbolic map's declaration order, which
          * interleaves the account group id between two of the monetary components and places the
-         * three date-of-birth parts before the credit score.
+         * three date-of-birth parts before the credit score, and the three non-map components follow
+         * it in that order.
          */
         AccountUpdateRequest build() {
             return new AccountUpdateRequest(
@@ -247,7 +258,7 @@ class AccountUpdateRequestTest {
                     governmentIssuedId,
                     phone2AreaCode, phone2Prefix, phone2LineNumber,
                     eftAccountId, primaryCardHolderIndicator,
-                    concurrencyToken);
+                    keyAction, navigationContext, concurrencyToken);
         }
 
         /**
@@ -1451,9 +1462,12 @@ class AccountUpdateRequestTest {
                     .hasSize(43)
                     .containsExactlyInAnyOrderElementsOf(expected);
             assertThat(propertyNamesOf(Draft.realistic().build()))
-                    .as("the token is the only non-map property published")
+                    .as("with the attention key and the carried context absent, the token is the only "
+                            + "non-map property published, so an untouched conversation costs one "
+                            + "property and not three")
                     .hasSize(44)
-                    .contains(CONCURRENCY_TOKEN_PROPERTY);
+                    .contains(CONCURRENCY_TOKEN_PROPERTY)
+                    .doesNotContain(KEY_ACTION_PROPERTY, NAVIGATION_CONTEXT_PROPERTY);
         }
 
         /**
@@ -1905,4 +1919,208 @@ class AccountUpdateRequestTest {
             return name() + " (map field " + mapField + ", 15 characters on screen)";
         }
     }
+
+    // THE ATTENTION KEY AND THE CARRIED NAVIGATION STATE
+
+    /**
+     * The two components that carry the conversation rather than the screen.
+     *
+     * <p>The program does not begin with the fields. It stores the attention key, marks it invalid at
+     * {@code app/cbl/COACTUPC.cbl} lines 898 to 916 and re-marks it valid only for the enter key,
+     * program-function key 3, program-function key 5 while changes are validated but unconfirmed, and
+     * program-function key 12 once details have been fetched - substituting the enter key when the key
+     * is still invalid. Lines 921 to 1003 then dispatch on those actions together with the first-entry
+     * or re-entry state. Separately, the decoration macro {@code app/cpy/CSSETATY.cpy} colours a field
+     * and writes its marker only when the field's flag is set <em>and</em> the conversation is a
+     * re-entry, the condition on line 20 of that copybook.</p>
+     *
+     * <p>The rules below assert only that this contract carries both faithfully: typed, never defaulted,
+     * never constrained for presence, cascaded into for the nested bounds, and omitted rather than
+     * nulled on the wire. Nothing here validates a key, dispatches on one, or decides whether
+     * decoration applies.</p>
+     */
+    @Nested
+    @DisplayName("the attention key and the carried navigation state")
+    class TheAttentionKeyAndTheCarriedNavigationState {
+
+        @Test
+        @DisplayName("the contract is exactly forty-six components wide and the three non-map components "
+                + "are the last three, in the order the sibling card-update contract uses")
+        void theContractIsExactlyFortySixComponentsWide() {
+            assertThat(AccountUpdateRequest.class.getRecordComponents()).hasSize(46);
+            assertThat(AccountUpdateRequest.class.getRecordComponents())
+                    .extracting(java.lang.reflect.RecordComponent::getName)
+                    .endsWith(KEY_ACTION_PROPERTY, NAVIGATION_CONTEXT_PROPERTY,
+                            CONCURRENCY_TOKEN_PROPERTY);
+        }
+
+        @ParameterizedTest(name = "{0} is carried verbatim")
+        @EnumSource(KeyAction.class)
+        @DisplayName("every value of the published key vocabulary is carried through unchanged, so the "
+                + "service dispatches on the key the operator actually pressed")
+        void everyKeyValueIsCarriedVerbatim(KeyAction action) {
+            Draft draft = Draft.realistic();
+            draft.keyAction = action;
+
+            assertThat(draft.build().keyAction()).isSameAs(action);
+        }
+
+        @Test
+        @DisplayName("an absent key stays absent, because the legacy mapping substitutes none and the "
+                + "enter-key substitution is the service's decision")
+        void anAbsentKeyStaysAbsent() {
+            assertThat(Draft.realistic().build().keyAction()).isNull();
+        }
+
+        @Test
+        @DisplayName("an absent carried context stays absent, so a first presentation is distinguishable "
+                + "from a re-entry rather than defaulted into one")
+        void anAbsentCarriedContextStaysAbsent() {
+            assertThat(Draft.realistic().build().navigationContext()).isNull();
+        }
+
+        @Test
+        @DisplayName("both absent draws no violation, so neither is mandatory at the boundary")
+        void bothAbsentDrawsNoViolation() {
+            assertThat(violations(Draft.realistic().build())).isEmpty();
+        }
+
+        @ParameterizedTest(name = "{0} raises no violation")
+        @EnumSource(KeyAction.class)
+        @DisplayName("no key value raises a violation, because the component declares no constraint")
+        void noKeyValueRaisesAViolation(KeyAction action) {
+            Draft draft = Draft.realistic();
+            draft.keyAction = action;
+
+            assertThat(violations(draft.build())).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the key component declares no annotation whatever, so nothing bounds, requires or "
+                + "reshapes it at the boundary")
+        void theKeyComponentDeclaresNoAnnotationWhatever() throws NoSuchFieldException {
+            assertThat(AccountUpdateRequest.class.getDeclaredField(KEY_ACTION_PROPERTY)
+                    .getAnnotations()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the key is typed as the domain vocabulary rather than as loose text, so an "
+                + "unmapped keystroke cannot reach the service disguised as a mapped one")
+        void theKeyIsTypedAsTheDomainVocabulary() throws NoSuchFieldException {
+            assertThat(AccountUpdateRequest.class.getDeclaredField(KEY_ACTION_PROPERTY).getType())
+                    .isEqualTo(KeyAction.class);
+        }
+
+        @Test
+        @DisplayName("the carried context declares the cascade marker and nothing else, because "
+                + "cascading an existing bound is not the same as adding a constraint")
+        void theCarriedContextDeclaresTheCascadeMarkerAndNothingElse() throws NoSuchFieldException {
+            assertThat(AccountUpdateRequest.class.getDeclaredField(NAVIGATION_CONTEXT_PROPERTY)
+                    .getAnnotations())
+                    .extracting(annotation -> annotation.annotationType().getName())
+                    .containsExactly("jakarta.validation.Valid");
+        }
+
+        @Test
+        @DisplayName("a valid carried context draws no violation, so a well-formed echo passes straight "
+                + "through to the service")
+        void aValidCarriedContextDrawsNoViolation() {
+            Draft draft = Draft.realistic();
+            draft.navigationContext = new NavigationContext("CAUP", "COACTUPC", "CAUP", "COACTUPC",
+                    "ADMIN001", null, NavigationContext.ProgramContext.REENTER, "000000011", "MARY ANN",
+                    "Q", "Aniya Von", "00000000011", "Y", "4111111111111111", "CACTUPA", "COACTUP");
+
+            assertThat(violations(draft.build())).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the cascade reaches into the carried context, so an echoed value that could not "
+                + "have occupied its legacy field is reported here rather than in the service")
+        void theCascadeReachesIntoTheCarriedContext() {
+            Draft draft = Draft.realistic();
+            draft.navigationContext = new NavigationContext("TOOLONGTRANSID", null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null);
+
+            assertThat(violations(draft.build()))
+                    .isNotEmpty()
+                    .allSatisfy(violation -> assertThat(violation.getPropertyPath().toString())
+                            .startsWith(NAVIGATION_CONTEXT_PROPERTY + "."));
+        }
+
+        @Test
+        @DisplayName("the re-entry flag the decoration gate reads survives the round trip, because it is "
+                + "the precondition for every field-level error state")
+        void theReEntryFlagSurvivesTheRoundTrip() throws Exception {
+            Draft draft = Draft.realistic();
+            draft.navigationContext = new NavigationContext(null, null, null, null, null, null,
+                    NavigationContext.ProgramContext.REENTER, null, null, null, null, null, null, null,
+                    null, null);
+
+            AccountUpdateRequest received = MAPPER.readValue(
+                    MAPPER.writeValueAsString(draft.build()), AccountUpdateRequest.class);
+
+            assertThat(received.navigationContext().reEntry()).isTrue();
+            assertThat(received.navigationContext().firstEntry()).isFalse();
+        }
+
+        @ParameterizedTest(name = "{0} survives a round trip")
+        @EnumSource(KeyAction.class)
+        @DisplayName("every key value survives a serialize-and-read round trip by name, so a client and "
+                + "the service agree on the keystroke")
+        void everyKeyValueSurvivesARoundTrip(KeyAction action) throws Exception {
+            Draft draft = Draft.realistic();
+            draft.keyAction = action;
+
+            AccountUpdateRequest received = MAPPER.readValue(
+                    MAPPER.writeValueAsString(draft.build()), AccountUpdateRequest.class);
+
+            assertThat(received.keyAction()).isSameAs(action);
+        }
+
+        @Test
+        @DisplayName("both are published by name when present, so a client can drive exit, save, cancel "
+                + "and re-entry over the wire")
+        void bothArePublishedByNameWhenPresent() throws Exception {
+            Draft draft = Draft.realistic();
+            draft.keyAction = KeyAction.PFK03;
+            draft.navigationContext = new NavigationContext(null, null, null, null, null, null,
+                    NavigationContext.ProgramContext.REENTER, null, null, null, null, null, null, null,
+                    null, null);
+
+            Map<String, Object> emitted = MAPPER.readValue(
+                    MAPPER.writeValueAsString(draft.build()),
+                    new TypeReference<Map<String, Object>>() { });
+
+            assertThat(emitted.keySet())
+                    .contains(KEY_ACTION_PROPERTY, NAVIGATION_CONTEXT_PROPERTY)
+                    .hasSize(46);
+        }
+
+        @Test
+        @DisplayName("neither takes part in the ordered cascade, so a submission carrying only the two "
+                + "of them still reports nothing at the boundary")
+        void neitherTakesPartInTheOrderedCascade() {
+            Draft draft = new Draft();
+            draft.keyAction = KeyAction.ENTER;
+            draft.navigationContext = new NavigationContext(null, null, null, null, null, null,
+                    NavigationContext.ProgramContext.ENTER, null, null, null, null, null, null, null,
+                    null, null);
+
+            assertThat(violations(draft.build())).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the diagnostic representation still discloses nothing, because the placeholder "
+                + "stands for the whole component set rather than for a listed subset")
+        void theDiagnosticRepresentationStillDisclosesNothing() {
+            Draft draft = Draft.realistic();
+            draft.keyAction = KeyAction.PFK05;
+
+            assertThat(draft.build().toString())
+                    .isEqualTo("AccountUpdateRequest[***REDACTED***]")
+                    .doesNotContain(KeyAction.PFK05.name(), KEY_ACTION_PROPERTY,
+                            NAVIGATION_CONTEXT_PROPERTY);
+        }
+    }
+
 }
