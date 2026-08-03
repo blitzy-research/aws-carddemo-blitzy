@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
@@ -141,13 +142,6 @@ class AccountUpdateResponseTest {
      * this type keeps the three parts apart.
      */
     private static final String ASSEMBLED_PHONE = "(703)555-0199";
-
-    /**
-     * Stand-in for the sealed old-image token. Deliberately not shaped like any real bearer or signed
-     * token: this suite treats the component as an opaque string and must not plant a literal that a
-     * credential scanner would have to reason about.
-     */
-    private static final String SEALED_OLD_IMAGE = "SEALED-OLD-IMAGE-TOKEN-0001";
 
     /**
      * Shared factory for the whole class, opened once and closed once. A factory is expensive to
@@ -364,7 +358,6 @@ class AccountUpdateResponseTest {
         private String nextRoute;
         private NavigationContext navigationContext;
         private List<ErrorResponse.FieldError> fieldErrors;
-        private String concurrencyToken;
 
         ResponseBuilder errorMessage(final String value) {
             this.errorMessage = value;
@@ -401,11 +394,6 @@ class AccountUpdateResponseTest {
             return this;
         }
 
-        ResponseBuilder concurrencyToken(final String value) {
-            this.concurrencyToken = value;
-            return this;
-        }
-
         AccountUpdateResponse build() {
             return new AccountUpdateResponse(
                     transactionName, title01, currentDate, programName, title02, currentTime,
@@ -421,8 +409,7 @@ class AccountUpdateResponseTest {
                     phone2AreaCode, phone2Prefix, phone2LineNumber,
                     eftAccountId, primaryCardHolderIndicator,
                     infoMessage, errorMessage,
-                    error, focusScreenFieldId, nextRoute, navigationContext, fieldErrors,
-                    concurrencyToken);
+                    error, focusScreenFieldId, nextRoute, navigationContext, fieldErrors);
         }
     }
 
@@ -772,8 +759,7 @@ class AccountUpdateResponseTest {
                 false, "ACSTTUS", "/api/v1/accounts/update", populatedNavigation(),
                 List.of(new ErrorResponse.FieldError("stateCode", "ACSSTTE",
                         ErrorResponse.FieldState.INVALID,
-                        "OR" + AccountUpdateResponse.SUFFIX_STATE_NOT_VALID)),
-                SEALED_OLD_IMAGE);
+                        "OR" + AccountUpdateResponse.SUFFIX_STATE_NOT_VALID)));
     }
 
     /**
@@ -1902,7 +1888,7 @@ class AccountUpdateResponseTest {
 
     /**
      * The control components: the echoed conversation state, the declarative route, the focus hint,
-     * the explicit error indicator and the sealed old-image token.
+     * the explicit error indicator and the field-error collection - five in all, and no sixth.
      */
     @Nested
     @DisplayName("the control components")
@@ -2027,31 +2013,39 @@ class AccountUpdateResponseTest {
         }
 
         @Test
-        @DisplayName("carries the sealed old-image token as an opaque string")
-        void carriesTheSealedOldImageTokenAsAnOpaqueString() throws JsonProcessingException {
-            // The legacy appended the complete old image of both records to the shared communication
-            // area, handed it back with the screen and sliced it off on the following turn, then
-            // compared the freshly read records against it before writing. Re-reading on the
-            // confirming turn would not reproduce that, so the state has to travel. It travels sealed.
-            final ObjectMapper mapper = moduleEquivalentMapper();
-            final AccountUpdateResponse response = blank()
-                    .concurrencyToken(SEALED_OLD_IMAGE)
-                    .build();
-
-            final JsonNode token = mapper.readTree(mapper.writeValueAsString(response))
-                    .get("concurrencyToken");
-
-            assertThat(token.isTextual()).isTrue();
-            assertThat(response.concurrencyToken()).isEqualTo(SEALED_OLD_IMAGE);
+        @DisplayName("carries no sealed old-image token for a client to echo back")
+        void carriesNoSealedOldImageToken() {
+            // The legacy compared the freshly read records against an old image it had appended to the
+            // shared communication area, which the terminal never saw. Nothing of that mechanism
+            // crosses this boundary. Optimistic locking lives on the persistent entity as a version
+            // attribute, the comparison lives in the update service, and a detected conflict reaches
+            // a client as a summary message plus field errors - never as a value to hand back.
+            assertThat(wireKeysOf(populated(),
+                    "concurrencyToken", "concurrency", "oldImage", "beforeImage", "afterImage",
+                    "recordImage", "imageDigest", "sealedImage", "seal", "digest", "snapshot",
+                    "changeToken", "conversationToken", "continuationToken", "stateToken"))
+                    .isEmpty();
         }
 
         @Test
-        @DisplayName("omits the sealed token when there is no record to confirm")
-        void omitsTheSealedTokenWhenThereIsNoRecordToConfirm() {
-            final AccountUpdateResponse response = blank().build();
+        @DisplayName("names no component that could stand for a carried record image")
+        void namesNoComponentThatCouldStandForACarriedRecordImage() throws JsonProcessingException {
+            // Pinning the whole emitted set rather than a handful of spellings, because a differently
+            // named component is exactly how a token of this kind reappears.
+            final Set<String> suspects = new TreeSet<>();
+            for (final String name : wireKeysOf(populated())) {
+                final String lowered = name.toLowerCase(Locale.ROOT);
+                if (lowered.contains("concurrency") || lowered.contains("version")
+                        || lowered.contains("etag") || lowered.contains("rowversion")
+                        || lowered.contains("revision") || lowered.contains("token")
+                        || lowered.contains("lock") || lowered.contains("stamp")
+                        || lowered.contains("image") || lowered.contains("snapshot")
+                        || lowered.contains("digest") || lowered.contains("seal")) {
+                    suspects.add(name);
+                }
+            }
 
-            assertThat(response.concurrencyToken()).isNull();
-            assertThat(wireKeysOf(response, "concurrencyToken")).isEmpty();
+            assertThat(suspects).isEmpty();
         }
 
         @Test
@@ -2209,13 +2203,13 @@ class AccountUpdateResponseTest {
         }
 
         @Test
-        @DisplayName("places no bound on the route or the sealed token, which are not map fields")
-        void placesNoBoundOnTheRouteOrTheSealedToken() {
-            // A sealed value has whatever length its sealing produces; bounding it by contract would
-            // truncate a token nobody can shorten safely.
+        @DisplayName("places no bound on the route, which is not a map field")
+        void placesNoBoundOnTheRoute() {
+            // The route is the one component with no measured map width, because it is not a legacy
+            // field at all: the navigation service owns its vocabulary, so a length taken from the
+            // mapset would be a bound invented here rather than one the screen contract supplies.
             assertThat(validator.validate(blank().nextRoute(valueOfLength(500)).build())).isEmpty();
-            assertThat(validator.validate(
-                    blank().concurrencyToken(valueOfLength(4000)).build())).isEmpty();
+            assertThat(validator.validate(blank().nextRoute(valueOfLength(4000)).build())).isEmpty();
         }
 
         @Test
@@ -2255,7 +2249,7 @@ class AccountUpdateResponseTest {
     class WireShape {
 
         @Test
-        @DisplayName("publishes exactly the 57 properties the contract declares and nothing else")
+        @DisplayName("publishes exactly the 56 properties the contract declares and nothing else")
         void publishesExactlyTheContractProperties() throws JsonProcessingException {
             final Set<String> expected = new LinkedHashSet<>();
             // Six screen-metadata families, written when the screen is presented.
@@ -2312,17 +2306,16 @@ class AccountUpdateResponseTest {
             // The two message families.
             expected.add("infoMessage");
             expected.add("errorMessage");
-            // The six control components.
+            // The five control components.
             expected.add("error");
             expected.add("focusScreenFieldId");
             expected.add("nextRoute");
             expected.add("navigationContext");
             expected.add("fieldErrors");
-            expected.add("concurrencyToken");
 
             assertThat(wireKeysOf(populated()))
                     .containsExactlyInAnyOrderElementsOf(expected);
-            assertThat(expected).hasSize(57);
+            assertThat(expected).hasSize(56);
             assertThat(expected)
                     .contains("middleName", "addressLine2")
                     .doesNotHaveDuplicates();
@@ -2377,9 +2370,9 @@ class AccountUpdateResponseTest {
             // account arm at 4076 to 4081 abandons nothing - is the service's concern. A conflict
             // reaches a client as a summary message plus field errors, never as a token to echo.
             assertThat(wireKeysOf(populated(),
-                    "version", "rowVersion", "recordVersion", "lockVersion", "etag", "eTag",
-                    "optimisticLock", "optimisticLockVersion", "lock", "lockToken", "revision",
-                    "timestamp", "lastModified"))
+                    "concurrencyToken", "version", "rowVersion", "recordVersion", "lockVersion",
+                    "etag", "eTag", "optimisticLock", "optimisticLockVersion", "lock", "lockToken",
+                    "revision", "timestamp", "lastModified"))
                     .isEmpty();
         }
 
@@ -2514,8 +2507,8 @@ class AccountUpdateResponseTest {
         @Test
         @DisplayName("withholds every regulated value from its diagnostic text")
         void withholdsEveryRegulatedValueFromItsDiagnosticText() {
-            // A diagnostic text travels into logs, so it must carry no identifier, no name, no address,
-            // no monetary amount and no sealed token.
+            // A diagnostic text travels into logs, so it must carry no identifier, no name, no
+            // address and no monetary amount.
             final String rendered = populated().toString();
 
             assertThat(rendered)
@@ -2528,8 +2521,7 @@ class AccountUpdateResponseTest {
                     .doesNotContain("148 Corvid Row")
                     .doesNotContain("FICTIONAL-GOVT-ID-01")
                     .doesNotContain("5000.00")
-                    .doesNotContain("-249.37")
-                    .doesNotContain(SEALED_OLD_IMAGE);
+                    .doesNotContain("-249.37");
         }
 
         @Test

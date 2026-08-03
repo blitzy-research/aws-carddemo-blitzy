@@ -32,108 +32,58 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 /**
- * Unit test for {@link DisclosureGroupRecordMapper}, the two-way mapping between the <strong>50-byte
- * disclosure-group record image</strong> and {@link DisclosureGroup}.
+ * Unit test for {@link DisclosureGroupRecordMapper}, the two-way mapping between the 50-byte
+ * disclosure-group record image and {@link DisclosureGroup}. The layout is a 16-byte three-part
+ * composite key - a ten-character account group identifier, a two-character transaction type and a
+ * four-character transaction category - followed by the six-byte interest rate and a 28-byte filler
+ * run. The provisioning cluster attests the key geometry independently by declaring a key length of 16
+ * at offset 0, so a row's identity is its business key and never a surrogate.
  *
- * <p>The layout under test is a <strong>16-byte three-part composite key</strong> - a ten-character
- * account group identifier, a two-character transaction type and a four-character transaction
- * category - followed by the <strong>six-byte</strong> interest rate and a 28-byte filler run. The
- * cluster that provisioned the legacy dataset attests the key geometry independently by declaring a
- * key length of 16 at offset 0, so the identity of a row is its business key and never a surrogate.
+ * <p><strong>Trap one - the rate is six encoded bytes, and getting it wrong fails silently.</strong>
+ * Four integer digits plus two decimals is a six-byte image, the only field of that shape in the estate
+ * and the only exact-numeric column of precision six in the schema; every other zoned-decimal amount is
+ * eleven or twelve bytes wide. <strong>An eleven-byte slice taken at the rate's offset does not
+ * fail:</strong> it reaches five bytes into the filler run, and because those bytes are ASCII zero in
+ * the shipped data the image is all digits and decodes without complaint, to a value one hundred
+ * thousand times too large. Only an explicit width assertion catches it, so the width is pinned to 6
+ * and pinned apart from both 11 and 12.
  *
- * <h2>Every expectation in this class is hand-derived</h2>
+ * <p><strong>Trap two - the ten-character group identifier must never be trimmed.</strong> Two of the
+ * three seeded identifiers carry trailing spaces, and that padding is part of the key. When the interest
+ * program fails to find a disclosure group it re-probes with a seven-character default literal moved
+ * into the ten-byte field, which left-justifies and space-fills it, so the probe key is the padded
+ * ten-character form. Trimming anywhere would make that probe miss and would <strong>silently disable
+ * the entire default-group fallback</strong> - no rate found for accounts that should have fallen back,
+ * and nothing failing loudly. Every identifier is therefore asserted at exactly ten encoded bytes and
+ * asserted unequal to its trimmed form.
  *
- * <p>No assertion here calls a production method to compute the value it then checks, and nothing is
- * snapshotted from an earlier run. Each offset, width, field image and decoded amount is written out
- * as a literal taken from the verified copybook geometry and the shipped sample data, and the record
- * images are assembled from those literals field by field so that a reviewer can count the bytes.
- * That is the whole point: a test whose expectation is produced by the code under test agrees with
- * that code by construction and can never contradict it. In particular the rate width is written as
- * the digit 6 rather than borrowed from any width constant published elsewhere in the module, because
- * a borrowed constant would make this test pass for a mapper that slices the wrong field.
+ * <p><strong>The filler bytes diverge from the sample data by design.</strong> Filler declared without
+ * an initialising clause is uninitialised, so no byte value is canonical: the sample files use ASCII
+ * zero while this module emits space uniformly. <strong>A whole-record 50-byte comparison against a
+ * sample row therefore fails on the filler alone</strong>, which is neither a mapping defect nor a
+ * defect in the data. Round-trip assertions are bounded to the mapped prefix, byte 0 up to but excluding
+ * byte 22, and one test exists purely to record the divergence so a later reader does not "fix" either
+ * side.
  *
- * <p>The class is also entirely self-contained: it opens no file, reads no classpath resource, touches
- * no database, queue or network, starts no application context and needs no container. The sample-data
- * rows it exercises are reproduced here as literals, byte for byte, from the census recorded below.
+ * <p><strong>Truncation, not rounding.</strong> No arithmetic statement in the estate specifies
+ * rounding, and a store without it truncates toward zero. The zoned-decimal codec is the only component
+ * allowed to choose a scale, so this class never rescales anything, names no rounding mode and builds
+ * every expected amount from a decimal string literal. The sign convention is the overpunched final
+ * digit byte, which is why the negative case is a six-byte image with a negative-range terminator rather
+ * than a minus sign.
  *
- * <h2>Trap one - the rate is six encoded bytes, and getting it wrong fails silently</h2>
+ * <p>Deliberately untested here: the rate feeds an interest computation that multiplies a category
+ * balance by it and only then divides, and the padded default identifier drives the fallback lookup.
+ * Neither the arithmetic, its operand order, nor the lookup is replicated or asserted - this is a mapper
+ * test and both belong to the accrual service. They are named only to explain why the six-byte width and
+ * the untrimmed key are load-bearing rather than cosmetic.
  *
- * <p>The interest rate is four integer digits and two decimal digits, so its image occupies
- * {@code 4 + 2 = 6} bytes. It is the only field of that shape anywhere in the estate and the only
- * exact-numeric column of precision six in the schema; every other zoned-decimal amount in the module
- * is eleven or twelve bytes wide. <strong>An eleven-byte slice taken at the rate's offset does not
- * fail.</strong> It reaches five bytes past the end of the mapped data and into the filler run, and
- * because those filler bytes are ASCII zero in the shipped data the resulting image is all digits and
- * decodes without complaint - to a value one hundred thousand times too large. No exception is raised
- * and no output looks obviously wrong, so only an explicit width assertion catches it. This class
- * therefore pins the width to 6 and pins it apart from both 11 and 12.
- *
- * <h2>Trap two - the ten-character group identifier must never be trimmed</h2>
- *
- * <p>Two of the three seeded group identifiers carry trailing spaces, and that padding is part of the
- * key rather than incidental whitespace. When the interest program fails to find a disclosure group it
- * re-probes with a seven-character default literal moved into the ten-byte identifier field, which
- * left-justifies and space-fills it, so the probe key is the padded ten-character form. Trimming the
- * stored identifier anywhere would make that probe miss and would <strong>silently disable the entire
- * default-group fallback</strong>: no rate would be found for accounts that should have fallen back,
- * and nothing would fail loudly. Every group identifier is therefore asserted at exactly ten encoded
- * bytes and asserted unequal to its trimmed form.
- *
- * <h2>The filler bytes diverge from the sample data by design</h2>
- *
- * <p>Filler declared without an initialising clause is uninitialised, so no byte value is canonical.
- * The reference-table sample files use ASCII zero, while this module emits space uniformly across every
- * layout. <strong>A whole-record 50-byte comparison against a sample row therefore fails on the filler
- * alone</strong>, which is neither a mapping defect nor a defect in the sample data. Round-trip
- * assertions here are bounded to the mapped data prefix, byte 0 up to but excluding byte 22, and one
- * test exists purely to record the divergence so a later reader does not "fix" either side.
- *
- * <h2>Decimal semantics: truncation, not rounding</h2>
- *
- * <p>No arithmetic statement anywhere in the legacy estate specifies rounding, and a legacy store
- * without it truncates toward zero rather than rounding half-up or half-even. The module honours that
- * by applying one truncating policy in the zoned-decimal codec, which is the only component allowed to
- * choose a scale. This class consequently never rescales anything: it names no rounding mode, calls no
- * rescaling method, and builds every expected amount from a decimal string literal rather than from a
- * binary floating-point value, so that no expectation here can be off by a cent for a reason of its
- * own. The sign convention it relies on is the overpunched final digit byte, which is why the negative
- * case is written as a six-byte image with a negative-range terminator rather than as a minus sign.
- *
- * <h2>What this class deliberately does not test</h2>
- *
- * <p>The rate feeds an interest computation that multiplies a category balance by it and only then
- * divides, and the padded default identifier drives the fallback lookup described above. Neither the
- * arithmetic, its operand order, nor the lookup is implemented, replicated or asserted here: this is a
- * mapper test, and both belong to the accrual service. They are named only to explain why the six-byte
- * width and the untrimmed key are load-bearing rather than cosmetic.
- *
- * <h2>Faithful over idiomatic, and the divergences this class pins</h2>
- *
- * <p>Where legacy semantics and idiomatic Java disagree, the legacy semantics win and the divergence is
- * recorded in {@code docs/decision-log.md} rather than settled by taste. This class does not edit that
- * log; it holds the five divergences of this layout to their recorded outcomes so that none of them can
- * regress unnoticed:
- *
- * <ol>
- * <li>the estate's only six-byte zoned-decimal field, and the schema's only exact-numeric column of
- *     precision six, whose mis-slicing at a sibling's width parses silently instead of failing;</li>
- * <li>a ten-character group identifier whose trailing spaces are load-bearing, because the
- *     default-group fallback probes with the padded form;</li>
- * <li>a rate of {@code 0.00} that is a present, legitimate value and never an absence;</li>
- * <li>ASCII-zero filler in the shipped sample data against uniform space filler on write, which bounds
- *     every comparison to the mapped prefix; and</li>
- * <li>truncating rather than rounding decimal arithmetic, owned by the codec and never overridden
- *     here.</li>
- * </ol>
- *
- * <p>No user-specified rules exist for this engagement - the project's rules document states that none
- * were provided - so this class is held to enterprise-standard best practice instead: a zero-warning
- * compile treated as a build failure, no reflection, no code generation, no logging, a package that
- * mirrors the production package exactly, and the licence header that every artefact in the estate
- * carries.
- *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Sources are cited, never transcribed.
+ * <p>Every expectation is hand-derived: each offset, width, field image and decoded amount is a literal
+ * taken from the verified copybook geometry and the shipped sample data, and the record images are
+ * assembled from those literals field by field so a reviewer can count the bytes. The rate width in
+ * particular is written as the digit 6 rather than borrowed from a published width constant, because a
+ * borrowed constant would make this test pass for a mapper that slices the wrong field. The class opens
+ * no file, reads no resource and needs no container.
  *
  * @see DisclosureGroupRecordMapper
  * @see DisclosureGroup
@@ -141,338 +91,191 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  */
 @DisplayName("disclosure-group record mapper: the 50-byte layout and its six-byte rate")
 class DisclosureGroupRecordMapperTest {
-
-    // ------------------------------------------------------------------------------------------
-    // The independent layout oracle. Zero-based offsets and encoded byte lengths, hand-written from
-    // the copybook geometry. These are the expectations; the mapper's own constants are the subjects.
-    // ------------------------------------------------------------------------------------------
-
-    /** Full record width in encoded bytes: the mapped prefix plus the filler run. */
     private static final int EXPECTED_RECORD_LENGTH = 50;
 
-    /** Group identifier: zero-based offset 0, one-based span 1-10. */
     private static final int EXPECTED_GROUP_ID_OFFSET = 0;
 
-    /** Group identifier width. Ten bytes, and the trailing spaces inside them are significant. */
     private static final int EXPECTED_GROUP_ID_LENGTH = 10;
 
-    /** Transaction type code: zero-based offset 10, one-based span 11-12. */
     private static final int EXPECTED_TYPE_CD_OFFSET = 10;
 
-    /** Transaction type code width. */
     private static final int EXPECTED_TYPE_CD_LENGTH = 2;
 
-    /** Transaction category code: zero-based offset 12, one-based span 13-16. */
     private static final int EXPECTED_CAT_CD_OFFSET = 12;
 
-    /** Transaction category code width. Leading zeros are significant, so it stays textual. */
     private static final int EXPECTED_CAT_CD_LENGTH = 4;
 
-    /** Composite key width: {@code 10 + 2 + 4}, the leading substring of the record image. */
     private static final int EXPECTED_KEY_LENGTH = 16;
 
-    /** Interest rate: zero-based offset 16, one-based span 17-22. */
     private static final int EXPECTED_RATE_OFFSET = 16;
 
     /**
-     * Interest rate width: <strong>six</strong> encoded bytes, four integer digits plus two decimal
-     * digits. Written as a literal digit here on purpose - see the class comment on trap one.
+     * Interest rate width: <strong>six</strong> encoded bytes. Written as a literal digit rather than
+     * borrowed from a published width constant, so that a mapper slicing at a sibling's width fails here
+     * instead of decoding silently - see trap one on the class.
      */
     private static final int EXPECTED_RATE_LENGTH = 6;
 
-    /** End of the mapped data, and the exact upper bound for a sample-data comparison: {@code 16 + 6}. */
     private static final int EXPECTED_MAPPED_PREFIX_LENGTH = 22;
 
-    /** Filler run: zero-based offset 22, one-based span 23-50. */
     private static final int EXPECTED_FILLER_OFFSET = 22;
 
-    /** Filler run width: {@code 50 - 22}. */
     private static final int EXPECTED_FILLER_LENGTH = 28;
 
-    // ------------------------------------------------------------------------------------------
-    // Cluster corroboration. The provisioning job declares the key as length 16 at offset 0, which
-    // is an authority independent of the copybook for the same two numbers.
-    // ------------------------------------------------------------------------------------------
-
-    /** Key length the indexed cluster declares. */
+    // Cluster corroboration: the provisioning job declares the key as length 16 at offset 0 over a
+    // 50-byte record, an authority independent of the copybook for the same three numbers.
     private static final int CLUSTER_DECLARED_KEY_LENGTH = 16;
 
-    /** Key offset the indexed cluster declares: the key is the leading substring of the image. */
     private static final int CLUSTER_DECLARED_KEY_OFFSET = 0;
 
-    /** Record size the indexed cluster declares, minimum and maximum alike. */
     private static final int CLUSTER_DECLARED_RECORD_SIZE = 50;
 
-    // ------------------------------------------------------------------------------------------
-    // The two sibling zoned-decimal widths this field is NOT. Spelled out as literals rather than
-    // imported from anywhere, so that this test cannot drift into agreement with a wrong slice.
-    // ------------------------------------------------------------------------------------------
-
-    /** Width of the transaction, daily-transaction and category-balance amounts. Never the rate's. */
+    // The two widths every other zoned-decimal amount in the module takes, held here purely so the rate
+    // can be asserted unequal to both. The surplus below is how far an eleven-byte slice at the rate's
+    // offset reaches past the mapped data and into the filler run.
     private static final int SIBLING_ELEVEN_BYTE_AMOUNT_WIDTH = 11;
 
-    /** Width of the five account monetary fields. Never the rate's either. */
     private static final int SIBLING_TWELVE_BYTE_AMOUNT_WIDTH = 12;
 
-    /** Bytes an eleven-byte window would absorb past the end of the rate: {@code 11 - 6}. */
     private static final int ELEVEN_BYTE_WINDOW_SURPLUS = 5;
 
-    // ------------------------------------------------------------------------------------------
-    // Sample-data accounting, measured over app/data/ASCII/discgrp.txt. Layout evidence only: these
-    // are record and byte counts, never a service level or a performance target.
-    // ------------------------------------------------------------------------------------------
-
-    /** Rows in the shipped reference data: three complete groups of seventeen. */
     private static final int SEEDED_ROW_COUNT = 51;
 
-    /** Distinct account group identifiers in the shipped reference data. */
     private static final int SEEDED_GROUP_COUNT = 3;
 
-    /** Rows per group. The product with the group count is the row count exactly. */
     private static final int SEEDED_ROWS_PER_GROUP = 17;
 
-    /** Total size of the shipped reference data in bytes. */
     private static final int SEEDED_FILE_BYTES = 2601;
 
-    /** Row stride in the shipped reference data: the record width plus one line-feed terminator. */
     private static final int SEEDED_ROW_STRIDE = 51;
 
-    /** Filler bytes across all 51 rows, every one of them ASCII zero: {@code 51 * 28}. */
     private static final int SEEDED_FILLER_BYTE_COUNT = 1428;
 
-    // ------------------------------------------------------------------------------------------
-    // Field literals. Group-key and field images are permitted layout metadata, not source text.
-    // ------------------------------------------------------------------------------------------
-
-    /** The one group identifier that fills its ten bytes with no padding at all. */
     private static final String DIRECT_HIT_GROUP_KEY = "A000000000";
 
-    /** The fallback group identifier: seven characters and three trailing spaces. */
+    // The padded form is the probe key the interest program actually builds, which is why the trailing
+    // spaces are asserted present and the trimmed form is held apart from it - see trap two.
     private static final String FALLBACK_GROUP_KEY = "DEFAULT   ";
 
-    /** The fallback group identifier as it must never be stored or probed. */
     private static final String FALLBACK_GROUP_KEY_TRIMMED = "DEFAULT";
 
-    /** The zero-rate group identifier: seven characters and three trailing spaces. */
     private static final String ZERO_RATE_GROUP_KEY = "ZEROAPR   ";
 
-    /** The zero-rate group identifier as it must never be stored or probed. */
     private static final String ZERO_RATE_GROUP_KEY_TRIMMED = "ZEROAPR";
 
-    /** Trailing spaces carried by each of the two padded group identifiers. */
     private static final int PADDED_GROUP_KEY_TRAILING_SPACES = 3;
 
-    /** The transaction type code every seeded category balance carries. */
     private static final String SEEDED_TYPE_CD = "01";
 
-    /** The highest transaction type code present in the reference data. */
     private static final String HIGHEST_SEEDED_TYPE_CD = "07";
 
-    /** A type code outside the seeded set: the mapper carries it verbatim rather than rejecting it. */
     private static final String OUT_OF_SET_TYPE_CD = "ZZ";
 
-    /** The transaction category code every seeded category balance carries, leading zeros included. */
     private static final String SEEDED_CAT_CD = "0001";
 
-    /** The category code with its leading zeros removed. Never a value this layout stores. */
     private static final String SEEDED_CAT_CD_WITHOUT_LEADING_ZEROS = "1";
 
-    // ------------------------------------------------------------------------------------------
-    // Rate images and the values they decode to. The final byte overpunches the sign: '{' carries
-    // digit 0 positive, 'A' through 'I' carry 1 through 9 positive, '}' carries 0 negative and 'J'
-    // through 'R' carry 1 through 9 negative. A plain trailing digit is positive.
-    // ------------------------------------------------------------------------------------------
-
-    /** Fifteen per cent, as the reference data writes it: 15 rows carry this image. */
     private static final String RATE_IMAGE_FIFTEEN = "00150{";
 
-    /** A genuine zero rate, as the reference data writes it: 30 rows carry this image. */
     private static final String RATE_IMAGE_ZERO = "00000{";
 
-    /** Twenty-five per cent, the third and last image in the reference data: 6 rows carry it. */
     private static final String RATE_IMAGE_TWENTY_FIVE = "00250{";
 
-    /**
-     * Fifteen per cent written with a plain trailing digit instead of an overpunched sign. Legal,
-     * positive, and absent from the reference data; it exists here because it is the shape in which an
-     * over-wide slice parses silently rather than being rejected on a non-digit byte.
-     */
     private static final String RATE_IMAGE_FIFTEEN_PLAIN_SIGN = "001500";
 
-    /**
-     * A negative rate. The reference data contains none - all 51 sign bytes are positive - so the
-     * sign path has to be constructed. The trailing {@code M} carries digit 4 with a negative sign.
-     */
     private static final String RATE_IMAGE_NEGATIVE = "00123M";
 
-    /**
-     * The widest magnitude six bytes at this geometry can carry. The trailing {@code I} carries digit
-     * 9 positive, so the six digits are all nines: four integer digits and two decimal digits.
-     */
     private static final String RATE_IMAGE_WIDEST = "99999I";
 
-    /** Decoded fifteen per cent, at the scale the layout's two decimal digits fix. */
     private static final BigDecimal RATE_FIFTEEN = new BigDecimal("15.00");
 
-    /** Decoded zero. A present, legitimate value - never an absence, never null. */
     private static final BigDecimal RATE_ZERO = new BigDecimal("0.00");
 
-    /** Decoded twenty-five per cent, the third image the reference data carries. */
     private static final BigDecimal RATE_TWENTY_FIVE = new BigDecimal("25.00");
 
-    /** Decoded negative rate: four integer digits, two decimal digits, negative sign. */
     private static final BigDecimal RATE_NEGATIVE = new BigDecimal("-12.34");
 
-    /** Decoded widest magnitude: precision six, scale two. */
     private static final BigDecimal RATE_WIDEST = new BigDecimal("9999.99");
 
-    /** Scale every decoded rate carries, because the layout declares two decimal digits. */
     private static final int RATE_SCALE = 2;
 
-    /** Significant digits the widest value carries: four integer digits plus two decimal digits. */
     private static final int RATE_FULL_PRECISION = 6;
 
-    /** The factor by which an eleven-byte window over a five-zero filler run inflates the value. */
     private static final BigDecimal ELEVEN_BYTE_WINDOW_INFLATION = new BigDecimal("100000");
 
-    /** What fifteen per cent becomes when five filler zeros are read into it. */
     private static final BigDecimal RATE_FIFTEEN_INFLATED = new BigDecimal("1500000.00");
 
-    /** The eleven digits an eleven-byte window would lift out of a plain-signed row. */
     private static final String ELEVEN_BYTE_WINDOW_IMAGE = "00150000000";
 
-    // ------------------------------------------------------------------------------------------
-    // Filler bytes. The reference data and this module deliberately disagree here.
-    // ------------------------------------------------------------------------------------------
-
-    /** The byte the reference-table sample files use for filler. */
     private static final char SAMPLE_DATA_FILLER_CHARACTER = '0';
 
-    /** The byte this module emits for filler, uniformly, across every layout. */
     private static final char EMITTED_FILLER_CHARACTER = ' ';
 
-    /** Filler run as the reference data writes it: 28 ASCII zeros. */
     private static final String SAMPLE_DATA_FILLER_RUN =
             String.valueOf(SAMPLE_DATA_FILLER_CHARACTER).repeat(EXPECTED_FILLER_LENGTH);
 
-    /** Filler run as this module emits it: 28 spaces. */
     private static final String EMITTED_FILLER_RUN =
             String.valueOf(EMITTED_FILLER_CHARACTER).repeat(EXPECTED_FILLER_LENGTH);
 
-    // ------------------------------------------------------------------------------------------
-    // Whole record images, assembled field by field from the literals above so that every byte of
-    // every image is auditable against the layout table without running anything.
-    // ------------------------------------------------------------------------------------------
-
-    /** Row 0 of the reference data: the direct-hit group at fifteen per cent. */
     private static final String SAMPLE_ROW_0 =
             sampleRow(DIRECT_HIT_GROUP_KEY, SEEDED_TYPE_CD, SEEDED_CAT_CD, RATE_IMAGE_FIFTEEN);
 
-    /** Row 17: the first row of the fallback group, also at fifteen per cent. */
     private static final String SAMPLE_ROW_17 =
             sampleRow(FALLBACK_GROUP_KEY, SEEDED_TYPE_CD, SEEDED_CAT_CD, RATE_IMAGE_FIFTEEN);
 
-    /** Row 34: the first row of the zero-rate group. */
     private static final String SAMPLE_ROW_34 =
             sampleRow(ZERO_RATE_GROUP_KEY, SEEDED_TYPE_CD, SEEDED_CAT_CD, RATE_IMAGE_ZERO);
 
-    /** Row 50: the last row of the reference data, on the highest seeded type code. */
     private static final String SAMPLE_ROW_50 =
             sampleRow(ZERO_RATE_GROUP_KEY, HIGHEST_SEEDED_TYPE_CD, SEEDED_CAT_CD, RATE_IMAGE_ZERO);
 
-    /** A row whose rate carries a plain trailing digit rather than an overpunched sign. */
     private static final String PLAIN_SIGN_ROW = sampleRow(
             DIRECT_HIT_GROUP_KEY, SEEDED_TYPE_CD, SEEDED_CAT_CD, RATE_IMAGE_FIFTEEN_PLAIN_SIGN);
 
-    /** A constructed row carrying the negative rate the reference data never contains. */
     private static final String NEGATIVE_RATE_ROW =
             sampleRow(DIRECT_HIT_GROUP_KEY, SEEDED_TYPE_CD, SEEDED_CAT_CD, RATE_IMAGE_NEGATIVE);
 
-    /** A constructed row carrying the widest magnitude the six-byte field can hold. */
     private static final String WIDEST_RATE_ROW =
             sampleRow(DIRECT_HIT_GROUP_KEY, SEEDED_TYPE_CD, SEEDED_CAT_CD, RATE_IMAGE_WIDEST);
 
-    /** A constructed row whose type code lies outside the seeded set. */
     private static final String OUT_OF_SET_TYPE_ROW =
             sampleRow(DIRECT_HIT_GROUP_KEY, OUT_OF_SET_TYPE_CD, SEEDED_CAT_CD, RATE_IMAGE_TWENTY_FIVE);
 
-    // ------------------------------------------------------------------------------------------
-    // Helpers. Each one is a plain assembly or slicing utility over hand-written literals; none of
-    // them consults the code under test, and each names US-ASCII explicitly at its byte boundary.
-    // ------------------------------------------------------------------------------------------
-
-    /**
-     * Assembles a record image the way the reference data writes it: four mapped fields followed by
-     * an ASCII-zero filler run.
-     *
-     * @param groupKey  ten-byte account group identifier, trailing spaces included
-     * @param typeCd    two-byte transaction type code
-     * @param catCd     four-byte transaction category code, leading zeros included
-     * @param rateImage six-byte zoned-decimal rate image
-     * @return the 50-byte record image as the sample data holds it
-     */
     private static String sampleRow(String groupKey, String typeCd, String catCd, String rateImage) {
         return groupKey + typeCd + catCd + rateImage + SAMPLE_DATA_FILLER_RUN;
     }
 
-    /**
-     * Assembles a record image the way this module emits one: the same four mapped fields followed by
-     * a space filler run.
-     *
-     * @param groupKey  ten-byte account group identifier, trailing spaces included
-     * @param typeCd    two-byte transaction type code
-     * @param catCd     four-byte transaction category code, leading zeros included
-     * @param rateImage six-byte zoned-decimal rate image
-     * @return the 50-byte record image as this module writes it
-     */
     private static String emittedRow(String groupKey, String typeCd, String catCd, String rateImage) {
         return groupKey + typeCd + catCd + rateImage + EMITTED_FILLER_RUN;
     }
 
-    /** Returns the mapped data prefix of an image: byte 0 up to but excluding byte 22. */
     private static String mappedPrefix(String groupKey, String typeCd, String catCd, String rateImage) {
         return groupKey + typeCd + catCd + rateImage;
     }
 
-    /** Encodes a value to US-ASCII, which is the only width authority this test recognises. */
     private static byte[] asciiBytes(String value) {
         return value.getBytes(StandardCharsets.US_ASCII);
     }
 
-    /** Returns a value's width in encoded bytes. Character counts are never a width authority. */
     private static int encodedLength(String value) {
         return value.getBytes(StandardCharsets.US_ASCII).length;
     }
 
-    /** Slices an image by zero-based encoded byte offset and encoded byte length. */
     private static String slice(String image, int offset, int length) {
         return new String(asciiBytes(image), offset, length, StandardCharsets.US_ASCII);
     }
 
-    /** Slices an image's encoded bytes by zero-based offset and length. */
     private static byte[] sliceBytes(String image, int offset, int length) {
         return Arrays.copyOfRange(asciiBytes(image), offset, offset + length);
     }
 
-    /**
-     * Assembles a newline-terminated buffer of whole rows, the shape a batch reader holds a file in.
-     * Row <em>i</em> then starts at {@code i * 51}, the record width plus its one terminator.
-     *
-     * @param rows rows to lay down in order, each already at its full record width
-     * @return the buffer, one stride per row, every row line-feed terminated
-     */
     private static byte[] rowBuffer(String... rows) {
         return asciiBytes(String.join("\n", rows) + "\n");
     }
 
-    // ==========================================================================================
-    // DECLARED GEOMETRY
-    // ==========================================================================================
-
     @Nested
     @DisplayName("declared geometry")
     class DeclaredGeometry {
-
         @Test
         @DisplayName("every declared offset is the zero-based byte position the copybook fixes: "
                 + "0, 10, 12, 16 and 22")
@@ -509,8 +312,6 @@ class DisclosureGroupRecordMapperTest {
         @DisplayName("the widths tile the record exactly: 10 + 2 + 4 = 16 key, 16 + 6 = 22 mapped, "
                 + "22 + 28 = 50 total")
         void theWidthsTileTheRecordExactly() {
-            // Each sum is written out on the expectation side so the arithmetic is visible rather
-            // than inferred from a chain of constants.
             assertThat(EXPECTED_GROUP_ID_LENGTH + EXPECTED_TYPE_CD_LENGTH + EXPECTED_CAT_CD_LENGTH)
                     .isEqualTo(EXPECTED_KEY_LENGTH);
             assertThat(EXPECTED_KEY_LENGTH + EXPECTED_RATE_LENGTH)
@@ -539,8 +340,6 @@ class DisclosureGroupRecordMapperTest {
         @DisplayName("the indexed cluster corroborates the key independently: length 16 at offset 0, "
                 + "so the key is the business key and never a surrogate")
         void theClusterCorroboratesTheKeyGeometry() {
-            // The provisioning job's KEYS(16 0) and RECORDSIZE(50 50) are an authority separate from
-            // the copybook for the same three numbers.
             assertThat(DisclosureGroupRecordMapper.KEY_LENGTH)
                     .isEqualTo(CLUSTER_DECLARED_KEY_LENGTH);
             assertThat(DisclosureGroupRecordMapper.DIS_ACCT_GROUP_ID_OFFSET)
@@ -548,8 +347,6 @@ class DisclosureGroupRecordMapperTest {
             assertThat(DisclosureGroupRecordMapper.RECORD_LENGTH)
                     .isEqualTo(CLUSTER_DECLARED_RECORD_SIZE);
 
-            // A key length of 16 at offset 0 means the key is the leading substring of the image, so
-            // the three components read back out of that substring and nothing is generated.
             DisclosureGroupId key = DisclosureGroupRecordMapper.keyFromRecord(SAMPLE_ROW_0);
             assertThat(key.getDisAcctGroupId() + key.getDisTranTypeCd() + key.getDisTranCatCd())
                     .isEqualTo(slice(SAMPLE_ROW_0, CLUSTER_DECLARED_KEY_OFFSET,
@@ -568,14 +365,9 @@ class DisclosureGroupRecordMapperTest {
         }
     }
 
-    // ==========================================================================================
-    // TRAP ONE :: the rate is six encoded bytes, and an over-wide slice fails silently
-    // ==========================================================================================
-
     @Nested
     @DisplayName("trap one: the six-byte rate")
     class TheSixByteRate {
-
         @Test
         @DisplayName("the rate is 6 encoded bytes and is neither 11 nor 12, because an over-wide "
                 + "slice reads filler digits into the value and parses silently")
@@ -586,15 +378,11 @@ class DisclosureGroupRecordMapperTest {
                     .isNotEqualTo(SIBLING_ELEVEN_BYTE_AMOUNT_WIDTH)
                     .isNotEqualTo(SIBLING_TWELVE_BYTE_AMOUNT_WIDTH);
 
-            // Four integer digits plus two decimal digits is where the six comes from, and it is why
-            // this is the only precision-six field in the module.
             assertThat(EXPECTED_RATE_LENGTH).isEqualTo(RATE_FULL_PRECISION);
 
-            // The two widths it must never borrow, restated so the contrast is on the page.
             assertThat(SIBLING_ELEVEN_BYTE_AMOUNT_WIDTH).isEqualTo(11);
             assertThat(SIBLING_TWELVE_BYTE_AMOUNT_WIDTH).isEqualTo(12);
 
-            // Every sample rate image is exactly six encoded bytes wide.
             assertThat(encodedLength(RATE_IMAGE_FIFTEEN)).isEqualTo(EXPECTED_RATE_LENGTH);
             assertThat(encodedLength(RATE_IMAGE_ZERO)).isEqualTo(EXPECTED_RATE_LENGTH);
             assertThat(encodedLength(RATE_IMAGE_TWENTY_FIVE)).isEqualTo(EXPECTED_RATE_LENGTH);
@@ -604,39 +392,30 @@ class DisclosureGroupRecordMapperTest {
         @DisplayName("an eleven-byte window at the rate offset reaches five bytes past the mapped "
                 + "prefix into filler, inflating the value a hundred thousandfold without failing")
         void anElevenByteWindowWouldReachIntoTheFiller() {
-            // The correct window, hand-written and then compared with the slice at that offset.
             assertThat(slice(SAMPLE_ROW_0, EXPECTED_RATE_OFFSET, EXPECTED_RATE_LENGTH))
                     .isEqualTo(RATE_IMAGE_FIFTEEN);
             assertThat(DisclosureGroupRecordMapper.fromRecord(SAMPLE_ROW_0).getDisIntRate())
                     .isEqualTo(RATE_FIFTEEN);
 
-            // Where an eleven-byte window would end, and how far past the mapped data that is. No
-            // production method is called with the wrong width: the contrast is derived here.
             assertThat(SIBLING_ELEVEN_BYTE_AMOUNT_WIDTH - EXPECTED_RATE_LENGTH)
                     .isEqualTo(ELEVEN_BYTE_WINDOW_SURPLUS);
             assertThat(EXPECTED_RATE_OFFSET + SIBLING_ELEVEN_BYTE_AMOUNT_WIDTH)
                     .isEqualTo(27)
                     .isGreaterThan(EXPECTED_MAPPED_PREFIX_LENGTH);
 
-            // The five surplus bytes are filler, every one of them, so nothing in them is value.
             assertThat(sliceBytes(SAMPLE_ROW_0, EXPECTED_MAPPED_PREFIX_LENGTH,
                     ELEVEN_BYTE_WINDOW_SURPLUS))
                     .hasSize(ELEVEN_BYTE_WINDOW_SURPLUS)
                     .containsOnly((byte) SAMPLE_DATA_FILLER_CHARACTER);
 
-            // On a row whose sign byte is a plain digit, those eleven bytes are all digits, which is
-            // exactly why the mistake is silent rather than rejected on a non-digit byte.
             assertThat(slice(PLAIN_SIGN_ROW, EXPECTED_RATE_OFFSET, SIBLING_ELEVEN_BYTE_AMOUNT_WIDTH))
                     .isEqualTo(ELEVEN_BYTE_WINDOW_IMAGE)
                     .containsOnlyDigits();
 
-            // Read at two decimal places those eleven digits are 1500000.00, which is the true rate
-            // multiplied by one hundred thousand: a wrong answer no exception would announce.
             assertThat(RATE_FIFTEEN_INFLATED)
                     .isEqualByComparingTo(RATE_FIFTEEN.multiply(ELEVEN_BYTE_WINDOW_INFLATION))
                     .isNotEqualByComparingTo(RATE_FIFTEEN);
 
-            // The six-byte window over that same row still yields the true rate.
             assertThat(DisclosureGroupRecordMapper.fromRecord(PLAIN_SIGN_ROW).getDisIntRate())
                     .isEqualTo(RATE_FIFTEEN);
         }
@@ -653,19 +432,13 @@ class DisclosureGroupRecordMapperTest {
             assertThat(widest.scale()).isEqualTo(RATE_SCALE);
             assertThat(widest.precision()).isEqualTo(RATE_FULL_PRECISION);
 
-            // No decoded rate can carry more significant digits than the field has bytes.
             assertThat(widest.precision()).isLessThanOrEqualTo(EXPECTED_RATE_LENGTH);
         }
     }
 
-    // ==========================================================================================
-    // TRAP TWO :: the ten-character group identifier is never trimmed
-    // ==========================================================================================
-
     @Nested
     @DisplayName("trap two: the untrimmed ten-character group identifier")
     class TheUntrimmedGroupIdentifier {
-
         @Test
         @DisplayName("all three seeded group identifiers occupy exactly ten encoded bytes, two of "
                 + "them by way of three trailing spaces")
@@ -674,7 +447,6 @@ class DisclosureGroupRecordMapperTest {
             assertThat(encodedLength(FALLBACK_GROUP_KEY)).isEqualTo(EXPECTED_GROUP_ID_LENGTH);
             assertThat(encodedLength(ZERO_RATE_GROUP_KEY)).isEqualTo(EXPECTED_GROUP_ID_LENGTH);
 
-            // The padding is what makes up the width, and there is exactly three bytes of it.
             assertThat(EXPECTED_GROUP_ID_LENGTH - encodedLength(FALLBACK_GROUP_KEY_TRIMMED))
                     .isEqualTo(PADDED_GROUP_KEY_TRAILING_SPACES);
             assertThat(EXPECTED_GROUP_ID_LENGTH - encodedLength(ZERO_RATE_GROUP_KEY_TRIMMED))
@@ -686,7 +458,6 @@ class DisclosureGroupRecordMapperTest {
                     encodedLength(ZERO_RATE_GROUP_KEY_TRIMMED), PADDED_GROUP_KEY_TRAILING_SPACES))
                     .containsOnly((byte) EMITTED_FILLER_CHARACTER);
 
-            // The direct-hit identifier needs no padding at all: it fills its ten bytes with data.
             assertThat(DIRECT_HIT_GROUP_KEY).doesNotContain(String.valueOf(EMITTED_FILLER_CHARACTER));
         }
 
@@ -757,14 +528,9 @@ class DisclosureGroupRecordMapperTest {
         }
     }
 
-    // ==========================================================================================
-    // DECODING
-    // ==========================================================================================
-
     @Nested
     @DisplayName("decoding a record image")
     class DecodingARecordImage {
-
         @Test
         @DisplayName("the first sample row decodes to its four properties: A000000000, type 01, "
                 + "category 0001 and a rate of 15.00")
@@ -792,7 +558,6 @@ class DisclosureGroupRecordMapperTest {
             assertThat(group.getDisTranCatCd()).isEqualTo(
                     slice(SAMPLE_ROW_50, EXPECTED_CAT_CD_OFFSET, EXPECTED_CAT_CD_LENGTH));
 
-            // Hand-written expectations for the same three slices, so the offsets are attested twice.
             assertThat(group.getDisAcctGroupId()).isEqualTo(ZERO_RATE_GROUP_KEY);
             assertThat(group.getDisTranTypeCd()).isEqualTo(HIGHEST_SEEDED_TYPE_CD);
             assertThat(group.getDisTranCatCd()).isEqualTo(SEEDED_CAT_CD);
@@ -802,8 +567,6 @@ class DisclosureGroupRecordMapperTest {
         @Test
         @DisplayName("a rate of 0.00 is a present value at scale two, never null, never an absence")
         void aZeroRateIsAPresentValue() {
-            // The declared return type is the value itself, not a container, so a non-null assertion
-            // here is the whole of the contract: there is no empty case to represent.
             BigDecimal zeroRate = DisclosureGroupRecordMapper.fromRecord(SAMPLE_ROW_34)
                     .getDisIntRate();
 
@@ -814,8 +577,6 @@ class DisclosureGroupRecordMapperTest {
             assertThat(zeroRate.scale()).isEqualTo(RATE_SCALE);
             assertThat(zeroRate.signum()).isZero();
 
-            // A genuine zero is what makes the accrual program's non-zero-rate test meaningful; the
-            // skip itself is service logic and is deliberately not exercised here.
             assertThat(DisclosureGroupRecordMapper.fromRecord(SAMPLE_ROW_50).getDisIntRate())
                     .isNotNull()
                     .isEqualTo(RATE_ZERO);
@@ -834,7 +595,6 @@ class DisclosureGroupRecordMapperTest {
             assertThat(zero).isEqualTo(RATE_ZERO);
             assertThat(zero.scale()).isEqualTo(RATE_SCALE);
 
-            // The images themselves, so the mapping from bytes to value is visible on the page.
             assertThat(slice(SAMPLE_ROW_0, EXPECTED_RATE_OFFSET, EXPECTED_RATE_LENGTH))
                     .isEqualTo(RATE_IMAGE_FIFTEEN);
             assertThat(slice(SAMPLE_ROW_34, EXPECTED_RATE_OFFSET, EXPECTED_RATE_LENGTH))
@@ -888,14 +648,9 @@ class DisclosureGroupRecordMapperTest {
         }
     }
 
-    // ==========================================================================================
-    // ENCODING AND THE BOUNDED ROUND TRIP
-    // ==========================================================================================
-
     @Nested
     @DisplayName("encoding a record image")
     class EncodingARecordImage {
-
         @Test
         @DisplayName("the mapped prefix, byte 0 up to but excluding byte 22, round-trips byte for "
                 + "byte under US-ASCII")
@@ -909,8 +664,6 @@ class DisclosureGroupRecordMapperTest {
             assertThat(sliceBytes(emitted, 0, EXPECTED_MAPPED_PREFIX_LENGTH))
                     .isEqualTo(expectedPrefix);
 
-            // The same bound applied to the sample row: the mapped data agrees, and only the filler
-            // beyond byte 22 is allowed to differ.
             assertThat(sliceBytes(emitted, 0, EXPECTED_MAPPED_PREFIX_LENGTH))
                     .isEqualTo(sliceBytes(SAMPLE_ROW_0, 0, EXPECTED_MAPPED_PREFIX_LENGTH));
         }
@@ -952,8 +705,6 @@ class DisclosureGroupRecordMapperTest {
         @DisplayName("the public four-argument constructor takes the fields in copybook order, and "
                 + "no identifier object is ever assigned to the entity")
         void thePublicConstructorTakesTheFieldsInCopybookOrder() {
-            // Four deliberately distinguishable values, supplied positionally. If any two arguments
-            // were transposed the emitted image would place them at the wrong offsets.
             DisclosureGroup group = new DisclosureGroup(
                     FALLBACK_GROUP_KEY, HIGHEST_SEEDED_TYPE_CD, SEEDED_CAT_CD, RATE_NEGATIVE);
             String emitted = DisclosureGroupRecordMapper.toRecord(group);
@@ -968,13 +719,9 @@ class DisclosureGroupRecordMapperTest {
                     .isEqualTo(RATE_IMAGE_NEGATIVE);
             assertThat(encodedLength(emitted)).isEqualTo(EXPECTED_RECORD_LENGTH);
 
-            // The identifier is derived from the three components the constructor received; it is
-            // never handed to the entity as an object, which is what the composite-key binding
-            // requires. A key built by hand from the same three values is the same identity.
             assertThat(group.toId()).isEqualTo(new DisclosureGroupId(
                     FALLBACK_GROUP_KEY, HIGHEST_SEEDED_TYPE_CD, SEEDED_CAT_CD));
 
-            // A decoded entity is populated the same way, component by component.
             DisclosureGroup decoded = DisclosureGroupRecordMapper.fromRecord(SAMPLE_ROW_17);
             assertThat(decoded.getDisAcctGroupId()).isEqualTo(FALLBACK_GROUP_KEY);
             assertThat(decoded.getDisTranTypeCd()).isEqualTo(SEEDED_TYPE_CD);
@@ -1012,14 +759,9 @@ class DisclosureGroupRecordMapperTest {
         }
     }
 
-    // ==========================================================================================
-    // FILLER DIVERGENCE :: recorded on purpose, never "corrected" on either side
-    // ==========================================================================================
-
     @Nested
     @DisplayName("filler bytes")
     class FillerBytes {
-
         @Test
         @DisplayName("the reference data's filler is ASCII zero while this module emits spaces, so a "
                 + "whole-record 50-byte comparison against the sample row fails by design and only "
@@ -1040,41 +782,29 @@ class DisclosureGroupRecordMapperTest {
                     .hasSize(EXPECTED_FILLER_LENGTH)
                     .containsOnly((byte) EMITTED_FILLER_CHARACTER);
 
-            // The divergence, stated as an assertion so that neither side can be quietly changed to
-            // match the other. Filler declared without an initialising clause has no canonical byte,
-            // so this is a source anomaly rather than a defect in either the data or the mapper.
             assertThat(emittedFiller).isNotEqualTo(sampleFiller);
             assertThat(SAMPLE_DATA_FILLER_CHARACTER).isNotEqualTo(EMITTED_FILLER_CHARACTER);
             assertThat(emitted).isNotEqualTo(SAMPLE_ROW_0);
 
-            // And the mapped prefix, which is the only comparison this layout supports, does agree.
             assertThat(sliceBytes(emitted, 0, EXPECTED_MAPPED_PREFIX_LENGTH))
                     .isEqualTo(sliceBytes(SAMPLE_ROW_0, 0, EXPECTED_MAPPED_PREFIX_LENGTH));
         }
     }
 
-    // ==========================================================================================
-    // REFERENCE-DATA ACCOUNTING :: layout evidence, never a performance figure
-    // ==========================================================================================
-
     @Nested
     @DisplayName("reference-data accounting")
     class ReferenceDataAccounting {
-
         @Test
         @DisplayName("the reference data is 51 rows on a 51-byte stride, forming three complete "
                 + "groups of seventeen, from which the fallback and zero-rate paths both draw")
         void theReferenceDataIsThreeGroupsOfSeventeen() {
-            // 51 rows is odd and reads like an off-by-one; it is not.
             assertThat(SEEDED_GROUP_COUNT * SEEDED_ROWS_PER_GROUP).isEqualTo(SEEDED_ROW_COUNT);
 
-            // Stride is the record width plus one line-feed terminator, and the file size follows.
             assertThat(SEEDED_ROW_STRIDE).isEqualTo(EXPECTED_RECORD_LENGTH + 1);
             assertThat(SEEDED_ROW_COUNT * SEEDED_ROW_STRIDE).isEqualTo(SEEDED_FILE_BYTES);
             assertThat(SEEDED_ROW_COUNT * EXPECTED_FILLER_LENGTH)
                     .isEqualTo(SEEDED_FILLER_BYTE_COUNT);
 
-            // Three distinct group identifiers, each exactly ten encoded bytes.
             assertThat(DIRECT_HIT_GROUP_KEY)
                     .isNotEqualTo(FALLBACK_GROUP_KEY)
                     .isNotEqualTo(ZERO_RATE_GROUP_KEY);
@@ -1084,10 +814,6 @@ class DisclosureGroupRecordMapperTest {
                     + encodedLength(ZERO_RATE_GROUP_KEY))
                     .isEqualTo(SEEDED_GROUP_COUNT * EXPECTED_GROUP_ID_LENGTH);
 
-            // The composition is what makes the accrual program's default-group fallback and its
-            // zero-rate skip both reachable from seeded data alone: the padded default identifier is
-            // present to be re-probed, and the zero-rate group supplies genuine 0.00 rates. Both
-            // branches belong to the accrual service and are not exercised here.
             assertThat(DisclosureGroupRecordMapper.fromRecord(SAMPLE_ROW_17).getDisAcctGroupId())
                     .isEqualTo(FALLBACK_GROUP_KEY);
             assertThat(DisclosureGroupRecordMapper.fromRecord(SAMPLE_ROW_34).getDisIntRate())
@@ -1114,20 +840,13 @@ class DisclosureGroupRecordMapperTest {
         }
     }
 
-    // ==========================================================================================
-    // ENTRY-POINT AGREEMENT
-    // ==========================================================================================
-
     @Nested
     @DisplayName("entry-point agreement")
     class EntryPointAgreement {
-
         @Test
         @DisplayName("the string, byte-array and byte-range entry points decode the same row to the "
                 + "same four property values")
         void theThreeEntryPointsDecodeTheSameRowIdentically() {
-            // Row 17 laid down as the second row of a newline-terminated buffer, so the range entry
-            // point has to skip a whole stride and leave the terminator behind.
             byte[] buffer = rowBuffer(SAMPLE_ROW_0, SAMPLE_ROW_17, SAMPLE_ROW_34);
             assertThat(buffer).hasSize(3 * SEEDED_ROW_STRIDE);
 
@@ -1137,7 +856,6 @@ class DisclosureGroupRecordMapperTest {
             DisclosureGroup fromRange =
                     DisclosureGroupRecordMapper.fromRecord(buffer, SEEDED_ROW_STRIDE);
 
-            // Entity equality is key-only by design, so the rate is compared explicitly as well.
             assertThat(fromBytes).isEqualTo(fromString);
             assertThat(fromRange).isEqualTo(fromString);
 
@@ -1149,7 +867,6 @@ class DisclosureGroupRecordMapperTest {
                 assertThat(decoded.getDisIntRate().scale()).isEqualTo(RATE_SCALE);
             }
 
-            // The last row of the buffer, addressed the same way, is a different row entirely.
             assertThat(DisclosureGroupRecordMapper
                     .fromRecord(buffer, 2 * SEEDED_ROW_STRIDE).getDisAcctGroupId())
                     .isEqualTo(ZERO_RATE_GROUP_KEY);
@@ -1170,14 +887,9 @@ class DisclosureGroupRecordMapperTest {
         }
     }
 
-    // ==========================================================================================
-    // REJECTING MALFORMED INPUT
-    // ==========================================================================================
-
     @Nested
     @DisplayName("rejecting malformed input")
     class RejectingMalformedInput {
-
         @Test
         @DisplayName("a 49-byte image is refused rather than silently padded, and the diagnostic "
                 + "names the artefact, the expected width of 50 and the actual length of 49")
@@ -1218,13 +930,11 @@ class DisclosureGroupRecordMapperTest {
                     .isThrownBy(() -> DisclosureGroupRecordMapper.fromRecord(shortImage))
                     .withMessageContaining(String.valueOf(EXPECTED_RECORD_LENGTH));
 
-            // A range that starts one byte in no longer fits inside a single-row buffer.
             byte[] singleRow = asciiBytes(SAMPLE_ROW_0);
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> DisclosureGroupRecordMapper.fromRecord(singleRow, 1))
                     .withMessageContaining("CVTRA02Y");
 
-            // A negative start index is refused before any slicing is attempted.
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> DisclosureGroupRecordMapper.fromRecord(singleRow, -1))
                     .withMessageContaining("CVTRA02Y");

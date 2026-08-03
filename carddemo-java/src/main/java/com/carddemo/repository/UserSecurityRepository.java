@@ -16,37 +16,71 @@
  */
 package com.carddemo.repository;
 
+import java.util.Optional;
+
 import com.carddemo.domain.UserSecurity;
-import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.repository.Repository;
 
 /**
- * Persistence gateway for the {@code user_security} table, which holds the module's sign-on
- * identities and is the sole authority for the administrative-versus-standard authorization split.
- * It backs two surfaces: the sign-on path that authenticates a request, and the four administrative
- * user transactions - list, add, update and delete - that maintain these rows.
+ * Persistence gateway for the {@code user_security} table - the relational form of the 80-byte
+ * {@code SEC-USER-DATA} record of copybook {@code CSUSR01Y}, keyed on the 8-character user
+ * identifier the record carries at offset 0.
  *
- * <p><strong>This interface declares nothing.</strong> Every access it needs is already inherited
- * from {@link JpaRepository}: {@code findById(String)} for the keyed read, {@code findAll(Pageable)}
- * for the administrative browse, {@code save} for both add and update, {@code deleteById} for the
- * delete, and {@code existsById} and {@code count} for the assertions the gate fixtures make. The
- * emptiness is a deliberate design conclusion rather than an omission, and the sections below record
- * why each finder a reader might reach for is either unnecessary or actively forbidden.
+ * <p><strong>This interface declares exactly the four operations the module performs, and inherits
+ * nothing else.</strong> It extends the bare {@link Repository} marker rather than
+ * {@code JpaRepository}, so the only methods that exist on it are the four written below. That is a
+ * least-privilege decision about a table holding credentials, and it is worth stating what extending
+ * {@code JpaRepository} would have handed to every injector instead:
  *
- * <p>It carries no stereotype annotation either. The application class declares no explicit repository
- * scan, so the framework discovers and proxies repository interfaces from the base package on its own,
- * and annotating this one would add nothing a reader could rely on.
+ * <ul>
+ *   <li>{@code findAll()} and {@code findAll(Sort)} - an <strong>unbounded</strong> read of every
+ *       sign-on identity, each one a fully hydrated entity carrying its BCrypt digest. One call, every
+ *       credential in the system in memory, and nothing in the signature to suggest it.</li>
+ *   <li>{@code saveAll}, {@code saveAllAndFlush}, {@code saveAndFlush}, {@code flush} - bulk and
+ *       flush-forcing writes over a table the legacy tier only ever rewrote one record at a time.</li>
+ *   <li>{@code deleteAll}, {@code deleteAllInBatch}, {@code deleteAllById}, {@code deleteAllByIdInBatch},
+ *       {@code delete}, {@code deleteInBatch} - a set of ways to remove <strong>every sign-on identity
+ *       in one statement</strong>, including two that bypass the persistence context entirely. The
+ *       legacy delete transaction removes one row that it has just read.</li>
+ *   <li>{@code getReferenceById} - a lazy proxy whose dereference outside a transaction is a failure
+ *       mode this entity cannot otherwise reach.</li>
+ *   <li>{@code findAll(Example)} and the whole query-by-example family - a query surface over an entity
+ *       whose attributes include the digest.</li>
+ * </ul>
  *
- * <h2>Legacy provenance</h2>
+ * <p>None of those is used anywhere in the module, and every one of them is reachable from any bean
+ * that declares this type as a constructor parameter. An interface is a capability grant, so the grant
+ * is written out rather than inherited: what is not declared below cannot be called, cannot be reached
+ * by a future edit that "just uses what is there", and cannot appear in a stack trace.
  *
- * <p>The row is the relational form of the 80-byte {@code SEC-USER-DATA} record declared in copybook
- * {@code CSUSR01Y}, which twelve programs include - the fifth-highest inclusion count in the estate,
- * which is why its layout has to be exactly right. Five of its six fields become columns, given here
- * as zero-based offset and width: the 8-byte identifier at 0, the 20-byte first name at 8, the
- * 20-byte last name at 28, the credential at 48 for <em>8 legacy bytes</em>, and the 1-byte user type
- * at 56. Mapped bytes end at offset 57, where a 23-byte trailing filler begins; that filler is
- * deliberately <strong>not persisted</strong>, because it is padding reconstructed from the declared
- * record width rather than data. Offset 57 plus 23 filler bytes is the 80-byte record length, which
- * is how the layout is known to be complete.
+ * <p><strong>The administrative browse returns a projection, not the entity.</strong>
+ * {@link #findAllProjectedBy(Pageable)} yields {@link AdminEntry}, a closed projection over the four
+ * non-credential columns, so the digest column is <strong>not named in the generated select</strong>
+ * and no digest is hydrated to serve a list of users. The keyed read still returns the entity, because
+ * sign-on has to verify a credential and the administrative update has to rewrite a row it read; those
+ * are the two places a digest is legitimately in memory, and they are now the only two.
+ *
+ * <p>The sections below record why each additional finder a reader might reach for is either
+ * unnecessary or actively forbidden.
+ *
+ * <p>{@code sec_usr_pwd} is {@code VARCHAR(60)} because it stores a BCrypt digest rather than the
+ * legacy 8-byte cleartext field. It is one of three columns in the schema whose width deliberately
+ * exceeds its legacy field - {@code customer.cust_ssn} and {@code customer.govt_issued_id} are the
+ * other two, widened for protection at rest - and the only one taken to satisfy the
+ * no-hardcoded-credential constraint in preference to behavioural parity; see
+ * {@code docs/decision-log.md}. It must not be narrowed, which would truncate stored digests.
+ *
+ * <p>No finder may take a credential, hashed or otherwise: a salted digest differs on every
+ * encoding of the same input, so an equality predicate over it could never match, and legacy
+ * sign-on reads by key first and only then compares. Hashing, verification and redaction live in
+ * the service and security-configuration layers, and nothing about this table is logged here.
+ *
+ * <p>{@code sec_usr_type} is an unconstrained {@link String} on purpose. Legacy sign-on tests only
+ * the administrative code and routes every other value to the main menu through an unconditional
+ * alternative, so a check constraint, converter or validation annotation here would reject data the
+ * legacy system accepted and routed.
  *
  * <p><strong>How the dataset is provisioned, and why no character-set decode was ever needed.</strong>
  * The provisioning job {@code app/jcl/DUSRSECJ.jcl} is unlike the jobs behind the module's other
@@ -78,13 +112,15 @@ import org.springframework.data.jpa.repository.JpaRepository;
  * sequenced or synthesised, so a row's identity in the table is the same identity the legacy record
  * had.
  *
- * <h2>The credential column is the module's single intentional width divergence</h2>
+ * <h2>The credential column is one of the schema's three deliberate width divergences</h2>
  *
  * <p>The legacy field is eight bytes wide. The column {@code sec_usr_pwd} is {@code VARCHAR(60)},
- * sized for a BCrypt digest. Every other column across all eleven tables preserves its legacy width
- * exactly, so this is the <strong>one deliberate width change in the entire schema</strong>. It must
- * not be narrowed back to the legacy width, which would truncate and destroy every stored digest, and
- * it must not be widened further. The divergence exists only because a binding requirement demands it,
+ * sized for a BCrypt digest. Three columns across the eleven tables deliberately exceed their legacy
+ * field width - this one, {@code customer.cust_ssn} and {@code customer.govt_issued_id}, the latter two
+ * widened to hold a sealed envelope rather than cleartext - and this is the <strong>only one widened
+ * for hashing rather than for protection at rest</strong>; every other column preserves its legacy
+ * width exactly. It must not be narrowed back to the legacy width, which would truncate and destroy
+ * every stored digest, and it must not be widened further. The divergence exists only because a binding requirement demands it,
  * and it is recorded in {@code docs/decision-log.md} rather than silently applied.
  *
  * <h2>A documented parity exception, and an absolute prohibition</h2>
@@ -154,24 +190,32 @@ import org.springframework.data.jpa.repository.JpaRepository;
  * but that type belongs to the service layer's use and is deliberately not referenced from this
  * package, which depends on the domain package alone.
  *
- * <h2>The administrative browse is an inherited paged read</h2>
+ * <h2>The administrative browse is a paged read over a projection</h2>
  *
  * <p>The administrative user list presents a page of 10 rows, proven from the legacy screen table
- * declared as occurring 10 times rather than inferred. The Java counterpart is the <strong>inherited
- * {@code findAll(Pageable)}</strong> with a sort on the user identifier, so <strong>no method is
- * declared for it</strong> and none is needed. The page size is supplied by the caller through the
- * {@code Pageable} and does not appear here as a constant or a default; and this interface imposes
- * <strong>no ordering of its own</strong>, so the service can request either direction and reproduce
- * the legacy browse fill order, which fills backwards as well as forwards.
+ * declared as occurring 10 times rather than inferred. The Java counterpart is
+ * {@link #findAllProjectedBy(Pageable)}, which returns {@link AdminEntry} rather than the entity. The
+ * page size is supplied by the caller through the {@code Pageable} and does not appear here as a
+ * constant or a default; and this interface imposes <strong>no ordering of its own</strong>, so the
+ * service can request either direction and reproduce the legacy browse fill order, which fills
+ * backwards as well as forwards.
  *
- * <h2>Writes go through the inherited save, one record at a time</h2>
+ * <p>The projection is what makes the list safe rather than merely tidy. The legacy screen shows an
+ * identifier, a first name, a last name and a type; it has never shown a credential. Returning the
+ * entity would nonetheless load one digest per row into memory, ten at a time, to render four columns -
+ * and every one of those instances is then a candidate for an accidental rendering. A closed projection
+ * makes the digest absent rather than merely unused, which is a stronger statement than any convention
+ * about not calling an accessor.
+ *
+ * <h2>Writes go through one save, one record at a time</h2>
  *
  * <p>The administrative add and update transactions both store a credential, and both <strong>hash on
- * write in the user-management service</strong> - never here. The inherited {@code save} is the only
+ * write in the user-management service</strong> - never here. {@link #save(UserSecurity)} is the only
  * write path and covers add and update alike through the merge semantics of the persistence provider,
  * which is exactly the record-at-a-time, rewrite-in-place behavior of the legacy tier. There is
  * therefore <strong>no bulk update, no upsert method and no modifying statement</strong> on this
- * interface, and the delete transaction is served by the inherited {@code deleteById}.
+ * interface, and the delete transaction is served by {@link #deleteById(String)}, which removes the one
+ * row it is given and has no counterpart that removes more.
  *
  * <h2>No version attribute, no association, and no index for a finder to serve</h2>
  *
@@ -217,5 +261,112 @@ import org.springframework.data.jpa.repository.JpaRepository;
  *
  * @see UserSecurity
  */
-public interface UserSecurityRepository extends JpaRepository<UserSecurity, String> {
+public interface UserSecurityRepository extends Repository<UserSecurity, String> {
+
+    /**
+     * Reads one sign-on identity by its eight-character identifier.
+     *
+     * <p>The one method that returns the entity, and therefore the one that brings a BCrypt digest into
+     * memory. Two callers need that and no others do: sign-on, which verifies a presented credential
+     * against the stored digest, and the administrative update transaction, which reads the row it is
+     * about to rewrite exactly as the legacy program does.
+     *
+     * @param secUsrId the eight-character sign-on identifier, which is the primary key
+     * @return the identity, or {@link Optional#empty()} when no row carries that identifier
+     */
+    Optional<UserSecurity> findById(String secUsrId);
+
+    /**
+     * Reads a page of sign-on identities as projections that carry no credential.
+     *
+     * <p>The criteria-less derived form is spelled {@code findAllProjectedBy} because the return type
+     * rather than a predicate is what varies: there is no criterion, and the projection is the point.
+     * The generated select names the four projected columns alone, so {@code sec_usr_pwd} is not read
+     * and no digest exists in the returned objects to be rendered, logged or serialized by accident.
+     *
+     * <p>Ordering and page size come entirely from the argument. The administrative browse pages 10 rows
+     * at a time and fills backwards as well as forwards, so imposing either here would break one of the
+     * two directions.
+     *
+     * @param pageable the page, size and sort the caller requires; never {@code null}
+     * @return one page of projections, empty when the page lies beyond the last row
+     */
+    Page<AdminEntry> findAllProjectedBy(Pageable pageable);
+
+    /**
+     * Stores one sign-on identity, inserting it or updating it in place.
+     *
+     * <p>The only write path. The credential this receives is already a BCrypt digest: hashing happens
+     * in the user-management service, never here, and the entity itself refuses a value that is not a
+     * digest of the expected form.
+     *
+     * @param identity the identity to store; never {@code null}
+     * @return the stored instance, which the persistence provider may substitute for the argument
+     */
+    UserSecurity save(UserSecurity identity);
+
+    /**
+     * Removes the one sign-on identity carrying an identifier.
+     *
+     * <p>Removes at most one row and has no bulk counterpart on this interface. The administrative
+     * delete transaction reads the row and shows it to the operator before calling this, so an absent
+     * identifier is already reported by then rather than being discovered here.
+     *
+     * @param secUsrId the eight-character sign-on identifier, which is the primary key
+     */
+    void deleteById(String secUsrId);
+
+    /**
+     * The four non-credential columns of a sign-on identity, as the administrative list needs them.
+     *
+     * <p>A <strong>closed</strong> projection: every accessor names a persistent attribute directly, so
+     * the persistence provider selects exactly those four columns and nothing more. It is nested inside
+     * the repository because it is part of this interface's contract rather than a domain type or a
+     * transport type - it depends on nothing, and it keeps the layer rule that this package imports only
+     * the domain package.
+     *
+     * <p><strong>There is no credential accessor and one cannot be added by convention.</strong> A
+     * projection accessor resolves by bean-property name, and the entity deliberately exposes its digest
+     * as {@code credentialDigest()} rather than as {@code getSecUsrPwd()}, so no accessor spelled the
+     * conventional way resolves to it. Declaring {@code getSecUsrPwd()} here would fail to bind rather
+     * than quietly widen the select, which is the failure direction to prefer.
+     *
+     * <p>The four accessors mirror the four fields the legacy screen displays, in the order the record
+     * declares them: the identifier at offset 0, the given name at offset 8, the family name at offset
+     * 28, and the role code at offset 56.
+     */
+    interface AdminEntry {
+
+        /**
+         * Returns the eight-character sign-on identifier; record offset 0, width 8.
+         *
+         * @return the identifier, never {@code null} for a persisted row
+         */
+        String getSecUsrId();
+
+        /**
+         * Returns the given name; record offset 8, width 20.
+         *
+         * @return the given name, never {@code null} for a persisted row
+         */
+        String getSecUsrFname();
+
+        /**
+         * Returns the family name; record offset 28, width 20.
+         *
+         * @return the family name, never {@code null} for a persisted row
+         */
+        String getSecUsrLname();
+
+        /**
+         * Returns the single-character role code; record offset 56, width 1.
+         *
+         * <p>Returned raw and unjudged, because the legacy program tests only the administrative code and
+         * routes every other value - including one the estate never declared - through an unconditional
+         * alternative. Interpreting it belongs to the service layer.
+         *
+         * @return the role code, never {@code null} for a persisted row
+         */
+        String getSecUsrType();
+    }
 }

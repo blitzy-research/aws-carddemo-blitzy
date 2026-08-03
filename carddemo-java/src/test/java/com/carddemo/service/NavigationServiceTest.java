@@ -19,8 +19,6 @@ package com.carddemo.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verifyNoInteractions;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -94,8 +92,9 @@ import com.carddemo.service.NavigationService.Routes;
  *
  * <p><strong>Harness.</strong> A surefire unit test over a service with no collaborators and no
  * mutable state: the real instance is exercised throughout, no application context is started, no
- * container is launched, no connection is opened and no port is bound. The Mockito double that
- * appears in {@link NoServerSideForwarding} is never stubbed; it exists to record an absence.
+ * container is launched, no connection is opened and no port is bound. {@link NoServerSideForwarding}
+ * proves the absence of a forwarding path from the delivered type's own shape rather than from a
+ * stand-in, and from the state a caller echoes back being unchanged by every rule in turn.
  *
  * <p><strong>Provenance.</strong> Checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
  * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Legacy behaviour is
@@ -208,29 +207,34 @@ final class NavigationServiceTest {
     private NavigationService subject;
 
     /**
-     * The shape a forwarding implementation would need, declared here and implemented nowhere.
+     * Asserts that the service holds nothing it could hand control to, which is the only form in which
+     * "no server-side forwarding" is a statement about this class rather than about a stand-in.
      *
-     * <p>The production constructor takes no argument at all, so there is no injected collaborator to
-     * interrogate; that absence is itself the contract, and it is proved at compile time by the fact
-     * that {@link #createService()} can construct the service with no argument. This interface names
-     * the two things a non-compliant implementation would have had to reach for &mdash; a downstream
-     * screen's entry point, which is what a transfer of control invokes, and a source of screen
-     * message text, which is what an implementation that composed its own thank-you or invalid-key
-     * line would need. A mock of it is handed to no one and asserted to record no interaction, so the
-     * assertion states that a navigation decision is complete without entering anything downstream
-     * and without composing any message text here.
+     * <p>An earlier revision made this claim with a hand-authored interface, mocked and then asserted to
+     * record no interaction. That assertion could not fail: the double was handed to nobody, so no
+     * implementation of this service &mdash; forwarding or not &mdash; could ever have interacted with
+     * it. What actually carries the claim is the service's own shape. A transfer of control needs
+     * something to transfer to, and a screen message needs a catalogue to come from; both would arrive
+     * as a constructor parameter or an instance field, because that is how this module supplies a
+     * collaborator. So the absence of either is checked directly: exactly one constructor, taking no
+     * argument, and no instance field of a module type.
      *
-     * <p>It is a hand-authored double rather than a production type on purpose: binding the assertion
-     * to a real service would tie this file to a class it neither imports nor needs, and stubbing one
-     * would risk producing an expected value from a production artefact.
+     * <p>Reflection is used, and is confined to test code. The module's own budget for reflection is
+     * zero in {@code src/main/java}; a test that inspects a delivered type's shape is the intended
+     * exception, and it is what makes this a mechanical check rather than a reviewer's reading.</p>
      */
-    interface DownstreamDispatch {
+    private static void assertServiceHoldsNothingToForwardTo() {
+        assertThat(NavigationService.class.getDeclaredConstructors())
+                .as("a collaborator this service could hand control to would arrive as a constructor "
+                        + "parameter; a single no-argument constructor is what rules that out")
+                .hasSize(1)
+                .allSatisfy(constructor -> assertThat(constructor.getParameterCount()).isZero());
 
-        /** What a transfer of control would invoke on the program it hands control to. */
-        void enterScreen(String routeValue);
-
-        /** What an implementation composing its own screen message text would call. */
-        String messageFor(String messageKey);
+        assertThat(NavigationService.class.getDeclaredFields())
+                .filteredOn(field -> !java.lang.reflect.Modifier.isStatic(field.getModifiers()))
+                .as("and no instance field may carry one either, which is the other way a downstream "
+                        + "screen entry point or a message catalogue could have been reached")
+                .isEmpty();
     }
 
     @BeforeEach
@@ -433,14 +437,19 @@ final class NavigationServiceTest {
         }
 
         @Test
-        @DisplayName("the split returns a destination value and never hands control anywhere")
+        @DisplayName("the split returns the exact destination each user type selects, and the service "
+                + "holds nothing it could hand control to instead")
         void theSplitReturnsAValue() {
-            final DownstreamDispatch downstream = mock(DownstreamDispatch.class);
+            assertAll(
+                    () -> assertThat(subject.resolveSignOnRoute(UserType.ADMIN))
+                            .as("an administrative type selects the administrative menu and no other "
+                                    + "route, which is the whole of the legacy split")
+                            .isSameAs(Route.ADMIN_MENU),
+                    () -> assertThat(subject.resolveSignOnRoute(UserType.USER))
+                            .as("and every other type selects the main menu")
+                            .isSameAs(Route.USER_MENU));
 
-            final Route resolved = subject.resolveSignOnRoute(UserType.ADMIN);
-
-            assertThat(resolved).isNotNull();
-            verifyNoInteractions(downstream);
+            assertServiceHoldsNothingToForwardTo();
         }
     }
 
@@ -1468,17 +1477,27 @@ final class NavigationServiceTest {
     // The central claim: a returned route value, and no server-side forward.
     // ----------------------------------------------------------------------------------------
 
+    /**
+     * Holds the claim that a navigation decision is a value and never a transfer of control.
+     *
+     * <p>Two observable facts carry it, and neither depends on a stand-in. The first is the service's
+     * own shape: one no-argument constructor and no instance field, so there is nothing it could hand
+     * control to and no catalogue it could compose a message from &mdash; see
+     * {@link NavigationServiceTest#assertServiceHoldsNothingToForwardTo()}. The second is that the state
+     * a caller echoes back is returned unchanged by every rule, which is where a forwarding
+     * implementation would have had to record where it went.</p>
+     */
     @Nested
     @DisplayName("a navigation decision is a value returned to the client: the legacy transfer of "
             + "control becomes a route constant in the response body and never a server-side forward")
     final class NoServerSideForwarding {
 
         @Test
-        @DisplayName("a full pass over every navigation rule enters no downstream screen and asks no "
-                + "collaborator for screen message text")
+        @DisplayName("a full pass over every navigation rule leaves the echoed state untouched and the "
+                + "service holds nothing it could have entered or asked for message text")
         void aFullPassOverEveryRuleEntersNothingDownstream() {
-            final DownstreamDispatch downstream = mock(DownstreamDispatch.class);
             final NavigationContext echoed = fullyEchoedState();
+            final NavigationContext handedOver = fullyEchoedState();
 
             subject.resolveSignOnRoute(UserType.ADMIN);
             subject.resolveSignOnRouteForUserTypeCode(STANDARD_USER_TYPE_CODE);
@@ -1499,32 +1518,40 @@ final class NavigationServiceTest {
             subject.routes();
             subject.adminScopedRoutes();
 
-            verifyNoInteractions(downstream);
+            assertThat(echoed)
+                    .as("every rule in the estate has now been asked, and the state the client echoed "
+                            + "is byte-for-byte what it handed over. A rule that forwarded would have to "
+                            + "record where it went, and this state is where it would record it")
+                    .isEqualTo(handedOver);
+            assertServiceHoldsNothingToForwardTo();
         }
 
         @Test
         @DisplayName("the exit key hands back a route value rather than transferring, and composes no "
                 + "message text here, because the common message catalogue owns that text")
         void theExitKeyHandsBackARouteValueAndComposesNoMessageText() {
-            final DownstreamDispatch downstream = mock(DownstreamDispatch.class);
+            final NavigationContext echoed = nominatingOriginatingProgram("COSGN00C");
 
             final Optional<Route> resolved = subject.resolveAttentionKeyRoute(KeyAction.PFK03,
-                    nominatingOriginatingProgram("COSGN00C"), DISCRIMINATING_CALLER_DEFAULT);
+                    echoed, DISCRIMINATING_CALLER_DEFAULT);
 
             assertAll(
                     () -> assertThat(resolved).contains(Route.SIGN_ON),
                     () -> assertThat(resolved)
                             .get()
                             .extracting(Route::getRouteValue)
-                            .isEqualTo(WIRE_SIGN_ON));
-            verifyNoInteractions(downstream);
+                            .isEqualTo(WIRE_SIGN_ON),
+                    () -> assertThat(echoed)
+                            .as("the exit key selected a destination and left the echoed state exactly "
+                                    + "as it arrived, so the client carries the decision forward")
+                            .isEqualTo(nominatingOriginatingProgram("COSGN00C")));
+            assertServiceHoldsNothingToForwardTo();
         }
 
         @Test
         @DisplayName("an unmapped key changes no route and composes no message text here, so the "
                 + "screen is re-presented by its owning service and not by this one")
         void anUnmappedKeyChangesNoRouteAndComposesNoMessageText() {
-            final DownstreamDispatch downstream = mock(DownstreamDispatch.class);
             final NavigationContext echoed = nominatingOriginatingProgram("COSGN00C");
 
             final Optional<Route> resolved = subject.resolveAttentionKeyRoute(KeyAction.PFK07,
@@ -1536,8 +1563,12 @@ final class NavigationServiceTest {
                             .isEmpty(),
                     () -> assertThat(echoed.fromProgram())
                             .as("the state the client will echo back is unchanged")
-                            .isEqualTo("COSGN00C"));
-            verifyNoInteractions(downstream);
+                            .isEqualTo("COSGN00C"),
+                    () -> assertThat(echoed)
+                            .as("and unchanged in every other component too, so an unmapped key is a "
+                                    + "no-op rather than a partial mutation")
+                            .isEqualTo(nominatingOriginatingProgram("COSGN00C")));
+            assertServiceHoldsNothingToForwardTo();
         }
 
         @Test

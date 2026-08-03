@@ -98,8 +98,22 @@ final class ProductionInfrastructureIsUntouchedTest {
     /**
      * Supplies every required variable with a usable value.
      *
-     * <p>Each value is derived from its own variable name. The check judges usability rather than shape,
-     * so nothing credential-shaped needs to appear in this file.
+     * <p>Each value is derived from its own variable name, because the required-settings check judges
+     * <em>usability</em> - declared, resolved, non-blank - rather than shape, so nothing
+     * credential-shaped needs to appear in this file.
+     *
+     * <p><strong>Two variables are exceptions, and the exception is the point rather than a
+     * convenience.</strong> The guard published by this configuration now performs a second check that
+     * the required-settings sweep does not: the job-submission queue must be a destination this
+     * deployment can have meant, and that is judged against the region the deployment declares. A
+     * name-derived value is not a queue destination at all, so those two carry realistic synthetic
+     * values - a bare first-in-first-out queue name, which is the preferred form because a name carries
+     * no destination for anything to redirect, and a region. Neither is a credential and neither names
+     * any real resource.
+     *
+     * <p>The outbound-trust rule itself is exercised in full by {@code ProductionOutboundTrustTest};
+     * what this file needs from it is only that a complete environment satisfies it, so that a refusal
+     * anywhere else in this class is attributable to what that test removed.
      *
      * @return a mutable map from variable name to value
      */
@@ -109,6 +123,8 @@ final class ProductionInfrastructureIsUntouchedTest {
             variables.put(setting.environmentVariable(),
                     "supplied-by-this-test-for-" + setting.environmentVariable());
         }
+        variables.put("CARDDEMO_SQS_QUEUE", "carddemo-jobs.fifo");
+        variables.put("AWS_REGION", "eu-west-2");
         return variables;
     }
 

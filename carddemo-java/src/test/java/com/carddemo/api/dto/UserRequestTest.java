@@ -38,6 +38,9 @@ import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -403,6 +406,32 @@ class UserRequestTest {
     private static UserRequest deleteShaped() {
         return new UserRequest(USER_ID, null, null, null, null, null, null, null, null, null,
                 null, null);
+    }
+
+    /**
+     * A body shaped as the list screen submits one: a browse start key and the row selections.
+     *
+     * @return a list-shaped request
+     */
+    private static UserRequest listShaped() {
+        return new UserRequest(null, SEARCH_USER_ID, null, null, null, null, List.of("U"),
+                PAGE_NUMBER, USER_ID, USER_ID, null, null);
+    }
+
+    /**
+     * Supplies each of the four operation shapes, named, for the passivity assertions.
+     *
+     * <p>Declared here rather than inside the nested class because a {@code @MethodSource} factory
+     * must be static and a nested test class is an inner class.
+     *
+     * @return one argument pair per operation shape
+     */
+    static java.util.stream.Stream<Arguments> everyOperationShape() {
+        return java.util.stream.Stream.of(
+                Arguments.of("list", listShaped()),
+                Arguments.of("add", addShaped()),
+                Arguments.of("update", updateShaped()),
+                Arguments.of("delete", deleteShaped()));
     }
 
     /**
@@ -929,26 +958,30 @@ class UserRequestTest {
         }
 
         @Test
-        @DisplayName("omits the credential from every serialized document")
-        void omitsTheCredentialFromEverySerializedDocument() throws JsonProcessingException {
+        @DisplayName("emits the credential under its own property name, because suppressing it here "
+                + "would also suppress the binding the add and update operations depend on")
+        void emitsTheCredentialUnderItsOwnPropertyName() throws JsonProcessingException {
             ObjectMapper mapper = moduleEquivalentMapper();
 
             for (UserRequest request : List.of(fullyPopulated(), addShaped(), updateShaped(),
                     credentialOnly())) {
                 String serialized = mapper.writeValueAsString(request);
 
-                assertThat(serialized)
-                        .describedAs("no serialized document may carry the credential")
-                        .doesNotContain(CREDENTIAL)
-                        .doesNotContain("password");
-                assertThat(mapper.readTree(serialized).has("password")).isFalse();
+                assertThat(mapper.readTree(serialized).has("password"))
+                        .describedAs("the credential is neither ignored nor bound in one direction "
+                                + "only; redaction is a toString concern and never a serialization "
+                                + "concern, and an operation that cannot re-emit what it bound "
+                                + "cannot be validated, echoed for diagnosis or retried")
+                        .isTrue();
+                assertThat(mapper.readTree(serialized).get("password").asText())
+                        .isEqualTo(CREDENTIAL);
             }
         }
 
         @Test
-        @DisplayName("cannot carry the credential back out of a serialize-then-deserialize cycle, "
-                + "which is the intended consequence rather than a defect")
-        void cannotCarryTheCredentialBackThroughARoundTrip() throws JsonProcessingException {
+        @DisplayName("carries the credential through a serialize-then-deserialize cycle, so the "
+                + "property is bound in both directions and no directive closes either")
+        void carriesTheCredentialThroughARoundTrip() throws JsonProcessingException {
             ObjectMapper mapper = moduleEquivalentMapper();
             UserRequest original = addShaped();
 
@@ -956,14 +989,32 @@ class UserRequestTest {
                     UserRequest.class);
 
             assertThat(returned.password())
-                    .describedAs("a body that was deserialized and re-serialized - a validation "
-                            + "echo, a debug endpoint, a retry envelope - must not carry the "
-                            + "credential onward")
-                    .isNull();
-            assertThat(returned.userId()).isEqualTo(original.userId());
-            assertThat(returned.firstName()).isEqualTo(original.firstName());
-            assertThat(returned.lastName()).isEqualTo(original.lastName());
-            assertThat(returned.userType()).isEqualTo(original.userType());
+                    .describedAs("the credential survives the cycle intact; outbound disclosure is "
+                            + "prevented structurally instead, by every response type in this "
+                            + "package declaring no credential component at all")
+                    .isEqualTo(original.password());
+            assertThat(returned)
+                    .describedAs("no component is lost in either direction, so the record compares "
+                            + "equal to the one it was written from")
+                    .isEqualTo(original);
+        }
+
+        @Test
+        @DisplayName("keeps the credential out of the diagnostic rendering even though it travels in "
+                + "the serialized document, which are two independent channels")
+        void keepsTheCredentialOutOfTheDiagnosticRenderingRegardless()
+                throws JsonProcessingException {
+            ObjectMapper mapper = moduleEquivalentMapper();
+            UserRequest request = addShaped();
+
+            assertThat(mapper.writeValueAsString(request))
+                    .describedAs("the serialization channel carries it")
+                    .contains(CREDENTIAL);
+            assertThat(request.toString())
+                    .describedAs("the diagnostic channel does not, which is the only control this "
+                            + "type applies and the only one it can apply without closing the "
+                            + "inbound direction as well")
+                    .doesNotContain(CREDENTIAL);
         }
 
         @Test
@@ -1025,18 +1076,20 @@ class UserRequestTest {
         }
 
         @Test
-        @DisplayName("discards a submitted page number, because the program computes it from a "
-                + "counter it retains itself")
-        void discardsASubmittedPageNumber() throws JsonProcessingException {
+        @DisplayName("carries a submitted page number verbatim, leaving the decision to disregard it "
+                + "to the service that owns the retained counter")
+        void carriesASubmittedPageNumberVerbatim() throws JsonProcessingException {
             String document = """
                     {"userId":"NEWUSR01","displayedPageNumber":"00000099"}""";
 
             UserRequest bound = moduleEquivalentMapper().readValue(document, UserRequest.class);
 
             assertThat(bound.displayedPageNumber())
-                    .describedAs("a submitted page number never influenced a page, so accepting one "
-                            + "could only mislead")
-                    .isNull();
+                    .describedAs("the program computes the number from a counter it retains itself, "
+                            + "so a submitted value never influenced a page - but disregarding it is "
+                            + "UserManagementService's decision, taken where that counter lives, and "
+                            + "this passive carrier applies no directional rule of its own")
+                    .isEqualTo("00000099");
             assertThat(bound.userId()).isEqualTo(USER_ID);
         }
 
@@ -1212,135 +1265,96 @@ class UserRequestTest {
 
 
     /**
-     * Each operation refuses the components its own map does not declare.
+     * The shared body carries no operation discriminator, and applicability is not decided here.
      *
-     * <p>One record body serves four screens whose maps declare different items, so without a
-     * discriminator every component of the union would be bindable on every operation - and a delete
-     * submission could carry a credential to a screen that has no credential field, while an add
-     * submission could carry a page cursor to a screen that has no list.
+     * <p>One record body serves four screens whose maps declare different items. It is tempting to
+     * express that with nested operation markers carrying group-scoped absence rules, so that a delete
+     * submission naming its operation is refused for carrying a credential its map has no field for.
+     * This type deliberately does not do that, and the omission is the contract rather than a gap.
      *
-     * <p>The type expresses this with nested operation markers carrying absence rules. Two properties
-     * matter and both are asserted here. Each rule asserts <em>absence</em>, never presence, so none
-     * of them can pre-empt the ordered emptiness cascade that stays in the service layer. And every
-     * one of them is inert under the plain unqualified validation, so a caller that names no operation
-     * sees a body that is bounded by width and by nothing else.
+     * <p><strong>Why a passive body is the correct shape.</strong> The four programs run ordered,
+     * first-error-wins cascades, and the order differs between two of them - the add screen tests the
+     * user identifier third, at line 132 of {@code app/cbl/COUSR01C.cbl}, while the update screen
+     * tests it first, at line 182 of {@code COUSR02C.cbl}. Bean Validation is unordered and reports
+     * every violation at once, so it can express neither cascade, and a body that carried half the
+     * applicability decision would split one rule across two layers. The endpoint already identifies
+     * the operation, so the service that runs the cascade is the one place that knows which components
+     * its screen declares.
      *
-     * <p>This is also where the delete screen's missing credential item is enforced rather than merely
-     * tolerated: the credential is optional on the shared type, and inapplicable on the one operation
-     * whose map declares none.
+     * <p>What is asserted here is therefore an absence with a behavioural consequence: no nested
+     * member type exists to name as a group, no declared constraint is scoped to a group, and every
+     * one of the four operation shapes validates cleanly on the transport type - including a
+     * delete-shaped body carrying a credential, which this type accepts and the service refuses.
      */
     @Nested
-    @DisplayName("operation scoping :: each operation refuses the other three's components")
-    class OperationScopedInapplicability {
+    @DisplayName("operation scoping :: the body is passive and names no operation")
+    class TheBodyNamesNoOperation {
 
         @Test
-        @DisplayName("accepts an add-shaped submission under the add operation")
-        void acceptsAnAddShapedSubmission() {
-            assertThat(violationsOf(addShaped(), UserRequest.AddOperation.class)).isEmpty();
+        @DisplayName("validates identically whether a group is named or not, so no constraint is "
+                + "scoped to an operation")
+        void validatesIdenticallyWhetherAGroupIsNamedOrNot() {
+            UserRequest everyComponentPopulated = fullyPopulated();
+
+            assertThat(violationsOf(everyComponentPopulated))
+                    .describedAs("the unqualified validation is the whole validation")
+                    .isEmpty();
+            assertThat(violationsOf(everyComponentPopulated, Default.class))
+                    .describedAs("naming the default group changes nothing, because a group-scoped "
+                            + "bound would apply on some operations and not others and would make "
+                            + "the transport type a partial owner of a service rule")
+                    .isEmpty();
         }
 
         @Test
-        @DisplayName("accepts an update-shaped submission under the update operation")
-        void acceptsAnUpdateShapedSubmission() {
-            assertThat(violationsOf(updateShaped(), UserRequest.UpdateOperation.class)).isEmpty();
+        @DisplayName("names no operation marker that a constraint could be scoped to, which the "
+                + "compiler rather than a runtime lookup enforces")
+        void namesNoOperationMarker() {
+            for (UserRequest request : List.of(fullyPopulated(), addShaped(), updateShaped(),
+                    deleteShaped(), listShaped(), credentialOnly(), whollyAbsent())) {
+                assertThat(violationsOf(request, Default.class))
+                        .describedAs("no shape can be refused by a group, because there is no group "
+                                + "type on this record to name; an attempt to reference one here "
+                                + "would fail to compile rather than fail at run time, which is the "
+                                + "strongest available proof that none exists")
+                        .isEmpty();
+            }
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("com.carddemo.api.dto.UserRequestTest#everyOperationShape")
+        @DisplayName("accepts every operation shape under the plain unqualified validation")
+        void acceptsEveryOperationShape(String shape, UserRequest request) {
+            assertThat(violationsOf(request))
+                    .describedAs("shape %s is bounded by width and by nothing else", shape)
+                    .isEmpty();
         }
 
         @Test
-        @DisplayName("accepts a delete-shaped submission carrying the identifier alone")
-        void acceptsADeleteShapedSubmission() {
-            assertThat(violationsOf(deleteShaped(), UserRequest.DeleteOperation.class)).isEmpty();
-        }
-
-        @Test
-        @DisplayName("refuses a credential on the delete operation, because the delete map declares "
-                + "no credential item at all")
-        void refusesACredentialOnTheDeleteOperation() {
+        @DisplayName("accepts a delete-shaped body carrying a credential, leaving that refusal to the "
+                + "service whose screen declares no credential item")
+        void acceptsACredentialOnADeleteShapedBody() {
             UserRequest request = new UserRequest(USER_ID, null, null, null, CREDENTIAL, null, null,
                     null, null, null, null, null);
 
-            assertThat(violationPathsOf(request, UserRequest.DeleteOperation.class))
-                    .describedAs("accepting a credential here would transport one to a screen the "
-                            + "legacy terminal gave no field for")
-                    .containsExactly("password");
+            assertThat(violationsOf(request))
+                    .describedAs("the delete map declares no credential item, but that is an "
+                            + "applicability rule and not a width rule")
+                    .isEmpty();
         }
 
         @Test
-        @DisplayName("refuses the echoed display values on the delete operation, because its "
-                + "program only ever writes them")
-        void refusesTheEchoedDisplayValuesOnTheDeleteOperation() {
-            UserRequest request = new UserRequest(USER_ID, null, FIRST_NAME, LAST_NAME, null,
-                    UserType.ADMIN.getCode(), null, null, null, null, null, null);
-
-            assertThat(violationPathsOf(request, UserRequest.DeleteOperation.class))
-                    .containsExactly("firstName", "lastName", "userType");
-        }
-
-        @Test
-        @DisplayName("refuses list state on every write operation, so no selection, cursor or "
-                + "browse key reaches a write")
-        void refusesListStateOnEveryWriteOperation() {
+        @DisplayName("accepts list paging state alongside single-user values, because no rule here "
+                + "makes the two mutually exclusive")
+        void acceptsListStateAlongsideSingleUserValues() {
             UserRequest request = new UserRequest(USER_ID, SEARCH_USER_ID, FIRST_NAME, LAST_NAME,
-                    CREDENTIAL, UserType.ADMIN.getCode(), List.of("S"), null, FIRST_ANCHOR,
-                    LAST_ANCHOR, null, null);
-
-            assertThat(violationPathsOf(request, UserRequest.AddOperation.class))
-                    .containsExactly("firstUserIdOnPage", "lastUserIdOnPage", "rowSelections",
-                            "searchUserId");
-            assertThat(violationPathsOf(request, UserRequest.UpdateOperation.class))
-                    .containsExactly("firstUserIdOnPage", "lastUserIdOnPage", "rowSelections",
-                            "searchUserId");
-        }
-
-        @Test
-        @DisplayName("refuses single-user components on the list operation, so a page request "
-                + "cannot smuggle a credential")
-        void refusesSingleUserComponentsOnTheListOperation() {
-            UserRequest request = fullyPopulated();
-
-            assertThat(violationPathsOf(request, UserRequest.ListOperation.class))
-                    .containsExactly("firstName", "lastName", "password", "userId", "userType");
-        }
-
-        @Test
-        @DisplayName("keeps the update operation wider than the delete operation, because the "
-                + "update map declares five items and the delete program reads one")
-        void keepsTheUpdateOperationWiderThanTheDeleteOperation() {
-            UserRequest request = updateShaped();
-
-            assertThat(violationsOf(request, UserRequest.UpdateOperation.class)).isEmpty();
-            assertThat(violationsOf(request, UserRequest.DeleteOperation.class))
-                    .describedAs("the same body is well formed for an update and over-posted for a "
-                            + "delete, which is exactly the asymmetry the two maps declare")
-                    .isNotEmpty();
-        }
-
-        @Test
-        @DisplayName("leaves every operation rule inert under the plain unqualified validation")
-        void leavesEveryOperationRuleInertUnderTheUnqualifiedValidation() {
-            UserRequest request = fullyPopulated();
+                    CREDENTIAL, UserType.ADMIN.getCode(), List.of("U"), PAGE_NUMBER, USER_ID,
+                    USER_ID, null, null);
 
             assertThat(violationsOf(request))
-                    .describedAs("a caller that names no operation must see the behaviour the type "
-                            + "had before the markers existed")
+                    .describedAs("a union body can be populated in combinations no single screen "
+                            + "produces; recognising them is the service's work")
                     .isEmpty();
-            assertThat(violationsOf(request, Default.class))
-                    .describedAs("naming the unqualified group explicitly must mean the same thing")
-                    .isEmpty();
-        }
-
-        @Test
-        @DisplayName("evaluates both the operation rules and the width bounds when an operation is "
-                + "named alongside the unqualified group")
-        void evaluatesBothWhenAnOperationIsNamedAlongsideTheUnqualifiedGroup() {
-            UserRequest request = new UserRequest(OVERLONG_USER_ID, SEARCH_USER_ID, null, null,
-                    null, null, null, null, null, null, null, null);
-
-            assertThat(violationPathsOf(request, UserRequest.AddOperation.class))
-                    .describedAs("a bare operation group carries only the absence rules")
-                    .containsExactly("searchUserId");
-            assertThat(violationPathsOf(request, Default.class, UserRequest.AddOperation.class))
-                    .describedAs("combining the groups reports the width breach as well")
-                    .containsExactly("searchUserId", "userId");
         }
     }
 
@@ -1594,35 +1608,24 @@ class UserRequestTest {
         }
 
         @Test
-        @DisplayName("accepts a selection sequence filled to the screen's row count")
-        void acceptsASelectionSequenceAtTheRowCount() {
-            List<String> full = new ArrayList<>();
-            for (int row = 0; row < UserRequest.ROW_COUNT; row++) {
-                full.add("S");
+        @DisplayName("carries a selection sequence of any length, because how many rows a screen has "
+                + "is the paging contract's measurement and not this type's")
+        void carriesASelectionSequenceOfAnyLength() {
+            List<String> beyondAnyScreen = new ArrayList<>();
+            for (int row = 0; row < PageMetadata.LARGEST_SCREEN_PAGE_SIZE + 1; row++) {
+                beyondAnyScreen.add("S");
             }
 
             UserRequest request = new UserRequest(null, SEARCH_USER_ID, null, null, null, null,
-                    full, null, null, null, null, null);
+                    beyondAnyScreen, null, null, null, null, null);
 
-            assertThat(request.rowSelections()).hasSize(UserRequest.ROW_COUNT);
-            assertThat(violationsOf(request)).isEmpty();
-        }
-
-        @Test
-        @DisplayName("refuses a selection sequence longer than the screen has rows, with a message "
-                + "that names the limit and the size")
-        void refusesASelectionSequenceLongerThanTheRowCount() {
-            List<String> tooMany = new ArrayList<>();
-            for (int row = 0; row <= UserRequest.ROW_COUNT; row++) {
-                tooMany.add("S");
-            }
-
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new UserRequest(null, SEARCH_USER_ID, null, null, null, null,
-                            tooMany, null, null, null, null, null))
-                    .withMessageContaining("rowSelections")
-                    .withMessageContaining(String.valueOf(UserRequest.ROW_COUNT))
-                    .withMessageContaining(String.valueOf(tooMany.size()));
+            assertThat(request.rowSelections())
+                    .describedAs("no cardinality bound is declared and nothing is truncated, so the "
+                            + "sequence arrives at the service exactly as it was sent")
+                    .hasSize(beyondAnyScreen.size());
+            assertThat(violationsOf(request))
+                    .describedAs("only the one-character element width is bounded here")
+                    .isEmpty();
         }
 
         @Test
@@ -1636,16 +1639,23 @@ class UserRequestTest {
         }
 
         @Test
-        @DisplayName("publishes every declared width and the row count as named constants")
+        @DisplayName("publishes every declared width as a named constant, and publishes no count of "
+                + "anything")
         void publishesEveryDeclaredWidthAsANamedConstant() {
             assertThat(UserRequest.USER_ID_LENGTH).isEqualTo(8);
             assertThat(UserRequest.NAME_PART_LENGTH).isEqualTo(20);
             assertThat(UserRequest.PASSWORD_LENGTH).isEqualTo(8);
             assertThat(UserRequest.USER_TYPE_LENGTH).isEqualTo(1);
             assertThat(UserRequest.ROW_SELECTION_LENGTH).isEqualTo(1);
-            assertThat(UserRequest.ROW_SELECTION_COUNT).isEqualTo(10);
             assertThat(UserRequest.DISPLAYED_PAGE_NUMBER_LENGTH).isEqualTo(8);
-            assertThat(UserRequest.ROW_COUNT).isEqualTo(10);
+
+            assertThat(PageMetadata.USER_LIST_PAGE_SIZE)
+                    .describedAs("the screen row count for this list is stated once, by PageMetadata, "
+                            + "and this request type publishes no count of its own; every constant it "
+                            + "does publish states the width of one screen item, and a reference to a "
+                            + "row or selection count on UserRequest would fail to compile rather "
+                            + "than fail here, which is the strongest available proof of absence")
+                    .isEqualTo(10);
         }
 
         @Test

@@ -262,62 +262,114 @@ class UserRequestSecurityTest {
         }
     }
 
+    /**
+     * The credential binds in both directions on the request, and the outbound channel is closed by
+     * the shape of the response contract rather than by a directive on this type.
+     *
+     * <p>A directional binding on the credential component would close the inbound direction as well
+     * for any body that is deserialized and re-serialized, which is exactly what a validation echo, a
+     * retry envelope and a problem report all do; an operation that cannot re-emit what it bound
+     * cannot be validated or retried. The protection is therefore structural: no response type in
+     * this package declares a credential component of any kind, so there is no member through which a
+     * serializer could carry one outward on a response. Redaction of the diagnostic rendering, pinned
+     * in the sibling nested class below, is the only control this request type applies.
+     */
     @Nested
-    @DisplayName("The credential never leaves in a serialized document, and always arrives in one")
-    class TheCredentialIsInboundOnly {
+    @DisplayName("The credential binds both ways, and no response type declares one at all")
+    class TheCredentialBindsBothWaysAndNoResponseCarriesOne {
 
         @Test
-        @DisplayName("the credential component declares write-only access, which is the mechanism that "
-                + "closes the outbound direction")
-        void theCredentialComponentDeclaresWriteOnlyAccess() throws NoSuchFieldException {
+        @DisplayName("the credential component declares no Jackson access mode, so neither direction "
+                + "is closed on the request")
+        void theCredentialComponentDeclaresNoAccessMode() throws NoSuchFieldException {
             Field field = UserRequest.class.getDeclaredField(CREDENTIAL_PROPERTY);
 
-            JsonProperty jsonProperty = field.getAnnotation(JsonProperty.class);
-
-            assertThat(jsonProperty).isNotNull();
-            assertThat(jsonProperty.access()).isEqualTo(JsonProperty.Access.WRITE_ONLY);
+            assertThat(field.getAnnotation(JsonProperty.class))
+                    .describedAs("a one-directional binding here would also strip the credential from "
+                            + "any body that was deserialized and re-serialized, defeating the "
+                            + "binding the add and update operations depend on")
+                    .isNull();
         }
 
         @Test
-        @DisplayName("the published interface description declares the same thing, so a generated client "
-                + "is told the property is write-only rather than discovering it by omission")
-        void thePublishedDescriptionDeclaresWriteOnlyToo() throws NoSuchFieldException {
-            Field field = UserRequest.class.getDeclaredField(CREDENTIAL_PROPERTY);
-
-            Schema schema = field.getAnnotation(Schema.class);
-
-            assertThat(schema).isNotNull();
-            assertThat(schema.accessMode()).isEqualTo(Schema.AccessMode.WRITE_ONLY);
-            assertThat(schema.format()).isEqualTo("password");
-            assertThat(schema.description()).isNotBlank();
-        }
-
-        @Test
-        @DisplayName("the credential is the only component closed to reading, and the one other "
-                + "component that declares an access mode is closed to writing instead")
-        void theCredentialIsTheOnlyComponentClosedToReading() throws NoSuchFieldException {
+        @DisplayName("no component declares a published-interface annotation, keeping this transport "
+                + "type free of any dependency beyond validation and its own package")
+        void noComponentDeclaresAPublishedInterfaceAnnotation() throws NoSuchFieldException {
             for (String name : COMPONENTS_IN_ORDER) {
-                if (CREDENTIAL_PROPERTY.equals(name) || PUBLISHED_PAGE_LABEL.equals(name)) {
-                    continue;
-                }
+                Field field = UserRequest.class.getDeclaredField(name);
+
+                assertThat(field.getAnnotation(Schema.class))
+                        .as("component %s must carry no published-interface annotation", name)
+                        .isNull();
+            }
+        }
+
+        @Test
+        @DisplayName("no component at all declares a Jackson access mode, so the passive contract has "
+                + "no directional exception anywhere")
+        void noComponentDeclaresAJacksonAccessMode() throws NoSuchFieldException {
+            for (String name : COMPONENTS_IN_ORDER) {
                 Field field = UserRequest.class.getDeclaredField(name);
 
                 assertThat(field.getAnnotation(JsonProperty.class))
                         .as("component %s must not declare a Jackson access mode", name)
                         .isNull();
             }
+        }
 
-            // The page label is the mirror image of the credential and is deliberately left in place:
-            // the credential is accepted and never emitted, and the label is emitted and never
-            // accepted, because the list program computes it from a counter it retains itself. Closing
-            // a component to writing withholds nothing a diagnostic needs, so it cannot be the accident
-            // this test looks for.
-            assertThat(UserRequest.class.getDeclaredField(PUBLISHED_PAGE_LABEL)
-                    .getAnnotation(JsonProperty.class).access())
-                    .isEqualTo(JsonProperty.Access.READ_ONLY);
-            assertThat(UserRequest.class.getDeclaredField(CREDENTIAL_PROPERTY)
-                    .getAnnotation(JsonProperty.class).access())
-                    .isEqualTo(JsonProperty.Access.WRITE_ONLY);
+        @Test
+        @DisplayName("no response type in this package declares a credential component, which is the "
+                + "mechanism that actually closes the outbound direction")
+        void noResponseTypeDeclaresACredentialComponent() {
+            List<String> credentialShapedNames = Arrays.stream(UserResponse.class.getRecordComponents())
+                    .map(RecordComponent::getName)
+                    .filter(name -> {
+                        String lowered = name.toLowerCase(Locale.ROOT);
+                        return lowered.contains("password") || lowered.contains("credential")
+                                || lowered.contains("secret") || lowered.contains("digest")
+                                || lowered.contains("salt") || lowered.contains("hash");
+                    })
+                    .toList();
+
+            assertThat(credentialShapedNames)
+                    .describedAs("the response carries no cleartext, no digest, no salt and no "
+                            + "encoded credential, so a serializer reaching it can disclose nothing "
+                            + "no matter what the request permits")
+                    .isEmpty();
+
+            List<String> rowCredentialNames = Arrays.stream(
+                            UserResponse.UserRow.class.getRecordComponents())
+                    .map(RecordComponent::getName)
+                    .filter(name -> {
+                        String lowered = name.toLowerCase(Locale.ROOT);
+                        return lowered.contains("password") || lowered.contains("credential")
+                                || lowered.contains("secret") || lowered.contains("digest")
+                                || lowered.contains("salt") || lowered.contains("hash");
+                    })
+                    .toList();
+
+            assertThat(rowCredentialNames)
+                    .describedAs("the per-row shape carries none either, so a list page of ten rows "
+                            + "discloses nothing ten times over")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the page label binds inbound as well, so the one component that was closed to "
+                + "writing is now carried like every other")
+        void thePageLabelBindsInboundAsWell() throws JsonProcessingException {
+            String document = "{\"userId\":\"" + USER_ID + "\",\"" + PUBLISHED_PAGE_LABEL
+                    + "\":\"00000099\"}";
+
+            UserRequest request = moduleEquivalentMapper().readValue(document, UserRequest.class);
+
+            assertThat(request.displayedPageNumber())
+                    .describedAs("the list program computes the number from a counter it retains "
+                            + "itself, so a submitted value never influenced a page - but "
+                            + "disregarding it belongs to the service that owns that counter, not to "
+                            + "a binding directive on a passive carrier")
+                    .isEqualTo("00000099");
+            assertThat(request.userId()).isEqualTo(USER_ID);
         }
 
         @Test
@@ -335,40 +387,32 @@ class UserRequestSecurityTest {
         }
 
         @Test
-        @DisplayName("the emitted document omits the credential property entirely, even when the "
-                + "component is populated")
-        void theEmittedDocumentOmitsTheCredentialProperty() throws JsonProcessingException {
+        @DisplayName("the emitted document carries the credential property, because closing that "
+                + "direction would break the inbound one for any re-serialized body")
+        void theEmittedDocumentCarriesTheCredentialProperty() throws JsonProcessingException {
             JsonNode payload = payloadOf(populated());
 
-            assertThat(payload.has(CREDENTIAL_PROPERTY)).isFalse();
+            assertThat(payload.has(CREDENTIAL_PROPERTY)).isTrue();
+            assertThat(payload.get(CREDENTIAL_PROPERTY).asText()).isEqualTo(SYNTHETIC_CREDENTIAL);
             assertThat(payload.get("userId").asText()).isEqualTo(USER_ID);
         }
 
         @Test
-        @DisplayName("the serialized text contains the credential nowhere, in no form and under no "
-                + "property name")
-        void theSerializedTextContainsTheCredentialNowhere() throws JsonProcessingException {
-            String document = moduleEquivalentMapper().writeValueAsString(populated());
-
-            assertThat(document).doesNotContain(SYNTHETIC_CREDENTIAL);
-            assertThat(document).doesNotContain(CREDENTIAL_PROPERTY);
-        }
-
-        @Test
-        @DisplayName("an empty credential is suppressed too, so the outbound closure does not depend on "
-                + "the absent-value omission policy")
-        void anEmptyCredentialIsSuppressedToo() throws JsonProcessingException {
+        @DisplayName("an empty credential is emitted too, so the wire shape does not vary with the "
+                + "value and a delete-shaped body is not distinguishable by omission")
+        void anEmptyCredentialIsEmittedToo() throws JsonProcessingException {
             UserRequest emptyCredential = new UserRequest(USER_ID, null, null, null, "", "A",
                     null, null, null, null, null, null);
 
             JsonNode payload = payloadOf(emptyCredential);
 
-            assertThat(payload.has(CREDENTIAL_PROPERTY)).isFalse();
+            assertThat(payload.has(CREDENTIAL_PROPERTY)).isTrue();
+            assertThat(payload.get(CREDENTIAL_PROPERTY).asText()).isEmpty();
         }
 
         @Test
-        @DisplayName("the emitted property set is pinned exactly, so reintroducing the credential to the "
-                + "outbound document by any route fails here")
+        @DisplayName("the emitted property set is pinned exactly, so a component appearing or "
+                + "disappearing on the wire by any route fails here")
         void theEmittedPropertySetIsPinnedExactly() throws JsonProcessingException {
             JsonNode payload = payloadOf(populated());
 
@@ -377,22 +421,24 @@ class UserRequestSecurityTest {
             Collections.sort(emitted);
 
             List<String> expected = new java.util.ArrayList<>(COMPONENTS_IN_ORDER);
-            expected.remove(CREDENTIAL_PROPERTY);
             Collections.sort(expected);
 
-            assertThat(emitted).containsExactlyElementsOf(expected);
+            assertThat(emitted)
+                    .describedAs("every declared component is emitted, the credential included; the "
+                            + "response contract rather than this set is what withholds it")
+                    .containsExactlyElementsOf(expected);
         }
 
         @Test
-        @DisplayName("a credential surviving a round trip through the module's own mapper is absent on the "
-                + "far side, which is the observable consequence of write-only access")
-        void aCredentialDoesNotSurviveARoundTrip() throws JsonProcessingException {
+        @DisplayName("the credential survives a round trip through the module's own mapper, which a "
+                + "validation echo or a retry envelope depends on")
+        void aCredentialSurvivesARoundTrip() throws JsonProcessingException {
             ObjectMapper mapper = moduleEquivalentMapper();
 
             String document = mapper.writeValueAsString(populated());
             UserRequest revived = mapper.readValue(document, UserRequest.class);
 
-            assertThat(revived.password()).isNull();
+            assertThat(revived.password()).isEqualTo(SYNTHETIC_CREDENTIAL);
             assertThat(revived.userId()).isEqualTo(USER_ID);
             assertThat(revived.rowSelections()).containsExactlyElementsOf(TEN_SELECTIONS);
         }
@@ -551,24 +597,22 @@ class UserRequestSecurityTest {
         }
 
         @Test
-        @DisplayName("the selection sequence is bounded at the screen's ten rows, because an eleventh "
-                + "selection corresponds to no row")
-        void theSelectionSequenceIsBoundedAtTenRows() throws NoSuchFieldException {
+        @DisplayName("the selection sequence carries no bound of its own, because a row count is a "
+                + "screen dimension and not a transport rule")
+        void theSelectionSequenceCarriesNoBoundOfItsOwn() throws NoSuchFieldException {
             Field field = UserRequest.class.getDeclaredField("rowSelections");
 
-            // Two width rules apply to this one component - the default-group arity bound and the
-            // operation-scoped emptiness rule - so the repeatable-aware accessor is the one that reads
-            // them. A single-annotation lookup returns nothing at all once a constraint is repeated.
+            // The repeatable-aware accessor is used deliberately: it would report a second rule if one
+            // were ever added, where a single-annotation lookup returns nothing once a constraint is
+            // repeated and would therefore pass for the wrong reason.
             Size[] rules = field.getAnnotationsByType(Size.class);
 
-            assertThat(rules).hasSize(2);
-            assertThat(java.util.Arrays.stream(rules)
-                    .filter(rule -> rule.groups().length == 0)
-                    .findFirst())
-                    .get()
-                    .extracting(Size::max)
-                    .isEqualTo(UserRequest.ROW_SELECTION_COUNT);
-            assertThat(UserRequest.ROW_SELECTION_COUNT).isEqualTo(10);
+            assertThat(rules)
+                    .describedAs("the only bound on this component is the one-character width of each "
+                            + "element, which is declared on the element and not on the sequence; a "
+                            + "bound on the sequence would state a screen dimension, and PageMetadata "
+                            + "already states it as %d", PageMetadata.USER_LIST_PAGE_SIZE)
+                    .isEmpty();
         }
 
         @Test
@@ -583,32 +627,34 @@ class UserRequestSecurityTest {
         }
 
         @Test
-        @DisplayName("a sequence of eleven selections is refused outright and never truncated, so no "
-                + "selection is silently discarded and no over-long sequence is ever held")
-        void aSequenceOfElevenSelectionsIsRefusedAndNeverTruncated() {
+        @DisplayName("a sequence of eleven selections is carried untouched and never truncated, so no "
+                + "selection is silently discarded and the service sees exactly what was sent")
+        void aSequenceOfElevenSelectionsIsCarriedUntouched() {
             List<String> eleven = Collections.nCopies(11, "S");
 
-            // The arity of this sequence is structural rather than editorial: eleven selections do not
-            // describe a screen the list program can display, so the value is refused at construction
-            // instead of being held and reported. Nothing over-length therefore reaches storage, a
-            // rendering or a log, which is a stronger outcome than a violation on a retained value.
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new UserRequest(null, null, null, null, null, null, eleven,
-                            null, null, null, null, null))
-                    .withMessageContaining("at most " + UserRequest.ROW_COUNT)
-                    .withMessageContaining("11");
+            // Whether eleven selections describe a renderable screen is a question about the screen,
+            // and the screen's row count is the paging contract's measurement. This transport type
+            // therefore neither refuses nor truncates: it carries the sequence intact so that the
+            // service, which knows the dimension, can report it against the right screen.
+            UserRequest request = new UserRequest(null, null, null, null, null, null, eleven,
+                    null, null, null, null, null);
+
+            assertThat(request.rowSelections()).hasSize(11);
+            assertThat(violationsOf(request)).isEmpty();
         }
 
         @Test
-        @DisplayName("an arbitrarily long sequence is refused on the same terms, so an unbounded "
-                + "submission cannot be retained at all")
-        void anArbitrarilyLongSequenceIsRefusedOnTheSameTerms() {
+        @DisplayName("an arbitrarily long sequence is carried on the same terms, and the copy is still "
+                + "immutable so nothing can mutate it afterwards")
+        void anArbitrarilyLongSequenceIsCarriedOnTheSameTerms() {
             List<String> farTooMany = Collections.nCopies(4096, "S");
 
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new UserRequest(null, null, null, null, null, null, farTooMany,
-                            null, null, null, null, null))
-                    .withMessageContaining("4096");
+            UserRequest request = new UserRequest(null, null, null, null, null, null, farTooMany,
+                    null, null, null, null, null);
+
+            assertThat(request.rowSelections()).hasSize(4096);
+            assertThatExceptionOfType(UnsupportedOperationException.class)
+                    .isThrownBy(() -> request.rowSelections().set(0, "U"));
         }
 
         @Test

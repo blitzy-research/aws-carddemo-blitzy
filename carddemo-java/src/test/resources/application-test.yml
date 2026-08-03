@@ -53,16 +53,20 @@ spring:
 
   flyway:
     enabled: true
-    # ONE SETTING ADMITS THE SEEDS: target. All four delivered scripts sit flat in the one location
-    # below - V1__create_schema.sql and V2__create_indexes.sql build the schema, and
-    # V3__seed_reference_data.sql and V4__seed_user_security.sql carry the reference-data and sign-on
-    # seeds the gate fixtures assert against. Nothing separates them but the version number, because the
-    # migration specifications for V3 and V4 require the flat layout and direct that no subdirectory be
-    # created; see docs/decision-log.md DL-119. The shared baseline pins spring.flyway.target at "2", so
-    # the seeds are resolved and reported above target; this overlay lifts the pin to latest so they are
-    # applied. Production re-asserts target: 2 and applies only V1 and V2. Do not lower the pin here -
-    # that leaves every fixture asserting against an empty result set.
-    locations: classpath:db/migration
+    # TWO SETTINGS ADMIT THE SEEDS, AND BOTH ARE REQUIRED: the seed LOCATION and the lifted target.
+    # The delivered scripts sit in two sibling locations - classpath:db/migration/schema carries
+    # V1__create_schema.sql and V2__create_indexes.sql, and classpath:db/migration/seed carries
+    # V3__seed_reference_data.sql and V4__seed_user_security.sql, the reference-data and sign-on seeds
+    # the gate fixtures assert against. A directory separates them, which is what AAP 0.3.1 and 0.4.2
+    # require: production resolves the schema location alone and is refused the seed location outright by
+    # FlywayConfig. See docs/decision-log.md DL-127.
+    #
+    # The shared baseline also pins spring.flyway.target at "2", which would stop a migration at the
+    # schema even with the seed location resolved, so this overlay lifts the pin to latest as well. Do
+    # not drop either setting here - that leaves every fixture asserting against an empty result set. The
+    # shared parent classpath:db/migration is never declared and holds no script: a location is scanned
+    # recursively, so naming the parent beside a child would resolve every script twice.
+    locations: classpath:db/migration/schema,classpath:db/migration/seed
     target: latest
     clean-disabled: false
 
@@ -101,7 +105,7 @@ spring:
   cloud:
     aws:
       region:
-        static: us-east-1
+        static: ${carddemo.aws.region}
       credentials:
         access-key: test
         secret-key: test
@@ -144,14 +148,23 @@ logging:
 
 carddemo:
   aws:
+    # The region and the endpoint override are bound HERE, in the carddemo namespace, because those are
+    # the two keys com.carddemo.config.AwsProperties binds and the spring.cloud.aws block above derives
+    # its own region and endpoints from them. Stating each fact once per document is what stops the two
+    # namespaces from naming different regions or different services. The override carries the same
+    # expression as the endpoints above; AbstractLocalStackIT raises both to the ephemeral address of
+    # the emulator it started, at a precedence above this file.
+    region: us-east-1
+    endpoint-override: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
     s3:
-      bucket: carddemo-batch-staging
+      batch-staging-bucket: carddemo-batch-staging
     sqs:
-      # The legacy resource name, carried unchanged and suffixed only because a FIFO queue must be;
-      # the operator-visible message text still names the transient-data queue as plain JOBS. The
+      # The name the migration plan mandates, namespaced after this module like the other three
+      # resources and suffixed because a FIFO queue must be; the operator-visible message text still
+      # names the transient-data queue as plain JOBS, and nothing composes one from the other. The
       # 80-byte record width and the ignore-on-error tolerance are deliberately not keys here -
       # both are enforced in the publisher instead. See docs/decision-log.md DL-092 and DL-094.
-      job-submission-queue: carddemo-jobs.fifo
+      job-queue: carddemo-jobs.fifo
       message-group-id: carddemo-job-submission
     sns:
       job-notification-topic: carddemo-job-notifications
@@ -178,3 +191,10 @@ carddemo:
     # management surface and the interface description stay exactly as the baseline closed them, so a
     # test asserting the shipped posture asserts the real one.
     require-https: false
+    # OPENS A CLOSED BASELINE, stated here so the concession is visible in the profile taking it.
+    # application.yml closes anonymous metrics scraping. This suite reads the exposition over the
+    # loopback interface within its own process, so there is no untrusted client to withhold it from,
+    # and a suite that could not read it could not assert on a meter. Nothing else is opened, and this
+    # value must stay in step with the packaged src/main/resources/application-test.yml. Production
+    # does not open this.
+    anonymous-metrics-scrape: true

@@ -50,9 +50,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <ul>
  *   <li>A FLOOR in the profile documents. Both copies of {@code application-test.yml} declare the
- *       emulator endpoint for the global setting and for each of the three services, so a client
- *       assembled by a context that never started an emulator still addresses an emulator address
- *       rather than a real one.</li>
+ *       emulator endpoint for the global setting, for each of the three services, and for this module's
+ *       own {@code carddemo.aws.endpoint-override}, so a client assembled by a context that never
+ *       started an emulator still addresses an emulator address rather than a real one - and a component
+ *       that asks the settings type instead of the client is told the same thing.</li>
  *   <li>A LIFT from {@link AbstractLocalStackIT}. A context whose test class extends that base class
  *       has the floor replaced by the ephemeral address of the emulator actually running, because a
  *       dynamic property source outranks every property file.</li>
@@ -85,12 +86,22 @@ class LocalStackPropertyRegistrationIT extends AbstractLocalStackIT {
     /** The profile document that carries the endpoint floor. */
     private static final String TEST_PROFILE_DOCUMENT = "application-test.yml";
 
-    /** The global endpoint setting and the three per-service restatements of it. */
+    /**
+     * Every endpoint setting that must name the emulator: the integration's global one, its three
+     * per-service restatements, and this module's own key.
+     *
+     * <p>The last of the five is {@code carddemo.aws.endpoint-override}, which
+     * {@code com.carddemo.config.AwsProperties} binds. It belongs in this list for exactly the reason
+     * the other four do - a client whose endpoint is not pinned resolves the region's real public
+     * endpoint rather than failing - and it is the key a consumer of that settings type reads, so a
+     * context in which it disagreed with the four would have two answers to one question.</p>
+     */
     private static final List<String> ENDPOINT_KEYS = List.of(
             "spring.cloud.aws.endpoint",
             "spring.cloud.aws.s3.endpoint",
             "spring.cloud.aws.sqs.endpoint",
-            "spring.cloud.aws.sns.endpoint");
+            "spring.cloud.aws.sns.endpoint",
+            "carddemo.aws.endpoint-override");
 
     /** Everything the registration publishes, in the order it publishes it. */
     private static final List<String> EXPECTED_REGISTRATIONS = List.of(
@@ -100,7 +111,8 @@ class LocalStackPropertyRegistrationIT extends AbstractLocalStackIT {
             "spring.cloud.aws.endpoint",
             "spring.cloud.aws.s3.endpoint",
             "spring.cloud.aws.sqs.endpoint",
-            "spring.cloud.aws.sns.endpoint");
+            "spring.cloud.aws.sns.endpoint",
+            "carddemo.aws.endpoint-override");
 
     /** The fixed port the emulator publishes inside the development stack. */
     private static final String EMULATOR_PORT = "4566";
@@ -142,13 +154,14 @@ class LocalStackPropertyRegistrationIT extends AbstractLocalStackIT {
     class TheLift {
 
         @Test
-        @DisplayName("exactly the region, the credentials and all four endpoint settings")
+        @DisplayName("exactly the region, the credentials and all five endpoint settings")
         void publishesExactlyTheAwsKeys() {
             final RecordingPropertyRegistry registry = record();
 
             assertThat(registry.names())
                     .as("the region and credentials pin the client away from the default chain; the"
-                            + " four endpoint settings pin it away from the real service")
+                            + " five endpoint settings pin both the framework's clients and this"
+                            + " module's own settings type away from the real service")
                     .containsExactlyElementsOf(EXPECTED_REGISTRATIONS);
             assertThat(registry.size()).isEqualTo(EXPECTED_REGISTRATIONS.size());
         }
@@ -203,8 +216,8 @@ class LocalStackPropertyRegistrationIT extends AbstractLocalStackIT {
     class TheFloor {
 
         @Test
-        @DisplayName("all four endpoint settings are declared")
-        void declaresAllFourEndpointSettings() throws IOException {
+        @DisplayName("all five endpoint settings are declared")
+        void declaresAllFiveEndpointSettings() throws IOException {
             final Properties leaves = leavesOf(new ClassPathResource(TEST_PROFILE_DOCUMENT));
 
             assertThat(ENDPOINT_KEYS)

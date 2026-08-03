@@ -91,9 +91,10 @@ import java.util.Objects;
  * back through the mapper reproduces the identical fifty bytes. Nothing in this class trims, strips,
  * folds, pads or normalizes a value, so a description is stored exactly as supplied in either form and
  * the padding decision stays with the record writer that owns it. The seed rows are excluded from a
- * production migration by version rather than by location: every migration is delivered from one flat
- * {@code classpath:db/migration}, and the shared and production configurations stop a migration after
- * the index script, so a production database receives the schema without the sample rows.
+ * production migration by location first and by version behind it: the seeding script is delivered from
+ * {@code classpath:db/migration/seed}, a location a production deployment is refused and therefore
+ * never resolves, and the shared and production configurations additionally stop a migration after the
+ * index script, so a production database receives the schema without the sample rows.
  *
  * <p><strong>Consumers.</strong> {@code CVTRA03Y} is included by exactly one program in the whole
  * estate, the transaction-report program {@code CBTRN03C} - the lowest inclusion count among the

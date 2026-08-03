@@ -258,7 +258,8 @@ class SecurityConfigTest {
     }
 
     /**
-     * Builds a runner carrying the chain, the token provider and the probe handlers.
+     * Builds a runner in the posture the local and test overlays take for the scrape endpoint, which is
+     * open to an anonymous collector.
      *
      * @param requireHttps whether the chain must require a secure channel
      * @param publishDocs  whether the running profile publishes the interface description
@@ -266,6 +267,21 @@ class SecurityConfigTest {
      */
     private static WebApplicationContextRunner runner(final boolean requireHttps,
             final boolean publishDocs) {
+        return runner(requireHttps, publishDocs, true);
+    }
+
+    /**
+     * Builds a runner carrying the chain, the token provider and the probe handlers.
+     *
+     * @param requireHttps     whether the chain must require a secure channel
+     * @param publishDocs      whether the running profile publishes the interface description
+     * @param anonymousScrape  whether the running profile opens the metrics scrape endpoint to a
+     *                         collector presenting no credential; the local and test overlays open it
+     *                         and the shared baseline and production leave it closed
+     * @return the configured runner
+     */
+    private static WebApplicationContextRunner runner(final boolean requireHttps,
+            final boolean publishDocs, final boolean anonymousScrape) {
         return new WebApplicationContextRunner()
                 // The two security auto-configurations are present deliberately. They are what would
                 // supply a generated user and a default permit-nothing-named chain if this module
@@ -281,6 +297,7 @@ class SecurityConfigTest {
                         JwtProperties.PREFIX + ".issuer=" + ISSUER,
                         JwtProperties.PREFIX + ".expiration=PT30M",
                         "carddemo.security.require-https=" + requireHttps,
+                        "carddemo.security.anonymous-metrics-scrape=" + anonymousScrape,
                         "springdoc.api-docs.enabled=" + publishDocs,
                         "springdoc.api-docs.path=" + API_DOCS,
                         "management.endpoints.web.base-path=" + MANAGEMENT_BASE);
@@ -289,6 +306,17 @@ class SecurityConfigTest {
     /** A runner in the posture the local and test overlays take: no transport requirement. */
     private static WebApplicationContextRunner plainTransport() {
         return runner(false, false);
+    }
+
+    /**
+     * A runner in the posture the shared baseline and production take for the scrape endpoint: closed to
+     * a collector presenting no credential, with transport left plain so the assertion reads an
+     * authorization outcome rather than a redirect.
+     *
+     * @return the configured runner
+     */
+    private static WebApplicationContextRunner closedScrape() {
+        return runner(false, false, false);
     }
 
     /**
@@ -331,9 +359,9 @@ class SecurityConfigTest {
         }
 
         @Test
-        @DisplayName("answer the metrics scrape endpoint without a credential, because the shipped "
-                + "collector configuration supplies none")
-        void permitTheScrapeEndpoint() throws Exception {
+        @DisplayName("answer the metrics scrape endpoint without a credential WHERE THE PROFILE OPENS "
+                + "IT, because the local and test collector runs on the same machine and supplies none")
+        void permitTheScrapeEndpointWhereTheProfileOpensIt() throws Exception {
             plainTransport().run(context -> clientFor(context)
                     .perform(get(MANAGEMENT_BASE + "/prometheus"))
                     .andExpect(result -> {
@@ -342,6 +370,48 @@ class SecurityConfigTest {
                         // failing to be refused, which a missing mapping would also look like.
                         assertThat(result.getResponse().getContentAsString()).isEqualTo("prometheus");
                     }));
+        }
+
+        @Test
+        @DisplayName("REFUSE the metrics scrape endpoint where the profile does not open it - the shared "
+                + "baseline and production - because the exposition is the shape of the workload rather "
+                + "than a status word")
+        void refuseTheScrapeEndpointWhereTheProfileDoesNotOpenIt() throws Exception {
+            closedScrape().run(context -> clientFor(context)
+                    .perform(get(MANAGEMENT_BASE + "/prometheus"))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus())
+                            .as("per-endpoint latency distributions, per-batch-step record counts, pool "
+                                    + "saturation and JVM internals must not be readable by a client "
+                                    + "that presents nothing")
+                            .isEqualTo(401)));
+        }
+
+        @Test
+        @DisplayName("still answer the metrics scrape endpoint for a CREDENTIALED collector where the "
+                + "profile does not open it, so closing anonymity does not unpublish the endpoint and "
+                + "the performance gate keeps its data source")
+        void answerTheScrapeEndpointForACredentialedCollector() throws Exception {
+            closedScrape().run(context -> clientFor(context)
+                    .perform(get(MANAGEMENT_BASE + "/prometheus").header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenFor(context, UserType.USER)))
+                    .andExpect(result -> {
+                        assertThat(result.getResponse().getStatus())
+                                .as("a production collector authenticates and collects; that is the "
+                                        + "whole reason the endpoint stays in the exposure list")
+                                .isEqualTo(200);
+                        assertThat(result.getResponse().getContentAsString()).isEqualTo("prometheus");
+                    }));
+        }
+
+        @Test
+        @DisplayName("keep answering the health probe anonymously with the scrape endpoint closed, so "
+                + "closing one anonymous surface does not close the other")
+        void keepTheHealthProbeAnonymousWithTheScrapeEndpointClosed() throws Exception {
+            closedScrape().run(context -> clientFor(context)
+                    .perform(get(MANAGEMENT_BASE + "/health"))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus())
+                            .as("the image health check presents no credential and must keep working")
+                            .isEqualTo(200)));
         }
 
         @ParameterizedTest(name = "GET {0}")
@@ -760,7 +830,8 @@ class SecurityConfigTest {
                     .withPropertyValues(
                             JwtProperties.PREFIX + ".issuer=" + ISSUER,
                             JwtProperties.PREFIX + ".expiration=PT30M",
-                            "carddemo.security.require-https=false")
+                            "carddemo.security.require-https=false",
+                            "carddemo.security.anonymous-metrics-scrape=false")
                     .run(context -> assertThat(context)
                             .as("a chain with no material to verify tokens with must not start")
                             .hasFailed());

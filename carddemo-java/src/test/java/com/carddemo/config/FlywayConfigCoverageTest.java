@@ -98,11 +98,20 @@ final class FlywayConfigCoverageTest {
     /** The profile the refusal is scoped to. */
     private static final String EXPECTED_PROFILE = "prod";
 
-    /** The one location every profile resolves, typed independently of the class under test. */
-    private static final String EXPECTED_SCHEMA_LOCATION = "classpath:db/migration";
+    /** The schema location every profile resolves, typed independently of the class under test. */
+    private static final String EXPECTED_SCHEMA_LOCATION = "classpath:db/migration/schema";
+
+    /** The seed location only local and test resolve, typed independently of the class under test. */
+    private static final String EXPECTED_SEED_LOCATION = "classpath:db/migration/seed";
 
     /** Class-path path behind {@link #EXPECTED_SCHEMA_LOCATION}, as a resource pattern reads it. */
-    private static final String EXPECTED_SCHEMA_PATH = "db/migration";
+    private static final String EXPECTED_SCHEMA_PATH = "db/migration/schema";
+
+    /** Class-path path behind {@link #EXPECTED_SEED_LOCATION}, as a resource pattern reads it. */
+    private static final String EXPECTED_SEED_PATH = "db/migration/seed";
+
+    /** The shared parent of the two delivered locations, which must hold no script at all. */
+    private static final String EXPECTED_PARENT_PATH = "db/migration";
 
     /**
      * A Base64 key decoding to exactly thirty-two bytes, matching the shape the encryption service
@@ -140,16 +149,24 @@ final class FlywayConfigCoverageTest {
         }
 
         @Test
-        @DisplayName("names the one delivered location, flat, with no subdirectory - which is what the "
-                + "migration specifications require and what makes the ceiling the control")
+        @DisplayName("names both delivered locations as siblings, neither containing the other, which "
+                + "is what makes the location list the boundary rather than a label")
         void namesTheOneDeliveredLocation() {
             assertThat(FlywayConfig.SCHEMA_LOCATION).isEqualTo(EXPECTED_SCHEMA_LOCATION);
+            assertThat(FlywayConfig.SEED_LOCATION).isEqualTo(EXPECTED_SEED_LOCATION);
             assertThat(FlywayConfig.SCHEMA_LOCATION)
-                    .as("the specifications for V3 and V4 both direct that no subdirectory be created, "
-                            + "because a location is scanned recursively and a directory therefore "
-                            + "cannot isolate the seeds; the version ceiling is the control instead")
-                    .doesNotContain("/schema")
-                    .doesNotContain("/seed");
+                    .as("a location is scanned recursively, so neither delivered location may sit inside "
+                            + "the other or a single listing would resolve both and production could not "
+                            + "be given the schema alone")
+                    .isNotEqualTo(FlywayConfig.SEED_LOCATION)
+                    .doesNotStartWith(FlywayConfig.SEED_LOCATION);
+            assertThat(FlywayConfig.SEED_LOCATION)
+                    .doesNotStartWith(FlywayConfig.SCHEMA_LOCATION);
+            assertThat(FlywayConfig.SCHEMA_LOCATION)
+                    .as("both must sit under the plan's own db/migration delivery pattern")
+                    .startsWith("classpath:" + EXPECTED_PARENT_PATH + "/");
+            assertThat(FlywayConfig.SEED_LOCATION)
+                    .startsWith("classpath:" + EXPECTED_PARENT_PATH + "/");
         }
 
         @Test
@@ -168,10 +185,10 @@ final class FlywayConfigCoverageTest {
         void reachesTheSchemaAndStopsBelowTheSeeds() {
             MigrationVersion ceiling = MigrationVersion.fromVersion(FlywayConfig.SCHEMA_ONLY_TARGET);
 
-            assertThat(deliveredMigrations(EXPECTED_SCHEMA_PATH))
+            assertThat(deliveredMigrations(EXPECTED_PARENT_PATH))
                     .as("every claim below is about the delivered set, so a migration added or removed "
-                            + "must be accounted for here first; all four sit in the one location and "
-                            + "are told apart by version alone")
+                            + "must be accounted for here first; the four are split across the two "
+                            + "sibling locations and are additionally told apart by version")
                     .containsExactlyInAnyOrderElementsOf(Stream.concat(SCHEMA_MIGRATIONS.stream(),
                             SEED_MIGRATIONS.stream()).toList());
 
@@ -191,19 +208,30 @@ final class FlywayConfigCoverageTest {
         }
 
         @Test
-        @DisplayName("the delivered inventory is exactly the four scripts the frozen plan names, flat in "
-                + "one directory, with nothing interleaved and nothing in a subdirectory")
+        @DisplayName("the delivered inventory is exactly the four scripts the frozen plan names, split "
+                + "across the two sibling locations, with nothing interleaved")
         void theDeliveredInventoryIsExactlyTheFourNamedScripts() {
-            assertThat(deliveredMigrations("db/migration"))
-                    .as("a recursive scan of the one location must find exactly the four delivered "
-                            + "scripts and no fifth: an extra script here is what would make the "
-                            + "version numbering stop describing what a profile applies, and the "
-                            + "numbering is the only thing separating the seeds from the schema")
+            assertThat(deliveredMigrations(EXPECTED_PARENT_PATH))
+                    .as("a recursive scan of the whole migration tree must find exactly the four "
+                            + "delivered scripts and no fifth: an extra script is what would make the "
+                            + "delivered inventory stop describing what a profile applies")
                     .containsExactlyInAnyOrderElementsOf(Stream.concat(SCHEMA_MIGRATIONS.stream(),
                             SEED_MIGRATIONS.stream()).toList());
-            assertThat(scriptsInASubdirectory())
-                    .as("the specifications for V3 and V4 both direct that no subdirectory be created, "
-                            + "so every delivered script must sit flat in the one location")
+            assertThat(deliveredMigrations(EXPECTED_SCHEMA_PATH))
+                    .as("the schema location must hold the schema scripts and NOTHING else: a seed "
+                            + "resolved from here would be resolved by production, which resolves this "
+                            + "location alone")
+                    .containsExactlyInAnyOrderElementsOf(SCHEMA_MIGRATIONS);
+            assertThat(deliveredMigrations(EXPECTED_SEED_PATH))
+                    .as("the seed location must hold the seed scripts and nothing else, so that adding "
+                            + "it to a profile adds exactly the fixtures and no schema")
+                    .containsExactlyInAnyOrderElementsOf(SEED_MIGRATIONS);
+            assertThat(scriptsDirectlyInTheSharedParent())
+                    .as("no script may sit directly in the shared parent %s. A Flyway location is "
+                            + "scanned recursively, so a script there is reached by any profile that "
+                            + "names either location's parent, and the location list stops being the "
+                            + "boundary that keeps the seeds away from production",
+                            EXPECTED_PARENT_PATH)
                     .isEmpty();
 
             MigrationVersion first = versionOf("V1__create_schema.sql");
@@ -369,10 +397,10 @@ final class FlywayConfigCoverageTest {
                                 + "none of the fixtures the profile exists to load", profile)
                         .isEqualTo(MigrationVersion.LATEST);
                 assertThat(Stream.of(configuration.getLocations()).map(Object::toString).toList())
-                        .as("the location is left exactly as handed over: %s already resolved the one "
-                                + "delivered location, and there is no second location to append - the "
-                                + "lifted ceiling above is the whole of what loads the fixtures", profile)
-                        .containsExactly(EXPECTED_SCHEMA_LOCATION);
+                        .as("%s handed over the schema location alone, so the seed location is appended "
+                                + "for it: without that location the lifted ceiling has no seed script "
+                                + "to reach, and the fixtures would still not load", profile)
+                        .containsExactly(EXPECTED_SCHEMA_LOCATION, EXPECTED_SEED_LOCATION);
                 for (final String seedMigration : SEED_MIGRATIONS) {
                     assertThat(versionOf(seedMigration))
                             .as("%s must be reachable once the ceiling is lifted", seedMigration)
@@ -400,7 +428,15 @@ final class FlywayConfigCoverageTest {
         ApplicationContextRunner runner = new ApplicationContextRunner()
                 .withUserConfiguration(FlywayConfig.class)
                 .withBean(SensitiveFieldEncryptionService.class,
-                        () -> new SensitiveFieldEncryptionService(TEST_KEY));
+                        () -> new SensitiveFieldEncryptionService(TEST_KEY))
+                // The three settings a production start-up must have stated. A context runner loads no
+                // profile document, so without them a production context is refused by the
+                // migration-source guard before any bean is created - which is that guard's whole
+                // point, and is asserted in its own nest rather than here.
+                .withPropertyValues(
+                        "spring.flyway.enabled=true",
+                        "spring.flyway.target=" + FlywayConfig.SCHEMA_ONLY_TARGET,
+                        "spring.flyway.locations=" + EXPECTED_SCHEMA_LOCATION);
         return profiles.length == 0 ? runner : runner.withPropertyValues(
                 "spring.profiles.active=" + String.join(",", profiles));
     }
@@ -423,26 +459,28 @@ final class FlywayConfigCoverageTest {
     }
 
     /**
-     * Returns the delivered migration file names that sit in a subdirectory of the one migration
-     * location rather than flat inside it.
+     * Returns the delivered migration file names that sit directly in the shared parent of the two
+     * delivered locations rather than inside one of them.
      *
-     * <p>The migration specifications for V3 and V4 both direct that no subdirectory be created, so a
-     * script in one is a defect this guard reports by name. It is deliberately the inverse of an earlier
-     * guard, which required each script to sit in one of two subdirectories; that arrangement is
-     * withdrawn, and this assertion is what stops it returning unnoticed.</p>
+     * <p>This is the guard that keeps the location list a boundary. A Flyway location is scanned
+     * recursively, so a script left in the parent is reached by any profile naming the parent, and a
+     * profile naming the parent reaches the seeds through the child directory - which is exactly the
+     * observation that made two earlier revisions abandon the location mechanism. The delivered
+     * arrangement answers it by leaving the parent empty, and this guard is what stops a script
+     * drifting back into it.</p>
      *
-     * @return the offending file names, or an empty list when every script is flat
+     * @return the offending file names, or an empty list when the parent holds no script
      */
-    private static List<String> scriptsInASubdirectory() {
-        final String flatPrefix = EXPECTED_SCHEMA_PATH + "/";
-        return Stream.of(migrationResources("db/migration"))
+    private static List<String> scriptsDirectlyInTheSharedParent() {
+        final String parentPrefix = EXPECTED_PARENT_PATH + "/";
+        return Stream.of(migrationResources(EXPECTED_PARENT_PATH))
                 .map(FlywayConfigCoverageTest::describeResource)
                 .filter(location -> {
-                    final int start = location.indexOf(flatPrefix);
-                    // Anything after the flat prefix that still carries a separator sits one or more
-                    // directories deeper than the single delivered location allows.
+                    final int start = location.indexOf(parentPrefix);
+                    // A script inside a delivered location still carries a separator after the parent
+                    // prefix; one sitting directly in the parent does not.
                     return start >= 0
-                            && location.substring(start + flatPrefix.length()).contains("/");
+                            && !location.substring(start + parentPrefix.length()).contains("/");
                 })
                 .sorted()
                 .toList();

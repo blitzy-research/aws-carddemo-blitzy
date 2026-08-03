@@ -17,8 +17,9 @@
 package com.carddemo.repository;
 
 import com.carddemo.domain.Transaction;
-import java.util.List;
 import java.util.Optional;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -110,8 +111,8 @@ import org.springframework.data.repository.query.Param;
  * index, customer, transaction base cluster and user-security files. Both card-side alternate-index
  * paths are among them; the transaction alternate-index path is not, and the transaction entry
  * addresses the base cluster directly. No online request could therefore reach this index, so its
- * Java realisation - {@link #findByProcessingDateRange(String, String)} - serves the reporting job
- * alone.
+ * Java realisation - {@link #findByProcessingDateRange(String, String, Pageable)} - serves the
+ * reporting job alone.
  *
  * <p>{@code V2__create_indexes.sql} additionally declares {@code fk_transaction_card}, from this
  * table's card number to the card master. The entity nonetheless declares <strong>no association of
@@ -177,7 +178,7 @@ import org.springframework.data.repository.query.Param;
  * belong to the service and batch tiers. This interface therefore declares no exception type and no
  * status enumeration. Its own expressions of "nothing there" are an empty {@link Optional} from
  * {@link #findMaxId()}, an empty {@link Optional} from the inherited single-row lookup, and an empty
- * {@link List} from {@link #findByProcessingDateRange(String, String)}.
+ * {@link Slice} from {@link #findByProcessingDateRange(String, String, Pageable)}.
  *
  * <p>The interface carries no stereotype annotation: the repository infrastructure discovers it
  * through the component scan rooted at the base package, so annotating it would add nothing and
@@ -259,14 +260,43 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
     Optional<String> findMaxId();
 
     /**
-     * Returns every transaction whose processing date falls within an inclusive date range, ordered by
-     * card number ascending.
+     * Returns one caller-sized slice of the transactions whose processing date falls within an
+     * inclusive date range, ordered by card number ascending.
      *
      * <p>This is the Java realisation of the batch transaction report's selection and ordering, and of
      * the batch-only processing-timestamp alternate index that made it affordable.
      * {@code V2__create_indexes.sql} backs it with the non-unique B-tree index
      * {@code idx_transaction_tran_proc_ts}, so the range resolves through that index rather than by
      * scanning the transaction master.
+     *
+     * <h2>The result is sliced, because the range is operator-chosen and the table is append-only</h2>
+     *
+     * <p>The two bounds arrive from a job parameter that an operator supplies, and rows are only ever
+     * added to this table - by the posting run, by the interest run and by the online add path. The
+     * number of rows a range selects is therefore unbounded in principle and grows for the life of the
+     * deployment, so materialising a whole range into one collection would make the reporting job's
+     * memory a function of how much history had accumulated and of how wide a range somebody typed.
+     * The reader consumes the range a page at a time instead.
+     *
+     * <p>A {@link Slice} rather than a {@link org.springframework.data.domain.Page}: a page carries a
+     * total count, which costs a second aggregate query over the same range on every fetch and which
+     * the report has no use for - it breaks its pages and its totals from the rows themselves, line by
+     * line. A slice reports only whether another page follows, which is exactly what a sequential
+     * reader needs.
+     *
+     * <p><strong>The ordering carries a tie-break so that paging is deterministic.</strong> Card
+     * number is not unique across transactions, so an ordering on it alone leaves rows that share a
+     * card number in an order the engine may choose differently for each page - which would let a row
+     * be returned twice, or skipped, as the reader advances. The identifier is appended as a second,
+     * unique ordering term to make the sequence total. That is faithful rather than additive: the
+     * legacy external sort declares one key and no {@code EQUALS} option, so it guarantees nothing at
+     * all about the relative order of records sharing a card number, and any total order refining the
+     * declared key is admissible. The primary ordering is unchanged.
+     *
+     * <p>The ordering above is declared in the query text, so it is applied before anything a caller's
+     * {@link Pageable} adds. A sort supplied through the pageable is appended after it and can only
+     * refine an already total order, so the contract cannot be overridden from a call site; passing an
+     * unsorted pageable is the intended usage.
      *
      * <h2>The legacy comparison is a ten-character prefix compare</h2>
      *
@@ -306,6 +336,43 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * scan on {@code idx_transaction_tran_proc_ts} survives. Wrapping it would defeat that index for
      * no gain.
      *
+     * <h2>The upper side carries a redundant pre-bound so the index constrains both ends</h2>
+     *
+     * <p>The consequence of that asymmetry is that the authoritative upper predicate is wrapped in a
+     * function of the column, and a predicate over a function of a column cannot serve as a bound for
+     * an index built on the column itself. Left at that, the index would be entered at the start date
+     * and then read to the end of the table, with every row beyond the end date fetched and discarded
+     * and the whole remainder sorted. The query therefore carries a <em>third</em> predicate,
+     * {@code t.tranProcTs <= CONCAT(:endDate, } sixteen nines{@code )}, whose right-hand side mentions
+     * no column and so is evaluated once and used as the index's upper bound.
+     *
+     * <p><strong>It is a pre-bound and never the authority.</strong> The ten-character prefix
+     * comparison stays in the same {@code WHERE} clause and is what decides membership; the pre-bound
+     * only has to be wide enough never to exclude a row the authority keeps. That property is provable
+     * from the record layout rather than assumed, and it holds under both a byte-ordered and a
+     * language-aware collation:
+     *
+     * <ul>
+     *   <li>A populated processing timestamp is a ten-character date, then a separating space, then a
+     *       time of day - so its eleventh character is a space. An unprocessed transaction carries 26
+     *       spaces. Under byte ordering the comparison against the pre-bound is decided at the first
+     *       character where the two differ: if the ten-character prefixes differ, the prefix decides
+     *       it and the row is below the pre-bound exactly when it is below the end date; if the
+     *       prefixes are equal, the eleventh character decides it, and a space is below the digit
+     *       nine. So every row the authority keeps satisfies the pre-bound.</li>
+     *   <li>Under a language-aware collation, which weighs letters and digits ahead of spaces and
+     *       punctuation, the pre-bound contributes the date's digits followed by sixteen nines while a
+     *       stored value contributes the same date's digits followed by the time's digits, of which
+     *       the first is the tens digit of an hour and so at most two. Nine outranks it, and a blank
+     *       timestamp contributes no digits at all. The pre-bound is again the greater value.</li>
+     * </ul>
+     *
+     * <p>The invariant those two arguments rest on is the record layout's own: <strong>a stored
+     * processing timestamp is either blank throughout or carries a space in its eleventh
+     * character.</strong> Every writer must preserve it. Widening the filler, or replacing it with a
+     * character that a language-aware collation ignores, would break the second argument; shortening
+     * it below the sixteen characters that follow the date prefix would break the first.
+     *
      * <p><strong>This must remain a character comparison.</strong> It is never converted to
      * {@code LocalDate}, {@code LocalDateTime}, {@code Instant}, a database date or date-time type, or
      * a type-conversion expression inside the query, because the legacy comparison is a character
@@ -331,6 +398,16 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * ascending ordering on the card-number attribute is therefore faithful to both, which is why no
      * separate zoned-decimal comparator exists.
      *
+     * <p><strong>That equivalence is a precondition on the stored data, and it is stated here so it is
+     * not mistaken for a property of the column.</strong> It holds only while every stored card number
+     * is exactly sixteen digit characters, zero-padded, unsigned and without a sign overpunch - which
+     * is what the 16-byte card-number field of the record layout carries and what every mapper in this
+     * module writes. Storing a shorter, space-padded, signed or non-numeric card number would make
+     * character order diverge from zoned-decimal order and would silently reorder the report, without
+     * breaking compilation and without failing any test that did not look for it. It is the same
+     * precondition {@link #findMaxId()} depends on for the identifier, and every writer must preserve
+     * both.
+     *
      * <p>The rows returned here are the report's input, nothing more. The report line itself is
      * assembled at the fixed 133-character width by the formatter in the utility layer, and the report
      * program {@code app/cbl/CBTRN03C.cbl} contains no arithmetic statement at all, so this method
@@ -348,16 +425,21 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *                  reformatted
      * @param endDate   the inclusive upper bound of the range, likewise a ten-character date; a
      *                  transaction processed on this date is returned
-     * @return the matching transactions in ascending card-number order; possibly empty, never
-     *         {@code null}
+     * @param pageable  the reader's window over the range - page number and page size, supplied by the
+     *                  caller and never defaulted here; the ordering is fixed by this method and a
+     *                  sort carried on the pageable can only refine it
+     * @return the requested slice of matching transactions in ascending card-number order, reporting
+     *         whether a further slice follows; possibly empty, never {@code null}
      */
     @Query("""
             SELECT t
             FROM Transaction t
             WHERE t.tranProcTs >= :startDate
+              AND t.tranProcTs <= CONCAT(:endDate, '9999999999999999')
               AND SUBSTRING(t.tranProcTs, 1, 10) <= :endDate
-            ORDER BY t.tranCardNum ASC
+            ORDER BY t.tranCardNum ASC, t.tranId ASC
             """)
-    List<Transaction> findByProcessingDateRange(@Param("startDate") String startDate,
-                                                @Param("endDate") String endDate);
+    Slice<Transaction> findByProcessingDateRange(@Param("startDate") String startDate,
+                                                 @Param("endDate") String endDate,
+                                                 Pageable pageable);
 }

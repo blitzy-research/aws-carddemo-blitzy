@@ -72,13 +72,13 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * The credential used here is an obviously synthetic phrase. The eight-character literal carried
  * in-stream by {@code app/jcl/DUSRSECJ.jcl} appears nowhere in this file.
  *
- * <p>{@code src/main/resources/db/migration/V4__seed_user_security.sql} applies under this profile, so
+ * <p>{@code src/main/resources/db/migration/seed/V4__seed_user_security.sql} applies under this profile, so
  * the table already holds the ten legacy sign-on identities when a test method begins. Every row this
  * test writes is therefore keyed inside a reserved range the seed never occupies, and the cleanup and
  * the emptiness assertions are both scoped to that range: nothing here deletes or counts a seeded row.
  * An unscoped delete or an assertion that the table starts empty would have made this test depend on
- * the seeds being absent, which they no longer are - the five migrations are flat in one location and
- * only a version ceiling holds them back from production.
+ * the seeds being absent, which they no longer are under this profile: the test overlay resolves the
+ * seed location that production is refused, and lifts the version ceiling behind it.
  *
  * <p>One assertion deliberately looks at the seeded rows rather than around them: it reads all ten
  * credentials through plain JDBC and requires each to be a digest of the declared width, with no two
@@ -185,11 +185,11 @@ class UserSecurityCredentialIT extends AbstractPostgresIT {
             + "application's own guard recognises")
     void theSeedDeliversTenIdentitiesAllStoredAsDigests() throws SQLException {
         assertThat(countUsers())
-                .as("all five migrations are flat in one location and the seeds are held back from "
-                        + "production by the version ceiling alone, so a profile that raises that "
-                        + "ceiling must actually receive them: a count of zero means the ceiling was "
-                        + "never raised, and a count above %d means a second seed exists",
-                        SEEDED_IDENTITY_COUNT)
+                .as("the seeds are held back from production by the seed location it is refused and by "
+                        + "the version ceiling behind that, so a profile resolving the location and "
+                        + "lifting the ceiling must actually receive them: a count of zero means one of "
+                        + "the two was left at the production value, and a count above %d means a second "
+                        + "seed exists", SEEDED_IDENTITY_COUNT)
                 .isEqualTo(SEEDED_IDENTITY_COUNT);
 
         assertThat(countAdministrators())

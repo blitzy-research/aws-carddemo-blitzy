@@ -48,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * service at all.
  *
  * <p>The claim being verified is the one written into
- * {@code src/main/resources/db/migration/V1__create_schema.sql} and into the field documentation of
+ * {@code src/main/resources/db/migration/schema/V1__create_schema.sql} and into the field documentation of
  * {@code com.carddemo.domain.Customer}: that {@code customer.cust_ssn} holds an application-produced
  * authenticated envelope and never the nine cleartext digits the legacy record carries at offset 279
  * of the 500-byte layout in {@code app/cpy/CVCUS01Y.cpy}. A documented guarantee that no test
@@ -84,7 +84,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * throwaway pair the test overlay declares.
  *
  * <h2>Coexistence with the seeded reference data</h2>
- * {@code src/main/resources/db/migration/V3__seed_reference_data.sql} loads the fifty fixture
+ * {@code src/main/resources/db/migration/seed/V3__seed_reference_data.sql} loads the fifty fixture
  * customers under the zero-padded keys {@code 000000001} through {@code 000000050}, and loads fifty
  * {@code card_cross_reference} rows that point at them through {@code fk_card_xref_customer}. This
  * test therefore keys every row it writes under {@link #TEST_KEY_PREFIX}, a range the seed never

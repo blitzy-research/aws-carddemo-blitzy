@@ -35,9 +35,11 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+import org.springframework.boot.autoconfigure.jdbc.JdbcTemplateAutoConfiguration;
 import org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
+import com.carddemo.service.SensitiveFieldEncryptionService;
 import com.carddemo.support.AbstractPostgresIT;
 
 /**
@@ -137,6 +139,10 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
 
     /** Row count the sign-on seed puts in the user-security table. */
     private static final long SEEDED_SIGN_ON_COUNT = 10L;
+
+    /** A field-encryption key of the right shape, so the collaborator bean can be built. */
+    private static final String FIELD_ENCRYPTION_KEY =
+            "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
 
     /**
      * Drops the probe database, so each test starts from nothing and the shared server is left as it
@@ -370,7 +376,103 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
                 .isEqualTo(SEEDED_SIGN_ON_COUNT);
     }
 
+    @Test
+    @DisplayName("the same inspection fires from an ordinary production singleton, in a context "
+            + "carrying NO migration tool at all - which is the path a disabled migration would leave")
+    void theInspectionFiresWithNoMigrationToolInTheContext() throws SQLException {
+        createProbeDatabase();
+
+        productionContextWithoutMigrations().run(started -> assertThat(started)
+                .as("THE CONTROL ASSERTION. This wiring - a data source and a template, and no "
+                        + "migration tool whatever - must be capable of starting against a "
+                        + "never-migrated database, or the refusal below would prove only that the "
+                        + "wiring is broken")
+                .hasNotFailed());
+
+        seedingMigration().migrate();
+        assertThat(scalar(COUNT_CUSTOMERS))
+                .as("the database now holds the seeded state, reached without this deployment's "
+                        + "knowledge")
+                .isEqualTo(SEEDED_CUSTOMER_COUNT);
+
+        productionContextWithoutMigrations().run(refused -> {
+            assertThat(refused)
+                    .as("NO MIGRATION TOOL IS PRESENT, so no configuration customizer runs and no "
+                            + "callback event is ever offered. Before the always-on singleton existed "
+                            + "this context started cleanly over ten known administrative credentials")
+                    .hasFailed();
+            assertThat(refused.getStartupFailure())
+                    .as("and it fails for THIS reason, naming the history table and the seed boundary")
+                    .hasStackTraceContaining(ProductionSeedRejectionCallback.HISTORY_TABLE)
+                    .hasStackTraceContaining(ProductionSeedRejectionCallback.FIRST_SEED_VERSION);
+        });
+
+        assertThat(scalar(COUNT_CUSTOMERS))
+                .as("and the refusal deletes nothing, for the same reason the callback deletes nothing")
+                .isEqualTo(SEEDED_CUSTOMER_COUNT);
+    }
+
+    @Test
+    @DisplayName("a production start-up that switched migrations off is refused outright, so the "
+            + "bypass cannot be taken in the first place")
+    void aProductionStartUpThatSwitchedMigrationsOffIsRefused() throws SQLException {
+        createProbeDatabase();
+
+        new ApplicationContextRunner()
+                .withUserConfiguration(FlywayConfig.class)
+                .withConfiguration(AutoConfigurations.of(DataSourceAutoConfiguration.class,
+                        FlywayAutoConfiguration.class))
+                .withBean(SensitiveFieldEncryptionService.class,
+                        () -> new SensitiveFieldEncryptionService(FIELD_ENCRYPTION_KEY))
+                .withPropertyValues(
+                        "spring.profiles.active=" + FlywayConfig.PRODUCTION_PROFILE,
+                        "spring.datasource.url=" + probeJdbcUrl(),
+                        "spring.datasource.username=" + databaseUser(),
+                        "spring.datasource.password=" + databasePassword(),
+                        "spring.flyway.enabled=false",
+                        "spring.flyway.locations=" + FlywayConfig.SCHEMA_LOCATION,
+                        "spring.flyway.target=" + FlywayConfig.SCHEMA_ONLY_TARGET)
+                .run(refused -> assertThat(refused)
+                        .as("switching migrations off is itself refused, before any bean is created, "
+                                + "so a deployment cannot reach a state where the migration-lifecycle "
+                                + "controls are absent")
+                        .hasFailed()
+                        .getFailure()
+                        .hasMessageContaining("spring.flyway.enabled"));
+    }
+
     // Helpers.
+
+    /**
+     * Builds a context runner carrying a data source and a template but NO migration tool, with
+     * {@link FlywayConfig} registered and the production profile active.
+     *
+     * <p>The absence of {@code FlywayAutoConfiguration} is the whole point: it reproduces exactly the
+     * state {@code spring.flyway.enabled=false} used to produce, in which no configuration customizer
+     * is applied and no callback event is ever offered, so only a control that does not ride on the
+     * migration lifecycle can fire. The production profile IS activated here - unlike in
+     * {@link #productionContext()} - because the control under test is scoped to that profile, and with
+     * only {@code FlywayConfig} registered the profile carries no other guard whose failure could mask
+     * this one.
+     *
+     * @return a runner ready to {@code run}, pointed at the probe database
+     */
+    private static ApplicationContextRunner productionContextWithoutMigrations() {
+        return new ApplicationContextRunner()
+                .withUserConfiguration(FlywayConfig.class)
+                .withConfiguration(AutoConfigurations.of(DataSourceAutoConfiguration.class,
+                        JdbcTemplateAutoConfiguration.class))
+                .withBean(SensitiveFieldEncryptionService.class,
+                        () -> new SensitiveFieldEncryptionService(FIELD_ENCRYPTION_KEY))
+                .withPropertyValues(
+                        "spring.profiles.active=" + FlywayConfig.PRODUCTION_PROFILE,
+                        "spring.datasource.url=" + probeJdbcUrl(),
+                        "spring.datasource.username=" + databaseUser(),
+                        "spring.datasource.password=" + databasePassword(),
+                        "spring.flyway.enabled=true",
+                        "spring.flyway.locations=" + FlywayConfig.SCHEMA_LOCATION,
+                        "spring.flyway.target=" + FlywayConfig.SCHEMA_ONLY_TARGET);
+    }
 
     /**
      * Builds a context runner carrying the three auto-configurations a production deployment initializes
@@ -428,7 +530,7 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
     private static Flyway seedingMigration() {
         return Flyway.configure()
                 .dataSource(probeJdbcUrl(), databaseUser(), databasePassword())
-                .locations(FlywayConfig.SCHEMA_LOCATION)
+                .locations(FlywayConfig.SCHEMA_LOCATION, FlywayConfig.SEED_LOCATION)
                 .target(FlywayConfig.SEEDING_TARGET)
                 .load();
     }

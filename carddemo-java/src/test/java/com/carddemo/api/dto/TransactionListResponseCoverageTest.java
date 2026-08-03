@@ -719,8 +719,9 @@ class TransactionListResponseCoverageTest {
          * published constants alone and the placeholder's privacy is asserted separately.</p>
          */
         @Test
-        @DisplayName("declares fifteen integer constants, seven message constants and one withheld-value placeholder")
-        void theStaticSurfaceIsThirteenWidthsAndSevenMessages() {
+        @DisplayName("declares fourteen integer constants, seven message constants and one "
+                + "withheld-value placeholder")
+        void theStaticSurfaceIsFourteenWidthsAndSevenMessages() {
             List<Field> statics =
                     Arrays.stream(TransactionListResponse.class.getDeclaredFields())
                             .filter(field -> Modifier.isStatic(field.getModifiers()))
@@ -728,17 +729,20 @@ class TransactionListResponseCoverageTest {
                             .toList();
 
             assertThat(statics.stream().filter(field -> field.getType() == int.class).toList())
-                    .hasSize(15);
+                    .as("every integer constant states the width or the decimal shape of one value; "
+                            + "the screen depth is not among them, because that is a screen dimension "
+                            + "the paging contract states once for the whole module")
+                    .hasSize(14);
             assertThat(statics.stream().filter(field -> field.getType() == String.class).toList())
                     .hasSize(8);
-            assertThat(statics).hasSize(23);
+            assertThat(statics).hasSize(22);
 
             List<Field> published =
                     statics.stream()
                             .filter(field -> Modifier.isPublic(field.getModifiers()))
                             .toList();
 
-            assertThat(published).hasSize(22);
+            assertThat(published).hasSize(21);
             assertThat(published)
                     .allSatisfy(
                             field ->
@@ -779,17 +783,17 @@ class TransactionListResponseCoverageTest {
         }
 
         /**
-         * The screen depth is published as a row count, and it is the only depth constant declared.
+         * The screen depth is published nowhere on this contract, under any spelling.
          *
-         * <p>The screen has ten row families, and this contract checks a page against that number, so
-         * the number it checks against is published rather than hidden: a producer handed a refusal
-         * needs to be able to read the bound it broke. It is a screen shape and not a tuning figure, so
-         * no second spelling of it exists here - no page size a caller may choose, no configurable
-         * limit and no performance guard. The single spelling is asserted so that adding a second one
-         * fails, because two depth constants is how a screen shape starts drifting from itself.</p>
+         * <p>How many row families the screen declares is a screen dimension rather than a field width,
+         * and the module states it once, in the paging contract. Publishing it here as well would make
+         * this response body a competing source of truth for the same measurement and would invite a
+         * caller to read it as a page size it could choose. Every constant this type does publish states
+         * the width or the decimal shape of one value, so the assertion is that no depth constant exists
+         * under any of the spellings a reintroduction would plausibly use.</p>
          */
         @Test
-        @DisplayName("publishes the screen depth once as a row count and declares no second depth constant")
+        @DisplayName("publishes no screen depth at all, under any spelling")
         void noPageSizeConstantIsDeclared() {
             List<String> names =
                     Arrays.stream(TransactionListResponse.class.getDeclaredFields())
@@ -798,20 +802,16 @@ class TransactionListResponseCoverageTest {
                             .map(Field::getName)
                             .toList();
 
-            assertThat(TransactionListResponse.ROW_COUNT).isEqualTo(10);
-            assertThat(TransactionListResponse.ROW_COUNT)
-                    .as("the screen depth agrees with the paging contract's own figure")
-                    .isEqualTo(PageMetadata.TRANSACTION_LIST_PAGE_SIZE);
+            assertThat(PageMetadata.TRANSACTION_LIST_PAGE_SIZE)
+                    .as("the paging contract is where this screen's depth is stated")
+                    .isEqualTo(10);
 
             assertThat(names)
-                    .as("the screen depth is stated once and only once")
-                    .filteredOn(name -> name.contains("ROW_COUNT"))
-                    .containsExactly("ROW_COUNT");
-            assertThat(names)
-                    .as("no second spelling of the depth is introduced")
+                    .as("no depth constant of any spelling is published on the response body")
                     .noneMatch(
                             name ->
-                                    name.contains("PAGE_SIZE")
+                                    name.contains("ROW_COUNT")
+                                            || name.contains("PAGE_SIZE")
                                             || name.contains("ROW_LIMIT")
                                             || name.contains("DEPTH")
                                             || name.contains("MAX_ROWS"));
@@ -1283,42 +1283,40 @@ class TransactionListResponseCoverageTest {
          * An over-deep page is refused rather than truncated, which surfaces the defect instead of
          * hiding it.
          *
-         * <p>Truncating and refusing are both ways of not presenting an eleventh row, and they are not
-         * equivalent. Truncation discards a row the browse returned and leaves the caller with a
-         * plausible ten-row page it can neither audit nor attribute; refusal names the row count at the
-         * boundary where the producer that assembled it can still be identified. Refusing is therefore
-         * the behaviour that keeps the earlier no-truncation guarantee honest, and the refusal text is
-         * asserted to name both the bound and the offending count.</p>
+         * <p>Neither truncating nor refusing happens here. Truncation would discard a row the browse
+         * returned and leave the caller with a plausible page it could neither audit nor attribute, and
+         * refusal would require this contract to publish the screen depth it refused against - a
+         * measurement the paging contract already states once for the whole module. The page is
+         * therefore carried exactly as supplied, and whether it fits the screen it is destined for is
+         * the concern of the service that assembled it, which is the layer that knows which screen that
+         * is. The no-truncation guarantee is kept by carrying every row, not by rejecting the page.</p>
          */
         @Test
-        @DisplayName("refuses an over-deep page rather than truncating it")
-        void anOverDeepPageIsNotTruncated() {
+        @DisplayName("carries an over-deep page untouched rather than truncating or refusing it")
+        void anOverDeepPageIsCarriedUntouched() {
             List<TransactionListResponse.TransactionRow> tooMany = new ArrayList<>();
-            for (int index = 0; index < TransactionListResponse.ROW_COUNT + 1; index++) {
+            for (int index = 0; index < PageMetadata.TRANSACTION_LIST_PAGE_SIZE + 1; index++) {
                 tooMany.add(row(String.format(Locale.ROOT, "%016d", index + 1)));
             }
 
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .as("a depth defect is surfaced rather than hidden")
-                    .isThrownBy(() -> withRows(tooMany))
-                    .withMessageContaining("at most 10 entries")
-                    .withMessageContaining("row families")
-                    .withMessageContaining("it holds 11");
+            assertThat(withRows(tooMany).rows())
+                    .as("every row the browse returned survives, so nothing is hidden from the caller")
+                    .hasSize(11)
+                    .containsExactlyElementsOf(tooMany);
         }
 
-        /**
-         * A page at exactly the screen depth is accepted, so the depth check is an upper bound and not
-         * an off-by-one refusal of a full page.
-         */
+        /** A page at exactly the screen depth is carried like any other, in the order supplied. */
         @Test
-        @DisplayName("accepts a page at exactly the screen depth")
-        void aPageAtExactlyTheScreenDepthIsAccepted() {
+        @DisplayName("carries a page at exactly the screen depth")
+        void aPageAtExactlyTheScreenDepthIsCarried() {
             List<TransactionListResponse.TransactionRow> exact = new ArrayList<>();
-            for (int index = 0; index < TransactionListResponse.ROW_COUNT; index++) {
+            for (int index = 0; index < PageMetadata.TRANSACTION_LIST_PAGE_SIZE; index++) {
                 exact.add(row(String.format(Locale.ROOT, "%016d", index + 1)));
             }
 
-            assertThat(withRows(exact).rows()).hasSize(TransactionListResponse.ROW_COUNT);
+            assertThat(withRows(exact).rows())
+                    .hasSize(PageMetadata.TRANSACTION_LIST_PAGE_SIZE)
+                    .containsExactlyElementsOf(exact);
         }
 
         /** A forward page's ascending order is carried verbatim. */

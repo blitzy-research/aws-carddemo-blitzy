@@ -108,11 +108,16 @@ final class WireVocabularyContractTest {
      * <p>Kept as a backstop beneath the concept rules rather than as the primary defence: each of these is
      * already rejected by the rule that owns its concept, and listing them additionally makes a regression to
      * a specific former name report itself by name rather than by category.</p>
+     *
+     * <p>{@code reportPeriod} is deliberately <em>absent</em> from this list. The report screen's three
+     * mutually exclusive one-character positions collapse into one enumerated period, so that name is the
+     * canonical spelling of the concept rather than a superseded one; the bare {@code period} remains listed
+     * because the qualified form is what the contract publishes.</p>
      */
     private static final List<String> SUPERSEDED_SPELLINGS = List.of(
             "screenTitle1", "screenTitle2", "screenTitleLine1", "screenTitleLine2", "titleLine1",
             "titleLine2", "title1", "title2", "fieldToFocus", "focusFieldName", "route", "navigation",
-            "page", "pageNumber", "pageIndicator", "period", "reportPeriod", "paymentBalance");
+            "page", "pageNumber", "pageIndicator", "period", "paymentBalance");
 
     /**
      * A single component of a single contract shape.

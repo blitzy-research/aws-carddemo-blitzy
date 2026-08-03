@@ -34,58 +34,21 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 /**
  * Unit tests for the shared common-message and screen-title catalog.
  *
- * <p>The class under test is the migrated form of two legacy copybooks: {@code app/cpy/CSMSG01Y.cpy},
- * declaring the common-message group as two 50-character items, and {@code app/cpy/COTTL01Y.cpy},
- * declaring the screen-title group as three 40-character items. Each was textually included by all 17
- * online COBOL programs, so the migration collapses 34 textual inclusions into one injected
- * singleton.</p>
- *
- * <p>Every published value is a fixed-width external contract rather than incidental whitespace: the
- * two common messages reach a REST response body by way of the online services, so shortening a value
- * or normalising its padding would change the wire contract. These tests therefore assert the padding
- * as deliberately as the visible text. In {@code app/cbl/COSGN00C.cbl} (transaction {@code CC00}) the
- * attention-key decision places the thank-you message into the screen message field on the exit-key
- * arm and sends plain text without raising the error flag, whereas its default arm raises the error
- * flag first and only then places the invalid-key message. This class covers the text alone; flag
- * state, cursor placement and routing belong to the services that own them.</p>
- *
- * <p>Every expected value is a literal declared in this test class, so the oracle is independent of
- * the code it judges: no expected value is produced by calling the class under test or any production
- * formatter, codec, template holder or record mapper. Padding is written as an explicit repeat count
- * rather than as trailing whitespace, so the count is visible to a reviewer and cannot be stripped by
- * an editor. Every width assertion measures encoded bytes, never character count, because these are
- * byte-width contracts. No fixed-width value is ever trimmed before comparison; trimming appears only
- * where the assertion is explicitly about visible text, such as the trailing full-stop run.</p>
+ * <p>These texts are an external contract: they are what an operator reads and what downstream
+ * tooling matches on, so each is asserted byte for byte at the width its legacy picture clause
+ * declares, trailing spaces included. The padding is part of the value rather than an artefact of
+ * it, so trimming any of these strings would change observable output.
  */
 @DisplayName("Common message catalog: the shared screen text keeps its legacy fixed widths")
 class MessageCatalogServiceTest {
-
-    /**
-     * Visible text of the 50-character thank-you common message. The three trailing full stops are part
-     * of the text rather than padding.
-     */
     private static final String MSG_THANK_YOU_VISIBLE = "Thank you for using CardDemo application...";
 
-    /**
-     * Visible text of the 50-character invalid-key common message. The full stop after the first word
-     * group, the single space that follows it and the three trailing full stops are all part of the
-     * text.
-     */
     private static final String MSG_INVALID_KEY_VISIBLE = "Invalid key pressed. Please see below...";
 
     private static final String TITLE01_VISIBLE = "AWS Mainframe Modernization";
 
-    /**
-     * Visible text of the active value of the second screen title. The copybook also carries a
-     * commented-out alternative on the line immediately above it; the alternative is inactive in the
-     * legacy source and must stay inactive here.
-     */
     private static final String TITLE02_VISIBLE = "CardDemo";
 
-    /**
-     * Visible text of the 40-character screen-title thank-you line. Note the product token and the
-     * width: this is a different literal from the 50-character common message serving the same purpose.
-     */
     private static final String TITLE_THANK_YOU_VISIBLE = "Thank you for using CCDA application...";
 
     private static final int EXPECTED_COMMON_MESSAGE_WIDTH = 50;
@@ -120,10 +83,6 @@ class MessageCatalogServiceTest {
 
     private static final String EXPECTED_TITLE02 = " ".repeat(14) + TITLE02_VISIBLE + " ".repeat(18);
 
-    /**
-     * The screen-title thank-you line at its contractual width, padded by a single trailing space
-     * written as a repeat count because a lone trailing space is the easiest character here to lose.
-     */
     private static final String EXPECTED_TITLE_THANK_YOU = TITLE_THANK_YOU_VISIBLE + " ".repeat(1);
 
     private static final String EXPECTED_KEY_MSG_THANK_YOU = "CCDA-MSG-THANK-YOU";
@@ -136,51 +95,23 @@ class MessageCatalogServiceTest {
 
     private static final String EXPECTED_KEY_TITLE_THANK_YOU = "CCDA-THANK-YOU";
 
-    /**
-     * Product token carried by the 50-character common message and by no screen-title thank-you line.
-     */
     private static final String CARDDEMO_TOKEN = "CardDemo";
 
-    /**
-     * Product token carried by the 40-character screen-title thank-you line and by no common message.
-     */
     private static final String CCDA_TOKEN = "CCDA";
 
-    /**
-     * Token appearing only in the commented-out alternative second screen title. The catalog must not
-     * publish it: activating an inactive legacy literal would be a behaviour change.
-     */
     private static final String INACTIVE_ALTERNATIVE_TITLE_TOKEN = "Credit Card Demo Application";
 
-    /**
-     * The catalog under test, reconstructed before each test so no test can depend on another having run
-     * and so the public no-argument constructor is exercised every time.
-     */
     private MessageCatalogService catalog;
 
-    /**
-     * Builds a fresh catalog. It has no collaborators, so there is nothing to mock and no container to
-     * start; direct construction is the strongest statement that this test needs no framework to run.
-     */
     @BeforeEach
     void createCatalog() {
         catalog = new MessageCatalogService();
     }
 
-    /**
-     * Measures a value the way the fixed-width contract defines it, in encoded bytes rather than
-     * characters: a character count would agree for well-formed catalog text and disagree the moment a
-     * non-ASCII character was introduced, which is exactly the regression these tests exist to catch.
-     */
     private static int encodedWidth(final String value) {
         return value.getBytes(StandardCharsets.US_ASCII).length;
     }
 
-    /**
-     * Counts the run of full stops terminating a value, over encoded bytes for consistency with the width
-     * measurement. Counting the run rejects both a shortened and a lengthened run in one assertion,
-     * which a suffix comparison alone cannot do.
-     */
     private static int trailingFullStops(final String value) {
         final byte[] bytes = value.getBytes(StandardCharsets.US_ASCII);
         int run = 0;
@@ -190,11 +121,6 @@ class MessageCatalogServiceTest {
         return run;
     }
 
-    /**
-     * Supplies every published value twice, once by way of its public constant and once by way of its
-     * accessor, with the width its legacy declaration gives it. Adding a message without extending this
-     * table leaves the new message unasserted, which is the point: the table is meant to have to grow.
-     */
     private static Stream<Arguments> publishedValues() {
         final MessageCatalogService catalogUnderTest = new MessageCatalogService();
         return Stream.of(
@@ -236,7 +162,6 @@ class MessageCatalogServiceTest {
             + "clause declares")
     void everyPublishedValueReproducesItsLegacyLiteral(final String member, final String published,
             final String expected, final int declaredWidth) {
-
         assertThat(published).as("%s must never be null", member).isNotNull();
         assertThat(published).as("%s text", member).isEqualTo(expected);
         assertThat(published.getBytes(StandardCharsets.US_ASCII))
@@ -245,13 +170,9 @@ class MessageCatalogServiceTest {
         assertThat(encodedWidth(published)).as("%s encoded width", member).isEqualTo(declaredWidth);
     }
 
-    /**
-     * The two 50-character items of the common-message group.
-     */
     @Nested
     @DisplayName("The two common messages the legacy estate shared across all seventeen online programs")
     class CommonMessages {
-
         @Test
         @DisplayName("the thank-you message occupies exactly fifty encoded bytes, the width its picture clause "
                 + "declares")
@@ -329,13 +250,9 @@ class MessageCatalogServiceTest {
         }
     }
 
-    /**
-     * The three 40-character items of the screen-title group.
-     */
     @Nested
     @DisplayName("The three screen-title lines, which are forty bytes wide and not fifty")
     class ScreenTitles {
-
         @Test
         @DisplayName("the first title keeps both its six leading and its seven trailing spaces, because "
                 + "together they centre it in the field")
@@ -405,13 +322,9 @@ class MessageCatalogServiceTest {
         }
     }
 
-    /**
-     * The guard against the single most tempting wrong simplification in this catalog.
-     */
     @Nested
     @DisplayName("The two thank-you literals, which serve the same purpose and are not the same contract")
     class ThankYouVariants {
-
         @Test
         @DisplayName("the fifty-byte CardDemo common message and the forty-byte CCDA screen title are two "
                 + "different legacy literals that must never be unified")
@@ -440,13 +353,9 @@ class MessageCatalogServiceTest {
         }
     }
 
-    /**
-     * The declared widths and the legacy field names the catalog publishes alongside the text.
-     */
     @Nested
     @DisplayName("The declared field widths and the legacy field names used as catalog keys")
     class DeclaredWidthsAndKeys {
-
         @Test
         @DisplayName("the published widths are fifty for a common message and forty for a screen title, and the "
                 + "two are not interchangeable")
@@ -489,13 +398,9 @@ class MessageCatalogServiceTest {
         }
     }
 
-    /**
-     * The two copybook groups republished as maps keyed by legacy field name.
-     */
     @Nested
     @DisplayName("The two copybook groups, republished whole and closed to modification")
     class GroupMaps {
-
         @Test
         @DisplayName("the common-message group holds exactly the two legacy entries, each at its fifty-byte width")
         void theCommonMessageGroupHoldsExactlyTheTwoLegacyEntries() {
@@ -570,13 +475,9 @@ class MessageCatalogServiceTest {
         }
     }
 
-    /**
-     * The accessor contract every collaborating service depends on.
-     */
     @Nested
     @DisplayName("The accessor contract the twelve collaborating services depend on")
     class AccessorContract {
-
         @Test
         @DisplayName("no accessor ever returns null, because a null screen message would blank a field instead "
                 + "of failing loudly")

@@ -131,6 +131,136 @@ class RejectRecordWriterContractTest {
         return value.getBytes(StandardCharsets.US_ASCII).length;
     }
 
+    // ------------------------------------------------------------------------------------------
+    // The independent oracle.
+    //
+    // Everything below reassembles the 430-byte reject record from literal layout offsets, the
+    // literal field values that transaction() supplies, and the reason enumeration's own code and
+    // description. It calls NEITHER the record mapper NOR the writer, which is the whole point: an
+    // expectation produced by the code under test cannot fail when that code is wrong, and a
+    // coordinated defect in the mapper and the writer would agree with itself. The widths below are
+    // the copybook's own and are written as integer literals so a shifted layout cannot survive.
+    // ------------------------------------------------------------------------------------------
+
+    /** Declared width of the 350-byte source record image the reject record opens with. */
+    private static final int SOURCE_WIDTH = 350;
+
+    /** Declared width of the four-digit reason code that opens the trailer. */
+    private static final int REASON_CODE_WIDTH = 4;
+
+    /** Declared width of the reason description that follows the code. */
+    private static final int REASON_DESCRIPTION_WIDTH = 76;
+
+    /** Declared width of the whole reject record: the source image plus the trailer. */
+    private static final int REJECT_WIDTH = 430;
+
+    /** The ten characters that overpunch a positive final digit, zero through nine in order. */
+    private static final String POSITIVE_OVERPUNCH = "{ABCDEFGHI";
+
+    /** The ten characters that overpunch a negative final digit, zero through nine in order. */
+    private static final String NEGATIVE_OVERPUNCH = "}JKLMNOPQR";
+
+    /**
+     * Places a value the way a {@code PIC X(n)} field holds it: left-justified, space-padded.
+     *
+     * @param  value the significant content
+     * @param  width the declared field width
+     * @return the value at exactly {@code width} characters
+     */
+    private static String alphanumeric(final String value, final int width) {
+        return value + " ".repeat(width - value.length());
+    }
+
+    /**
+     * Encodes an amount the way an eleven-byte {@code PIC S9(09)V99} field holds it, by hand.
+     *
+     * <p>Eleven digit positions, right-justified and zero-filled, with the sign folded into the final
+     * byte from the two overpunch alphabets above. No production codec is involved.
+     *
+     * @param  amount the amount, already at scale two
+     * @return its eleven-byte zoned image
+     */
+    private static String zonedAmountImage(final BigDecimal amount) {
+        String digits = amount.abs().movePointRight(2).toBigIntegerExact().toString();
+        digits = "0".repeat(11 - digits.length()) + digits;
+        final int finalDigit = digits.charAt(10) - '0';
+        final char sign = amount.signum() < 0
+                ? NEGATIVE_OVERPUNCH.charAt(finalDigit)
+                : POSITIVE_OVERPUNCH.charAt(finalDigit);
+        return digits.substring(0, 10) + sign;
+    }
+
+    /**
+     * Reassembles, by hand, the 350-byte source image of the record {@link #transaction} builds.
+     *
+     * <p>The literal field values are the same ones that method supplies, and the padding is applied
+     * here by this class's own helper at the copybook's declared widths.
+     *
+     * @param  transactionId the sixteen-character transaction identifier
+     * @param  amount        the transaction amount at scale two
+     * @param  source        the ten-character origin descriptor
+     * @return the source image, exactly {@value #SOURCE_WIDTH} characters
+     */
+    private static String sourceImage(final String transactionId, final BigDecimal amount,
+            final String source) {
+        final String image = alphanumeric(transactionId, 16)
+                + alphanumeric("01", 2)
+                + alphanumeric("0005", 4)
+                + alphanumeric(source, 10)
+                + alphanumeric("Grocery purchase", 100)
+                + zonedAmountImage(amount)
+                + alphanumeric("000000123", 9)
+                + alphanumeric("Corner Store", 50)
+                + alphanumeric("Seattle", 50)
+                + alphanumeric("98101     ", 10)
+                + alphanumeric("4111111111111111", 16)
+                + alphanumeric("2022-01-01 10:00:00.000000", 26)
+                + alphanumeric("2022-01-02 03:00:00.000000", 26)
+                + " ".repeat(20);
+        assertThat(encodedWidth(image))
+                .as("this class's own source-image oracle must itself be 350 bytes")
+                .isEqualTo(SOURCE_WIDTH);
+        return image;
+    }
+
+    /**
+     * Reassembles, by hand, the 80-byte validation trailer for a reason.
+     *
+     * <p>A four-digit zero-filled code followed by the description padded out to its full field. The
+     * code and the description come from the enumeration, which is the contract; the geometry comes
+     * from the two width literals above.
+     *
+     * @param  reason the reject reason
+     * @return the trailer, exactly 80 characters
+     */
+    private static String trailerImage(final RejectReason reason) {
+        final String code = String.valueOf(reason.getReasonCode());
+        final String trailer = "0".repeat(REASON_CODE_WIDTH - code.length()) + code
+                + alphanumeric(reason.getDescription(), REASON_DESCRIPTION_WIDTH);
+        assertThat(encodedWidth(trailer))
+                .as("this class's own trailer oracle must itself be 80 bytes")
+                .isEqualTo(REASON_CODE_WIDTH + REASON_DESCRIPTION_WIDTH);
+        return trailer;
+    }
+
+    /**
+     * Reassembles, by hand, the complete 430-byte reject record.
+     *
+     * @param  transactionId the sixteen-character transaction identifier
+     * @param  amount        the transaction amount at scale two
+     * @param  source        the ten-character origin descriptor
+     * @param  reason        the reject reason the trailer carries
+     * @return the reject record, exactly {@value #REJECT_WIDTH} characters
+     */
+    private static String rejectImage(final String transactionId, final BigDecimal amount,
+            final String source, final RejectReason reason) {
+        final String image = sourceImage(transactionId, amount, source) + trailerImage(reason);
+        assertThat(encodedWidth(image))
+                .as("this class's own reject-record oracle must itself be 430 bytes")
+                .isEqualTo(REJECT_WIDTH);
+        return image;
+    }
+
     @Nested
     @DisplayName("declared geometry")
     class DeclaredGeometry {
@@ -220,13 +350,20 @@ class RejectRecordWriterContractTest {
             String onRewrite = RejectRecordWriter
                     .validationTrailer(RejectReason.ACCOUNT_NOT_FOUND_ON_REWRITE);
 
+            // The shared description is stated as a literal rather than by comparing the two
+            // production outputs to each other, which would hold even if both were wrong.
+            String sharedDescription =
+                    alphanumeric("ACCOUNT RECORD NOT FOUND", REASON_DESCRIPTION_WIDTH);
+
             assertThat(onRead).isNotEqualTo(onRewrite);
-            assertThat(onRead).startsWith("0101");
-            assertThat(onRewrite).startsWith("0109");
+            assertThat(onRead).isEqualTo("0101" + sharedDescription);
+            assertThat(onRewrite).isEqualTo("0109" + sharedDescription);
             assertThat(RejectRecordWriter
                     .failReasonDescriptionField(RejectReason.ACCOUNT_NOT_FOUND_ON_READ))
-                    .isEqualTo(RejectRecordWriter
-                            .failReasonDescriptionField(RejectReason.ACCOUNT_NOT_FOUND_ON_REWRITE));
+                    .isEqualTo(sharedDescription);
+            assertThat(RejectRecordWriter
+                    .failReasonDescriptionField(RejectReason.ACCOUNT_NOT_FOUND_ON_REWRITE))
+                    .isEqualTo(sharedDescription);
         }
 
         @ParameterizedTest
@@ -276,8 +413,9 @@ class RejectRecordWriterContractTest {
         }
 
         @Test
-        @DisplayName("places the mapper's source image first, byte for byte and unaltered")
-        void placesTheMapperImageFirst() {
+        @DisplayName("places the source record image first, byte for byte and unaltered, compared "
+                + "against an image this class assembles from the layout rather than from the mapper")
+        void placesTheSourceImageFirst() {
             DailyTransaction source = transaction("0000000000000002", RETURN_AMOUNT,
                     OPERATOR_SOURCE);
             RejectedTransaction item = new RejectedTransaction(source,
@@ -285,8 +423,11 @@ class RejectRecordWriterContractTest {
 
             byte[] image = RejectRecordWriter.rejectRecordImageBytes(item);
 
-            assertThat(Arrays.copyOfRange(image, 0, 350))
-                    .isEqualTo(DailyTransactionRecordMapper.toRecordBytes(source));
+            // The expected side is hand-assembled at the copybook's declared offsets, so a
+            // coordinated defect in the mapper and the writer cannot agree with itself and pass.
+            assertThat(Arrays.copyOfRange(image, 0, SOURCE_WIDTH))
+                    .isEqualTo(sourceImage("0000000000000002", RETURN_AMOUNT, OPERATOR_SOURCE)
+                            .getBytes(StandardCharsets.US_ASCII));
         }
 
         @Test
@@ -296,9 +437,29 @@ class RejectRecordWriterContractTest {
 
             byte[] image = RejectRecordWriter.rejectRecordImageBytes(item);
 
-            assertThat(new String(Arrays.copyOfRange(image, 350, 430), StandardCharsets.US_ASCII))
-                    .isEqualTo(RejectRecordWriter
-                            .validationTrailer(RejectReason.INVALID_CARD_NUMBER));
+            assertThat(new String(Arrays.copyOfRange(image, SOURCE_WIDTH, REJECT_WIDTH),
+                            StandardCharsets.US_ASCII))
+                    .isEqualTo(trailerImage(RejectReason.INVALID_CARD_NUMBER));
+        }
+
+        @Test
+        @DisplayName("assembles the whole 430-byte record exactly as this class assembles it from the "
+                + "layout, so both halves and their junction are proved at once")
+        void assemblesTheWholeRecordAsTheLayoutPrescribes() {
+            RejectedTransaction purchase = new RejectedTransaction(
+                    transaction("0000000000000004", PURCHASE_AMOUNT, POS_SOURCE),
+                    RejectReason.TRANSACTION_AFTER_ACCOUNT_EXPIRATION);
+            RejectedTransaction refund = new RejectedTransaction(
+                    transaction("0000000000000005", RETURN_AMOUNT, OPERATOR_SOURCE),
+                    RejectReason.ACCOUNT_NOT_FOUND_ON_REWRITE);
+
+            assertThat(RejectRecordWriter.rejectRecordImage(purchase))
+                    .isEqualTo(rejectImage("0000000000000004", PURCHASE_AMOUNT, POS_SOURCE,
+                            RejectReason.TRANSACTION_AFTER_ACCOUNT_EXPIRATION));
+            assertThat(RejectRecordWriter.rejectRecordImageBytes(refund))
+                    .isEqualTo(rejectImage("0000000000000005", RETURN_AMOUNT, OPERATOR_SOURCE,
+                            RejectReason.ACCOUNT_NOT_FOUND_ON_REWRITE)
+                            .getBytes(StandardCharsets.US_ASCII));
         }
 
         @Test
@@ -310,12 +471,21 @@ class RejectRecordWriterContractTest {
                     RejectReason.ACCOUNT_NOT_FOUND_ON_REWRITE);
 
             byte[] image = RejectRecordWriter.rejectRecordImageBytes(item);
-            DailyTransaction recovered = DailyTransactionRecordMapper
-                    .fromRecord(Arrays.copyOfRange(image, 0, 350));
+            String emitted = new String(Arrays.copyOfRange(image, 0, SOURCE_WIDTH),
+                    StandardCharsets.US_ASCII);
 
-            assertThat(recovered).isEqualTo(source);
-            assertThat(recovered.getDalytranAmt()).isEqualByComparingTo(RETURN_AMOUNT);
-            assertThat(recovered.getDalytranSource()).isEqualTo(OPERATOR_SOURCE);
+            // Read back by slicing at the layout's own offsets rather than by handing the bytes to the
+            // mapper: the point is that the negative overpunch and the ten-byte origin descriptor
+            // survive as BYTES, which a round trip through the mapper would not establish.
+            assertThat(emitted)
+                    .isEqualTo(sourceImage("0000000000000003", RETURN_AMOUNT, OPERATOR_SOURCE));
+            assertThat(emitted.substring(132, 143))
+                    .as("the amount keeps its negative overpunch in its final byte")
+                    .isEqualTo(zonedAmountImage(RETURN_AMOUNT))
+                    .endsWith("N");
+            assertThat(emitted.substring(22, 32))
+                    .as("the ten-byte origin descriptor keeps its trailing spaces")
+                    .isEqualTo(OPERATOR_SOURCE);
         }
 
         @Test
@@ -388,8 +558,8 @@ class RejectRecordWriterContractTest {
             writer.close();
 
             StringBuilder expected = new StringBuilder();
-            for (RejectedTransaction item : items) {
-                expected.append(RejectRecordWriter.rejectRecordImage(item));
+            for (String image : representativeExpectedImages()) {
+                expected.append(image);
             }
             byte[] written = Files.readAllBytes(target);
 
@@ -416,14 +586,14 @@ class RejectRecordWriterContractTest {
             writer.close();
 
             byte[] written = Files.readAllBytes(target);
+            List<String> expected = representativeExpectedImages();
             for (int index = 0; index < items.size(); index++) {
-                int start = index * RejectRecordWriter.REJECT_RECORD_LENGTH;
-                assertThat(DailyTransactionRecordMapper.fromRecord(written, start))
-                        .isEqualTo(items.get(index).sourceRecord());
-                assertThat(new String(Arrays.copyOfRange(written, start + 350, start + 430),
+                int start = index * REJECT_WIDTH;
+                assertThat(new String(Arrays.copyOfRange(written, start, start + REJECT_WIDTH),
                         StandardCharsets.US_ASCII))
-                        .isEqualTo(RejectRecordWriter
-                                .validationTrailer(items.get(index).reason()));
+                        .as("record %d must equal the image this class assembles from the layout",
+                                index)
+                        .isEqualTo(expected.get(index));
             }
         }
 
@@ -504,6 +674,28 @@ class RejectRecordWriterContractTest {
             }
             return items;
         }
+
+        /**
+         * The same representative population, as the 430-byte images this class assembles by hand.
+         *
+         * <p>Deliberately a second, parallel loop rather than a projection of
+         * {@link #representativeItems()}: every image here is built from layout offsets and literal
+         * field values, so the expected side of the file comparisons never passes through the mapper
+         * or the writer that produced the actual side.
+         *
+         * @return the expected reject records, in the order the writer receives them
+         */
+        private List<String> representativeExpectedImages() {
+            List<String> images = new ArrayList<>();
+            RejectReason[] reasons = RejectReason.values();
+            for (int index = 0; index < reasons.length; index++) {
+                boolean purchase = index % 2 == 0;
+                images.add(rejectImage(String.format(Locale.ROOT, "%016d", index),
+                        purchase ? PURCHASE_AMOUNT : RETURN_AMOUNT,
+                        purchase ? POS_SOURCE : OPERATOR_SOURCE, reasons[index]));
+            }
+            return images;
+        }
     }
 
     @Nested
@@ -533,13 +725,13 @@ class RejectRecordWriterContractTest {
             resumed.close();
 
             byte[] written = Files.readAllBytes(target);
-            assertThat(written).hasSize(2 * RejectRecordWriter.REJECT_RECORD_LENGTH);
-            assertThat(new String(Arrays.copyOfRange(written, 350, 430), StandardCharsets.US_ASCII))
-                    .isEqualTo(RejectRecordWriter
-                            .validationTrailer(RejectReason.INVALID_CARD_NUMBER));
-            assertThat(new String(Arrays.copyOfRange(written, 780, 860), StandardCharsets.US_ASCII))
-                    .isEqualTo(RejectRecordWriter
-                            .validationTrailer(RejectReason.OVERLIMIT_TRANSACTION));
+            assertThat(written).hasSize(2 * REJECT_WIDTH);
+            assertThat(new String(Arrays.copyOfRange(written, SOURCE_WIDTH, REJECT_WIDTH),
+                    StandardCharsets.US_ASCII))
+                    .isEqualTo(trailerImage(RejectReason.INVALID_CARD_NUMBER));
+            assertThat(new String(Arrays.copyOfRange(written, REJECT_WIDTH + SOURCE_WIDTH,
+                    2 * REJECT_WIDTH), StandardCharsets.US_ASCII))
+                    .isEqualTo(trailerImage(RejectReason.OVERLIMIT_TRANSACTION));
         }
 
         @Test

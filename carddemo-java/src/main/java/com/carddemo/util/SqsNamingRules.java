@@ -16,6 +16,9 @@
  */
 package com.carddemo.util;
 
+import java.util.List;
+import java.util.Locale;
+
 /**
  * The one statement of what a queue destination and a message group may be, shared by the publisher
  * that sends to the queue and by the tests that hold the emulator bootstrap to the same contract.
@@ -115,6 +118,54 @@ public final class SqsNamingRules {
     /** The service an ARN must name for it to address a queue. */
     private static final String ARN_SERVICE = "sqs";
 
+    /** Zero-based index of the partition segment within an ARN. */
+    private static final int ARN_PARTITION_SEGMENT = 1;
+
+    /** Zero-based index of the region segment within an ARN. */
+    private static final int ARN_REGION_SEGMENT = 3;
+
+    /** Zero-based index of the account segment within an ARN. */
+    private static final int ARN_ACCOUNT_SEGMENT = 4;
+
+    /**
+     * The partitions a production destination may name.
+     *
+     * <p>An allow list rather than a shape test. A partition decides which set of endpoints, which
+     * trust root and which account namespace a value addresses, so an unrecognised partition is not a
+     * new region to be tolerated - it is a value nobody in this deployment can have meant.
+     */
+    private static final List<String> PERMITTED_ARN_PARTITIONS =
+            List.of("aws", "aws-cn", "aws-us-gov");
+
+    /**
+     * Number of digits in an account identifier.
+     *
+     * <p>Checked because it is the one segment of a trusted destination that is neither a fixed
+     * literal nor the deployment's own region, so shape is all there is to hold it to. A value that is
+     * not twelve digits is not an account and the destination is therefore not the queue service's.
+     */
+    private static final int ACCOUNT_ID_LENGTH = 12;
+
+    /**
+     * Host prefix every queue-service endpoint carries.
+     *
+     * <p>Both the ordinary and the validated-cryptography endpoints are covered, because the second is
+     * a legitimate production choice and refusing it would push a deployment towards the first.
+     */
+    private static final List<String> QUEUE_HOST_PREFIXES = List.of("sqs.", "sqs-fips.");
+
+    /**
+     * Host suffixes a queue-service endpoint may carry, one per partition.
+     *
+     * <p>An allow list for the same reason the partitions are: the suffix is what decides whose
+     * infrastructure receives the job cards, and a host outside these is by definition not it.
+     */
+    private static final List<String> QUEUE_HOST_SUFFIXES =
+            List.of(".amazonaws.com", ".amazonaws.com.cn");
+
+    /** Number of path segments a queue URL carries after its host: the account and the queue. */
+    private static final int QUEUE_URL_PATH_SEGMENT_COUNT = 2;
+
     /**
      * Longest configured destination value accepted in any form.
      *
@@ -162,6 +213,230 @@ public final class SqsNamingRules {
         }
         requireQueueName(value, propertyKey);
         return value;
+    }
+
+    /**
+     * Validates a configured queue destination against the stricter rule a production deployment is
+     * held to, and returns it unchanged.
+     *
+     * <h2>Why a second, stricter rule exists at all</h2>
+     *
+     * <p>{@link #requireQueueDestination(String, String)} answers "is this a well-formed destination",
+     * which is the right question for a developer's machine and for the suite, where the destination
+     * legitimately addresses an emulator over plain transport on the loopback interface. It is the
+     * wrong question for a deployment, because a well-formed destination can address <em>anybody</em>:
+     * the messaging client accepts any syntactically valid URI as a queue locator, so a value such as a
+     * plain-transport URL on an unrelated host whose last path segment merely ends in the
+     * first-in-first-out suffix passes every shape test and then receives the job cards. That is not a
+     * malformed value being tolerated - it is a correctly formed value naming the wrong recipient, and
+     * only an identity check can tell the two apart.
+     *
+     * <p>The job cards are the estate's single online-to-batch bridge. Each is an eighty-column
+     * job-control image naming the job, the procedure library, the step and the reporting period. A
+     * destination outside the deployment therefore discloses the batch topology and, more to the point,
+     * silently prevents every requested job from ever running while each request still answers
+     * successfully - the queue is defined ignore-on-error, so nothing complains.
+     *
+     * <h2>The three accepted forms, in order of preference</h2>
+     *
+     * <ul>
+     *   <li><strong>A bare queue name</strong> is the preferred form and needs no identity check at
+     *       all, because it carries no destination: the client resolves it against the region and
+     *       credentials the deployment itself supplies, so a name cannot redirect anything. Held to
+     *       {@link #requireQueueName(String, String)} and nothing more.</li>
+     *   <li><strong>A queue URL</strong> must use transport security, must sit on a queue-service
+     *       endpoint host for the deployment's own region, and must carry exactly an account segment
+     *       and a queue segment. Plain transport is refused outright rather than warned about: job
+     *       cards on an unencrypted connection are readable and rewritable in flight.</li>
+     *   <li><strong>A queue ARN</strong> must name a recognised partition, the queue service, the
+     *       deployment's own region and a twelve-digit account.</li>
+     * </ul>
+     *
+     * <p>Both the URL and the ARN form are checked against {@code expectedRegion}, which is the region
+     * the deployment configured for its clients. That is the "deployment identity" half of the check
+     * and it is what makes the rule about <em>this</em> deployment rather than about AWS in general: a
+     * genuine queue URL in somebody else's region is still a destination this deployment did not mean.
+     *
+     * <p>Every diagnostic names the property key and the rule it broke and never repeats the configured
+     * value, per {@code docs/decision-log.md} DL-041: the key is the actionable fact, and an operator
+     * reads the value there.
+     *
+     * @param value          the configured destination: a queue name, a queue URL, or a queue ARN;
+     *                       must not be {@code null}
+     * @param propertyKey    the configuration key it was bound from, named in every diagnostic
+     * @param expectedRegion the region this deployment configured for its clients, which a URL or ARN
+     *                       destination must agree with; must not be {@code null} or blank
+     * @return {@code value}, unchanged
+     * @throws IllegalArgumentException if the value is not one of the three accepted forms, uses plain
+     *                                  transport, sits on a host that is not a queue-service endpoint,
+     *                                  names a partition, service, region or account this deployment
+     *                                  cannot have meant, or carries a queue name that breaks the
+     *                                  queue-name rule
+     * @throws NullPointerException     if {@code expectedRegion} is {@code null}
+     */
+    public static String requireProductionQueueDestination(final String value,
+            final String propertyKey, final String expectedRegion) {
+        requireBounded(value, propertyKey, QUEUE_DESTINATION_MAX_LENGTH, "queue destination");
+        if (expectedRegion == null || expectedRegion.isBlank()) {
+            throw new IllegalArgumentException("property " + propertyKey + " cannot be held to a"
+                    + " production destination rule because this deployment declares no region for its"
+                    + " clients; a destination can only be checked against the deployment it belongs"
+                    + " to, so the region must be configured first");
+        }
+        if (value.startsWith(PLAIN_URL_PREFIX)) {
+            throw new IllegalArgumentException("property " + propertyKey + " names a queue over plain"
+                    + " transport, which a deployment may not do: an eighty-column job-control card on"
+                    + " an unencrypted connection is readable and rewritable in flight. Use a bare"
+                    + " queue name, or a '" + SECURE_URL_PREFIX + "' queue URL on a queue-service"
+                    + " endpoint host");
+        }
+        if (value.startsWith(ARN_PREFIX)) {
+            requireTrustedArn(value, propertyKey, expectedRegion);
+            return value;
+        }
+        if (value.startsWith(SECURE_URL_PREFIX)) {
+            requireTrustedQueueUrl(value, propertyKey, expectedRegion);
+            return value;
+        }
+        if (value.indexOf("//") >= 0 || value.indexOf(ARN_SEPARATOR) >= 0) {
+            throw new IllegalArgumentException("property " + propertyKey + " is neither a bare queue"
+                    + " name, a '" + SECURE_URL_PREFIX + "' queue URL, nor an '" + ARN_PREFIX
+                    + "' queue ARN, and a deployment may name nothing else. A value carrying a scheme"
+                    + " separator or a colon is read as one of the latter two and must satisfy that"
+                    + " form's rule");
+        }
+        // The preferred form: a name carries no destination, so the client resolves it against this
+        // deployment's own region and credentials and nothing can be redirected.
+        requireQueueName(value, propertyKey);
+        return value;
+    }
+
+    /**
+     * Holds a queue ARN to the partition, service, region and account a deployment can have meant.
+     *
+     * @param value          the configured value, known to start with the ARN prefix
+     * @param propertyKey    the configuration key it was bound from
+     * @param expectedRegion the region this deployment configured
+     * @throws IllegalArgumentException if any segment is one this deployment cannot have meant
+     */
+    private static void requireTrustedArn(final String value, final String propertyKey,
+            final String expectedRegion) {
+        final String[] segments = splitOn(value, ARN_SEPARATOR);
+        if (segments.length != ARN_SEGMENT_COUNT) {
+            throw new IllegalArgumentException("property " + propertyKey + " begins with '"
+                    + ARN_PREFIX + "' and is therefore read as a queue ARN, which carries exactly "
+                    + ARN_SEGMENT_COUNT + " colon-separated segments; the configured value carries "
+                    + segments.length);
+        }
+        if (!PERMITTED_ARN_PARTITIONS.contains(segments[ARN_PARTITION_SEGMENT])) {
+            throw new IllegalArgumentException("property " + propertyKey + " is read as a queue ARN"
+                    + " whose partition segment must be one of " + PERMITTED_ARN_PARTITIONS
+                    + "; the configured value names another partition, which addresses a different set"
+                    + " of endpoints and a different account namespace entirely");
+        }
+        if (!ARN_SERVICE.equals(segments[ARN_SERVICE_SEGMENT])) {
+            throw new IllegalArgumentException("property " + propertyKey + " is read as an ARN whose"
+                    + " service segment must be '" + ARN_SERVICE + "' for it to address a queue, and"
+                    + " the configured value names a different service");
+        }
+        if (!expectedRegion.equalsIgnoreCase(segments[ARN_REGION_SEGMENT])) {
+            throw new IllegalArgumentException("property " + propertyKey + " is read as a queue ARN"
+                    + " whose region segment must be the region this deployment configured for its"
+                    + " clients; the configured value names a different region, so it addresses a queue"
+                    + " in a deployment this one is not");
+        }
+        requireAccountId(segments[ARN_ACCOUNT_SEGMENT], propertyKey);
+        requireQueueName(segments[ARN_RESOURCE_SEGMENT], propertyKey);
+    }
+
+    /**
+     * Holds a queue URL to a queue-service endpoint host in this deployment's region, with exactly an
+     * account segment and a queue segment beneath it.
+     *
+     * @param value          the configured value, known to start with the secure URL prefix
+     * @param propertyKey    the configuration key it was bound from
+     * @param expectedRegion the region this deployment configured
+     * @throws IllegalArgumentException if the host is not a queue-service endpoint for that region, or
+     *                                  the path is not an account and a queue
+     */
+    private static void requireTrustedQueueUrl(final String value, final String propertyKey,
+            final String expectedRegion) {
+        final String authorityAndPath = value.substring(SECURE_URL_PREFIX.length());
+        final int pathStart = authorityAndPath.indexOf(URL_SEPARATOR);
+        if (pathStart <= 0) {
+            throw new IllegalArgumentException("property " + propertyKey + " is read as a queue URL"
+                    + " and carries no path, so it names an endpoint rather than a queue. A queue URL"
+                    + " carries an account segment and a queue segment");
+        }
+        // Anything a userinfo or a port could hide is refused with the host, below: the authority is
+        // compared whole against the endpoint grammar rather than picked apart, so a value such as
+        // "sqs.us-east-1.amazonaws.com@attacker.example" cannot masquerade as the host it prefixes.
+        final String host = authorityAndPath.substring(0, pathStart).toLowerCase(Locale.ROOT);
+        requireQueueServiceHost(host, propertyKey, expectedRegion);
+
+        final String[] pathSegments = splitOn(authorityAndPath.substring(pathStart + 1), URL_SEPARATOR);
+        if (pathSegments.length != QUEUE_URL_PATH_SEGMENT_COUNT) {
+            throw new IllegalArgumentException("property " + propertyKey + " is read as a queue URL,"
+                    + " whose path is exactly an account segment and a queue segment; the configured"
+                    + " value carries " + pathSegments.length + " path segment(s)");
+        }
+        requireAccountId(pathSegments[0], propertyKey);
+        requireQueueName(pathSegments[1], propertyKey);
+    }
+
+    /**
+     * Requires a URL authority to be a queue-service endpoint host for one region.
+     *
+     * <p>The comparison is a whole-authority match against the endpoint grammar - a known prefix, the
+     * expected region, a known suffix, and nothing else at all - rather than a search for the region or
+     * the suffix inside the authority. That direction matters: a containment test would accept
+     * {@code sqs.us-east-1.amazonaws.com.attacker.example}, and a suffix test alone would accept
+     * {@code attacker.amazonaws.com}. Requiring the authority to be <em>exactly</em> prefix, region and
+     * suffix admits nothing that is not the endpoint, and it also refuses a userinfo prefix or a port
+     * suffix, neither of which a configured endpoint needs and either of which changes who is
+     * addressed.
+     *
+     * @param host           the lower-cased URL authority
+     * @param propertyKey    the configuration key it was bound from
+     * @param expectedRegion the region this deployment configured
+     * @throws IllegalArgumentException if the authority is not a queue-service endpoint for that region
+     */
+    private static void requireQueueServiceHost(final String host, final String propertyKey,
+            final String expectedRegion) {
+        final String region = expectedRegion.strip().toLowerCase(Locale.ROOT);
+        for (final String prefix : QUEUE_HOST_PREFIXES) {
+            for (final String suffix : QUEUE_HOST_SUFFIXES) {
+                if (host.equals(prefix + region + suffix)) {
+                    return;
+                }
+            }
+        }
+        throw new IllegalArgumentException("property " + propertyKey + " is read as a queue URL whose"
+                + " host must be a queue-service endpoint for the region this deployment configured -"
+                + " one of the prefixes " + QUEUE_HOST_PREFIXES + " followed by that region and one of"
+                + " the suffixes " + QUEUE_HOST_SUFFIXES + ", and nothing else. The configured host is"
+                + " not, so the job-submission cards would be sent somewhere this deployment does not"
+                + " own");
+    }
+
+    /**
+     * Requires an account segment to be twelve digits.
+     *
+     * @param account     the segment to check
+     * @param propertyKey the configuration key it was bound from
+     * @throws IllegalArgumentException if the segment is not exactly {@value #ACCOUNT_ID_LENGTH} digits
+     */
+    private static void requireAccountId(final String account, final String propertyKey) {
+        boolean allDigits = account.length() == ACCOUNT_ID_LENGTH;
+        for (int index = 0; allDigits && index < account.length(); index++) {
+            allDigits = account.charAt(index) >= '0' && account.charAt(index) <= '9';
+        }
+        if (!allDigits) {
+            throw new IllegalArgumentException("property " + propertyKey + " must carry an account"
+                    + " identifier of exactly " + ACCOUNT_ID_LENGTH + " digits in its account"
+                    + " position; the configured value does not, so it does not address the queue"
+                    + " service at all");
+        }
     }
 
     /**

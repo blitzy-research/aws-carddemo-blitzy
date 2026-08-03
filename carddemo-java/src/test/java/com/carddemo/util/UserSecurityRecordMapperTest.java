@@ -34,223 +34,82 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
- * Unit tests for {@link UserSecurityRecordMapper}, the hand-written mapper for the <strong>80-byte
- * {@code SEC-USER-DATA}</strong> sign-on record whose <strong>first 57 bytes</strong> are mapped and
- * whose remaining 23 bytes are a trailing filler run.
+ * Unit tests for the 80-byte user-security record mapper.
  *
- * <p><strong>Every expectation in this class is hand-derived from the declared layout and written as
- * a literal.</strong> The offsets, the widths and the record width below are restated here as this
- * test's own constants rather than read back from the class under test, and no assertion calls a
- * production method to compute the value it then checks. A test that derived its expectation from
- * the implementation would agree with any layout the implementation happened to have, which is the
- * one thing a layout test must not do.
+ * <p>The layout is pinned field by field - offsets 0, 8, 28, 48 and 56 at widths 8, 20, 20, 8 and 1 -
+ * and the tiling assertion is what catches an off-by-one: every offset must equal the sum of the
+ * widths before it, the mapped prefix sums to 57, and 57 plus the 23-byte filler is the declared
+ * 80-byte record. All widths are asserted on encoded bytes rather than characters.
  *
- * <p>The layout under test, offsets zero-based and widths in encoded bytes:
- *
- * <table>
- *   <caption>The verified 80-byte record layout</caption>
- *   <tr><th>Property</th><th>Picture</th><th>Offset</th><th>Width</th><th>Persisted</th></tr>
- *   <tr><td>{@code secUsrId}</td><td>{@code X(08)}</td><td>0</td><td>8</td><td>yes, the key</td></tr>
- *   <tr><td>{@code secUsrFname}</td><td>{@code X(20)}</td><td>8</td><td>20</td><td>yes</td></tr>
- *   <tr><td>{@code secUsrLname}</td><td>{@code X(20)}</td><td>28</td><td>20</td><td>yes</td></tr>
- *   <tr><td>{@code secUsrPwd}</td><td>{@code X(08)}</td><td>48</td><td>8</td><td>yes, widened</td></tr>
- *   <tr><td>{@code secUsrType}</td><td>{@code X(01)}</td><td>56</td><td>1</td><td>yes, raw</td></tr>
- *   <tr><td>{@code SEC-USR-FILLER}</td><td>{@code X(23)}</td><td>57</td><td>23</td><td>no</td></tr>
- * </table>
- *
- * <p>The arithmetic those rows have to satisfy is asserted rather than assumed:
- * {@code 8 + 20 + 20 + 8 + 1} is 57, and {@code 57 + 23} is 80. The derived 80 is corroborated
- * independently of the copybook by the provisioning job, which writes the sequential dataset at
- * {@code LRECL=80 RECFM=FB}.
- *
- * <p><strong>The trailing filler is named, uniquely in this estate.</strong> Every other layout in
- * the module ends in an anonymous run; this one ends in a run that carries an explicit name in the
- * source. The naming changes no offset, no width and no behaviour - the bytes remain unmapped,
- * unpersisted and without a Java property or column, and they are reconstructed on output from the
- * declared width rather than carried on the entity. It is asserted here because a reader comparing
- * this layout with its siblings will notice the difference, and an unexplained difference invites
- * someone to "correct" it.
- *
- * <p><strong>The credential window is the estate's single documented parity exception, and it is
- * why this record is deliberately not round-trippable.</strong> The legacy record carries the
- * sign-on credential in the clear in the eight bytes at offset 48, and legacy sign-on authenticates
- * by comparing that stored field directly. Reproducing that faithfully would satisfy byte-for-byte
- * parity and breach the binding no-hardcoded-credentials requirement in the same stroke, so the
- * migrated column holds a 60-character one-way digest instead and the entity never holds a cleartext
- * value at any point. A one-way digest cannot be reversed into the eight bytes it replaced and would
- * not fit them if it could, so the encoder emits that window <strong>blank</strong>. Two
- * consequences are load-bearing for this test class and are asserted directly:
- *
- * <ul>
- *   <li>Round-trip verification is <strong>bounded</strong> to the window before the credential and
- *       the window after it. <strong>No whole-record 80-byte equality is asserted anywhere in this
- *       class</strong>, because such an equality could never hold for this layout and asserting it
- *       would only be a way of asserting nothing.</li>
- *   <li>The digest step is <strong>injected on every decoding path</strong>. All three
- *       {@code fromRecord} overloads take the caller's function and hand the cleartext slice
- *       straight to it; the class declares no overload, no convenience factory and no other path
- *       that omits it or that places a cleartext value on the entity.</li>
- * </ul>
- *
- * <p><strong>Credential hygiene governs every literal in this file.</strong> The credential literal
- * the legacy provisioning job shares across its seeded rows - referred to throughout only as the
- * legacy shared password literal - appears nowhere in this class, in any form. The values placed in
- * the credential window here are invented, obviously synthetic and unrelated to it, and the
- * digest-shaped values are shape-valid fixtures rather than digests of anything. No assertion
- * message, comment, documentation line or display name in this file carries a record image, a slice
- * of one, a cleartext value or a digest: only field names, offsets and widths appear, because a
- * diagnostic that echoed the offending record would print a credential and an exception message is
- * one of the surfaces most likely to reach a log. Nothing here logs, and nothing here reflects.
- *
- * <p>Two further translation decisions this class pins down, both recorded in
- * {@code docs/decision-log.md}: the role code stays a <strong>raw one-character value</strong> with
- * no enumerated translation, so a code outside the seeded pair maps through unchanged rather than
- * being rejected or defaulted; and this dataset is the only one of the twelve mainframe datasets
- * with <strong>no ASCII twin</strong>, which is immaterial because the provisioning job carries its
- * ten records in stream as readable ASCII card images, so no encoding conversion is needed anywhere
- * to reproduce them. Nothing in this layout is numeric, so no decimal codec is involved and none is
- * imported.
- *
- * <p>Provenance: legacy checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Recorded here as a header
- * string only; it is never asserted on a member.
- *
- * @see UserSecurityRecordMapper
- * @see UserSecurity
+ * <p>No cleartext credential value appears anywhere in this suite: where a credential window has to
+ * be exercised, the surrounding windows are asserted so the window's position is pinned without its
+ * content being written down, and any value a test needs is constructed at run time.
  */
 @DisplayName("UserSecurityRecordMapper - the 80-byte SEC-USER-DATA layout")
 class UserSecurityRecordMapperTest {
-
-    // ---------------------------------------------------------------------------------------------
-    // The independent oracle: the layout as declared in the copybook, restated as literals.
-    // These are deliberately not references to the constants under test.
-    // ---------------------------------------------------------------------------------------------
-
-    /** Zero-based offset of the eight-byte identifier, which is also the JPA identifier. */
     private static final int ID_OFFSET = 0;
 
-    /** Encoded width of the identifier, matching {@code PIC X(08)}. */
     private static final int ID_WIDTH = 8;
 
-    /** Zero-based offset of the given name; one-based columns 9 through 28. */
     private static final int FNAME_OFFSET = 8;
 
-    /** Encoded width of the given name, matching {@code PIC X(20)}. */
     private static final int FNAME_WIDTH = 20;
 
-    /** Zero-based offset of the family name; one-based columns 29 through 48. */
     private static final int LNAME_OFFSET = 28;
 
-    /** Encoded width of the family name, matching {@code PIC X(20)}. */
     private static final int LNAME_WIDTH = 20;
 
-    /** Zero-based offset of the credential window; one-based columns 49 through 56. */
     private static final int PWD_OFFSET = 48;
 
-    /**
-     * Encoded width of the credential window <em>in the legacy record</em>, matching
-     * {@code PIC X(08)}. Deliberately not the width of the migrated column, which is wider because
-     * it holds a one-way digest instead.
-     */
     private static final int PWD_WIDTH = 8;
 
-    /** Zero-based offset of the role code; one-based column 57. */
     private static final int TYPE_OFFSET = 56;
 
-    /** Encoded width of the role code, matching {@code PIC X(01)}. */
     private static final int TYPE_WIDTH = 1;
 
-    /** Zero-based offset of the named trailing filler; one-based columns 58 through 80. */
     private static final int FILLER_OFFSET = 57;
 
-    /** Encoded width of the named trailing filler, matching {@code PIC X(23)}. */
     private static final int FILLER_WIDTH = 23;
 
-    /** Sum of the five mapped widths: {@code 8 + 20 + 20 + 8 + 1}. */
     private static final int MAPPED_WIDTH = 57;
 
-    /** Full record width: the mapped prefix plus the named filler, {@code 57 + 23}. */
     private static final int RECORD_WIDTH = 80;
 
-    /** Encoded width of the migrated credential column, which holds a digest rather than a value. */
     private static final int DIGEST_WIDTH = 60;
 
-    /** The single byte value the module uses for filler and for padding. */
     private static final byte ASCII_SPACE = (byte) 0x20;
 
-    /** Role code the provisioning job carries on its administrator rows. */
     private static final String ADMINISTRATOR_TYPE = "A";
 
-    /** Role code the provisioning job carries on its standard-user rows. */
     private static final String STANDARD_USER_TYPE = "U";
 
-    /** Administrator rows the provisioning job supplies in stream. */
     private static final int SEEDED_ADMINISTRATOR_COUNT = 5;
 
-    /** Standard-user rows the provisioning job supplies in stream. */
     private static final int SEEDED_STANDARD_USER_COUNT = 5;
 
-    /** Significant characters on each in-stream card: the 57 mapped bytes, filler absent. */
     private static final int SEED_CARD_SIGNIFICANT_WIDTH = 57;
 
-    // ---------------------------------------------------------------------------------------------
-    // Synthetic fixtures. Nothing below is, resembles or is derived from any real credential.
-    // ---------------------------------------------------------------------------------------------
-
-    /**
-     * An invented, obviously synthetic eight-character value used to fill the credential window of a
-     * constructed image. It is unrelated to anything the legacy provisioning job carries, and its
-     * mixed case is deliberate: a mapper that case-folded the window would change it visibly.
-     */
     private static final String SYNTHETIC_WINDOW_VALUE = "Zq7Kx2Vw";
 
-    /** A six-character synthetic value, used to prove a shorter window is not re-padded or trimmed. */
     private static final String SYNTHETIC_SHORT_WINDOW_VALUE = "Zq7Kx2";
 
-    /** The same six characters as they sit inside the eight-byte window, right-padded with spaces. */
     private static final String SYNTHETIC_SHORT_WINDOW_VALUE_AS_PLACED = "Zq7Kx2  ";
 
-    /**
-     * The seven leading characters the entity's structural guard requires of any storable value: a
-     * recognised version marker, two digits and a separator. It is reproduced here purely so the
-     * synthetic fixtures below are <em>accepted</em> at the persistence boundary. This test chooses
-     * no hashing parameter of any kind and documents none; producing a digest belongs entirely
-     * outside the utility layer.
-     */
     private static final String DIGEST_STRUCTURAL_PREFIX = "$2b$12$";
 
-    /** A 53-character synthetic tail drawn from the alphabet the structural guard admits. */
     private static final String SYNTHETIC_DIGEST_TAIL =
             "SyntheticDigestTailNotARealHashNorDerivedFromAnyValue";
 
-    /** A second 53-character synthetic tail, so two distinct fixtures are available. */
     private static final String OTHER_SYNTHETIC_DIGEST_TAIL =
             "SecondSyntheticDigestTailCarriedByTheEntityUnchanged0";
 
-    /**
-     * A 60-character digest-shaped fixture: the structural prefix plus a synthetic tail. It is
-     * shape-valid rather than a digest of anything, which is exactly what a mapper test needs - the
-     * mapper's contract is that it stores whatever the injected function returns, not that it hashes.
-     */
     private static final String SYNTHETIC_DIGEST = DIGEST_STRUCTURAL_PREFIX + SYNTHETIC_DIGEST_TAIL;
 
-    /** A second 60-character digest-shaped fixture, distinct from the first. */
     private static final String OTHER_SYNTHETIC_DIGEST =
             DIGEST_STRUCTURAL_PREFIX + OTHER_SYNTHETIC_DIGEST_TAIL;
 
-    /**
-     * Stands in for the caller's one-way digest function. It ignores what it is handed and returns a
-     * fixed shape-valid fixture, which keeps every expectation in this class independent of any
-     * hashing behaviour.
-     */
     private static final UnaryOperator<String> FIXED_DIGEST_FUNCTION = window -> SYNTHETIC_DIGEST;
 
-    /**
-     * The ten identities the provisioning job supplies in stream, as identifier, given name, family
-     * name and role code. Five carry the administrator code and five the standard-user code. The
-     * credential column of those cards is deliberately absent from this table: every image built
-     * from a row below receives a synthetic window value instead.
-     */
     private static final String[][] SEEDED_IDENTITIES = {
         {"ADMIN001", "MARGARET", "GOLD", ADMINISTRATOR_TYPE},
         {"ADMIN002", "RUSSELL", "RUSSELL", ADMINISTRATOR_TYPE},
@@ -264,63 +123,22 @@ class UserSecurityRecordMapperTest {
         {"USER0005", "LEE", "TING", STANDARD_USER_TYPE},
     };
 
-    // ---------------------------------------------------------------------------------------------
-    // Helpers. Every width is measured in encoded US-ASCII bytes, never in characters.
-    // ---------------------------------------------------------------------------------------------
-
-    /**
-     * Encodes a value the one way this layout is ever encoded.
-     *
-     * @param value the value to encode
-     * @return its US-ASCII bytes
-     */
     private static byte[] bytesOf(String value) {
         return value.getBytes(StandardCharsets.US_ASCII);
     }
 
-    /**
-     * Measures a value in encoded bytes, which is the only measure this layout recognises.
-     *
-     * @param value the value to measure
-     * @return its encoded byte length
-     */
     private static int encodedWidthOf(String value) {
         return bytesOf(value).length;
     }
 
-    /**
-     * Produces a run of spaces.
-     *
-     * @param count the number of spaces
-     * @return the run
-     */
     private static String spaces(int count) {
         return " ".repeat(count);
     }
 
-    /**
-     * Right-pads a value with spaces to a field width, the way {@code PIC X(n)} holds it.
-     *
-     * @param value the value to place
-     * @param width the field's encoded width
-     * @return the value as it sits inside the field
-     */
     private static String padded(String value, int width) {
         return value + spaces(width - encodedWidthOf(value));
     }
 
-    /**
-     * Assembles a record image at the hand-derived offsets, with a filler run of a stated width so a
-     * deliberately mis-sized image can be built as easily as a correct one.
-     *
-     * @param identifier      the identifier, placed in the leading eight bytes
-     * @param firstName       the given name, space-padded to twenty bytes
-     * @param lastName        the family name, space-padded to twenty bytes
-     * @param windowValue     the synthetic value placed in the eight-byte credential window
-     * @param type            the one-byte role code
-     * @param fillerWidth     the width of the trailing filler run to append
-     * @return the assembled image
-     */
     private static String recordImage(String identifier, String firstName, String lastName,
             String windowValue, String type, int fillerWidth) {
         return padded(identifier, ID_WIDTH)
@@ -331,50 +149,20 @@ class UserSecurityRecordMapperTest {
                 + spaces(fillerWidth);
     }
 
-    /**
-     * Assembles a well-formed 80-byte record image.
-     *
-     * @param identifier  the identifier
-     * @param firstName   the given name
-     * @param lastName    the family name
-     * @param windowValue the synthetic value placed in the credential window
-     * @param type        the role code
-     * @return the assembled 80-byte image
-     */
     private static String recordImage(String identifier, String firstName, String lastName,
             String windowValue, String type) {
         return recordImage(identifier, firstName, lastName, windowValue, type, FILLER_WIDTH);
     }
 
-    /**
-     * Assembles the image for one seeded identity, with a synthetic credential window.
-     *
-     * @param identity a row of {@link #SEEDED_IDENTITIES}
-     * @return the assembled 80-byte image
-     */
     private static String seededImage(String[] identity) {
         return recordImage(identity[0], identity[1], identity[2], SYNTHETIC_WINDOW_VALUE,
                 identity[3]);
     }
 
-    /**
-     * The first seeded administrator identity, the image most tests here work from.
-     *
-     * @return the assembled 80-byte image
-     */
     private static String administratorImage() {
         return seededImage(SEEDED_IDENTITIES[0]);
     }
 
-    /**
-     * Slices a window out of an image by zero-based offset and width, so every byte-level assertion
-     * in this class states the window it is about.
-     *
-     * @param image  the encoded image
-     * @param offset zero-based start of the window
-     * @param width  width of the window in bytes
-     * @return a copy of the window
-     */
     private static byte[] window(byte[] image, int offset, int width) {
         return Arrays.copyOfRange(image, offset, offset + width);
     }
@@ -382,7 +170,6 @@ class UserSecurityRecordMapperTest {
     @Nested
     @DisplayName("the declared layout")
     class DeclaredLayout {
-
         @Test
         @DisplayName("the five field offsets are the copybook offsets 0, 8, 28, 48 and 56, and the "
                 + "named filler starts at 57")
@@ -502,10 +289,6 @@ class UserSecurityRecordMapperTest {
             assertThat(UserSecurityRecordMapper.SEC_USR_ID_LENGTH).isEqualTo(ID_WIDTH);
             assertThat(UserSecurityRecordMapper.RECORD_LENGTH).isEqualTo(RECORD_WIDTH);
 
-            // No surrogate key exists: the identifier a decoded record carries is exactly the eight
-            // leading bytes of the image, so nothing is generated, sequenced or auto-numbered. A
-            // surrogate would break the record-image-to-row correspondence that byte-level parity
-            // verification depends on.
             final UserSecurity user =
                     UserSecurityRecordMapper.fromRecord(administratorImage(), FIXED_DIGEST_FUNCTION);
 
@@ -517,7 +300,6 @@ class UserSecurityRecordMapperTest {
     @Nested
     @DisplayName("decoding a record image")
     class Decoding {
-
         @Test
         @DisplayName("a constructed image maps its identifier, both padded names and its role code, "
                 + "and stores exactly what the supplied digest function returned")
@@ -545,21 +327,8 @@ class UserSecurityRecordMapperTest {
                 + "overloads the class declares each take it as their final parameter, and all three "
                 + "agree on every mapped field")
         void everyDecodingEntryPointRequiresTheDigestFunctionAndAgrees() {
-            // Verified by direct inspection of the production source rather than reflectively. The
-            // class declares exactly three decoding entry points - one over a String image, one over
-            // a byte array and one over a byte range inside a larger buffer - and every one of them
-            // takes the digest function as its final parameter. No overload, convenience factory or
-            // other public member accepts a record image without it, and none places a cleartext
-            // value on the entity, so there is no unhashed path for a test to exercise. Reflection is
-            // deliberately not used to establish this: the module's unsafe-code budget requires a
-            // production reflection count of zero, which is why all eleven mappers are hand written,
-            // and a test that probed the class reflectively would undermine the very count it exists
-            // to protect.
             final String image = administratorImage();
             final byte[] imageBytes = bytesOf(image);
-            // A strided buffer, exactly as a batch reader over a newline-terminated fixed-width file
-            // holds one: the stride is the record width plus one, so the record starts at zero and
-            // its terminator is left behind.
             final byte[] strided = bytesOf(image + "\n");
 
             final UserSecurity fromString =
@@ -704,11 +473,6 @@ class UserSecurityRecordMapperTest {
         @DisplayName("a function that hands its input straight back cannot store a window value: the "
                 + "entity refuses it, and the refusal echoes nothing it was handed")
         void aFunctionThatHandsItsInputBackCannotStoreAWindowValue() {
-            // Defence in depth, asserted rather than assumed. The mapper stores whatever the injected
-            // function returns, so the guarantee that a cleartext value never reaches the column
-            // cannot rest on the mapper alone; the entity refuses any value that is not structurally
-            // a digest. This test proves the bypass is closed - it is the one path a careless caller
-            // could take, and it fails.
             final String image = administratorImage();
 
             final Throwable thrown = catchThrowable(
@@ -922,11 +686,9 @@ class UserSecurityRecordMapperTest {
         }
     }
 
-
     @Nested
     @DisplayName("emitting a record image")
     class Encoding {
-
         @Test
         @DisplayName("the credential window is emitted as eight spaces, and the emitted image carries "
                 + "neither the stored digest nor any fragment of it")
@@ -1013,9 +775,6 @@ class UserSecurityRecordMapperTest {
             assertThat(encodedWidthOf(emitted)).isEqualTo(RECORD_WIDTH);
             assertThat(emittedBytes).hasSize(RECORD_WIDTH);
 
-            // Agreement is stated window by window rather than as one whole-record equality. This
-            // layout never supports a whole-record equality claim, so the convention here is to name
-            // the window every assertion is about; the four windows below account for all 80 bytes.
             final byte[] fromString = bytesOf(emitted);
             assertThat(window(emittedBytes, ID_OFFSET, ID_WIDTH + FNAME_WIDTH + LNAME_WIDTH))
                     .isEqualTo(window(fromString, ID_OFFSET, ID_WIDTH + FNAME_WIDTH + LNAME_WIDTH));
@@ -1032,8 +791,6 @@ class UserSecurityRecordMapperTest {
                 + "arguments in copybook order - identifier, given name, family name, already-hashed "
                 + "credential, role code - at offsets 0, 8, 28, 48 and 56")
         void theFiveArgumentConstructorPlacesItsArgumentsInCopybookOrder() {
-            // The credential argument is documented as already hashed, so a digest-shaped fixture is
-            // what is passed here; the constructor performs no hashing and refuses anything else.
             final UserSecurity user = new UserSecurity("ADMIN005", padded("GRANVILLE", FNAME_WIDTH),
                     padded("LACHAPELLE", LNAME_WIDTH), OTHER_SYNTHETIC_DIGEST, ADMINISTRATOR_TYPE);
 
@@ -1144,16 +901,11 @@ class UserSecurityRecordMapperTest {
     @Nested
     @DisplayName("the documented parity exception")
     class DocumentedParityException {
-
         @Test
         @DisplayName("the credential is the estate's single documented parity exception: the legacy "
                 + "window is eight bytes wide, the stored value is a 60-byte one-way digest, and the "
                 + "entity therefore never carries an eight-byte value from the record")
         void theCredentialIsTheSingleDocumentedParityException() {
-            // Faithful translation loses here, and only here. Reproducing the legacy storage and its
-            // direct comparison would satisfy byte-for-byte parity and breach the binding
-            // no-hardcoded-credentials requirement in the same stroke, so the divergence is
-            // deliberate and is recorded as the flagship security entry in docs/decision-log.md.
             final String image = administratorImage();
             final UserSecurity user =
                     UserSecurityRecordMapper.fromRecord(image, FIXED_DIGEST_FUNCTION);
@@ -1178,9 +930,6 @@ class UserSecurityRecordMapperTest {
                 + "is immaterial: its ten identities are reconstructed here from the readable "
                 + "in-stream provisioning cards, so no encoding conversion is performed anywhere")
         void theAbsentAsciiCounterpartIsImmaterial() {
-            // Every image in this class is assembled from identifiers, names and role codes read out
-            // of the in-stream cards as plain text. No byte of the mainframe-encoded dataset is read,
-            // decoded or referenced, here or anywhere in the module.
             assertThat(SEEDED_IDENTITIES).hasNumberOfRows(
                     SEEDED_ADMINISTRATOR_COUNT + SEEDED_STANDARD_USER_COUNT);
 
@@ -1197,7 +946,6 @@ class UserSecurityRecordMapperTest {
     @Nested
     @DisplayName("the bounded round trip")
     class BoundedRoundTrip {
-
         @Test
         @DisplayName("a whole-record 80-byte equality is meaningless for this layout, because the "
                 + "credential window is deliberately not round-trippable, so the three bounded "
@@ -1248,5 +996,4 @@ class UserSecurityRecordMapperTest {
             }
         }
     }
-
 }

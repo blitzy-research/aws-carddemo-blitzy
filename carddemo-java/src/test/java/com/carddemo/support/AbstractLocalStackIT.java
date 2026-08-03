@@ -185,6 +185,14 @@ public abstract class AbstractLocalStackIT {
      * that a context never reaches the default credentials chain, which on a developer's machine or a
      * build agent could find real ones.</p>
      *
+     * <p><strong>The module's own endpoint key is raised alongside the integration's four.</strong>
+     * {@code carddemo.aws.endpoint-override} is the key {@code com.carddemo.config.AwsProperties} binds
+     * and the form a consumer of that type reads, and both copies of the test profile floor it at the
+     * emulator's fixed port. Raising only the {@code spring.cloud.aws} settings would leave a context
+     * in which the clients address the container this JVM started while the settings type still reports
+     * the floor - two answers to one question, and the wrong one belonging to whichever component asked
+     * the type rather than the client.</p>
+     *
      * @param registry the registry the Spring TestContext Framework supplies; must not be null
      */
     @DynamicPropertySource
@@ -196,6 +204,7 @@ public abstract class AbstractLocalStackIT {
         registry.add("spring.cloud.aws.s3.endpoint", AbstractLocalStackIT::emulatorEndpoint);
         registry.add("spring.cloud.aws.sqs.endpoint", AbstractLocalStackIT::emulatorEndpoint);
         registry.add("spring.cloud.aws.sns.endpoint", AbstractLocalStackIT::emulatorEndpoint);
+        registry.add("carddemo.aws.endpoint-override", AbstractLocalStackIT::emulatorEndpoint);
     }
 
     /**

@@ -276,7 +276,7 @@ class JobSubmissionServiceBoundaryTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new JobSubmissionService(sqsOperations, candidate,
                             MESSAGE_GROUP))
-                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue")
+                    .withMessageContaining("carddemo.aws.sqs.job-queue")
                     .withMessageContaining("has no default");
         }
 
@@ -313,7 +313,7 @@ class JobSubmissionServiceBoundaryTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new JobSubmissionService(sqsOperations, candidate,
                             MESSAGE_GROUP))
-                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue");
+                    .withMessageContaining("carddemo.aws.sqs.job-queue");
         }
 
         @Test
@@ -323,7 +323,7 @@ class JobSubmissionServiceBoundaryTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new JobSubmissionService(sqsOperations, overlong,
                             MESSAGE_GROUP))
-                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue")
+                    .withMessageContaining("carddemo.aws.sqs.job-queue")
                     .withMessageContaining(String.valueOf(SqsNamingRules.QUEUE_NAME_MAX_LENGTH));
         }
 

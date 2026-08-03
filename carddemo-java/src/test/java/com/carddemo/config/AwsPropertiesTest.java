@@ -16,12 +16,18 @@
  */
 package com.carddemo.config;
 
+import java.net.URI;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -68,32 +74,17 @@ class AwsPropertiesTest {
     /** Configuration prefix under test, taken from the type rather than restated. */
     private static final String PREFIX = AwsProperties.PREFIX;
 
+    /** Key path of the region, taken from the type. */
+    private static final String KEY_REGION = AwsProperties.REGION_PROPERTY;
+
+    /** Key path of the endpoint override - the one optional key under this prefix. */
+    private static final String KEY_ENDPOINT_OVERRIDE = AwsProperties.ENDPOINT_OVERRIDE_PROPERTY;
+
     /** Key path of the staging bucket, taken from the type. */
-    private static final String KEY_BUCKET = AwsProperties.S3.BUCKET_PROPERTY;
-
-    /** Key path prefixing the object-store key-prefix group, taken from the type. */
-    private static final String KEY_PREFIX_GROUP = AwsProperties.S3.KEY_PREFIX_PROPERTY_GROUP;
-
-    /** Key path of the inbound key prefix. */
-    private static final String KEY_INBOUND = KEY_PREFIX_GROUP + ".inbound";
-
-    /** Key path of the statement key prefix. */
-    private static final String KEY_STATEMENTS = KEY_PREFIX_GROUP + ".statements";
-
-    /** Key path of the markup-statement key prefix, hyphenated as the document writes it. */
-    private static final String KEY_STATEMENTS_HTML = KEY_PREFIX_GROUP + ".statements-html";
-
-    /** Key path of the report key prefix. */
-    private static final String KEY_REPORTS = KEY_PREFIX_GROUP + ".reports";
-
-    /** Key path of the rejected-record key prefix. */
-    private static final String KEY_REJECTS = KEY_PREFIX_GROUP + ".rejects";
-
-    /** Key path of the backup key prefix. */
-    private static final String KEY_BACKUPS = KEY_PREFIX_GROUP + ".backups";
+    private static final String KEY_BUCKET = AwsProperties.S3.BATCH_STAGING_BUCKET_PROPERTY;
 
     /** Key path of the job-submission queue, taken from the type. */
-    private static final String KEY_QUEUE = AwsProperties.Sqs.JOB_SUBMISSION_QUEUE_PROPERTY;
+    private static final String KEY_QUEUE = AwsProperties.Sqs.JOB_QUEUE_PROPERTY;
 
     /** Key path of the message group, taken from the type. */
     private static final String KEY_MESSAGE_GROUP = AwsProperties.Sqs.MESSAGE_GROUP_ID_PROPERTY;
@@ -106,6 +97,15 @@ class AwsPropertiesTest {
 
     /** Environment variable a production deployment supplies the queue through, with no fallback. */
     private static final String QUEUE_VARIABLE = "CARDDEMO_SQS_QUEUE";
+
+    /** Environment variable a production deployment supplies the region through, with no fallback. */
+    private static final String REGION_VARIABLE = "AWS_REGION";
+
+    /** The region every document names. */
+    private static final String REGION = "us-east-1";
+
+    /** The emulator address the local and test documents aim every client at. */
+    private static final String ENDPOINT_OVERRIDE = "http://localhost:4566";
 
     /** The staging bucket every document names. */
     private static final String BUCKET = "carddemo-batch-staging";
@@ -126,16 +126,21 @@ class AwsPropertiesTest {
      * one - which the shipped documents cannot express, since they declare all of them.</p>
      */
     private static final Map<String, String> COMPLETE = Map.ofEntries(
+            Map.entry(KEY_REGION, REGION),
+            Map.entry(KEY_ENDPOINT_OVERRIDE, ENDPOINT_OVERRIDE),
             Map.entry(KEY_BUCKET, BUCKET),
-            Map.entry(KEY_INBOUND, "inbound/"),
-            Map.entry(KEY_STATEMENTS, "statements/"),
-            Map.entry(KEY_STATEMENTS_HTML, "statements-html/"),
-            Map.entry(KEY_REPORTS, "reports/"),
-            Map.entry(KEY_REJECTS, "rejects/"),
-            Map.entry(KEY_BACKUPS, "backups/"),
             Map.entry(KEY_QUEUE, QUEUE),
             Map.entry(KEY_MESSAGE_GROUP, MESSAGE_GROUP),
             Map.entry(KEY_TOPIC, TOPIC));
+
+    /**
+     * The five keys a deployment must supply, which is every bound key except the endpoint override.
+     *
+     * <p>The override is deliberately absent from this set: production ships without it, so a test that
+     * required it would require the one configuration the production profile does not carry.</p>
+     */
+    private static final List<String> REQUIRED_KEYS =
+            List.of(KEY_REGION, KEY_BUCKET, KEY_QUEUE, KEY_MESSAGE_GROUP, KEY_TOPIC);
 
     /**
      * Runner that registers the settings record and nothing else.
@@ -175,11 +180,16 @@ class AwsPropertiesTest {
 
                 final AwsProperties bound = context.getBean(AwsProperties.class);
 
-                assertThat(bound.s3().bucket())
+                assertThat(bound.region())
+                        .as("every resource below is provisioned in this region, and the AWS "
+                                + "integration's own region setting derives from this key rather than "
+                                + "restating the value")
+                        .isEqualTo(REGION);
+                assertThat(bound.s3().batchStagingBucket())
                         .as("the bucket is a cross-file contract; the emulator bootstrap script and "
                                 + "the container composition provision this exact name")
                         .isEqualTo(BUCKET);
-                assertThat(bound.sqs().jobSubmissionQueue())
+                assertThat(bound.sqs().jobQueue())
                         .as("the queue carries the name the plan mandates plus the suffix the "
                                 + "queue service demands, uniform with the other three resource "
                                 + "names; the legacy queue name is carried by the operator-visible "
@@ -194,51 +204,89 @@ class AwsPropertiesTest {
         }
 
         @ParameterizedTest(name = "profile = {0}")
-        @ValueSource(strings = {"default", "local", "test"})
-        @DisplayName("resolve one key prefix per output family, none of them shared, so no family can "
-                + "overwrite another")
-        void resolveOneKeyPrefixPerOutputFamily(final String profile) {
+        @ValueSource(strings = {"local", "test"})
+        @DisplayName("aim every client at the emulator, because an absent endpoint override resolves "
+                + "the region's real public endpoint rather than failing")
+        void aimEveryClientAtTheEmulator(final String profile) {
             AwsPropertiesTest.this.shipped(profile).run(context -> {
-                final AwsProperties.S3.KeyPrefixes prefixes =
-                        context.getBean(AwsProperties.class).s3().prefix();
+                final AwsProperties bound = context.getBean(AwsProperties.class);
 
-                assertThat(prefixes.inbound()).isEqualTo("inbound/");
-                assertThat(prefixes.statements()).isEqualTo("statements/");
-                assertThat(prefixes.statementsHtml())
-                        .as("the hyphenated key statements-html must reach the camel-cased component")
-                        .isEqualTo("statements-html/");
-                assertThat(prefixes.reports()).isEqualTo("reports/");
-                assertThat(prefixes.rejects()).isEqualTo("rejects/");
-                assertThat(prefixes.backups()).isEqualTo("backups/");
-
-                assertThat(new String[] {prefixes.inbound(), prefixes.statements(),
-                        prefixes.statementsHtml(), prefixes.reports(), prefixes.rejects(),
-                        prefixes.backups()})
-                        .as("two families sharing a prefix would let one overwrite the other")
-                        .doesNotHaveDuplicates();
+                assertThat(bound.hasEndpointOverride())
+                        .as("%s must declare an override: a client without one addresses the real "
+                                + "service on whatever credentials the default chain finds", profile)
+                        .isTrue();
+                assertThat(bound.endpointOverrideUri())
+                        .as("the parsed form is what a client builder takes")
+                        .isPresent()
+                        .get()
+                        .satisfies(endpoint -> {
+                            assertThat(endpoint.getHost()).isIn("localhost", "127.0.0.1");
+                            assertThat(endpoint.getPort()).isEqualTo(4566);
+                        });
             });
         }
 
         @Test
-        @DisplayName("let production supply the queue from the environment, since production defaults "
-                + "none")
-        void letProductionSupplyTheQueueFromTheEnvironment() {
-            AwsPropertiesTest.this.shipped("prod", QUEUE_VARIABLE + "=" + QUEUE).run(context -> {
-                assertThat(context).hasNotFailed();
-                assertThat(context.getBean(AwsProperties.class).sqs().jobSubmissionQueue())
-                        .as("production binds the queue the deployment names and nothing else")
-                        .isEqualTo(QUEUE);
-            });
+        @DisplayName("leave production with no endpoint override at all, so each client resolves its "
+                + "own region's endpoint")
+        void leaveProductionWithNoEndpointOverride() {
+            AwsPropertiesTest.this.shipped("prod",
+                    QUEUE_VARIABLE + "=" + QUEUE, REGION_VARIABLE + "=" + REGION).run(context -> {
+                        assertThat(context).hasNotFailed();
+                        final AwsProperties bound = context.getBean(AwsProperties.class);
+
+                        assertThat(bound.hasEndpointOverride())
+                                .as("an override exists only to aim a client at an emulator, and an "
+                                        + "inherited one would have to be blanked to undo")
+                                .isFalse();
+                        assertThat(bound.endpointOverrideUri()).isEmpty();
+                    });
+        }
+
+        @Test
+        @DisplayName("withhold the withdrawn key names, so the contract cannot drift back to them")
+        void withholdTheWithdrawnKeyNames() {
+            assertThat(List.of(KEY_REGION, KEY_ENDPOINT_OVERRIDE, KEY_BUCKET, KEY_QUEUE,
+                    KEY_MESSAGE_GROUP, KEY_TOPIC))
+                    .as("an earlier revision bound s3.bucket, sqs.job-submission-queue and six "
+                            + "s3.prefix.* keys, and reconciled the documents to that set - which is "
+                            + "why the plan's key paths are asserted here rather than inferred from a "
+                            + "document")
+                    .doesNotContain(PREFIX + ".s3.bucket",
+                            PREFIX + ".sqs.job-submission-queue",
+                            PREFIX + ".s3.prefix");
+        }
+
+        @Test
+        @DisplayName("let production supply the queue and the region from the environment, since "
+                + "production defaults neither")
+        void letProductionSupplyTheQueueAndRegionFromTheEnvironment() {
+            AwsPropertiesTest.this.shipped("prod",
+                    QUEUE_VARIABLE + "=" + QUEUE, REGION_VARIABLE + "=" + REGION).run(context -> {
+                        assertThat(context).hasNotFailed();
+                        final AwsProperties bound = context.getBean(AwsProperties.class);
+
+                        assertThat(bound.sqs().jobQueue())
+                                .as("production binds the queue the deployment names and nothing else")
+                                .isEqualTo(QUEUE);
+                        assertThat(bound.region())
+                                .as("and the region likewise; a deployment landing in whichever region "
+                                        + "a fallback named is the failure the removed fallback "
+                                        + "prevents")
+                                .isEqualTo(REGION);
+                    });
         }
 
         @Test
         @DisplayName("stop a production start-up whose queue variable was never set, rather than "
                 + "publishing to the text of a placeholder")
         void stopAProductionStartUpWhoseQueueVariableWasNeverSet() {
-            AwsPropertiesTest.this.shipped("prod").run(context -> assertThat(context)
-                    .as("the binder resolves an unset variable leniently, as its own reference text, "
-                            + "which carries no suffix and must therefore be refused here too")
-                    .hasFailed());
+            AwsPropertiesTest.this.shipped("prod", REGION_VARIABLE + "=" + REGION)
+                    .run(context -> assertThat(context)
+                            .as("the binder resolves an unset variable leniently, as its own reference "
+                                    + "text, which carries no suffix and must therefore be refused here "
+                                    + "too")
+                            .hasFailed());
         }
     }
 
@@ -252,15 +300,33 @@ class AwsPropertiesTest {
             AwsPropertiesTest.this.runner.withPropertyValues(completeConfiguration()).run(context -> {
                 final AwsProperties bound = context.getBean(AwsProperties.class);
 
+                assertThat(bound.region()).isEqualTo(REGION);
+                assertThat(bound.endpointOverride()).isEqualTo(ENDPOINT_OVERRIDE);
                 assertThat(bound.s3()).isNotNull();
-                assertThat(bound.s3().bucket()).isEqualTo(BUCKET);
-                assertThat(bound.s3().prefix()).isNotNull();
+                assertThat(bound.s3().batchStagingBucket()).isEqualTo(BUCKET);
                 assertThat(bound.sqs()).isNotNull();
-                assertThat(bound.sqs().jobSubmissionQueue()).isEqualTo(QUEUE);
+                assertThat(bound.sqs().jobQueue()).isEqualTo(QUEUE);
                 assertThat(bound.sqs().messageGroupId()).isEqualTo(MESSAGE_GROUP);
                 assertThat(bound.sns()).isNotNull();
                 assertThat(bound.sns().jobNotificationTopic()).isEqualTo(TOPIC);
             });
+        }
+
+        @Test
+        @DisplayName("binds the hyphenated bucket key to its camel-cased component, which is the one "
+                + "key path a binder could plausibly fail to reach")
+        void bindsTheHyphenatedBucketKey() {
+            AwsPropertiesTest.this.runner
+                    .withPropertyValues(KEY_REGION + "=" + REGION,
+                            KEY_BUCKET + "=" + BUCKET,
+                            KEY_QUEUE + "=" + QUEUE,
+                            KEY_MESSAGE_GROUP + "=" + MESSAGE_GROUP,
+                            KEY_TOPIC + "=" + TOPIC)
+                    .run(context -> assertThat(context.getBean(AwsProperties.class)
+                            .s3().batchStagingBucket())
+                            .as("%s must reach batchStagingBucket through the binder's relaxed matching",
+                                    KEY_BUCKET)
+                            .isEqualTo(BUCKET));
         }
 
         @Test
@@ -311,7 +377,7 @@ class AwsPropertiesTest {
                     .withPropertyValues(completeConfigurationWith(KEY_QUEUE, queueName))
                     .run(context -> {
                         assertThat(context).hasNotFailed();
-                        assertThat(context.getBean(AwsProperties.class).sqs().jobSubmissionQueue())
+                        assertThat(context.getBean(AwsProperties.class).sqs().jobQueue())
                                 .isEqualTo(queueName);
                     });
         }
@@ -346,7 +412,7 @@ class AwsPropertiesTest {
         void leavesAnAbsentNameToTheValidator() {
             final AwsProperties.Sqs constructed = new AwsProperties.Sqs(null, MESSAGE_GROUP);
 
-            assertThat(constructed.jobSubmissionQueue()).isNull();
+            assertThat(constructed.jobQueue()).isNull();
         }
     }
 
@@ -355,8 +421,7 @@ class AwsPropertiesTest {
     class MissingOrBlankResourceName {
 
         @ParameterizedTest(name = "omitted = {0}")
-        @ValueSource(strings = {KEY_BUCKET, KEY_INBOUND, KEY_STATEMENTS, KEY_STATEMENTS_HTML,
-            KEY_REPORTS, KEY_REJECTS, KEY_BACKUPS, KEY_QUEUE, KEY_MESSAGE_GROUP, KEY_TOPIC})
+        @MethodSource("com.carddemo.config.AwsPropertiesTest#requiredKeys")
         @DisplayName("stops start-up when the key is absent, so a deployment is refused rather than "
                 + "defaulted")
         void stopsStartUpWhenTheKeyIsAbsent(final String omittedKey) {
@@ -368,8 +433,7 @@ class AwsPropertiesTest {
         }
 
         @ParameterizedTest(name = "blanked = {0}")
-        @ValueSource(strings = {KEY_BUCKET, KEY_INBOUND, KEY_STATEMENTS, KEY_STATEMENTS_HTML,
-            KEY_REPORTS, KEY_REJECTS, KEY_BACKUPS, KEY_QUEUE, KEY_MESSAGE_GROUP, KEY_TOPIC})
+        @MethodSource("com.carddemo.config.AwsPropertiesTest#requiredKeys")
         @DisplayName("stops start-up when the key is present but blank, which is the same absence "
                 + "wearing a different mask")
         void stopsStartUpWhenTheKeyIsBlank(final String blankedKey) {
@@ -396,21 +460,148 @@ class AwsPropertiesTest {
     }
 
     @Nested
+    @DisplayName("The optional endpoint override")
+    class OptionalEndpointOverride {
+
+        @Test
+        @DisplayName("binds absent, because that is the configuration a production deployment ships")
+        void bindsAbsent() {
+            AwsPropertiesTest.this.runner
+                    .withPropertyValues(completeConfigurationWithout(KEY_ENDPOINT_OVERRIDE))
+                    .run(context -> {
+                        assertThat(context)
+                                .as("a presence constraint here would refuse the production profile")
+                                .hasNotFailed();
+                        final AwsProperties bound = context.getBean(AwsProperties.class);
+
+                        assertThat(bound.endpointOverride()).isNull();
+                        assertThat(bound.hasEndpointOverride()).isFalse();
+                        assertThat(bound.endpointOverrideUri()).isEmpty();
+                    });
+        }
+
+        @ParameterizedTest(name = "configured = [{0}]")
+        @ValueSource(strings = {"", " ", "   ", "\t"})
+        @DisplayName("treats a blank value as no redirection at all, rather than as an address of zero "
+                + "length")
+        void treatsABlankValueAsNoRedirection(final String blank) {
+            AwsPropertiesTest.this.runner
+                    .withPropertyValues(completeConfigurationWith(KEY_ENDPOINT_OVERRIDE, blank))
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        final AwsProperties bound = context.getBean(AwsProperties.class);
+
+                        assertThat(bound.hasEndpointOverride()).isFalse();
+                        assertThat(bound.endpointOverrideUri()).isEmpty();
+                    });
+        }
+
+        @ParameterizedTest(name = "configured = {0}")
+        @ValueSource(strings = {"http://localhost:4566", "http://localstack:4566",
+            "https://emulator.internal:4566", "http://127.0.0.1:4566"})
+        @DisplayName("parses a configured address into the form a client builder takes")
+        void parsesAConfiguredAddress(final String configured) {
+            AwsPropertiesTest.this.runner
+                    .withPropertyValues(completeConfigurationWith(KEY_ENDPOINT_OVERRIDE, configured))
+                    .run(context -> {
+                        final AwsProperties bound = context.getBean(AwsProperties.class);
+
+                        assertThat(bound.hasEndpointOverride()).isTrue();
+                        assertThat(bound.endpointOverrideUri())
+                                .contains(URI.create(configured));
+                        assertThat(bound.endpointOverride())
+                                .as("the configured text is returned unchanged, so recognising a form "
+                                        + "never rewrites it")
+                                .isEqualTo(configured);
+                    });
+        }
+
+        @ParameterizedTest(name = "configured = {0}")
+        @ValueSource(strings = {"localhost:4566", "not an address", "/actuator", "http://",
+            "${LOCALSTACK_ENDPOINT}"})
+        @DisplayName("stops start-up for a value no client could address, rather than letting the first "
+                + "request discover it")
+        void stopsStartUpForAValueNoClientCouldAddress(final String configured) {
+            AwsPropertiesTest.this.runner
+                    .withPropertyValues(completeConfigurationWith(KEY_ENDPOINT_OVERRIDE, configured))
+                    .run(context -> assertThat(context)
+                            .as("an override is handed to a client builder, so an unusable one fails at "
+                                    + "the first request unless it is refused here")
+                            .hasFailed());
+        }
+
+        @Test
+        @DisplayName("names the key and what the key requires, and does not echo the value it refused")
+        void namesTheKeyWithoutEchoingTheValue() {
+            final String refused = "definitely-not-an-endpoint";
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new AwsProperties(REGION, refused,
+                            new AwsProperties.S3(BUCKET),
+                            new AwsProperties.Sqs(QUEUE, MESSAGE_GROUP),
+                            new AwsProperties.Sns(TOPIC)))
+                    .withMessageContaining(KEY_ENDPOINT_OVERRIDE)
+                    .satisfies(thrown -> assertThat(thrown.getMessage())
+                            .as("a diagnostic states its own expectation and does not repeat what it "
+                                    + "was given; the operator can read that at the key it names")
+                            .doesNotContain(refused));
+        }
+
+        @Test
+        @DisplayName("is not a credential and is not treated as one, so the description remains a "
+                + "diagnostic")
+        void isNotACredential() {
+            final AwsProperties constructed = new AwsProperties(REGION, ENDPOINT_OVERRIDE,
+                    new AwsProperties.S3(BUCKET),
+                    new AwsProperties.Sqs(QUEUE, MESSAGE_GROUP),
+                    new AwsProperties.Sns(TOPIC));
+
+            assertThat(constructed.endpointOverrideUri())
+                    .as("an emulator address is a published locator, not a secret")
+                    .contains(URI.create(ENDPOINT_OVERRIDE));
+            assertThat(Optional.of(constructed.toString()))
+                    .get()
+                    .satisfies(description -> assertThat(description).contains(ENDPOINT_OVERRIDE));
+        }
+    }
+
+    @Nested
     @DisplayName("The published key paths")
     class PublishedKeyPaths {
 
         @Test
-        @DisplayName("are the ones the publisher and the production guard already name, so the three "
-                + "cannot drift apart")
-        void areTheOnesTheRestOfTheModuleAlreadyNames() {
+        @DisplayName("are the six the migration plan states, written out here rather than derived, "
+                + "because a document and its binder can drift together")
+        void areTheSixTheMigrationPlanStates() {
             assertThat(PREFIX).isEqualTo("carddemo.aws");
-            assertThat(KEY_BUCKET).isEqualTo("carddemo.aws.s3.bucket");
-            assertThat(KEY_PREFIX_GROUP).isEqualTo("carddemo.aws.s3.prefix");
+            assertThat(KEY_REGION)
+                    .as("the production guard requires this key of a deployment, and the AWS "
+                            + "integration's own region setting derives from it")
+                    .isEqualTo("carddemo.aws.region");
+            assertThat(KEY_ENDPOINT_OVERRIDE).isEqualTo("carddemo.aws.endpoint-override");
+            assertThat(KEY_BUCKET).isEqualTo("carddemo.aws.s3.batch-staging-bucket");
             assertThat(KEY_QUEUE)
                     .as("the publisher injects this literal and the production guard requires it")
-                    .isEqualTo("carddemo.aws.sqs.job-submission-queue");
+                    .isEqualTo("carddemo.aws.sqs.job-queue");
             assertThat(KEY_MESSAGE_GROUP).isEqualTo("carddemo.aws.sqs.message-group-id");
             assertThat(KEY_TOPIC).isEqualTo("carddemo.aws.sns.job-notification-topic");
+        }
+
+        @Test
+        @DisplayName("are six and only six, so a seventh key cannot be introduced without this "
+                + "assertion being reconsidered")
+        void areSixAndOnlySix() {
+            assertThat(COMPLETE.keySet())
+                    .as("the plan states exactly six key paths under this prefix; the six s3.prefix.* "
+                            + "keys an earlier revision added bound nothing and are withdrawn")
+                    .hasSize(6)
+                    .containsExactlyInAnyOrder(KEY_REGION, KEY_ENDPOINT_OVERRIDE, KEY_BUCKET,
+                            KEY_QUEUE, KEY_MESSAGE_GROUP, KEY_TOPIC);
+            assertThat(REQUIRED_KEYS)
+                    .as("five of the six are required; the endpoint override is the one a production "
+                            + "deployment ships without")
+                    .hasSize(5)
+                    .doesNotContain(KEY_ENDPOINT_OVERRIDE);
         }
 
         @Test
@@ -444,6 +635,15 @@ class AwsPropertiesTest {
         return "default".equals(profile)
                 ? configured
                 : configured.withPropertyValues(KEY_ACTIVE_PROFILES + "=" + profile);
+    }
+
+    /**
+     * The five keys a deployment must supply, as parameterized-test arguments.
+     *
+     * @return one argument per required key
+     */
+    static Stream<Arguments> requiredKeys() {
+        return REQUIRED_KEYS.stream().map(Arguments::of);
     }
 
     /**

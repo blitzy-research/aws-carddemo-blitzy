@@ -113,18 +113,10 @@ import java.util.Objects;
  * @see FixedWidthFieldReader
  */
 public final class DailyTransactionRecordMapper {
-
-    /** Layout name carried into every diagnostic; it names both the record group and the copybook. */
     public static final String ARTEFACT = "DALYTRAN-RECORD (CVTRA06Y)";
 
-    /** Full record width: the mapped data prefix plus the trailing filler run. */
     public static final int RECORD_LENGTH = 350;
 
-    /**
-     * Width of the mapped data prefix, and <strong>the exact bound for a fixture round-trip
-     * comparison</strong>: compare from zero up to but excluding this value and nothing beyond it,
-     * because the filler bytes are not uniform across the estate's fixtures.
-     */
     public static final int MAPPED_DATA_LENGTH = 330;
 
     public static final int DALYTRAN_ID_OFFSET = 0;
@@ -147,13 +139,8 @@ public final class DailyTransactionRecordMapper {
 
     public static final int DALYTRAN_DESC_LENGTH = 100;
 
-    /** Offset of the amount, the only numeric-valued field in this layout. */
     public static final int DALYTRAN_AMT_OFFSET = 132;
 
-    /**
-     * Encoded width of the amount, taken from {@link ZonedDecimalCodec} rather than written as a literal
-     * so the codec and the layout cannot disagree. The final byte carries the overpunched sign.
-     */
     public static final int DALYTRAN_AMT_LENGTH = ZonedDecimalCodec.DAILY_TRANSACTION_AMOUNT_WIDTH;
 
     public static final int DALYTRAN_MERCHANT_ID_OFFSET = 143;
@@ -170,13 +157,8 @@ public final class DailyTransactionRecordMapper {
 
     public static final int DALYTRAN_MERCHANT_ZIP_OFFSET = 252;
 
-    /** Width of the merchant postal code, which is free-form and never treated as a number. */
     public static final int DALYTRAN_MERCHANT_ZIP_LENGTH = 10;
 
-    /**
-     * Offset of the card number. The estate's external sort specifications address this field by
-     * position, so the offset is contractual and not merely internal.
-     */
     public static final int DALYTRAN_CARD_NUM_OFFSET = 262;
 
     public static final int DALYTRAN_CARD_NUM_LENGTH = 16;
@@ -185,24 +167,14 @@ public final class DailyTransactionRecordMapper {
 
     public static final int DALYTRAN_ORIG_TS_LENGTH = 26;
 
-    /**
-     * Offset of the processing timestamp, which the batch alternate index and a sort specification both
-     * address by position.
-     */
     public static final int DALYTRAN_PROC_TS_OFFSET = 304;
 
-    /** Width of the processing timestamp; an all-space value is legitimate and must survive. */
     public static final int DALYTRAN_PROC_TS_LENGTH = 26;
 
-    /** Offset at which the unmapped trailing filler run begins. */
     public static final int FILLER_OFFSET = 330;
 
     public static final int FILLER_LENGTH = 20;
 
-    /**
-     * Byte this mapper writes across the filler run. Filler with no initialising clause is
-     * uninitialised, so no value is canonical; space is the module-wide default.
-     */
     public static final char FILLER_CHARACTER = ' ';
 
     private static final String DALYTRAN_ID = "DALYTRAN-ID";
@@ -231,11 +203,6 @@ public final class DailyTransactionRecordMapper {
 
     private static final String DALYTRAN_PROC_TS = "DALYTRAN-PROC-TS";
 
-    /**
-     * Verifies the declared geometry once, at class initialisation: that the mapped fields are
-     * contiguous from zero with no gap or overlap, and that they sum to the declared prefix width. A
-     * mis-typed offset therefore fails on first use rather than producing a plausible object.
-     */
     static {
         requireContiguous(DALYTRAN_ID, DALYTRAN_ID_OFFSET, 0);
         requireContiguous(DALYTRAN_TYPE_CD, DALYTRAN_TYPE_CD_OFFSET,
@@ -269,49 +236,26 @@ public final class DailyTransactionRecordMapper {
         requireSum("record image", RECORD_LENGTH, MAPPED_DATA_LENGTH + FILLER_LENGTH);
     }
 
-    /** Not instantiable: a stateless mapper exposing only static members. */
     private DailyTransactionRecordMapper() {
     }
 
     /**
-     * Maps a complete record image, supplied as a string, onto a fully populated entity.
+     * Maps a 350-byte record image onto an entity.
      *
-     * <p>The image must be exactly {@value #RECORD_LENGTH} encoded bytes and must exclude any line
-     * terminator: a fixture line is one byte shorter than the file's stride, so a caller reading
-     * lines must drop the separator, which is never record content. The encoded width is checked
-     * before a single field is sliced. Character fields are copied verbatim - untrimmed, not case
-     * folded, not normalised.
-     *
-     * @param  recordImage the whole record image, excluding any line terminator
+     * @param recordImage the record, whose encoded length must be exactly {@link #RECORD_LENGTH}
      * @return a fully populated entity, never partially mapped
-     * @throws NullPointerException     if {@code recordImage} is {@code null}
-     * @throws IllegalArgumentException if the encoded width is not exactly
-     *                                  {@value #RECORD_LENGTH}, if a character cannot be
-     *                                  represented in US-ASCII, or if the amount is not a valid
-     *                                  zoned-decimal image
      */
     public static DailyTransaction fromRecord(String recordImage) {
         Objects.requireNonNull(recordImage, ARTEFACT + " record image must not be null");
-        // Measured through the reader's own encoded-length operation, never through String.length(),
-        // because a character count is not a width authority. The reader re-asserts the same
-        // invariant when it takes ownership of the image; that repetition is deliberate, since the
-        // reader's invariant must hold however it was constructed.
         requireRecordWidth(FixedWidthFieldReader.encodedLength(recordImage));
         return fromReader(FixedWidthFieldReader.of(ARTEFACT, recordImage, RECORD_LENGTH));
     }
 
     /**
-     * Maps a complete record image, supplied as bytes, onto a fully populated entity.
+     * Maps a 350-byte record image onto an entity.
      *
-     * <p>Preferred when the caller already holds raw bytes, because it removes any need to choose a
-     * charset. The array is only read: neither retained nor modified.
-     *
-     * @param  recordImage the whole record image as bytes, excluding any line terminator
+     * @param recordImage the record bytes, exactly {@link #RECORD_LENGTH} long
      * @return a fully populated entity, never partially mapped
-     * @throws NullPointerException     if {@code recordImage} is {@code null}
-     * @throws IllegalArgumentException if the length is not exactly {@value #RECORD_LENGTH}, if any
-     *                                  byte is not 7-bit ASCII, or if the amount is not a valid
-     *                                  zoned-decimal image
      */
     public static DailyTransaction fromRecord(byte[] recordImage) {
         Objects.requireNonNull(recordImage, ARTEFACT + " record image must not be null");
@@ -320,77 +264,47 @@ public final class DailyTransactionRecordMapper {
     }
 
     /**
-     * Maps one record held inside a larger byte buffer onto a fully populated entity.
+     * Maps one record held inside a larger byte buffer onto an entity.
      *
-     * <p>The seam for a batch reader holding a whole newline-terminated file in one buffer. Such a
-     * file has a stride one greater than the record width, so record <em>i</em> starts at
-     * {@code i * (RECORD_LENGTH + 1)}, which selects the record and leaves its separator behind;
-     * stride arithmetic and file access stay with the caller. The remaining geometry check - that
-     * the range lies wholly inside the buffer - is made inside {@link FixedWidthFieldReader}.
+     * <p>The seam for a batch reader holding a whole newline-terminated file in one buffer: such a file
+     * has a stride one greater than the record width, so record <em>i</em> starts at
+     * {@code i * (RECORD_LENGTH + 1)}, which selects the record and leaves its separator behind. Stride
+     * arithmetic and file access stay with the caller, and the range check belongs to the reader because
+     * the buffer is legitimately longer than one record.
      *
-     * @param  buffer the buffer containing the record, and possibly many others
-     * @param  offset zero-based index at which the record starts
+     * @param buffer the buffer containing the record, and possibly many others
+     * @param from the zero-based index at which the record starts
      * @return a fully populated entity, never partially mapped
-     * @throws NullPointerException     if {@code buffer} is {@code null}
-     * @throws IllegalArgumentException if {@code offset} is negative, if the record range is not
-     *                                  wholly inside {@code buffer}, if any byte in it is not
-     *                                  7-bit ASCII, or if the amount is not a valid zoned-decimal
-     *                                  image
+     * @throws NullPointerException if {@code buffer} is {@code null}
+     * @throws IllegalArgumentException if {@code from} is negative, if the record range is not wholly
+     *                                  inside {@code buffer}, if any byte in it is not 7-bit ASCII, or
+     *                                  if the amount is not a valid zoned-decimal image
      */
     public static DailyTransaction fromRecord(byte[] buffer, int from) {
         Objects.requireNonNull(buffer, ARTEFACT + " record buffer must not be null");
-        // The range check belongs to the reader, which reports whether the fault was a negative index
-        // or a range overrunning the buffer. Re-checking the width here would be wrong rather than
-        // merely redundant: the buffer is legitimately longer than one record.
         return fromReader(FixedWidthFieldReader.of(ARTEFACT, buffer, from, RECORD_LENGTH));
     }
 
     /**
-     * Renders an entity as its canonical {@value #RECORD_LENGTH}-byte record image, as a string
-     * carrying no line terminator.
+     * Renders an entity back to its 350-byte image, filler included.
      *
-     * <p>The exact inverse of {@link #fromRecord(String)} for the mapped fields, and the padding is
-     * part of the contract: character fields are placed left-justified and space-padded, so a value
-     * that already fills its field - including one that is all spaces - is placed unchanged; the
-     * amount is encoded with its sign overpunched into the final byte; the filler run is emitted as
-     * {@link #FILLER_CHARACTER}. <strong>Compare only the mapped prefix in a fixture assertion</strong>,
-     * since the filler byte is not uniform across the estate's fixtures.
-     *
-     * @param  record the entity to render; no mapped property may be {@code null}
-     * @return the record image, exactly {@value #RECORD_LENGTH} encoded bytes wide
-     * @throws NullPointerException     if {@code record} or any mapped property is {@code null}
-     * @throws IllegalArgumentException if a character value is wider than its field or cannot be
-     *                                  represented in US-ASCII, or if the amount needs more digits
-     *                                  than its field provides
+     * @param record the entity to render
+     * @return the 350-byte record image
      */
     public static String toRecord(DailyTransaction record) {
         return toReader(record).image();
     }
 
     /**
-     * Renders an entity as its canonical {@value #RECORD_LENGTH}-byte record image, as bytes.
+     * Renders an entity back to its 350-byte image as bytes.
      *
-     * <p>Byte-for-byte identical to {@link #toRecord(DailyTransaction)} and offered so a writer need
-     * not choose a charset. The array is fresh and unshared and carries no line terminator: record
-     * separation belongs to the writer.
-     *
-     * @param  record the entity to render; no mapped property may be {@code null}
-     * @return a new array of exactly {@value #RECORD_LENGTH} US-ASCII bytes
-     * @throws NullPointerException     if {@code record} or any mapped property is {@code null}
-     * @throws IllegalArgumentException on exactly the same conditions as
-     *                                  {@link #toRecord(DailyTransaction)}
+     * @param record the entity to render
+     * @return the 350 encoded bytes
      */
     public static byte[] toRecordBytes(DailyTransaction record) {
         return toReader(record).toByteArray();
     }
 
-    /**
-     * Reads the mapped fields at their declared offsets and builds the entity.
-     *
-     * <p>Populated through the entity's all-argument constructor, whose parameter order is the
-     * record-image order, because the no-argument constructor is reserved for the persistence
-     * provider. Timestamps and identifiers are carried across as text exactly as read.
-     */
     private static DailyTransaction fromReader(FixedWidthFieldReader reader) {
         return new DailyTransaction(
                 reader.field(DALYTRAN_ID, DALYTRAN_ID_OFFSET, DALYTRAN_ID_LENGTH),
@@ -412,13 +326,6 @@ public final class DailyTransactionRecordMapper {
                 reader.field(DALYTRAN_PROC_TS, DALYTRAN_PROC_TS_OFFSET, DALYTRAN_PROC_TS_LENGTH));
     }
 
-    /**
-     * Places the mapped fields and the filler run, in declaration order, and completes the image.
-     *
-     * <p>The placements deliberately add up to the full record width, because that is what makes a
-     * missing field visible during review: the builder rejects any placement falling outside the
-     * record, so an offset that does not add up cannot survive a single execution.
-     */
     private static FixedWidthFieldReader toReader(DailyTransaction record) {
         Objects.requireNonNull(record, ARTEFACT + " source entity must not be null");
         return FixedWidthFieldReader.builder(ARTEFACT, RECORD_LENGTH)
@@ -457,31 +364,17 @@ public final class DailyTransactionRecordMapper {
                 .build();
     }
 
-    /**
-     * Slices the amount and decodes it at the canonical monetary scale.
-     *
-     * <p>An exception raised by the codec is deliberately not re-wrapped, because its diagnostic
-     * already names the offending byte and re-wrapping would hide it.
-     */
     private static BigDecimal decodeAmount(FixedWidthFieldReader reader) {
         return ZonedDecimalCodec.decodeMonetary(
                 reader.field(DALYTRAN_AMT, DALYTRAN_AMT_OFFSET, DALYTRAN_AMT_LENGTH),
                 DALYTRAN_AMT_LENGTH, DALYTRAN_AMT);
     }
 
-    /** Encodes the amount into its declared width, sign overpunched into the final byte. */
     private static String encodeAmount(BigDecimal amount) {
         return ZonedDecimalCodec.encodeMonetary(requirePresent(amount, DALYTRAN_AMT),
                 DALYTRAN_AMT_LENGTH, DALYTRAN_AMT);
     }
 
-    /**
-     * Rejects an image whose encoded byte length is not exactly the declared record width.
-     *
-     * <p>A Java-only defensive guard with no legacy antecedent: the legacy records are fixed length
-     * by construction, so the programs never had a wrong-length record to handle. When the overshoot
-     * is exactly one byte the message names an unstripped separator as the likely cause.
-     */
     private static void requireRecordWidth(int actualEncodedLength) {
         if (actualEncodedLength == RECORD_LENGTH) {
             return;
@@ -501,7 +394,6 @@ public final class DailyTransactionRecordMapper {
         throw new IllegalArgumentException(message.toString());
     }
 
-    /** Rejects an absent property on the encoding path, naming the field rather than the value. */
     private static <T> T requirePresent(T value, String fieldName) {
         return Objects.requireNonNull(value, ARTEFACT + " field '" + fieldName
                 + "' must be present: a fixed-width record has no concept of an absent field, and"
@@ -509,7 +401,6 @@ public final class DailyTransactionRecordMapper {
                 + " content");
     }
 
-    /** Verifies that a field begins exactly where the previous one ended, with no gap or overlap. */
     private static void requireContiguous(String fieldName, int declaredOffset, int computedOffset) {
         if (declaredOffset != computedOffset) {
             throw new IllegalStateException(ARTEFACT + " layout is inconsistent: field '" + fieldName
@@ -518,7 +409,6 @@ public final class DailyTransactionRecordMapper {
         }
     }
 
-    /** Verifies that a set of declared widths sums to the width it is required to fill. */
     private static void requireSum(String subject, int declared, int computed) {
         if (declared != computed) {
             throw new IllegalStateException(ARTEFACT + " layout is inconsistent: the " + subject

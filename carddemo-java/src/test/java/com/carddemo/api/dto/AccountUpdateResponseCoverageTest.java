@@ -66,16 +66,18 @@ import org.junit.jupiter.params.provider.ValueSource;
  * one collection and five amounts its compact constructor normalises or verifies, and a diagnostic
  * rendering that is a whitelist rather than a set of substitutions.
  *
- * <h2>Fifty-one map families plus six control components, and the arithmetic is checkable</h2>
+ * <h2>Fifty-one map families plus five control components, and the arithmetic is checkable</h2>
  *
  * <p>The symbolic map declares fifty-four field families. Forty-three are operator-editable and come
  * back as resulting values; six are screen metadata and two are message slots, all eight protected
  * on the mapset; and three are function-key legends that are deliberately not carried. That gives
- * fifty-one carried families, to which six control components are added. The sixth of those is the
- * concurrency token: not a map field at all, but the outbound half of the program commarea extension
- * the transaction carries across the pseudo-conversational turn, declared last so that it sits in the
- * position its returning counterpart occupies on the request. The tests below assert that arithmetic
- * component by component rather than trusting the prose.
+ * fifty-one carried families, to which five control components are added: the explicit error
+ * indicator, the focus hint, the declarative route, the echoed conversation state and the per-field
+ * error collection. Fifty-six in all, and nothing after them - in particular no optimistic-lock,
+ * version or entity-tag value, because concurrency is a persistence concern carried by the entity's
+ * own version attribute and a detected conflict reaches a client as a summary text plus field
+ * errors. The tests below assert that arithmetic component by component rather than trusting the
+ * prose.
  *
  * <h2>Two components must carry no constraint at all, not even a maximum length</h2>
  *
@@ -90,11 +92,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <p>Every other redacting type in this package substitutes a placeholder per withheld component,
  * which leaves the component names visible. This one does not: it renders five control values, a
  * count in place of the field-error entries, and one collective placeholder standing for all
- * fifty-one remaining components. Fifty-one component names therefore never appear at all, and the
+ * fifty remaining components. Fifty component names therefore never appear at all, and the
  * diagnostic's size cannot grow with the number of mistakes an operator made. Both properties are
- * asserted. The concurrency token is one of the fifty-one: it is opaque rather than secret, but a
- * whitelist withholds by default, and naming it would be the first step toward reasoning about its
- * contents.
+ * asserted.
  *
  * <h2>One summary message, any number of independent field errors</h2>
  *
@@ -181,8 +181,7 @@ class AccountUpdateResponseCoverageTest {
             "focusScreenFieldId",
             "nextRoute",
             "navigationContext",
-            "fieldErrors",
-            "concurrencyToken");
+            "fieldErrors");
 
     /** The six screen-metadata components, protected on the mapset. */
     private static final List<String> METADATA_COMPONENTS = List.of(
@@ -237,10 +236,9 @@ class AccountUpdateResponseCoverageTest {
     /** The two message components, protected on the mapset. */
     private static final List<String> MESSAGE_COMPONENTS = List.of("infoMessage", "errorMessage");
 
-    /** The six control components, which carry no legacy field value. */
+    /** The five control components, which carry no legacy field value. */
     private static final List<String> CONTROL_COMPONENTS = List.of(
-            "error", "focusScreenFieldId", "nextRoute", "navigationContext", "fieldErrors",
-            "concurrencyToken");
+            "error", "focusScreenFieldId", "nextRoute", "navigationContext", "fieldErrors");
 
     /** The forty-five components that carry a declared maximum length. */
     private static final List<String> BOUNDED_COMPONENTS = List.of(
@@ -302,8 +300,7 @@ class AccountUpdateResponseCoverageTest {
             "error",
             "nextRoute",
             "navigationContext",
-            "fieldErrors",
-            "concurrencyToken");
+            "fieldErrors");
 
     /** The five monetary components, each an exact decimal. */
     private static final List<String> MONETARY_COMPONENTS = List.of(
@@ -324,12 +321,12 @@ class AccountUpdateResponseCoverageTest {
             List.of("accountId", "accountGroupId", "customerId", "governmentIssuedId");
 
     /**
-     * The fifty-one components the diagnostic rendering never names, standing collectively behind one
+     * The fifty components the diagnostic rendering never names, standing collectively behind one
      * placeholder.
      */
     private static final List<String> UNNAMED_IN_RENDERING = Stream.concat(
                     Stream.concat(METADATA_COMPONENTS.stream(), VALUE_COMPONENTS.stream()),
-                    Stream.of("infoMessage", "concurrencyToken"))
+                    Stream.of("infoMessage"))
             .toList();
 
     /** The seven keys the diagnostic rendering does name. */
@@ -482,16 +479,6 @@ class AccountUpdateResponseCoverageTest {
 
     /** Declarative next route, deliberately unbounded. */
     private static final String NEXT_ROUTE = "/api/accounts/update";
-
-    /**
-     * An opaque concurrency token, shaped like one but carrying no meaning.
-     *
-     * <p>Deliberately not a plausible description of the fixture's account and customer: this type
-     * neither mints nor reads the token, so a value that looked derivable from the other components
-     * would suggest a relationship the contract does not have. The value is only required to be an
-     * arbitrary string, which is what an opaque, integrity-protected token is to this boundary.
-     */
-    private static final String CONCURRENCY_TOKEN = "v1.YWNjdDo5OTk5.Y3VzdDo4ODg4.c2lnbmF0dXJl";
 
     /** Credit limit, two decimal places. */
     private static final BigDecimal CREDIT_LIMIT = new BigDecimal("15000.00");
@@ -725,8 +712,7 @@ class AccountUpdateResponseCoverageTest {
     /**
      * Builds a response from the supplied components, leaving every unnamed component absent.
      *
-     * @param text the text components to populate, keyed by declared component name; the
-     *        concurrency token is one of these, since it too is carried as opaque characters
+     * @param text the text components to populate, keyed by declared component name
      * @param monetary the monetary components to populate, keyed by declared component name
      * @param error whether the response reports a failed submission
      * @param fieldErrors the per-field errors to carry, which may be {@code null}
@@ -795,8 +781,7 @@ class AccountUpdateResponseCoverageTest {
                 text.get("focusScreenFieldId"),
                 text.get("nextRoute"),
                 navigation,
-                fieldErrors,
-                text.get("concurrencyToken"));
+                fieldErrors);
     }
 
     /**
@@ -889,10 +874,6 @@ class AccountUpdateResponseCoverageTest {
         text.put("errorMessage", AccountUpdateResponse.MSG_ACCOUNT_NUMBER_NOT_USABLE);
         text.put("focusScreenFieldId", FOCUS_SCREEN_FIELD_ID);
         text.put("nextRoute", NEXT_ROUTE);
-        // The fifty-seventh component. Not a map field, so it is absent from every family count in
-        // this class, but it is a declared component and the every-component fixture has to carry it
-        // or the wire-shape assertion below would pass while the component never crossed at all.
-        text.put("concurrencyToken", CONCURRENCY_TOKEN);
         return text;
     }
 
@@ -958,9 +939,9 @@ class AccountUpdateResponseCoverageTest {
             return size.max();
         }
 
-        /** The fifty-seven components appear in map declaration order followed by the controls. */
+        /** The fifty-six components appear in map declaration order followed by the controls. */
         @Test
-        @DisplayName("declares fifty-seven components in the documented order")
+        @DisplayName("declares fifty-six components in the documented order")
         void theComponentsAreDeclaredInTheDocumentedOrder() {
             List<String> declared =
                     Arrays.stream(AccountUpdateResponse.class.getRecordComponents())
@@ -968,21 +949,21 @@ class AccountUpdateResponseCoverageTest {
                             .toList();
 
             assertThat(declared).containsExactlyElementsOf(EXPECTED_COMPONENTS);
-            assertThat(declared).hasSize(57);
+            assertThat(declared).hasSize(56);
         }
 
         /**
-         * Fifty-one carried map families plus six control components account for every component,
+         * Fifty-one carried map families plus five control components account for every component,
          * and the fifty-four declared families minus the three function-key legends give the
          * fifty-one.
          */
         @Test
-        @DisplayName("accounts for fifty-one map families and six control components")
+        @DisplayName("accounts for fifty-one map families and five control components")
         void theCarriedFamiliesAndControlsAccountForEveryComponent() {
             assertThat(VALUE_COMPONENTS).hasSize(43);
             assertThat(METADATA_COMPONENTS).hasSize(6);
             assertThat(MESSAGE_COMPONENTS).hasSize(2);
-            assertThat(CONTROL_COMPONENTS).hasSize(6);
+            assertThat(CONTROL_COMPONENTS).hasSize(5);
 
             int carriedFamilies =
                     VALUE_COMPONENTS.size() + METADATA_COMPONENTS.size() + MESSAGE_COMPONENTS.size();
@@ -1011,16 +992,47 @@ class AccountUpdateResponseCoverageTest {
             assertThat(declared.subList(0, 6)).containsExactlyElementsOf(METADATA_COMPONENTS);
         }
 
-        /** The six control components trail, after both message slots. */
+        /** The five control components trail, after both message slots, and nothing follows them. */
         @Test
-        @DisplayName("declares the six control components last")
+        @DisplayName("declares the five control components last, with nothing after them")
         void theControlComponentsAreDeclaredLast() {
             List<String> declared =
                     Arrays.stream(AccountUpdateResponse.class.getRecordComponents())
                             .map(RecordComponent::getName)
                             .toList();
 
-            assertThat(declared.subList(51, 57)).containsExactlyElementsOf(CONTROL_COMPONENTS);
+            assertThat(declared.subList(51, 56)).containsExactlyElementsOf(CONTROL_COMPONENTS);
+            assertThat(declared).last().isEqualTo("fieldErrors");
+        }
+
+        /**
+         * No component stands for an optimistic-lock, version or entity-tag value.
+         *
+         * <p>The legacy detected a concurrent change by comparing the record image it carried across
+         * the pseudo-conversational turn against the records it re-read before writing. None of that
+         * crosses this boundary: the version attribute lives on the entity, the comparison lives in
+         * the update service, and a conflict reaches the client as a summary text plus field errors.
+         * The whole declared set is screened rather than a handful of spellings, because a
+         * differently named component is precisely how such a value reappears.
+         */
+        @Test
+        @DisplayName("declares no optimistic-lock, version or entity-tag component")
+        void declaresNoOptimisticLockComponent() {
+            List<String> declared =
+                    Arrays.stream(AccountUpdateResponse.class.getRecordComponents())
+                            .map(RecordComponent::getName)
+                            .toList();
+
+            assertThat(declared).doesNotContain("concurrencyToken", "version", "rowVersion",
+                    "recordVersion", "lockVersion", "etag", "eTag", "optimisticLock", "revision",
+                    "oldImage", "beforeImage", "recordImage", "snapshot");
+            assertThat(declared).allSatisfy(name -> {
+                String lowered = name.toLowerCase(Locale.ROOT);
+                assertThat(lowered).doesNotContain("concurrency").doesNotContain("version")
+                        .doesNotContain("etag").doesNotContain("revision").doesNotContain("token")
+                        .doesNotContain("lock").doesNotContain("stamp").doesNotContain("image")
+                        .doesNotContain("snapshot").doesNotContain("digest").doesNotContain("seal");
+            });
         }
 
         /** Each bounded component declares the width the symbolic map declares. */
@@ -1087,7 +1099,7 @@ class AccountUpdateResponseCoverageTest {
 
             assertThat(partition).containsExactlyInAnyOrderElementsOf(EXPECTED_COMPONENTS);
             assertThat(BOUNDED_COMPONENTS).hasSize(45);
-            assertThat(UNBOUNDED_COMPONENTS).hasSize(12);
+            assertThat(UNBOUNDED_COMPONENTS).hasSize(11);
         }
 
         /** The unbounded components declare no maximum length. */
@@ -1104,11 +1116,9 @@ class AccountUpdateResponseCoverageTest {
                     "error",
                     "nextRoute",
                     "navigationContext",
-                    "fieldErrors",
-                    "concurrencyToken"
+                    "fieldErrors"
                 })
-        @DisplayName("leaves the amounts, unvalidated fields, indicator, route, state and token "
-                + "unbounded")
+        @DisplayName("leaves the amounts, unvalidated fields, indicator, route and state unbounded")
         void theUnboundedComponentsDeclareNoWidth(String component) throws NoSuchFieldException {
             assertThat(
                             AccountUpdateResponse.class
@@ -2109,18 +2119,14 @@ class AccountUpdateResponseCoverageTest {
     class WireShape {
 
         /**
-         * Every populated component appears under the name the record declares, all fifty-seven.
+         * Every populated component appears under the name the record declares, all fifty-six.
          *
-         * <p>The fifty-seventh is the concurrency token, which is not a map field and therefore appears
-         * in none of this class's family counts. It is still a declared component and it still has to
-         * reach the client, because the request the client sends next is required to return it
-         * unchanged; a response that omitted it would make the confirming submission impossible. The
-         * every-component fixture consequently carries it, so this assertion covers the declared
-         * surface rather than only the part of it the screen map accounts for.</p>
+         * <p>The assertion is exact in both directions, so a component that stopped crossing would
+         * fail it and so would a component that appeared without being declared - which is what makes
+         * it the guard against an optimistic-lock or entity-tag value reappearing on the wire.</p>
          */
         @Test
-        @DisplayName("emits every populated component under its declared name, the concurrency token "
-                + "included")
+        @DisplayName("emits every populated component under its declared name, and nothing besides")
         void everyPopulatedComponentAppearsUnderItsDeclaredName() throws JsonProcessingException {
             JsonNode tree =
                     JsonContractSupport.declaredSettingsMapper()
@@ -2130,11 +2136,8 @@ class AccountUpdateResponseCoverageTest {
 
             assertThat(tree.fieldNames())
                     .toIterable()
-                    .containsExactlyInAnyOrderElementsOf(EXPECTED_COMPONENTS);
-            assertThat(tree.get("concurrencyToken").asText())
-                    .as("the token crosses opaquely and unchanged, because the confirming submission "
-                            + "has to be able to return exactly what it was given")
-                    .isEqualTo(CONCURRENCY_TOKEN);
+                    .containsExactlyInAnyOrderElementsOf(EXPECTED_COMPONENTS)
+                    .hasSize(56);
         }
 
         /** The collection is always present and is emitted as an empty array when empty. */
@@ -2533,15 +2536,15 @@ class AccountUpdateResponseCoverageTest {
         }
 
         /**
-         * Fifty-one component names never appear at all. This rendering is a whitelist, so unlike
-         * every other redacting type in this package it does not even name what it withholds.
+         * Fifty component names never appear at all. This rendering is a whitelist, so unlike every
+         * other redacting type in this package it does not even name what it withholds.
          */
         @Test
-        @DisplayName("names none of the fifty-one withheld components")
+        @DisplayName("names none of the fifty withheld components")
         void noneOfTheWithheldComponentsIsNamed() {
             String rendered = populated(null).toString();
 
-            assertThat(UNNAMED_IN_RENDERING).hasSize(51);
+            assertThat(UNNAMED_IN_RENDERING).hasSize(50);
             for (String component : UNNAMED_IN_RENDERING) {
                 assertThat(rendered)
                         .as("component %s must not be named at all", component)

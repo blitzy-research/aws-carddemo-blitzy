@@ -180,11 +180,12 @@
 # raised by a listener, a health indicator or the migration itself would already be too late for at
 # least one of them.
 #
-# The same class also refuses, at migration time, any resolved version ceiling that reaches a seed
-# version, and any resolved location other than classpath:db/migration - the one location the delivered
-# scripts occupy and the sequence that ceiling was measured against - so a merged environment, an
-# operator override or a copied overlay block cannot reintroduce the seeds in silence even if the
-# co-activation guard were ever removed.
+# The same class also refuses, at migration time, any resolved location other than
+# classpath:db/migration/schema - which refuses the seed location classpath:db/migration/seed by name,
+# and refuses their shared parent classpath:db/migration too, because a location is scanned recursively
+# and the parent would reach the seeds through the child directory - and it refuses any resolved version
+# ceiling that reaches a seed version. So a merged environment, an operator override or a copied overlay
+# block cannot reintroduce the seeds in silence even if the co-activation guard were ever removed.
 #
 # And because no configuration control can reach a database that was ALREADY seeded before this
 # process existed, com.carddemo.config.ProductionSeedRejectionCallback refuses a production start-up
@@ -246,23 +247,31 @@ spring:
   # -----------------------------------------------------------------------------------------------
   # SCHEMA EVOLUTION - AND BOTH SETTINGS BELOW ARE SECURITY CONTROLS, NOT TIDINESS PREFERENCES.
   #
-  # THE PRODUCTION CONTROL IS THE VERSION CEILING OF 2. It is re-asserted here rather than inherited -
-  # the shared baseline in application.yml already carries the same restrictive value, so a profile that
-  # forgets the property inherits the safe one, and this overlay states the most consequential setting
-  # in the file out loud for anyone reading only this file. Four migrations exist in this module, all
-  # four flat in one location, and production applies only what sits at or below the ceiling:
+  # THE PRIMARY PRODUCTION CONTROL IS THE LOCATION LIST: THE SCHEMA LOCATION AND NOTHING ELSE. Four
+  # migrations exist in this module, split across two sibling locations, and production resolves only
+  # one of them:
   #
-  #   classpath:db/migration            RESOLVED HERE, as by every profile
+  #   classpath:db/migration/schema     RESOLVED HERE, as by every profile
   #     V1__create_schema.sql           the eleven application tables         APPLIED HERE
   #     V2__create_indexes.sql          keys and alternate-index equivalents  APPLIED HERE
   #   ------------------------------------------------------------ ceiling: target 2
-  #     V3__seed_reference_data.sql     sample reference rows                 RESOLVED, ABOVE TARGET,
-  #                                                                          NEVER APPLIED HERE
-  #     V4__seed_user_security.sql      sign-on identities                    RESOLVED, ABOVE TARGET,
-  #                                                                          NEVER APPLIED HERE
+  #   classpath:db/migration/seed       NOT RESOLVED HERE - REFUSED BY FlywayConfig
+  #     V3__seed_reference_data.sql     sample reference rows                 NEVER RESOLVED HERE
+  #     V4__seed_user_security.sql      sign-on identities                    NEVER RESOLVED HERE
   #
-  # A script above the ceiling is REPORTED as pending-above-target and the migration still validates
-  # successfully, so this is a normal steady state rather than a condition a deployment must suppress.
+  # A script the location list does not resolve is not reported, not pending and not applicable, so the
+  # production migration history ends at V2 with nothing outstanding. This is the mechanism AAP 0.3.1
+  # and 0.4.2 require: FlywayConfig resolves V3 and V4 from profile-scoped locations so a production
+  # deployment migrates schema and indexes without inheriting sample data or seeded credentials. See
+  # docs/decision-log.md DL-127.
+  #
+  # THE SECOND CONTROL IS THE VERSION CEILING OF 2, retained behind the location list. It is re-asserted
+  # here rather than inherited - the shared baseline in application.yml already carries the same
+  # restrictive value, so a profile that forgets the property inherits the safe one, and this overlay
+  # states it out loud for anyone reading only this file. Were a seed location ever resolved here despite
+  # the refusal, V3 and V4 would still sit above this ceiling and would not be executed; a script above
+  # the ceiling is reported as pending-above-target and the migration still validates successfully, so
+  # even that degraded state is not a condition a deployment must suppress.
   #
   # The batch framework's own metadata tables are created by Spring Batch itself rather than by a
   # migration, which is why the inventory above is four scripts and not five; see the batch block
@@ -277,25 +286,25 @@ spring:
   # module encrypts at rest. Neither belongs in production, and neither reaching it would be
   # untidiness: it would be a credential incident and a privacy incident respectively.
   #
-  # WHY A CEILING RATHER THAN A SEPARATE DIRECTORY. The migration specifications for V3 and V4 both
-  # require the four scripts to be physically flat in one directory, direct that no subdirectory be
-  # created, and name this ceiling as the production control - on the stated ground that
-  # directory-scoped locations cannot isolate the seeds. That is correct, and it is the reason: a
-  # location is scanned recursively, so any deployment that resolves both directories - a merged
-  # location list, a wildcard location, a filesystem: location, or an operator running the migration
-  # tool directly against the packaged artefact - applies V1 through V4 in ascending order whatever
-  # folder each script came from. A directory boundary therefore buys the APPEARANCE of isolation while
-  # discouraging the setting that actually holds. A version number orders the whole history rather than
-  # one folder of it, so it holds however the location list was assembled. An earlier revision of these
-  # documents did split the scripts; that split is withdrawn - see docs/decision-log.md DL-119 - and
-  # what AAP 0.3.1 and 0.4.2 call profile-scoped resolution is this profile-scoped ceiling. Verified
-  # against Flyway 11.7.2: with target 2 the applied set is exactly {1, 2} and the two seeds are
-  # reported above target.
+  # WHY A DIRECTORY AND A CEILING, IN THAT ORDER. A location is scanned RECURSIVELY, which is why the
+  # two delivered locations are SIBLINGS and their shared parent db/migration holds no script at all: a
+  # deployment listing the parent would reach the seeds through the child directory, so the parent is
+  # refused here exactly as the seed location is. With the parent empty the recursion has nothing to
+  # cross, and a list naming db/migration/schema resolves the schema scripts and nothing else. Verified
+  # against Flyway 11.7.2 and PostgreSQL 16: a production-shaped location list reports exactly V1 and V2,
+  # and the two seeds appear in no state at all - not applied, not pending, not above target.
   #
-  # THE RULE FOR ANY FUTURE SCRIPT, and it is the whole rule: a script production MUST run is numbered
-  # at or below 2; a script production must NEVER run is numbered above 2. The number is the whole of
-  # the decision - there is no directory to choose. Raise this ceiling only in the same commit that adds
-  # a production-required script above it, and never to admit a seed. A sign-on credential is stored
+  # Two earlier revisions of these documents kept all four scripts in the parent and relied on the
+  # ceiling alone, on the ground above. The ground is sound; the conclusion it supports is that the
+  # SCHEMA scripts must move down too, which is what has been done. The ceiling is retained behind the
+  # location because it is the control that still holds if a seed is renumbered, or if a merged location
+  # list or a command-line override adds the seed location back. See docs/decision-log.md DL-127, which
+  # supersedes DL-102, DL-111, DL-116 and DL-119.
+  #
+  # THE RULE FOR ANY FUTURE SCRIPT: a script production MUST run goes in db/migration/schema and is
+  # numbered at or below 2; a script production must NEVER run goes in db/migration/seed and is numbered
+  # above 2. Never place a script in the shared parent. Raise this ceiling only in the same commit that
+  # adds a production-required script above it, and never to admit a seed. A sign-on credential is stored
   # only as a hash regardless, so that even a mistake here leaks no usable secret.
   #
   # `target` does not weaken validation: validate-on-migrate stays on, and it catches a CHANGED
@@ -310,16 +319,40 @@ spring:
   #
   # A CONFIGURATION CONTROL IS ONLY EXCLUDED WHILE NOTHING RE-ADDS IT, and until com.carddemo.config.
   # FlywayConfig existed the two settings below were the whole of the mechanism. That class now
-  # refuses, whenever this profile is active, any resolved location other than the schema location and
-  # any resolved ceiling that reaches a seed version - checked against the MERGED, BOUND values rather
-  # than against this document, so an inherited value, an operator override on the command line and a
-  # co-activated overlay are all covered by one check. It also completes the list the other way round:
-  # a profile that needs fixtures and lost the seed location has it added back, because a
-  # fixture-bearing profile silently migrating no fixtures is a defect too.
+  # refuses, whenever this profile is active:
+  #
+  #   * any location list that is not EXACTLY ONE entry equal, character for character, to the packaged
+  #     classpath:db/migration. A file-system descriptor, a bare path, a nested sub-path, a trailing
+  #     separator, a second entry and an empty list are each refused. The match is equality and not
+  #     containment on purpose: containment cannot separate the packaged directory from an
+  #     operator-writable directory that merely ends in the same folder name, and such a directory
+  #     could present its own V1 and V2 carrying seed content the ceiling would then never stop;
+  #
+  #   * any ceiling that is not EXACTLY "2". Above it lie the seeds. BELOW IT LIES AN UNDER-MIGRATED
+  #     SCHEMA: a ceiling of "1.1" reaches no seed and so would satisfy a seeds-only test, yet it stops
+  #     before V2 and leaves the indexes and constraints V2 creates absent - a database that reports a
+  #     successful migration while missing the structures every alternate-index query depends on;
+  #
+  #   * migrations switched OFF. `enabled: false` builds no migration tool, which applies no
+  #     configuration customizer and offers no callback event, so ONE property would otherwise switch
+  #     off the location refusal, the ceiling refusal AND the already-seeded-database refusal together,
+  #     silently, with the application starting normally against whatever the database already holds.
+  #
+  # All three are checked against the MERGED, BOUND values rather than against this document, so an
+  # inherited value, an operator override on the command line and a co-activated overlay are all
+  # covered - AND THE FIRST TWO ARE ALSO READ STRAIGHT OUT OF THE ENVIRONMENT BEFORE ANY BEAN IS
+  # CREATED, so they hold even when no migration tool is built at all. THE VALUES BELOW ARE NOT A
+  # DEFAULT THIS PROFILE MERELY SUGGESTS: they are required, and a production start-up that resolves
+  # anything else stops rather than proceeding. FlywayConfig also completes the list the other way
+  # round for the seeding profiles: a profile that needs fixtures and lost the seed location has it
+  # added back, because a fixture-bearing profile silently migrating no fixtures is a defect too.
   #
   # AND BECAUSE NEITHER A CONFIGURATION CONTROL NOR THE MIGRATION TOOL CAN REACH A DATABASE THAT WAS
   # ALREADY SEEDED, com.carddemo.config.ProductionSeedRejectionCallback - registered for this profile
-  # alone, and firing before the first script executes - refuses the start-up on any of three signals:
+  # alone, and firing before the first script executes - refuses the start-up on any of three signals.
+  # The same inspection is ALSO run from an ordinary singleton FlywayConfig publishes for this profile,
+  # so the database is examined on every production start-up through a path that does not involve the
+  # migration lifecycle at all. The three signals are:
   #
   #   1. the migration history records a successful migration at or above version 3;
   #   2. any of the ten sign-on identifiers this module's fixture seed reserves is present in
@@ -345,17 +378,28 @@ spring:
   # beside flyway-core in pom.xml; without it the build still succeeds and the application then fails
   # at run time, so the two must stay declared together.
   flyway:
+    # REQUIRED true, not merely defaulted to it. FlywayConfig reads this key out of the environment in
+    # a bean-factory post-processor and refuses the start-up unless it is stated true, because with
+    # migrations off there is no migration tool to carry the two refusals below or the seeded-database
+    # refusal above. A control that one property can switch off is not a control.
     enabled: true
-    # See docs/decision-log.md DL-102.
+    # See docs/decision-log.md DL-127.
     #
-    # THE ONE DELIVERED LOCATION AND NOTHING ELSE. Another location would carry scripts the ceiling
-    # below never measured, so FlywayConfig refuses any other location while this profile is active.
-    locations: classpath:db/migration
-    # THIS LINE IS THE PRODUCTION CONTROL. V1 and V2 are at or below "2" and are applied; V3 and V4 sit
-    # above it, are reported above target, and are never executed. Raising this value seeds production.
-    # FlywayConfig re-applies the pin after binding, so an inherited value, an operator override or a
-    # merged property source cannot lift it, and ProductionSeedRejectionCallback refuses a start against
-    # a database that was seeded before this profile was ever pointed at it.
+    # THE ONE PACKAGED LOCATION AND NOTHING ELSE, matched by equality rather than containment. Another
+    # location would carry scripts the ceiling below never measured, and a look-alike directory on disk
+    # could carry its own V1 and V2, so FlywayConfig refuses anything but this exact value - including
+    # a filesystem: descriptor, a bare path, a nested sub-path, a trailing separator and a second entry.
+    # THIS LINE IS THE PRODUCTION CONTROL: THE SCHEMA LOCATION AND NOTHING ELSE. The two seed scripts
+    # live in classpath:db/migration/seed and are therefore not resolved here at all - not resolved,
+    # not reported, not applied. FlywayConfig refuses any other location while this profile is active,
+    # which includes the seed location by name AND the shared parent classpath:db/migration, because a
+    # location is scanned recursively and the parent would reach the seeds through the child directory.
+    locations: classpath:db/migration/schema
+    # THE SECOND CONTROL, BEHIND THE FIRST. V1 and V2 are at or below "2" and are applied. Were a seed
+    # location ever resolved here despite the refusal, V3 and V4 would still sit above this ceiling and
+    # would not be executed. FlywayConfig re-applies the pin after binding, so an inherited value, an
+    # operator override or a merged property source cannot lift it, and ProductionSeedRejectionCallback
+    # refuses a start against a database that was seeded before this profile was ever pointed at it.
     target: "2"
     baseline-on-migrate: false
     validate-on-migrate: true
@@ -399,13 +443,27 @@ spring:
   # paid emulator tier nor an activation value for one has any place in this file - emulation is a
   # local concern only.
   #
+  # AND DECLARING NONE IS NOT THE SAME AS FORBIDDING ONE, which is what an earlier revision of this
+  # block treated as equivalent. This document cannot see the environment: an override supplied as
+  # SPRING_CLOUD_AWS_ENDPOINT, SPRING_CLOUD_AWS_S3_ENDPOINT, SPRING_CLOUD_AWS_SQS_ENDPOINT or
+  # SPRING_CLOUD_AWS_SNS_ENDPOINT - or on the command line, or by a co-activated overlay - binds
+  # perfectly well for a key no document mentions, and every client then addresses whatever host it
+  # names. All four keys are therefore REFUSED under this profile by
+  # config/ProductionConfigurationValidator, before any bean is instantiated, rather than merely left
+  # out here. A deployment that sets one is told which one and why.
+  #
   # NO STATIC CREDENTIAL PROPERTY IS DECLARED EITHER. The reasoning is recorded in the environment
   # inventory above: with none present, the SDK's default provider chain resolves a role, and the
   # placeholder pair the local profile uses for the emulator must never be carried across to here.
   #
-  # The region is required rather than defaulted, and guarded. application.yml supplies a fallback so
-  # a developer can start without preparing an environment; a production deployment silently landing
-  # in whatever region that fallback names is a different matter, so the fallback is removed here.
+  # The region is required rather than defaulted, and guarded - but the bare reference lives at
+  # carddemo.aws.region further down rather than here, and this setting DERIVES from it. That is
+  # deliberate on two counts. It states the region once per profile, so this namespace and the carddemo
+  # one cannot name different regions while both look correct; and it puts the guarded reference on the
+  # key com.carddemo.config.AwsProperties actually binds, which is the type a client builder reads.
+  # application.yml supplies a fallback there so a developer can start without preparing an
+  # environment; a production deployment silently landing in whatever region that fallback names is a
+  # different matter, so the fallback is removed further down.
   # Removing it is not by itself enough - the region is bound as a configuration-properties value, so
   # an unset variable would bind the literal text and the SDK would reject it as an unknown region
   # rather than reporting a variable nobody set. The guard at the head of this file reports it
@@ -416,7 +474,7 @@ spring:
   cloud:
     aws:
       region:
-        static: ${AWS_REGION}
+        static: ${carddemo.aws.region}
       s3:
         path-style-access-enabled: false
 
@@ -496,25 +554,37 @@ server:
 # future edit that reopens something in the shared baseline cannot silently reopen it in production by
 # inheritance. They are not redundant lines to be tidied away.
 #
-# TWO ENDPOINTS MUST REMAIN REACHABLE, AND NARROWING MUST NOT REACH THEM. Each is resolved literally
+# TWO ENDPOINTS MUST REMAIN PUBLISHED, AND NARROWING MUST NOT REACH THEM. Each is resolved literally
 # by a sibling file, and the same image runs under every profile:
 #
 #   /actuator/health      the HEALTHCHECK target of carddemo-java/Dockerfile and the readiness gate
 #                         anything waiting on this application depends upon
-#   /actuator/prometheus  the scrape target of config/prometheus/prometheus.yml and the surface every
-#                         panel of config/grafana/dashboards/carddemo-overview.json reads. It is also
-#                         where the performance baseline is established
+#   /actuator/prometheus  the surface every panel of
+#                         config/grafana/dashboards/carddemo-overview.json reads, and where the
+#                         performance baseline is established
+#
+# PUBLISHED IS NOT THE SAME AS ANONYMOUS, and under this profile the two differ. Only the health probe
+# is anonymous here. The scrape endpoint requires a bearer token, because
+# carddemo.security.anonymous-metrics-scrape is closed in the shared baseline and restated closed
+# further down - so the exposition, which carries per-endpoint latency distributions, per-batch-step
+# record counts, pool saturation and JVM internals, is not readable by a client that presents nothing.
+# Publishing it here and authenticating it there is deliberate: a credentialed collector keeps its
+# data and the performance gate keeps its source, while an uncredentialed one gets 401 from the rule
+# that authenticates everything under the management base path. config/prometheus/prometheus.yml is
+# the LOCAL stack's collector - it presents no credential and addresses Compose service names - so it
+# is not the collector for this profile and must not be pointed at one.
 #
 # THE BASE PATH IS INHERITED AND DELIBERATELY NOT RESTATED. application.yml states /actuator once, and
 # those two sibling files resolve it literally. Repeating it here would create a second place for it to
 # drift; inheriting it means there is exactly one.
 #
 # ONE INTERACTION WORTH RECORDING, because it is easy to misread as a break. The container health
-# check and the local scrape job both speak plaintext, and the image ships with the local profile
-# selected, so they work as written for the profile they were built for. A deployment that selects
-# THIS profile enables in-JVM transport security above, so its probe and its scrape must address the
-# same two paths over HTTPS. The paths and the published set are unchanged either way - only the
-# scheme differs, and it differs because this profile requires encryption.
+# check and the local scrape job both speak plaintext and present no credential, and the image ships
+# with the local profile selected, so they work as written for the profile they were built for. A
+# deployment that selects THIS profile enables in-JVM transport security above, so its probe must
+# address the same path over HTTPS - and its collector must additionally present a bearer token,
+# because this profile does not open anonymous scraping. The paths and the published set are unchanged
+# either way; what differs is the scheme, and for the scrape also the credential.
 #
 # EVERYTHING ELSE IS CLOSED. Nothing that enumerates resolved configuration, the bean graph, the
 # request mappings or the applied migrations is published; nothing that dumps memory or threads is
@@ -659,8 +729,17 @@ logging:
 # ===================================================================================================
 carddemo:
   aws:
+    # THE REGION, AND THE ONE PLACE IT IS STATED IN THIS DOCUMENT. No fallback: a deployment that has
+    # not set AWS_REGION is refused by the guard at the head of this file rather than provisioning and
+    # publishing in whichever region a default named. The AWS integration's own region setting above
+    # reads this key instead of restating the variable, so the two namespaces cannot disagree.
+    region: ${AWS_REGION}
+    # NO ENDPOINT OVERRIDE IS DECLARED, and that absence is the setting. An override exists only to aim
+    # a client at an emulator; with none, every client resolves the real service endpoint for the region
+    # above. The local and test overlays are where an override belongs, and an inherited one here would
+    # have to be blanked to undo - which is exactly the kind of correction that gets forgotten.
     s3:
-      bucket: ${CARDDEMO_S3_BUCKET:carddemo-batch-staging}
+      batch-staging-bucket: ${CARDDEMO_S3_BUCKET:carddemo-batch-staging}
     sqs:
       # NO DEFAULT. A deployment names its own queue, and a fallback here would be a placeholder
       # that started cleanly and published nowhere. The canonical name is carddemo-jobs.fifo, in
@@ -672,7 +751,19 @@ carddemo:
       # malformed queue name rather than as a variable a deployer forgot to set. The guard described
       # at the head of this file reports the absence for what it is, and earlier. See
       # docs/decision-log.md DL-105.
-      job-submission-queue: ${CARDDEMO_SQS_QUEUE}
+      #
+      # AND WELL-FORMED IS NOT THE SAME AS TRUSTED. The messaging client accepts any syntactically
+      # valid locator as a queue, so a value such as http://<some-host>/carddemo-jobs.fifo is a
+      # perfectly well-formed destination that happens to name somebody else's host - and it would
+      # then receive the eighty-column job-control cards of every batch submission, silently, because
+      # the queue is defined ignore-on-error and every request would still answer successfully.
+      # Under this profile the destination is therefore held to a rule about THIS deployment by
+      # config/ProductionConfigurationValidator: a bare queue name is preferred and needs no check at
+      # all, because a name carries no destination; an https queue URL must sit on a queue-service
+      # endpoint host for the region declared above and carry exactly an account segment and a queue
+      # segment; a queue ARN must name a recognised partition, the queue service, that same region and
+      # a twelve-digit account. Plain transport and any other host are refused outright.
+      job-queue: ${CARDDEMO_SQS_QUEUE}
       message-group-id: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:carddemo-job-submission}
       # The 80-character card width and the tolerate-a-publish-failure behaviour are NOT declared as
       # properties. Both are fixed by the legacy queue definition rather than chosen by a deployment,
@@ -754,3 +845,27 @@ carddemo:
     # entity-version checks used here are a STRICT IMPROVEMENT on that baseline, and the reasoning
     # is in docs/decision-log.md.
     require-https: true
+    # -------------------------------------------------------------------------------------------
+    # THE METRICS SCRAPE ENDPOINT REQUIRES A CREDENTIAL HERE. Inherited as closed from
+    # application.yml and restated so the production posture is stated independently of what the
+    # shared baseline happens to say. Only the local and test overlays open it, because only their
+    # collector runs on the same machine as the application.
+    #
+    # WHAT WOULD OTHERWISE BE READABLE BY ANY NETWORK CLIENT: per-endpoint request counts and latency
+    # distributions, per-batch-step record counts, data-source pool saturation, and JVM heap, thread
+    # and garbage-collection internals. That set is enough to profile transaction volume, infer
+    # business activity from the batch counts, and time an attack - against a deployment the client
+    # holds no credential for. The health probe stays anonymous because its body is a status word;
+    # this is the shape of the workload, which is a different kind of answer.
+    #
+    # THE ENDPOINT IS STILL PUBLISHED - see the exposure list above, which keeps prometheus in it.
+    # Closing this key does not unpublish it and does not disable a meter. A collector that presents
+    # a bearer token collects exactly what it collected before, so the performance gate keeps its
+    # data source; a client that presents nothing now gets 401 from the rule that authenticates
+    # everything under the management base path.
+    #
+    # THE SHIPPED COLLECTOR CONFIGURATION AT config/prometheus/prometheus.yml IS THE LOCAL STACK'S,
+    # NOT THIS PROFILE'S. It presents no credential and addresses Compose service names, so it
+    # cannot and must not be pointed at a production deployment. A production collector authenticates
+    # over TLS with a scoped credential; that file records the requirement and this key enforces it.
+    anonymous-metrics-scrape: false

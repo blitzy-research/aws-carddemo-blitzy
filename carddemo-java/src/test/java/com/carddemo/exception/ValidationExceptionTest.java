@@ -33,154 +33,99 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for {@link ValidationException}, the transport for the legacy field-flag validation
- * surface.
+ * surface. They exist above all to pin the <strong>two-state per-field error contract</strong> so that
+ * it can never be collapsed into a single boolean - decision log entry D-33.
  *
- * <p>These tests exist for one reason above all others: to pin the <strong>two-state per-field error
- * contract</strong> so that it can never be collapsed into a single boolean. The two states are not
- * a design preference; they are forced by the legacy screen behaviour, and they are recorded as
- * decision log entry D-33.</p>
+ * <p><strong>Why two states and not one.</strong> The shape is dictated by
+ * {@code app/cpy/CSSETATY.cpy}, a parameterised {@code PROCEDURE DIVISION} macro carrying three
+ * substitution tokens. Three verified properties are the contract: it fires only when the flag is
+ * not-OK <em>or</em> blank <em>and</em> the re-enter indicator is set; in both firing states it changes
+ * the field's colour attribute; and <strong>additionally, only when the flag is specifically
+ * blank</strong>, it writes a {@code '*'} marker. That third property is the entire justification for
+ * two states - the marker is the observable difference between "you left this out" and "what you typed
+ * is wrong", and a single boolean would erase it. So the legacy blank flag becomes
+ * {@link ValidationException.FieldState#MISSING} (flag value {@code 'B'}, or a space for the two
+ * key-filter flags, the one variation in the estate), the not-OK flag becomes
+ * {@link ValidationException.FieldState#INVALID} (flag value {@code '0'}), and the third state in each
+ * legacy triple is the valid state, which decorates nothing and therefore has no representation at all
+ * in an error enum. This is why a {@code VALID} constant must never be added.
  *
- * <p><strong>Why two states and not one.</strong> The shape of the exception is dictated by
- * {@code app/cpy/CSSETATY.cpy}, which is not a data structure but a parameterised
- * {@code PROCEDURE DIVISION} macro carrying three substitution tokens - a validation-flag name, a
- * screen (3270) field name and a map name. Three properties of that macro were verified line by line
- * and are the contract: it fires <strong>only</strong> when the flag is in the not-OK state
- * <em>or</em> the blank state <em>and</em> the re-enter indicator is set; in <em>both</em> firing
- * states it changes the field's colour attribute to the error colour; and
- * <strong>additionally, and only when the flag is specifically the blank state,</strong> it writes a
- * {@code '*'} marker into the output field. That third property is the entire justification for two
- * states: the marker is the observable difference an operator sees between "you left this out" and
- * "what you typed is wrong", and a single boolean would erase it.</p>
+ * <p>The macro is expanded <strong>39 times</strong> in {@code app/cbl/COACTUPC.cbl} between L3208 and
+ * L3432 - roughly 234 generated lines - which collapse into a single parameterised decorator call plus
+ * the error contract this exception carries.
  *
- * <p>The mapping is therefore that the legacy <strong>blank</strong> flag - colour change
- * <em>plus</em> the {@code '*'} marker - becomes {@link ValidationException.FieldState#MISSING},
- * its flag value being the character {@code 'B'} and a space for the two key-filter flags which are
- * the one variation in the estate; the legacy <strong>not-OK</strong> flag - colour change only, no
- * marker - becomes {@link ValidationException.FieldState#INVALID}, its flag value being the
- * character {@code '0'}; and the third state in each legacy flag triple is the valid state, which
- * decorates nothing, produces no error entry and therefore has <em>no representation at all</em> in
- * an error enum. This is why a {@code VALID} constant must never be added.</p>
+ * <p><strong>The re-entry gate is deliberately not enforced here.</strong> Because the macro fires only
+ * when the re-enter indicator is set, per-field error states are populated only on re-submission and
+ * never on first presentation. That gating belongs to the account-update service and to
+ * {@code api/dto/FieldErrorDecorator}; it is recorded here so a downstream author cannot mistake this
+ * exception's willingness to carry an error for permission to report one on first entry.
  *
- * <p><strong>Scale of the construct being replaced.</strong> The macro is expanded
- * <strong>39 times</strong> in {@code app/cbl/COACTUPC.cbl} between L3208 and L3432, always against
- * the same map, with 39 distinct validation flags and 39 distinct screen field names - roughly 234
- * generated lines - which collapse into a single parameterised decorator call plus the error
- * contract this exception carries.</p>
+ * <p><strong>Two of the 39 decorated fields are never validated</strong>, as the source states directly
+ * at {@code app/cbl/COACTUPC.cbl} L3345 (middle name, screen field {@code ACSMNAM}) and L3369 (second
+ * address line, {@code ACSADL2}). <strong>No validation constraint may be attached to either field in
+ * the DTO layer</strong>, because adding one would reject input the legacy system accepts - decision log
+ * entry D-34. This exception is a carrier, not a validator: it must be able to represent a decoration
+ * that no rule produced, which {@link #theExceptionCarriesADecorationThatNoEditProduced()} proves.
  *
- * <p><strong>Behaviour deliberately not modelled here.</strong> The re-entry gate is not enforced by
- * this exception. Because the macro fires only when the re-enter indicator is set, per-field error
- * states are populated only on <strong>re-submission</strong> and never on the first presentation of
- * the screen. That gating belongs to the account-update service and to
- * {@code api/dto/FieldErrorDecorator}, and must be tested there. It is documented here so a
- * downstream author cannot mistake this exception's willingness to carry an error for permission to
- * report one on first entry.</p>
+ * <p>A source defect worth knowing about: at {@code app/cbl/COACTUPC.cbl} L3427-L3435 the comments
+ * labelling the primary-cardholder and electronic-funds-transfer expansions are transposed relative to
+ * the code they describe. The code is correct and the comments are swapped, so a translation must follow
+ * the token substitutions and never the adjacent comment. Row 15 of the source anomaly register.
  *
- * <p><strong>The two decorated-but-never-validated fields.</strong> Two of the 39 decorated fields
- * are decorated for display but <strong>never actually validated</strong>, as the source states
- * directly: an inline comment at {@code app/cbl/COACTUPC.cbl} L3345 records that no edits are coded
- * for the middle-name field (screen field {@code ACSMNAM}), and a comment at L3369 records that no
- * edits are coded as yet for the second address line (screen field {@code ACSADL2}).
- * <strong>No validation constraint may be attached to either field in the DTO layer</strong>, because
- * adding one would reject input the legacy system accepts. Recorded as decision log entry D-34. This
- * exception is a <em>carrier</em>, not a validator: it must be able to represent a decoration that no
- * rule produced, which {@link #theExceptionCarriesADecorationThatNoEditProduced()} proves.</p>
- *
- * <p><strong>A source defect worth knowing about.</strong> At {@code app/cbl/COACTUPC.cbl} L3427 to
- * L3435 the comments labelling two of the macro expansions - the primary-cardholder flag and the
- * electronic-funds-transfer account identifier - are <strong>transposed</strong> relative to the code
- * they describe. The code is correct and the comments are swapped, so any translation must follow the
- * token substitutions and never the adjacent comment. Row 15 of the source anomaly register.</p>
- *
- * <p><strong>Serialisation.</strong> The nested carrier is intentionally not serialisable, because a
- * validation error is a request-scoped presentation concern rather than a persisted value, and the
- * enclosing exception therefore holds it in a {@code transient} field. A round trip consequently
- * preserves the message and the cause - which {@code Throwable} itself writes - and revives the
- * per-field detail as an <strong>empty</strong> list, never {@code null}, so callers never need a
- * null check. That is the property {@link #fieldErrorsIsNeverNullOnAnyConstructionPath()} and the two
- * round-trip tests guarantee.</p>
+ * <p><strong>Serialisation.</strong> The nested carrier is intentionally not serialisable, a validation
+ * error being a request-scoped presentation concern rather than a persisted value, so the enclosing
+ * exception holds it in a {@code transient} field. A round trip therefore preserves the message and the
+ * cause and revives the per-field detail as an <strong>empty</strong> list, never {@code null}, so
+ * callers need no null check.
  *
  * <p><strong>Identity.</strong> This is the project's own type in {@code com.carddemo.exception},
- * deliberately not the exception of the same simple name defined by the Bean Validation API; the two
- * must never be interchanged, and no import of that API appears in this file, which is the proof. It
- * is also not an abend: a field-level validation failure is a recoverable, re-displayable outcome,
- * never a program termination.</p>
+ * deliberately not the Bean Validation exception of the same simple name; no import of that API appears
+ * in this file, which is the proof. It is also not an abend - a field-level validation failure is
+ * recoverable and re-displayable, never a program termination.
  */
 @DisplayName("ValidationException :: two-state per-field validation transport")
 class ValidationExceptionTest {
-
-    /** Summary-level wording a service would supply alongside per-field detail. */
     private static final String SUMMARY = "Account update rejected: correct the marked fields";
 
-    /**
-     * Legacy screen field tag for the account status, one of the 39 decorated fields, paired
-     * with the Java property name a REST consumer binds to. Both spellings must survive
-     * verbatim: the Java name is what the API exposes, the screen tag is what the legacy
-     * contract names.
-     */
     private static final String BMS_ACCT_STATUS = "ACSTTUS";
 
-    /** Java property name for the account status field. */
     private static final String PROP_ACCT_STATUS = "acctStatus";
 
-    /** Caller-supplied wording for the account status failure; nothing is synthesised. */
     private static final String ACCT_STATUS_MESSAGE = "Account status must be supplied";
 
-    /** Legacy screen field tag for the account open year. */
     private static final String BMS_OPEN_YEAR = "OPNYEAR";
 
-    /** Java property name for the account open year. */
     private static final String PROP_OPEN_YEAR = "openYear";
 
-    /** Caller-supplied wording for the open year failure. */
     private static final String OPEN_YEAR_MESSAGE = "Open year must be a four digit year";
 
-    /** Legacy screen field tag for the credit limit. */
     private static final String BMS_CREDIT_LIMIT = "ACRDLIM";
 
-    /** Java property name for the credit limit. */
     private static final String PROP_CREDIT_LIMIT = "creditLimit";
 
-    /** Caller-supplied wording for the credit limit failure. */
     private static final String CREDIT_LIMIT_MESSAGE = "Credit limit must be a signed amount";
 
-    /** Legacy screen field tag for the middle name - decorated but never validated. */
     private static final String BMS_MIDDLE_NAME = "ACSMNAM";
 
-    /** Java property name for the middle name - no constraint may be attached to it. */
     private static final String PROP_MIDDLE_NAME = "middleName";
 
-    /** Legacy screen field tag for the second address line - decorated but never validated. */
     private static final String BMS_ADDRESS_LINE_2 = "ACSADL2";
 
-    /** Java property name for the second address line - no constraint may be attached. */
     private static final String PROP_ADDRESS_LINE_2 = "addressLine2";
 
-    /** Wording used where a field is decorated for display although no edit produced it. */
     private static final String DECORATION_ONLY_MESSAGE = "Field marked for operator attention";
 
-    /**
-     * A neutral placeholder standing in for a credential-style field. The 39 decorated
-     * account-update fields contain no credential field, so this is deliberately invented
-     * rather than borrowed, and it exists only to prove that no submitted value can be
-     * echoed back.
-     */
     private static final String PROP_CREDENTIAL = "userCredential";
 
-    /** Neutral placeholder screen tag paired with the credential-style property name. */
     private static final String BMS_CREDENTIAL = "USRCRED";
 
-    /** Wording for a credential-style failure: it names the field, never the input. */
     private static final String CREDENTIAL_MESSAGE = "Credential failed its edit";
-
-    // 1. FieldState: exactly two constants, in declaration order
 
     @Test
     @DisplayName("FieldState declares exactly two constants, MISSING then INVALID: a third state such as "
             + "VALID, OK, UNKNOWN or NONE is forbidden because a field that passed its edits decorates "
             + "nothing and so has no representation in an error enum")
     void fieldStateDeclaresExactlyTheTwoLegacyErrorStatesInDeclarationOrder() {
-        // containsExactly pins membership AND order, so inserting a third constant - or
-        // reordering the two - fails immediately rather than silently changing the contract.
         assertThat(ValidationException.FieldState.values())
                 .containsExactly(ValidationException.FieldState.MISSING,
                         ValidationException.FieldState.INVALID);
@@ -216,8 +161,6 @@ class ValidationExceptionTest {
         assertThat(ValidationException.FieldState.MISSING.name()).isEqualTo("MISSING");
         assertThat(ValidationException.FieldState.INVALID.name()).isEqualTo("INVALID");
     }
-
-    // 2. The single-field constructor
 
     @Test
     @DisplayName("The single-field constructor carries exactly one MISSING entry with the Java property "
@@ -270,8 +213,6 @@ class ValidationExceptionTest {
         assertThat(rejectedEntry.state()).isSameAs(ValidationException.FieldState.INVALID);
         assertThat(absentEntry.state()).isNotEqualTo(rejectedEntry.state());
 
-        // Same field, same legacy tag, same wording - only the state differs. A boolean here
-        // would make the two indistinguishable and lose the marker semantics entirely.
         assertThat(absentEntry.field()).isEqualTo(rejectedEntry.field());
         assertThat(absentEntry.bmsFieldId()).isEqualTo(rejectedEntry.bmsFieldId());
         assertThat(absentEntry).isNotEqualTo(rejectedEntry);
@@ -297,28 +238,16 @@ class ValidationExceptionTest {
     @DisplayName("An absent state is rejected at construction rather than normalised, because the legacy "
             + "flag is either blank or not-OK whenever the decoration fires and there is no third state")
     void anAbsentStateIsRejectedAtConstruction() {
-        // The legacy macro decorates a field only when its flag holds one of the two error
-        // values, so a carrier with no state describes a screen condition that cannot occur.
-        // Admitting it would force the REST error mapper to invent a value on the producer's
-        // behalf, and either invention misinstructs the operator: MISSING tells them to supply a
-        // value they may already have supplied, INVALID tells them to correct one they may never
-        // have entered. The failure is therefore located here, at the producer.
         assertThatThrownBy(() -> new ValidationException.FieldError(
                 PROP_ACCT_STATUS, BMS_ACCT_STATUS, null, ACCT_STATUS_MESSAGE))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("state");
 
-        // The single-field exception constructor funnels through the same record, so it rejects
-        // an absent state too rather than constructing a carrier the mapper cannot translate.
         assertThatThrownBy(() -> new ValidationException(
                 PROP_ACCT_STATUS, BMS_ACCT_STATUS, null, ACCT_STATUS_MESSAGE))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("state");
 
-        // Both legal states remain constructible, so the rejection is of absence only and not of
-        // either state, and neither of the other three components acquires a null check it did
-        // not have: an unscreened validation still supplies a null tag, and a caller that has no
-        // wording for a field still supplies a null message.
         assertThat(new ValidationException.FieldError(PROP_ACCT_STATUS, BMS_ACCT_STATUS,
                 ValidationException.FieldState.MISSING, ACCT_STATUS_MESSAGE).state())
                 .isSameAs(ValidationException.FieldState.MISSING);
@@ -326,8 +255,6 @@ class ValidationExceptionTest {
                 ValidationException.FieldState.INVALID, null).state())
                 .isSameAs(ValidationException.FieldState.INVALID);
     }
-
-    // 3. The message-only constructor
 
     @Test
     @DisplayName("The message-only constructor reports the message exactly and an empty, non-null detail "
@@ -340,8 +267,6 @@ class ValidationExceptionTest {
         assertThat(thrown.hasFieldErrors()).isFalse();
         assertThat(thrown.getCause()).isNull();
     }
-
-    // 4. The collection constructors
 
     @Test
     @DisplayName("Per-field detail keeps the order it was supplied in, because the legacy macro expansions "
@@ -463,8 +388,6 @@ class ValidationExceptionTest {
         assertThat(thrown.hasFieldErrors()).isFalse();
     }
 
-    // 5. Defensive copy on the way in
-
     @Test
     @DisplayName("The supplied list is copied on construction, so a caller that reuses its working list "
             + "between validation passes cannot mutate an exception that has already been thrown")
@@ -475,9 +398,6 @@ class ValidationExceptionTest {
 
         ValidationException thrown = new ValidationException(SUMMARY, working);
 
-        // Reusing the working list is exactly what a validation cascade does when it moves on to
-        // the next field. Without a copy on the way in, the already-thrown exception would change
-        // underneath whoever is handling it.
         working.add(invalidOpenYear());
         working.remove(0);
         working.clear();
@@ -503,8 +423,6 @@ class ValidationExceptionTest {
         assertThat(working).isEmpty();
         assertThat(thrown.fieldErrors()).containsExactly(invalidOpenYear());
     }
-
-    // 6. The exposed list is unmodifiable
 
     @Test
     @DisplayName("The exposed detail list is unmodifiable: add, set, remove and clear all refuse, so the "
@@ -542,8 +460,6 @@ class ValidationExceptionTest {
         assertThat(exposed).isEmpty();
     }
 
-    // 7. fieldErrors() is never null
-
     @Test
     @DisplayName("fieldErrors() is never null on any of the four construction paths, nor on the null-list "
             + "path, so a caller iterating the detail never needs a null check")
@@ -564,8 +480,6 @@ class ValidationExceptionTest {
         List<ValidationException.FieldError> absent = null;
         assertThat(new ValidationException(SUMMARY, absent).fieldErrors()).isNotNull().isEmpty();
     }
-
-    // 8. serialVersionUID and the transient-tolerant round trip
 
     @Test
     @DisplayName("serialVersionUID is the explicitly declared 1L rather than a compiler-generated hash, so "
@@ -600,22 +514,15 @@ class ValidationExceptionTest {
 
         ValidationException revived = roundTrip(original);
 
-        // The message and the cause are written by Throwable itself, so they survive. The
-        // per-field detail is a request-scoped presentation concern rather than a persisted
-        // value, so it is held transiently and comes back absent - as an empty list, never
-        // null, which is what keeps the accessor's contract intact after deserialisation.
         assertThat(revived.getMessage()).isEqualTo(SUMMARY);
         assertThat(revived.getCause()).isInstanceOf(IllegalStateException.class);
         assertThat(revived.fieldErrors()).isNotNull().isEmpty();
         assertThat(revived.hasFieldErrors()).isFalse();
 
-        // The original is untouched by having been serialised.
         assertThat(original.fieldErrors())
                 .containsExactly(missingAcctStatus(), invalidCreditLimit());
         assertThat(original.hasFieldErrors()).isTrue();
     }
-
-    // 9. The nested carrier behaves as a value
 
     @Test
     @DisplayName("The carrier is a value: identical components compare and hash equal, a differing state "
@@ -636,18 +543,11 @@ class ValidationExceptionTest {
                 .contains(PROP_CREDIT_LIMIT, BMS_CREDIT_LIMIT, "INVALID", CREDIT_LIMIT_MESSAGE);
     }
 
-    // 10. A decoration that no edit produced
-
     @Test
     @DisplayName("The exception faithfully carries a decoration for a field that no edit produced - the "
             + "middle name and the second address line are decorated but never validated - because it is "
             + "a carrier, not a validator")
     void theExceptionCarriesADecorationThatNoEditProduced() {
-        // Both of these fields are decorated by the legacy macro yet have no edits coded at
-        // all, which the source states in an inline comment at each site. The exception must
-        // be able to represent that decoration without anything here implying a rule ran, and
-        // the DTO layer must not attach a constraint to either field: doing so would reject
-        // input the legacy system accepts.
         ValidationException thrown = new ValidationException(SUMMARY, List.of(
                 new ValidationException.FieldError(PROP_MIDDLE_NAME, BMS_MIDDLE_NAME,
                         ValidationException.FieldState.MISSING, DECORATION_ONLY_MESSAGE),
@@ -670,8 +570,6 @@ class ValidationExceptionTest {
         assertThat(secondAddressLine.message()).isEqualTo(DECORATION_ONLY_MESSAGE);
     }
 
-    // 11. Type identity
-
     @Test
     @DisplayName("The type is an unchecked RuntimeException, is not an abend because a field-level failure "
             + "is recoverable and re-displayable, and lives in the project's own exception package")
@@ -681,28 +579,18 @@ class ValidationExceptionTest {
         assertThat(thrown).isInstanceOf(RuntimeException.class);
         assertThat(ValidationException.class.getSuperclass()).isSameAs(RuntimeException.class);
 
-        // An abend terminates the program; a field-level validation failure never does. The
-        // two hierarchies are siblings and must stay that way.
         assertThat(AbendException.class.isAssignableFrom(ValidationException.class)).isFalse();
         assertThat(ValidationException.class.isAssignableFrom(AbendException.class)).isFalse();
 
-        // Identity check against the exception of the same simple name in the Bean Validation
-        // API: this is the project's own type, and no import of that API appears in this file.
         assertThat(ValidationException.class.getPackageName()).isEqualTo("com.carddemo.exception");
         assertThat(ValidationException.class.getName())
                 .isEqualTo("com.carddemo.exception.ValidationException");
     }
 
-    // 12. A validation failure never echoes what was submitted
-
     @Test
     @DisplayName("A failure on a credential-style field names the field and the state only: the carrier has "
             + "no slot for a submitted value, so nothing that was typed can be echoed back")
     void aFailureOnACredentialStyleFieldEchoesNoSubmittedValue() {
-        // The carrier's four components are a property name, a legacy screen tag, a state and
-        // a caller-supplied message. None of them is a submitted value, so there is no slot a
-        // value could leak through. This test pins that structurally instead of trusting every
-        // future caller to remember it.
         String submitted = "supplied-value-that-must-never-be-echoed";
 
         ValidationException thrown = new ValidationException(PROP_CREDENTIAL, BMS_CREDENTIAL,
@@ -721,16 +609,6 @@ class ValidationExceptionTest {
                 .contains(PROP_CREDENTIAL, BMS_CREDENTIAL, "INVALID");
     }
 
-    // Fixtures
-
-    /**
-     * Serialises and deserialises the supplied exception through byte-array streams.
-     *
-     * @param original the exception to round trip
-     * @return the revived instance
-     * @throws IOException            if either stream fails
-     * @throws ClassNotFoundException if the revived type cannot be resolved
-     */
     private static ValidationException roundTrip(ValidationException original)
             throws IOException, ClassNotFoundException {
         ByteArrayOutputStream serialised = new ByteArrayOutputStream();
@@ -745,33 +623,16 @@ class ValidationExceptionTest {
         }
     }
 
-    /**
-     * An absent account status: the legacy blank flag, which highlights the field and writes
-     * the marker.
-     *
-     * @return a MISSING carrier for the account status field
-     */
     private static ValidationException.FieldError missingAcctStatus() {
         return new ValidationException.FieldError(PROP_ACCT_STATUS, BMS_ACCT_STATUS,
                 ValidationException.FieldState.MISSING, ACCT_STATUS_MESSAGE);
     }
 
-    /**
-     * A supplied but rejected open year: the legacy not-OK flag, which highlights the field
-     * and writes no marker.
-     *
-     * @return an INVALID carrier for the account open year field
-     */
     private static ValidationException.FieldError invalidOpenYear() {
         return new ValidationException.FieldError(PROP_OPEN_YEAR, BMS_OPEN_YEAR,
                 ValidationException.FieldState.INVALID, OPEN_YEAR_MESSAGE);
     }
 
-    /**
-     * A supplied but rejected credit limit: the legacy not-OK flag.
-     *
-     * @return an INVALID carrier for the credit limit field
-     */
     private static ValidationException.FieldError invalidCreditLimit() {
         return new ValidationException.FieldError(PROP_CREDIT_LIMIT, BMS_CREDIT_LIMIT,
                 ValidationException.FieldState.INVALID, CREDIT_LIMIT_MESSAGE);

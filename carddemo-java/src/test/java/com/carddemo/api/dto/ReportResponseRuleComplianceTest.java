@@ -64,14 +64,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * literal fragments. Those fragments are published separately from the whole messages precisely
  * because the middle of the sentence is supplied at run time.
  *
- * <p><strong>A selector triple and a derived name, not one enumerated period.</strong> The screen
- * carries three independent one-character selector positions and the report program's own ten-character
- * work field. {@code CORPT00C} evaluates the three inbound positions in the fixed order monthly,
- * yearly, custom, stops at the first it finds marked, and writes the name of the report it chose at
- * lines 214, 240 and 433 - so the name is derived from the selection rather than submitted alongside
- * it, which is why the response publishes four components where a single enumerated period would have
- * published one. Reducing the three to one value would discard both the submission an operator can
- * actually make, more than one position marked, and the citation for which position won.
+ * <p><strong>One enumerated period, and no separate derived name.</strong> The screen carries three
+ * one-character selector positions, but they are mutually exclusive: {@code CORPT00C} evaluates the
+ * three inbound positions in the fixed order monthly, yearly, custom and acts on exactly one, writing
+ * the name of the report it chose into its own ten-character work item at lines 214, 240 and 433.
+ * Because the screen can only ever mean one period, the response echoes one enumerated component
+ * rather than three characters, which makes a multiply-marked state unrepresentable instead of leaving
+ * every consumer to re-derive which position won. The derived name is that component's own carried
+ * value rather than a component of its own, so it cannot drift from the period and cannot be submitted
+ * independently of it; it reaches an operator only inside the two composed message texts.
  *
  * <p><strong>Eight field-identity constants, not eight component names.</strong> {@code FIELD_*}
  * carries the identifier the generated symbolic map gives each field - {@code MONTHLY},
@@ -79,18 +80,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code CONFIRM} - and deliberately not the name of the record component it belongs to. The
  * distinction is what makes the bound on {@code focusScreenFieldId} meaningful: every identifier is at
  * most {@value ReportResponse#SCREEN_FIELD_ID_LENGTH} characters, which is the ceiling the generator
- * imposes and the exact bound the component declares, whereas the sixteen-character property name of
- * the monthly selector would breach that bound and make the contract contradict itself. The two
+ * imposes and the exact bound the component declares, whereas a longer property name such as the
+ * twelve-character {@code reportPeriod} would breach that bound and make the contract contradict
+ * itself. The two
  * vocabularies are therefore asserted to be disjoint rather than identical, and the group stays eight
  * strong because the program places the cursor at seven sites that all name the monthly field and
  * never on the yearly or custom positions.
  *
- * <p><strong>Two independent declarations of the same three literals.</strong>
- * {@link ReportResponse#REPORT_NAME_MONTHLY} and its two siblings, and
- * {@link ReportPeriod#getValue()}, both publish {@code Monthly}, {@code Yearly} and {@code Custom}.
- * A bridging assertion pins the two together, because nothing in the compiler stops one side from
- * being corrected without the other and the assembled operator text would then disagree with the
- * name the response carries.
+ * <p><strong>One declaration of the three report-name literals, not two.</strong>
+ * {@link ReportPeriod#getValue()} is the single source of {@code Monthly}, {@code Yearly} and
+ * {@code Custom}. This response deliberately restates none of them, because a second declaration could
+ * be corrected on one side only and the assembled operator text would then disagree with the period the
+ * response carries. Assertions below read the literals from the vocabulary rather than from here.
  */
 @DisplayName("ReportResponse - the CR00 report-request screen contract")
 class ReportResponseRuleComplianceTest {
@@ -102,10 +103,11 @@ class ReportResponseRuleComplianceTest {
     private static final String PROGRAM_NAME = "CORPT00C";
 
     /**
-     * The one character a marked selector position carries, at most
-     * {@value ReportResponse#SELECTION_LENGTH} character wide.
+     * The three per-position selector properties and the separate report-name property the collapse
+     * removed, asserted absent from the contract.
      */
-    private static final String SELECTED_MARKER = "Y";
+    private static final List<String> REMOVED_COMPONENTS = List.of(
+            "monthlySelection", "yearlySelection", "customSelection", "reportName");
 
     /**
      * Builds a mapper configured exactly as {@code application.yml} configures the module's mapper.
@@ -160,8 +162,7 @@ class ReportResponseRuleComplianceTest {
             final String errorMessage, final boolean submissionAccepted,
             final String message, final boolean generalError, final String focusScreenFieldId) {
         return new ReportResponse(
-                markerFor(period, ReportPeriod.MONTHLY), markerFor(period, ReportPeriod.YEARLY),
-                markerFor(period, ReportPeriod.CUSTOM), reportNameFor(period), startMonth,
+                period, startMonth,
                 startDay, startYear, endMonth, endDay, endYear,
                 confirm, TRANSACTION_NAME, "CardDemo", "07/19/22", PROGRAM_NAME,
                 "Transaction Reports", "10:30:00", errorMessage, submissionAccepted, message,
@@ -179,8 +180,7 @@ class ReportResponseRuleComplianceTest {
     private static ReportResponse aSparseResponse(final ReportPeriod period, final String confirm,
             final String errorMessage) {
         return new ReportResponse(
-                markerFor(period, ReportPeriod.MONTHLY), markerFor(period, ReportPeriod.YEARLY),
-                markerFor(period, ReportPeriod.CUSTOM), reportNameFor(period), null,
+                period, null,
                 null, null, null, null, null,
                 confirm, null, null, null, null,
                 null, null, errorMessage, false, null,
@@ -188,27 +188,14 @@ class ReportResponseRuleComplianceTest {
     }
 
     /**
-     * Marks one selector position when it is the position that was selected.
+     * Derives the report name from the period, as {@code CORPT00C} does at lines 214, 240 and 433.
      *
-     * <p>The three positions are echoed independently rather than reduced to one value, so a fixture
-     * that wants to say "monthly was chosen" has to leave the other two absent rather than name a
-     * period. This helper performs exactly the translation the service performs, and performing it
-     * here keeps every call site of {@link #aResponse} and {@link #aSparseResponse} reading as a
-     * period so the two enumerated-period tests below still have a period to enumerate.
+     * <p>The derivation is the period's own carried value. Restating the three literals here would
+     * create a second source of truth for one contractual string, so this helper reads them from the
+     * vocabulary instead.
      *
-     * @param selected the position the operator marked, or {@code null} when none was marked
-     * @param position the position being rendered
-     * @return the marker character when the two coincide, otherwise {@code null}
-     */
-    private static String markerFor(final ReportPeriod selected, final ReportPeriod position) {
-        return selected == position ? SELECTED_MARKER : null;
-    }
-
-    /**
-     * Derives the report name from the selection, as {@code CORPT00C} does at lines 214, 240 and 433.
-     *
-     * @param selected the position the operator marked, or {@code null} when none was marked
-     * @return the short report name, or {@code null} when no selection was made
+     * @param selected the period the operator chose, or {@code null} when none was chosen
+     * @return the short report name, or {@code null} when no period was chosen
      */
     private static String reportNameFor(final ReportPeriod selected) {
         return selected == null ? null : selected.getValue();
@@ -282,21 +269,26 @@ class ReportResponseRuleComplianceTest {
         }
 
         @Test
-        @DisplayName("a selector position is a single character too, and it is declared separately "
-                + "from the confirmation width even though the two values coincide")
-        void aSelectorPositionIsASingleCharacter() {
-            assertThat(ReportResponse.SELECTION_LENGTH).isOne();
+        @DisplayName("the collapsed period declares no width at all, because a member of a closed "
+                + "vocabulary is not a fixed-width screen value")
+        void theCollapsedPeriodDeclaresNoWidth() {
+            assertThat(declaresAnUpperBound("reportPeriod")).isFalse();
         }
 
         @Test
-        @DisplayName("the derived report name is the ten-character legacy work field, wide enough for "
-                + "all three names it can hold")
-        void theDerivedReportNameIsTenCharacters() {
-            assertThat(ReportResponse.REPORT_NAME_LENGTH).isEqualTo(10);
-            assertThat(List.of(ReportResponse.REPORT_NAME_MONTHLY, ReportResponse.REPORT_NAME_YEARLY,
-                    ReportResponse.REPORT_NAME_CUSTOM)).allSatisfy(name ->
-                    assertThat(name.length())
-                            .isLessThanOrEqualTo(ReportResponse.REPORT_NAME_LENGTH));
+        @DisplayName("the three derived report names are the vocabulary's own bare values, all shorter "
+                + "than the ten-character legacy work item that held them, and none is restated here")
+        void theThreeDerivedReportNamesComeFromTheVocabularyAlone() {
+            assertThat(List.of(ReportPeriod.MONTHLY.getValue(), ReportPeriod.YEARLY.getValue(),
+                    ReportPeriod.CUSTOM.getValue()))
+                    .containsExactly("Monthly", "Yearly", "Custom")
+                    .allSatisfy(name -> assertThat(name.length()).isLessThan(10));
+            assertThat(Arrays.stream(ReportResponse.class.getDeclaredFields())
+                    .map(java.lang.reflect.Field::getName)
+                    .filter(name -> name.startsWith("REPORT_NAME"))
+                    .toList())
+                    .as("a second declaration of a contractual literal is a second source of truth")
+                    .isEmpty();
         }
 
         @Test
@@ -325,8 +317,6 @@ class ReportResponseRuleComplianceTest {
 
         @ParameterizedTest
         @CsvSource({
-            "monthlySelection,1", "yearlySelection,1", "customSelection,1",
-            "reportName,10",
             "startMonth,2", "startDay,2", "startYear,4",
             "endMonth,2", "endDay,2", "endYear,4",
             "confirm,1", "transactionName,4", "title01,40",
@@ -534,7 +524,7 @@ class ReportResponseRuleComplianceTest {
             assertThat(identities()).isNotEmpty().allSatisfy(identity ->
                     assertThat(identity.length()).isBetween(1,
                             ReportResponse.SCREEN_FIELD_ID_LENGTH));
-            assertThat("monthlySelection".length())
+            assertThat("reportPeriod".length())
                     .as("the property name would breach the bound the identity satisfies")
                     .isGreaterThan(ReportResponse.SCREEN_FIELD_ID_LENGTH);
         }
@@ -554,7 +544,7 @@ class ReportResponseRuleComplianceTest {
 
             assertThat(constants).hasSize(8).contains("FIELD_MONTHLY_SELECTION")
                     .doesNotContain("FIELD_YEARLY_SELECTION", "FIELD_CUSTOM_SELECTION",
-                            "FIELD_PERIOD", "FIELD_REPORT_NAME");
+                            "FIELD_REPORT_NAME");
         }
 
         /**
@@ -582,43 +572,44 @@ class ReportResponseRuleComplianceTest {
     class TheDeclaredShapeAndValidationBounds {
 
         @Test
-        @DisplayName("the response declares twenty-four components in screen order, the selector "
-                + "triple, the derived report name, two date triples, the confirmation, the screen "
-                + "furniture and the routing block")
-        void theResponseDeclaresTwentyFourComponentsInScreenOrder() {
+        @DisplayName("the response declares twenty-one components in screen order, the collapsed "
+                + "period, two date triples, the confirmation, the screen furniture and the routing "
+                + "block")
+        void theResponseDeclaresTwentyOneComponentsInScreenOrder() {
             final List<String> declared = Arrays.stream(ReportResponse.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
-            assertThat(declared).containsExactly("monthlySelection", "yearlySelection",
-                    "customSelection", "reportName", "startMonth", "startDay", "startYear",
+            assertThat(declared).containsExactly("reportPeriod",
+                    "startMonth", "startDay", "startYear",
                     "endMonth", "endDay", "endYear", "confirm", "transactionName", "title01",
                     "currentDate", "programName", "title02", "currentTime", "errorMessage",
                     "submissionAccepted", "message", "generalError", "focusScreenFieldId",
                     "nextRoute", "navigationContext");
-            assertThat(declared).hasSize(24);
+            assertThat(declared).hasSize(21);
             assertThat(declared)
-                    .as("no single enumerated period survives on the wire")
-                    .doesNotContain("period", "reportPeriod", "fieldToFocus", "route");
-            assertThat(declared.subList(0, 4))
-                    .as("the three positions are echoed independently and the name is derived")
-                    .containsExactly("monthlySelection", "yearlySelection", "customSelection",
-                            "reportName");
+                    .as("no per-position selector and no separate report name survives on the wire")
+                    .doesNotContainAnyElementsOf(REMOVED_COMPONENTS);
+            assertThat(declared.get(0))
+                    .as("the collapsed period leads, where the three positions used to")
+                    .isEqualTo("reportPeriod");
         }
 
         @Test
-        @DisplayName("exactly nineteen components carry a declared upper bound, and the five that do "
-                + "not are the two flags, the free-form message, the route and the navigation block")
-        void exactlyNineteenComponentsCarryAnUpperBound() {
+        @DisplayName("exactly fifteen components carry a declared upper bound, and the six that do "
+                + "not are the enumerated period, the two flags, the free-form message, the route and "
+                + "the navigation block")
+        void exactlyFifteenComponentsCarryAnUpperBound() {
             final List<String> bounded = Arrays.stream(ReportResponse.class.getRecordComponents())
                     .map(RecordComponent::getName)
                     .filter(ReportResponseRuleComplianceTest::declaresAnUpperBound).toList();
 
-            assertThat(bounded).hasSize(19);
-            assertThat(bounded).doesNotContain("submissionAccepted", "message", "generalError",
-                    "nextRoute", "navigationContext");
+            assertThat(bounded).hasSize(15);
+            assertThat(bounded).doesNotContain("reportPeriod", "submissionAccepted", "message",
+                    "generalError", "nextRoute", "navigationContext");
             assertThat(bounded)
-                    .as("the four components that replaced the enumerated period are all bounded")
-                    .contains("monthlySelection", "yearlySelection", "customSelection", "reportName");
+                    .as("every fixed-width screen value the response echoes is bounded")
+                    .contains("startMonth", "startDay", "startYear", "endMonth", "endDay", "endYear",
+                            "confirm");
         }
 
         @Test
@@ -628,10 +619,10 @@ class ReportResponseRuleComplianceTest {
                     "12", "28", "2022", "Y", ReportResponse.MSG_SELECT_REPORT_TYPE, true,
                     "queued", false, ReportResponse.FIELD_START_MONTH);
 
-            assertThat(response.monthlySelection()).isNull();
-            assertThat(response.yearlySelection()).isNull();
-            assertThat(response.customSelection()).isEqualTo(SELECTED_MARKER);
-            assertThat(response.reportName()).isEqualTo(ReportResponse.REPORT_NAME_CUSTOM);
+            assertThat(response.reportPeriod()).isSameAs(ReportPeriod.CUSTOM);
+            assertThat(response.reportPeriod().getValue())
+                    .as("the derived report name is the period's own carried value")
+                    .isEqualTo(reportNameFor(ReportPeriod.CUSTOM));
             assertThat(response.startMonth()).isEqualTo("01");
             assertThat(response.startDay()).isEqualTo("31");
             assertThat(response.startYear()).isEqualTo("2022");
@@ -668,8 +659,6 @@ class ReportResponseRuleComplianceTest {
 
         @ParameterizedTest
         @CsvSource({
-            "monthlySelection,1", "yearlySelection,1", "customSelection,1",
-            "reportName,10",
             "startMonth,2", "startDay,2", "startYear,4",
             "endMonth,2", "endDay,2", "endYear,4",
             "confirm,1", "transactionName,4", "title01,40",
@@ -700,63 +689,36 @@ class ReportResponseRuleComplianceTest {
          */
         private ReportResponse responseWith(final String componentName, final String value) {
             return switch (componentName) {
-                case "monthlySelection" -> new ReportResponse(value, null, null, null, null, null,
-                        null, null, null, null, null, null, null, null, null, null, null, null,
-                        false, null, false, null, null, null);
-                case "yearlySelection" -> new ReportResponse(null, value, null, null, null, null,
-                        null, null, null, null, null, null, null, null, null, null, null, null,
-                        false, null, false, null, null, null);
-                case "customSelection" -> new ReportResponse(null, null, value, null, null, null,
-                        null, null, null, null, null, null, null, null, null, null, null, null,
-                        false, null, false, null, null, null);
-                case "reportName" -> new ReportResponse(null, null, null, value, null, null, null,
-                        null, null, null, null, null, null, null, null, null, null, null, false,
-                        null, false, null, null, null);
-                case "startMonth" -> new ReportResponse(null, null, null, null, value, null, null,
-                        null, null, null, null, null, null, null, null, null, null, null, false,
-                        null, false, null, null, null);
-                case "startDay" -> new ReportResponse(null, null, null, null, null, value, null,
-                        null, null, null, null, null, null, null, null, null, null, null, false,
-                        null, false, null, null, null);
-                case "startYear" -> new ReportResponse(null, null, null, null, null, null, value,
-                        null, null, null, null, null, null, null, null, null, null, null, false,
-                        null, false, null, null, null);
-                case "endMonth" -> new ReportResponse(null, null, null, null, null, null, null,
-                        value, null, null, null, null, null, null, null, null, null, null, false,
-                        null, false, null, null, null);
-                case "endDay" -> new ReportResponse(null, null, null, null, null, null, null, null,
-                        value, null, null, null, null, null, null, null, null, null, false, null,
-                        false, null, null, null);
-                case "endYear" -> new ReportResponse(null, null, null, null, null, null, null, null,
-                        null, value, null, null, null, null, null, null, null, null, false, null,
-                        false, null, null, null);
-                case "confirm" -> new ReportResponse(null, null, null, null, null, null, null, null,
-                        null, null, value, null, null, null, null, null, null, null, false, null,
-                        false, null, null, null);
-                case "transactionName" -> new ReportResponse(null, null, null, null, null, null,
-                        null, null, null, null, null, value, null, null, null, null, null, null,
-                        false, null, false, null, null, null);
-                case "title01" -> new ReportResponse(null, null, null, null, null, null, null, null,
-                        null, null, null, null, value, null, null, null, null, null, false, null,
-                        false, null, null, null);
-                case "currentDate" -> new ReportResponse(null, null, null, null, null, null, null,
-                        null, null, null, null, null, null, value, null, null, null, null, false,
-                        null, false, null, null, null);
-                case "programName" -> new ReportResponse(null, null, null, null, null, null, null,
-                        null, null, null, null, null, null, null, value, null, null, null, false,
-                        null, false, null, null, null);
-                case "title02" -> new ReportResponse(null, null, null, null, null, null, null, null,
-                        null, null, null, null, null, null, null, value, null, null, false, null,
-                        false, null, null, null);
-                case "currentTime" -> new ReportResponse(null, null, null, null, null, null, null,
-                        null, null, null, null, null, null, null, null, null, value, null, false,
-                        null, false, null, null, null);
-                case "errorMessage" -> new ReportResponse(null, null, null, null, null, null, null,
-                        null, null, null, null, null, null, null, null, null, null, value, false,
-                        null, false, null, null, null);
-                case "focusScreenFieldId" -> new ReportResponse(null, null, null, null, null, null,
-                        null, null, null, null, null, null, null, null, null, null, null, null,
-                        false, null, false, value, null, null);
+                case "startMonth" -> new ReportResponse(null, value, null, null, null, null, null, null, null, null, null, null, null, null,
+                        null, false, null, false, null, null, null);
+                case "startDay" -> new ReportResponse(null, null, value, null, null, null, null, null, null, null, null, null, null, null,
+                        null, false, null, false, null, null, null);
+                case "startYear" -> new ReportResponse(null, null, null, value, null, null, null, null, null, null, null, null, null, null,
+                        null, false, null, false, null, null, null);
+                case "endMonth" -> new ReportResponse(null, null, null, null, value, null, null, null, null, null, null, null, null, null,
+                        null, false, null, false, null, null, null);
+                case "endDay" -> new ReportResponse(null, null, null, null, null, value, null, null, null, null, null, null, null, null,
+                        null, false, null, false, null, null, null);
+                case "endYear" -> new ReportResponse(null, null, null, null, null, null, value, null, null, null, null, null, null, null,
+                        null, false, null, false, null, null, null);
+                case "confirm" -> new ReportResponse(null, null, null, null, null, null, null, value, null, null, null, null, null, null,
+                        null, false, null, false, null, null, null);
+                case "transactionName" -> new ReportResponse(null, null, null, null, null, null, null, null, value, null, null, null, null, null,
+                        null, false, null, false, null, null, null);
+                case "title01" -> new ReportResponse(null, null, null, null, null, null, null, null, null, value, null, null, null, null,
+                        null, false, null, false, null, null, null);
+                case "currentDate" -> new ReportResponse(null, null, null, null, null, null, null, null, null, null, value, null, null, null,
+                        null, false, null, false, null, null, null);
+                case "programName" -> new ReportResponse(null, null, null, null, null, null, null, null, null, null, null, value, null, null,
+                        null, false, null, false, null, null, null);
+                case "title02" -> new ReportResponse(null, null, null, null, null, null, null, null, null, null, null, null, value, null,
+                        null, false, null, false, null, null, null);
+                case "currentTime" -> new ReportResponse(null, null, null, null, null, null, null, null, null, null, null, null, null, value,
+                        null, false, null, false, null, null, null);
+                case "errorMessage" -> new ReportResponse(null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+                        value, false, null, false, null, null, null);
+                case "focusScreenFieldId" -> new ReportResponse(null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+                        null, false, null, false, value, null, null);
                 default -> throw new IllegalArgumentException(
                         "no bounded component named " + componentName);
             };
@@ -796,11 +758,11 @@ class ReportResponseRuleComplianceTest {
                     ReportResponse.MSG_END_DATE_INVALID).toString();
 
             assertThat(rendered).startsWith("ReportResponse[");
-            assertThat(rendered).contains("yearlySelection=" + SELECTED_MARKER,
-                    "reportName=" + ReportResponse.REPORT_NAME_YEARLY, "confirm=Y",
+            assertThat(rendered).contains("reportPeriod=" + ReportPeriod.YEARLY.name(), "confirm=Y",
                     "errorMessage=" + ReportResponse.MSG_END_DATE_INVALID,
                     "submissionAccepted=false", "generalError=false");
-            assertThat(rendered).doesNotContain("period=");
+            assertThat(rendered).doesNotContain("monthlySelection", "yearlySelection",
+                    "customSelection", "reportName=");
         }
 
         @Test
@@ -830,40 +792,39 @@ class ReportResponseRuleComplianceTest {
 
         @ParameterizedTest
         @EnumSource(ReportPeriod.class)
-        @DisplayName("a selection travels on the wire as one marked position and the derived report "
-                + "name, and never as an enumerated token")
-        void aSelectionTravelsAsAMarkerAndTheDerivedName(final ReportPeriod period)
+        @DisplayName("a chosen period travels on the wire as one value carrying the derived report "
+                + "name, and never as a set of per-position markers")
+        void aChosenPeriodTravelsAsOneValueCarryingTheDerivedName(final ReportPeriod period)
                 throws JsonProcessingException {
             final JsonNode payload = payloadOf(aSparseResponse(period, null, null));
-            final String markedProperty = switch (period) {
-                case MONTHLY -> "monthlySelection";
-                case YEARLY -> "yearlySelection";
-                case CUSTOM -> "customSelection";
-            };
 
-            assertThat(payload.get(markedProperty).asText()).isEqualTo(SELECTED_MARKER);
-            assertThat(payload.get("reportName").asText()).isEqualTo(period.getValue());
-            assertThat(payload.has("period")).isFalse();
-            assertThat(List.of("monthlySelection", "yearlySelection", "customSelection")).allSatisfy(
+            assertThat(payload.get("reportPeriod").asText())
+                    .as("the wire form of a closed vocabulary is its member identifier")
+                    .isEqualTo(period.name());
+            assertThat(reportNameFor(period))
+                    .as("the derived report name is the carried value, never the identifier")
+                    .isNotEqualTo(period.name());
+            assertThat(REMOVED_COMPONENTS).allSatisfy(
                     property -> assertThat(payload.has(property))
-                            .as("only the marked position is carried, and %s is %s", property,
-                                    property.equals(markedProperty) ? "marked" : "unmarked")
-                            .isEqualTo(property.equals(markedProperty)));
+                            .as("%s no longer exists on the contract", property)
+                            .isFalse());
         }
 
         @Test
         @DisplayName("the derived report name is the screen value and not the enum constant name, and "
-                + "the two independent declarations of the three literals agree")
-        void theDerivedNameIsTheScreenValueAndTheTwoDeclarationsAgree() {
+                + "it is declared once, in the vocabulary alone")
+        void theDerivedNameIsTheScreenValueDeclaredOnce() {
             assertThat(ReportPeriod.MONTHLY.getValue()).isEqualTo("Monthly")
                     .isNotEqualTo(ReportPeriod.MONTHLY.name());
             assertThat(ReportPeriod.fromValue("Monthly")).contains(ReportPeriod.MONTHLY);
             assertThat(ReportPeriod.fromValue("MONTHLY")).isEmpty();
 
-            assertThat(ReportResponse.REPORT_NAME_MONTHLY)
-                    .isEqualTo(ReportPeriod.MONTHLY.getValue());
-            assertThat(ReportResponse.REPORT_NAME_YEARLY).isEqualTo(ReportPeriod.YEARLY.getValue());
-            assertThat(ReportResponse.REPORT_NAME_CUSTOM).isEqualTo(ReportPeriod.CUSTOM.getValue());
+            assertThat(Arrays.stream(ReportResponse.class.getDeclaredFields())
+                    .map(Field::getName)
+                    .filter(name -> name.startsWith("REPORT_NAME"))
+                    .toList())
+                    .as("a second declaration could be corrected on one side only")
+                    .isEmpty();
         }
 
         @Test

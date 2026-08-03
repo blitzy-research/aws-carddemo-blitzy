@@ -35,6 +35,7 @@ import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.api.dto.PageMetadata;
 import com.carddemo.domain.enums.AccountStatus;
 import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.domain.enums.ReportPeriod;
 import com.carddemo.domain.enums.UserType;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -241,10 +242,10 @@ final class OpenApiConfigTest {
      * four complementary rules, and it is the one that catches a credential parked under an honest label.</p>
      *
      * <p><strong>Why a declaration is permitted where a value is not.</strong> The document publishes a
-     * named schema for every request and response contract, and two of those contracts legitimately declare
-     * a credential-named property: the sign-on and user-administration requests each declare a
-     * {@code password}, and the account-update and card-update pairs each declare a
-     * {@code concurrencyToken}. A property
+     * named schema for every request and response contract, and a few of those contracts legitimately
+     * declare a credential-named property: the sign-on and user-administration requests each declare a
+     * {@code password}, and the account-update request declares the {@code concurrencyToken} it returns
+     * to the service on the confirming turn. No response contract declares one. A property
      * declaration is a statement that the field exists and how wide it is; it is not the field's value. The
      * rule therefore rejects a credential-named field whose value is a scalar — text, a number or a
      * boolean, which is what an actual credential would be — while permitting one whose value is the nested
@@ -348,7 +349,7 @@ final class OpenApiConfigTest {
             Stream.<Enum<?>[]>of(ErrorResponse.FieldState.values(), FieldErrorDecorator.FlagState.values(),
                             MenuResponse.MessageSeverity.values(), NavigationContext.ProgramContext.values(),
                             PageMetadata.PagingDirection.values(), AccountStatus.values(),
-                            KeyAction.values(), UserType.values())
+                            KeyAction.values(), ReportPeriod.values(), UserType.values())
                     .flatMap(Arrays::stream)
                     .map(Enum::name)
                     .toList());

@@ -48,18 +48,40 @@ import org.springframework.validation.annotation.Validated;
  * minted token or in the context record, never in configuration. Nothing else about the substitution is
  * configurable, because nothing else about it is a deployment decision.
  *
- * <p><strong>The signing material has no default anywhere, and that is deliberate.</strong> The shared
- * baseline declares the issuer and the lifetime but states no secret and defaults none - not an empty
- * string, not a placeholder, not a development value promoted by accident. Each profile supplies it:
- * a throwaway value locally and in tests, and an environment reference with no fallback in production.
- * A defaulted secret would violate the no-hardcoded-credentials requirement exactly as thoroughly as a
- * literal one, because a deployment that forgot to set it would sign real tokens with a value published
- * in this repository. With no default, that deployment cannot start.
+ * <p><strong>The shared baseline defaults the signing material nowhere, and neither does production.
+ * The local and test overlays deliberately do.</strong> The baseline declares the issuer and the
+ * lifetime and states no secret at all - not an empty string, not a placeholder, not a development
+ * value promoted by accident - so there is no shared value for a profile to inherit or for a deployment
+ * to fall back on. Production declares the {@code CARDDEMO_JWT_SECRET} reference with nothing beside
+ * it. Local and test declare the same reference <em>with</em> a fallback, so a developer or a test run
+ * that exports nothing still reaches a usable value, and each fallback's own text says what it is:
+ * {@code local-development-only-...-do-not-reuse} and {@code test-only-...-not-used-outside-tests}. The
+ * copy of the test overlay on the test class path states its literal outright rather than as a
+ * reference, because a test run has no environment to read.
+ *
+ * <p>That asymmetry is the contract rather than an oversight. A fallback is admissible exactly where
+ * the tokens it signs can never be presented to a production deployment, and inadmissible where they
+ * can: a defaulted production secret would violate the no-hardcoded-credentials requirement exactly as
+ * thoroughly as a literal one, because a deployment that forgot to set the variable would sign real
+ * tokens with a value published in this repository.
+ *
+ * <p><strong>What actually stops a production deployment that has not set the variable, since it is not
+ * the constraint below.</strong> Configuration-properties binding resolves placeholders leniently, so
+ * an unset variable binds the reference's own text, and that text is not blank. An <em>empty</em>
+ * variable is caught here, because an empty string is blank. An <em>absent</em> one is caught twice
+ * over elsewhere: {@link ProductionConfigurationValidator} refuses a production value that still
+ * carries its own placeholder text, naming the variable a deployer must set, and
+ * {@link JwtTokenProvider} refuses it because placeholder text cannot meet the fixed algorithm's
+ * key-length floor. Production fails fast, by those two mechanisms rather than by this record's
+ * annotation, and the distinction is stated because a reader who believes the annotation is the guard
+ * would remove one of the mechanisms that actually is.
  *
  * <p><strong>Validation is split between two mechanisms, and the split is not arbitrary.</strong> The
  * constraint annotations below express <em>presence</em>, which is what the binder can check on a value
- * it has just read, and they are what turns an absent secret into a refusal to start. The compact
- * constructor expresses the one condition an annotation cannot state - that a lifetime must be a
+ * it has just read, and they are what turns a missing or blank secret into a refusal to start - with the
+ * one exception recorded above, where lenient placeholder resolution hands the binder text that is
+ * present and not blank, and the two mechanisms named there take over. The compact constructor
+ * expresses the one condition an annotation cannot state - that a lifetime must be a
  * positive span of time - and it deliberately tolerates {@code null} so that an absent lifetime is
  * reported by {@link NotNull} rather than by a null-pointer failure raised before validation runs. The
  * two never overlap, so there is never a question of which one fires: presence is the validator's,
@@ -75,15 +97,18 @@ import org.springframework.validation.annotation.Validated;
  * credential lifetime, not a latency, time-out or capacity figure; the legacy estate documents no such
  * figure and this module asserts none.
  *
- * <p>The split of validation between annotations and the constructor, and the rule that no profile may
- * default the signing value, are reasoned in {@code docs/decision-log.md} DL-097.
+ * <p>The split of validation between annotations and the constructor, and the rule that neither the
+ * shared baseline nor the production profile may default the signing value, are reasoned in
+ * {@code docs/decision-log.md} DL-097.
  *
  * @param secret     material the token signature is computed with, supplied in production by the
  *                   {@code CARDDEMO_JWT_SECRET} environment variable and resolved there with <em>no
- *                   fallback default</em>. The shared baseline declares no value for it and no profile
- *                   defaults one, so a deployment that has not set that variable cannot reach a running
- *                   state; an absent or blank value stops start-up here. Never logged, never serialized
- *                   and never carried in {@link #toString()}
+ *                   fallback default</em>. The shared baseline declares no value for it, so a production
+ *                   deployment that has not set that variable cannot reach a running state - stopped by
+ *                   the production configuration check and by the key-length floor rather than by the
+ *                   constraint declared here, which catches a blank value. The local and test overlays
+ *                   deliberately do declare a fallback, and it is an explicitly non-production one.
+ *                   Never logged, never serialized and never carried in {@link #toString()}
  * @param issuer     name a minted token claims as its origin and the value a presented token is required
  *                   to carry. Every shipped profile states it directly rather than through a variable,
  *                   because it names this module rather than an environment. It is deliberately not this

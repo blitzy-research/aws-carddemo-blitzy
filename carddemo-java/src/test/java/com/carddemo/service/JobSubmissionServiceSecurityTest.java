@@ -79,13 +79,17 @@ import static org.mockito.Mockito.when;
  *       straight to the stream publisher. In every case the assertion is not merely that an
  *       exception is raised but that <em>zero</em> publish attempts were made, because a guard that
  *       throws after publishing the first card would still have leaked it.</li>
- *   <li><strong>A legitimate submission is never suppressed.</strong> Each message's deduplication
- *       identifier must be unique to its submission, so requesting the same reporting period twice
- *       queues two jobs. A period-derived identity would make the second request collide inside the
- *       queue service's deduplication interval and be discarded with a success response, losing a
- *       re-run silently. The tests assert two full submissions, wholly disjoint identifiers, and
- *       &mdash; separately &mdash; that ordering is untouched, because uniqueness and ordering are
- *       independent properties and only the first one changed.</li>
+ *   <li><strong>A replay is idempotent and a second submission is the caller's to name.</strong>
+ *       Each message's deduplication identifier is composed from the submission's own identity plus
+ *       the card ordinal, and a random value may never stand in for that identity, because a random
+ *       identity defeats idempotency. The derived identity is therefore a pure function of the two
+ *       date slots: repeating one request reproduces its identifiers exactly, so a caller completing
+ *       an interrupted submission adds only the cards that never landed. A submission that is
+ *       genuinely a second unit of work names itself apart through the identity-bearing entry point.
+ *       The tests assert that a replay reproduces every identifier, that two distinct periods share
+ *       none, that the bridge still publishes both streams in full regardless, and &mdash;
+ *       separately &mdash; that ordering is untouched, because uniqueness and ordering are
+ *       independent properties of the queue.</li>
  *   <li><strong>A failure is reported, not thrown.</strong> The legacy queue is defined
  *       ignore-on-error, so a publish failure must leave the caller's request completing normally
  *       while the stream stops short and the result says so.</li>
@@ -151,6 +155,12 @@ class JobSubmissionServiceSecurityTest {
 
     /** A legitimate end-date slot value. */
     private static final String END_DATE = "2022-07-06";
+
+    /** A second, distinct start-date slot value, for proving two periods derive two identities. */
+    private static final String OTHER_START_DATE = "2019-11-30";
+
+    /** A second, distinct end-date slot value, chosen on a leap day so the shape check is exercised. */
+    private static final String OTHER_END_DATE = "2020-02-29";
 
     // SENTINELS
 
@@ -241,7 +251,7 @@ class JobSubmissionServiceSecurityTest {
                     .as("a queue without the first-in-first-out suffix must be refused")
                     .isThrownBy(() -> new JobSubmissionService(sqsOperations, "JOBS",
                             MESSAGE_GROUP_ID))
-                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue");
+                    .withMessageContaining("carddemo.aws.sqs.job-queue");
         }
 
         @Test
@@ -252,7 +262,7 @@ class JobSubmissionServiceSecurityTest {
                         .as("the queue name [%s] must be refused", unusable)
                         .isThrownBy(() -> new JobSubmissionService(sqsOperations, unusable,
                                 MESSAGE_GROUP_ID))
-                        .withMessageContaining("carddemo.aws.sqs.job-submission-queue");
+                        .withMessageContaining("carddemo.aws.sqs.job-queue");
             }
         }
 
@@ -412,8 +422,9 @@ class JobSubmissionServiceSecurityTest {
         @Test
         @DisplayName("keeps the reporting period legible in the submission identity, so a queued submission can be read back to the period that asked for it")
         void keepsTheReportingPeriodLegibleInTheSubmissionIdentity() {
-            // The nonce alone would make the identity unique. The dates stay in it because the
-            // identity appears in every diagnostic this class emits, and an opaque identity is
+            // The dates are what the identity is made of, which is deliberate on two counts: it makes
+            // the derivation a pure function of the request, and it keeps the identity legible,
+            // because the identity appears in every diagnostic this class emits and an opaque one is
             // worth less operationally than one that names its reporting period.
             service.submitTransactionReportJob(START_DATE, END_DATE);
 
@@ -433,15 +444,16 @@ class JobSubmissionServiceSecurityTest {
      */
 
     @Nested
-    @DisplayName("a repeated submission is queued rather than suppressed")
+    @DisplayName("a replay is idempotent and a second submission is named by the caller")
     class ARepeatedSubmissionIsQueued {
 
         @Test
-        @DisplayName("two requests for the same reporting period produce two complete submissions, because the legacy queue appended rather than deduplicated")
+        @DisplayName("the bridge publishes every card of every request it is given, so nothing is suppressed on this side of the queue")
         void twoRequestsForTheSamePeriodProduceTwoCompleteSubmissions() {
-            // The legacy transient-data queue is defined with an append disposition. An operator
-            // who asked for the same period twice got two jobs, and that is the point: a report is
-            // re-run because the first run was lost, superseded or wanted again.
+            // The bridge itself never withholds a card: it publishes the whole stream and reports the
+            // outcome. Whether the queue service then collapses a duplicate is the queue's business,
+            // and it is driven entirely by the identity, which is why the identity is the thing under
+            // test rather than the publish count.
             final JobSubmissionService.SubmissionResult first =
                     service.submitTransactionReportJob(START_DATE, END_DATE);
             final JobSubmissionService.SubmissionResult second =
@@ -456,37 +468,76 @@ class JobSubmissionServiceSecurityTest {
         }
 
         @Test
-        @DisplayName("the two submissions share no deduplication identifier at all, so the queue service cannot discard the second one inside its deduplication interval")
-        void theTwoSubmissionsShareNoDeduplicationIdentifier() {
-            // This is the assertion that would have failed before the identity carried a nonce.
-            // With a period-derived identity, card N of the second submission carried exactly the
-            // identifier card N of the first had used, and the queue service discarded it behind a
-            // success response: no job queued, nobody told.
+        @DisplayName("replaying one request reproduces every deduplication identifier, so the queue service completes the stream instead of doubling it")
+        void replayingOneRequestReproducesEveryDeduplicationIdentifier() {
+            // This is the property a random identity would destroy. A caller whose first pass stopped
+            // part way - because a write was refused - repeats the request and reissues exactly the
+            // identifiers the first pass used, so the cards that already landed are collapsed and the
+            // ones that never did are added. With a per-call nonce every replay would look like new
+            // work and the queue would hold two partial streams.
             service.submitTransactionReportJob(START_DATE, END_DATE);
-            final Set<String> firstSubmission = new LinkedHashSet<>(deduplicationIds());
+            final List<String> firstPass = List.copyOf(deduplicationIds());
 
             attempts.clear();
             service.submitTransactionReportJob(START_DATE, END_DATE);
-            final Set<String> secondSubmission = new LinkedHashSet<>(deduplicationIds());
 
-            assertThat(firstSubmission)
-                    .as("the first submission's identifiers")
+            assertThat(firstPass)
+                    .as("the first pass's identifiers")
                     .hasSize(EXPECTED_CARD_COUNT);
-            assertThat(secondSubmission)
-                    .as("the second submission's identifiers")
-                    .hasSize(EXPECTED_CARD_COUNT);
-            assertThat(secondSubmission)
-                    .as("not one identifier may be shared between two submissions of the same"
-                            + " reporting period")
-                    .doesNotContainAnyElementsOf(firstSubmission);
+            assertThat(deduplicationIds())
+                    .as("the replay must reproduce the first pass card for card")
+                    .containsExactlyElementsOf(firstPass);
         }
 
         @Test
-        @DisplayName("every identifier across many repeated submissions is distinct")
-        void everyIdentifierAcrossManyRepeatedSubmissionsIsDistinct() {
-            // A single repeat could pass by luck if the identity varied on something coarse, such
-            // as a clock with second resolution. Twenty back-to-back submissions inside the same
-            // instant is what rules that out.
+        @DisplayName("two distinct reporting periods share no deduplication identifier, so distinct requests never collapse into one another")
+        void twoDistinctPeriodsShareNoDeduplicationIdentifier() {
+            service.submitTransactionReportJob(START_DATE, END_DATE);
+            final Set<String> firstPeriod = new LinkedHashSet<>(deduplicationIds());
+
+            attempts.clear();
+            service.submitTransactionReportJob(OTHER_START_DATE, OTHER_END_DATE);
+            final Set<String> secondPeriod = new LinkedHashSet<>(deduplicationIds());
+
+            assertThat(firstPeriod)
+                    .as("the first period's identifiers")
+                    .hasSize(EXPECTED_CARD_COUNT);
+            assertThat(secondPeriod)
+                    .as("the second period's identifiers")
+                    .hasSize(EXPECTED_CARD_COUNT);
+            assertThat(secondPeriod)
+                    .as("not one identifier may be shared between two distinct reporting periods")
+                    .doesNotContainAnyElementsOf(firstPeriod);
+        }
+
+        @Test
+        @DisplayName("a caller that means a second unit of work rather than a replay names it apart, and the bridge honours that identity verbatim")
+        void aSecondUnitOfWorkIsNamedApartByTheCaller() {
+            // The legacy queue appended unconditionally, so an operator who wanted the same period
+            // again got a second job. That remains reachable - and it remains a visible decision,
+            // taken by whatever owns the request, rather than something this class manufactures on
+            // every call and cannot be talked out of.
+            final String namedApart = "REPORT-REQUEST-0000000002";
+
+            service.submitTransactionReportJob(START_DATE, END_DATE);
+            final Set<String> derived = new LinkedHashSet<>(deduplicationIds());
+
+            attempts.clear();
+            service.submitTransactionReportJob(namedApart, START_DATE, END_DATE);
+
+            assertThat(deduplicationIds())
+                    .as("the named submission shares no identifier with the derived one")
+                    .doesNotContainAnyElementsOf(derived)
+                    .allSatisfy(identifier -> assertThat(identifier)
+                            .startsWith(namedApart + EXPECTED_ORDINAL_SEPARATOR));
+        }
+
+        @Test
+        @DisplayName("many repeated submissions of one request stay on one set of identifiers, because the derivation consults no clock and no random source")
+        void manyRepeatedSubmissionsStayOnOneSetOfIdentifiers() {
+            // A single repeat could pass by luck if the derivation varied on something coarse, such
+            // as a clock with second resolution. Twenty back-to-back submissions is what rules that
+            // out in the other direction: the identifiers must not drift at all.
             final int repeats = 20;
 
             for (int repeat = 0; repeat < repeats; repeat++) {
@@ -494,18 +545,18 @@ class JobSubmissionServiceSecurityTest {
             }
 
             assertThat(attempts).hasSize(repeats * EXPECTED_CARD_COUNT);
-            assertThat(deduplicationIds())
-                    .as("every identifier of every repeated submission must be distinct")
-                    .doesNotHaveDuplicates();
+            assertThat(new LinkedHashSet<>(deduplicationIds()))
+                    .as("twenty repeats of one request must use exactly one set of identifiers")
+                    .hasSize(EXPECTED_CARD_COUNT);
         }
 
         @Test
-        @DisplayName("ordering is untouched by the uniqueness change: repeated submissions still travel in one message group")
+        @DisplayName("ordering is independent of the identity: repeated submissions still travel in one message group")
         void orderingIsUntouchedByTheUniquenessChange() {
-            // Uniqueness and ordering are independent properties of a first-in-first-out queue and
-            // only uniqueness changed. Had the nonce been added to the message group instead, each
-            // submission would have become its own group and the cards would no longer have been
-            // guaranteed to arrive in order.
+            // Uniqueness and ordering are independent properties of a first-in-first-out queue. Had
+            // the identity been folded into the message group instead, each submission would have
+            // become its own group and the cards would no longer have been guaranteed to arrive in
+            // order.
             service.submitTransactionReportJob(START_DATE, END_DATE);
             service.submitTransactionReportJob(START_DATE, END_DATE);
 
@@ -515,13 +566,13 @@ class JobSubmissionServiceSecurityTest {
         }
 
         @Test
-        @DisplayName("card ordinals still distinguish the cards inside one submission, so a genuine double publish of the same card is still caught")
+        @DisplayName("card ordinals distinguish the cards inside one submission, so a genuine double publish of the same card is still caught")
         void cardOrdinalsStillDistinguishTheCardsInsideOneSubmission() {
-            // The nonce moved to the submission identity and not to the per-card portion, so the
-            // ordinal still does its original job. Publishing the same card of the same submission
-            // twice - a programming error rather than an operator action - still yields the same
-            // identifier, and the queue service treats it as the duplicate it is.
-            final String submissionId = "2022-01-01_2022-07-06_fixedidentityforthistest";
+            // The identity names the submission and the ordinal names the card within it, so the two
+            // do separate jobs. Publishing the same card of the same submission twice - a programming
+            // error rather than an operator action - yields the same identifier, and the queue service
+            // treats it as the duplicate it is.
+            final String submissionId = "2022-01-01_2022-07-06";
             final String card = JclCardImageBuilder.build(START_DATE, END_DATE).get(0);
 
             service.writeJobSubmissionQueue(submissionId, card, FIRST_ORDINAL);
@@ -827,7 +878,7 @@ class JobSubmissionServiceSecurityTest {
                     .as("a queue name without the first-in-first-out suffix must be refused")
                     .isThrownBy(() -> new JobSubmissionService(sqsOperations, suffixlessQueue,
                             MESSAGE_GROUP_ID))
-                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue")
+                    .withMessageContaining("carddemo.aws.sqs.job-queue")
                     .withMessageContaining(".fifo")
                     .withMessageNotContaining(HOSTILE_MARKER)
                     .satisfies(JobSubmissionServiceSecurityTest::assertCarriesNoRawTerminator);
@@ -859,7 +910,7 @@ class JobSubmissionServiceSecurityTest {
                             + " the required suffix, so the suffix cannot be used to slip one past")
                     .isThrownBy(() ->
                             new JobSubmissionService(sqsOperations, forgedQueue, MESSAGE_GROUP_ID))
-                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue")
+                    .withMessageContaining("carddemo.aws.sqs.job-queue")
                     .withMessageContaining("printable US-ASCII only")
                     .withMessageContaining("position 4")
                     .withMessageContaining("code point " + (int) CARRIAGE_RETURN)
@@ -1395,8 +1446,8 @@ class JobSubmissionServiceSecurityTest {
 
     /*
      * ========================================================================================
-     * The deduplication identifier's length budget, which the per-submission nonce consumes part
-     * of and which therefore has to be shown to be enforced.
+     * The deduplication identifier's length budget, which a caller-supplied identity can exhaust and
+     * which therefore has to be shown to be enforced.
      * ========================================================================================
      */
 
@@ -1442,11 +1493,11 @@ class JobSubmissionServiceSecurityTest {
         }
 
         @Test
-        @DisplayName("the identity the service derives for itself leaves ample room for the ordinal, nonce included")
+        @DisplayName("the identity the service derives for itself leaves ample room for the ordinal")
         void theDerivedIdentityLeavesAmpleRoomForTheOrdinal() {
-            // The nonce lengthened the derived identity, so this states what the budget now is:
-            // two ten-character dates, two separators, a thirty-two-character nonce, a separator
-            // and the ordinal.
+            // The derived identity is two ten-character dates and one separator, so the identifier is
+            // that plus a separator and the ordinal - far inside the ceiling. The budget only becomes
+            // interesting when the identity is the caller's, which the two tests above cover.
             service.submitTransactionReportJob(START_DATE, END_DATE);
 
             final int longestDerived = deduplicationIds().stream()

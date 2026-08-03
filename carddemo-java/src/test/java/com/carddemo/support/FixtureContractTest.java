@@ -18,6 +18,9 @@ package com.carddemo.support;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.carddemo.domain.UserSecurity;
+import com.carddemo.util.UserSecurityRecordMapper;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -174,19 +177,30 @@ final class FixtureContractTest {
     //
     // The nine are byte-verbatim copies of sequential datasets, and every assertion this suite makes
     // about them - the recorded byte count, the record count, the digest, the line-feed terminator -
-    // holds because they are copies. The credential fixture is derived rather than copied: the
+    // holds because they are copies. The sign-on identity fixture is derived rather than copied: the
     // provisioning job carries its ten records in stream as 57-character cards, and the record layout
     // pads each one to 80. It therefore has a different shape from all nine, and in one respect the
     // opposite shape: it carries no line terminator at all, so it is read on a fixed stride instead of
     // by line. Adding it to FIXTURE_NAMES would hand it to the parameterized rows above, every one of
     // which assumes a trailing line feed, and they would fail on it for the right reason.
     //
+    // IT IS ALSO DERIVED IN A SECOND, SECURITY-BEARING SENSE: the eight bytes the record layout
+    // reserves for the sign-on credential are NOT the bytes the provisioning job carries there. The
+    // legacy value is a shared cleartext credential, and the migration contract forbids it anywhere in
+    // this module - fixtures included - so the window carries the unrelated synthetic literal declared
+    // below instead. Nothing downstream is weakened by that: the credential never reaches the database
+    // in any form but a digest, and the mapper that reads this layout hashes the window through an
+    // injected function and emits it blank, so the window's CONTENT is contractually irrelevant while
+    // its WIDTH and POSITION are not. Everything this fixture is actually consulted for - the ten
+    // identifiers, their order, the five-and-five role split, the card-to-record padding - is
+    // reproduced from the provisioning job exactly.
+    //
     // So it is enumerated separately, and given its own assertions below. What must NOT happen is the
     // directory-membership check being relaxed to tolerate it: that check exists precisely to catch an
     // unaccounted-for file, and the fix for a NEW accounted-for file is to account for it by name.
     // ---------------------------------------------------------------------------------------------
 
-    /** The derived credential fixture: the tenth file in the directory, terminator-free. */
+    /** The derived sign-on identity fixture: the tenth file in the directory, terminator-free. */
     private static final String CREDENTIAL_FIXTURE = "usrsec.txt";
 
     /** Record width of the credential fixture, from the user-security record layout. */
@@ -209,6 +223,37 @@ final class FixtureContractTest {
 
     /** Zero-based offset of the user type within a credential record. */
     private static final int CREDENTIAL_TYPE_OFFSET = 56;
+
+    /**
+     * Zero-based offset of the eight bytes the record layout reserves for the sign-on credential.
+     *
+     * <p>The position and the width are contractual because the two fields that follow are addressed
+     * from them; the content is not, because the mapper that reads this layout hashes the window
+     * through an injected one-way function and emits it blank.
+     */
+    private static final int CREDENTIAL_WINDOW_OFFSET = 48;
+
+    /** Width of the reserved credential window, from the user-security record layout. */
+    private static final int CREDENTIAL_WINDOW_WIDTH = 8;
+
+    /**
+     * The synthetic literal this fixture carries in the credential window on every record, in place of
+     * the shared cleartext value the provisioning job carries there.
+     *
+     * <p>Eight characters wide, so the window is exercised at its full declared width rather than
+     * being blanked, and deliberately unrelated to the legacy value, to any personal name in the
+     * fixture and to any identifier in it: nothing about it can be inverted into the value it replaced,
+     * because it is not derived from it. It is the same synthetic window literal the user-security
+     * mapper's own suite uses, so the two agree about what a populated window looks like without either
+     * reproducing a real credential.
+     *
+     * <p>Pinning it by equality rather than measuring it is the point. A measurement - "not blank, and
+     * the same on all ten records" - is satisfied by the legacy value just as well as by this one, so
+     * it would not notice the legacy value being restored. An exact comparison against this constant
+     * does notice, and it can never print a secret on failure, because the only value it can print is
+     * this one.
+     */
+    private static final String REDACTED_CREDENTIAL_WINDOW = "Zq7Kx2Vw";
 
     /** How many of the ten records carry the administrative user type. */
     private static final int ADMINISTRATOR_COUNT = 5;
@@ -635,20 +680,23 @@ final class FixtureContractTest {
     }
 
     /**
-     * The derived credential fixture, asserted on its own terms.
+     * The derived sign-on identity fixture, asserted on its own terms.
      *
      * <p>Read on a fixed eighty-byte stride rather than by line, because it carries no line
      * terminator: a line-oriented read would see one 800-character line and every offset below would
      * be wrong. The stride is what makes the file parseable, so asserting the stride divides the size
      * exactly is asserting the file is usable at all.
      *
-     * <p>Nothing here asserts on the credential itself. The eight bytes the layout reserves for it are
-     * compared between records and measured, which is enough to prove the fixture carries one real
-     * credential on every record, and never enough to reveal what it is. A failure message from this
-     * class reports a record index and a measurement, never a value.
+     * <p><strong>No real credential is carried, compared or preserved here.</strong> The eight bytes
+     * the record layout reserves for the sign-on credential carry
+     * {@link FixtureContractTest#REDACTED_CREDENTIAL_WINDOW}, a synthetic literal unrelated to the
+     * legacy value, and the assertion below pins them to exactly that literal. That is a strictly
+     * stronger statement than measuring the window would be - a measurement is satisfied by the legacy
+     * value too, so it would not notice it being restored - and it is also strictly safer, because the
+     * only value the assertion can render on failure is the synthetic one declared in this file.
      */
     @Nested
-    @DisplayName("the derived credential fixture")
+    @DisplayName("the derived sign-on identity fixture")
     final class TheDerivedCredentialFixture {
 
         @Test
@@ -741,31 +789,108 @@ final class FixtureContractTest {
         }
 
         @Test
-        @DisplayName("reserves eight non-blank bytes for the credential, identical on every record")
-        void reservesTheCredentialFieldOnEveryRecord() throws IOException {
-            // Measured and compared, never read out. The seed migration digests one value ten times
-            // with ten different salts, so proving the source carries ONE value on all ten records is
-            // what makes ten distinct digests the expected outcome rather than a discrepancy.
-            final int credentialOffset = 48;
-            final int credentialWidth = 8;
-
-            final Set<String> distinct = new TreeSet<>();
+        @DisplayName("carries the synthetic credential window on every record, so no real credential "
+                + "is retained anywhere in this module's test data")
+        void carriesTheSyntheticCredentialWindowOnEveryRecord() throws IOException {
+            // The security assertion of this suite, and it is an equality rather than a measurement on
+            // purpose: a measurement - not blank, same on every record - is satisfied by the legacy
+            // cleartext value exactly as well as by the synthetic one, so it would not notice the
+            // legacy value being restored. This does. It also cannot leak, because the only value it
+            // can render on failure is the synthetic literal declared in this file.
+            //
+            // The single-value property the seed migration depends on survives the substitution: one
+            // window value across all ten records is what makes ten DISTINCT digests in
+            // V4__seed_user_security.sql the expected outcome - ten salts over one input - rather than
+            // a discrepancy.
             final List<byte[]> records = credentialRecords();
+            final Set<String> distinct = new TreeSet<>();
             for (int index = 0; index < records.size(); index++) {
-                final String reserved = new String(records.get(index), credentialOffset,
-                        credentialWidth, StandardCharsets.ISO_8859_1);
-                assertThat(reserved.isBlank())
-                        .as("record %d: the credential field must not be blank", index)
-                        .isFalse();
-                assertThat(reserved.length())
-                        .as("record %d: the credential field must occupy its full width", index)
-                        .isEqualTo(credentialWidth);
-                distinct.add(reserved);
+                final String window = new String(records.get(index), CREDENTIAL_WINDOW_OFFSET,
+                        CREDENTIAL_WINDOW_WIDTH, StandardCharsets.ISO_8859_1);
+
+                assertThat(window)
+                        .as("record %d: the credential window must carry the synthetic literal and "
+                                + "never a real credential", index)
+                        .isEqualTo(REDACTED_CREDENTIAL_WINDOW);
+                distinct.add(window);
             }
 
             assertThat(distinct)
-                    .as("all ten records must reserve the same single credential value")
-                    .hasSize(1);
+                    .as("all ten records must carry the one synthetic window value, because the seed "
+                            + "migration digests one input ten times under ten salts")
+                    .containsExactly(REDACTED_CREDENTIAL_WINDOW);
+            assertThat(REDACTED_CREDENTIAL_WINDOW)
+                    .as("the synthetic literal must itself fill the window, so the window is exercised "
+                            + "at its full declared width rather than blanked")
+                    .hasSize(CREDENTIAL_WINDOW_WIDTH);
+        }
+
+        @Test
+        @DisplayName("hands the mapper a window that is hashed and never stored, and is re-emitted "
+                + "blank, so this fixture cannot put a cleartext credential into an entity or a record")
+        void handsTheMapperAWindowThatIsHashedAndNeverStored() throws IOException {
+            // The digest-safe half of the same guarantee. The window content is contractually
+            // irrelevant precisely because this holds: whatever the window carries is passed once to
+            // the caller's one-way function and never kept, and the encoder emits eight spaces where
+            // the legacy record kept eight cleartext bytes. Both directions are asserted here against
+            // the fixture's own records, so the fixture is proved harmless rather than assumed to be.
+            //
+            // The digest is synthetic and shape-valid rather than a real hash: this asserts that the
+            // mapper stores what the function returned, not that anything was hashed correctly, which
+            // belongs to the credential service and its own suite.
+            final String syntheticDigest =
+                    "$2b$12$FixtureSyntheticDigestTailNotDerivedFromAnyRealValue0";
+            final String blankWindow = " ".repeat(CREDENTIAL_WINDOW_WIDTH);
+
+            for (final byte[] record : credentialRecords()) {
+                final UserSecurity mapped =
+                        UserSecurityRecordMapper.fromRecord(record, window -> syntheticDigest);
+
+                assertThat(mapped.credentialDigest())
+                        .as("the entity must carry the function's output and never the window bytes")
+                        .isEqualTo(syntheticDigest)
+                        .isNotEqualTo(REDACTED_CREDENTIAL_WINDOW);
+
+                final String emitted = UserSecurityRecordMapper.toRecord(mapped);
+                assertThat(emitted.substring(CREDENTIAL_WINDOW_OFFSET,
+                                CREDENTIAL_WINDOW_OFFSET + CREDENTIAL_WINDOW_WIDTH))
+                        .as("the emitted record must blank the credential window rather than "
+                                + "reconstructing anything in it")
+                        .isEqualTo(blankWindow);
+                assertThat(emitted)
+                        .as("no emitted record may carry the window value in any position")
+                        .doesNotContain(REDACTED_CREDENTIAL_WINDOW);
+            }
+        }
+
+        @Test
+        @DisplayName("carries the synthetic window exactly once per record and nowhere else, so a "
+                + "reusable secret cannot be smuggled in past the ten windows this suite pins")
+        void carriesTheSyntheticWindowExactlyOncePerRecordAndNowhereElse() throws IOException {
+            // The WHOLE file is measured here, not just the ten credential windows, because a value
+            // reintroduced into a name field, into the filler, or as an eleventh record appended past
+            // the stride would satisfy the per-record pin above and still publish a secret. Counting
+            // occurrences of the synthetic window over the whole file closes both: ten and only ten,
+            // one per record, and no eleventh record carrying anything at all.
+            //
+            // The check is expressed against the synthetic literal rather than against the legacy
+            // value it replaced, because the legacy value may not appear in this module at all - not in
+            // a fixture, not in a constant and not in an assertion message. Pinning the value that IS
+            // permitted is what makes a failure describable without printing what was refused.
+            final String content =
+                    new String(fixtureBytes(CREDENTIAL_FIXTURE), StandardCharsets.ISO_8859_1);
+
+            assertThat(content)
+                    .as("the synthetic window must be present")
+                    .contains(REDACTED_CREDENTIAL_WINDOW);
+            assertThat(content.split(java.util.regex.Pattern.quote(REDACTED_CREDENTIAL_WINDOW), -1))
+                    .as("ten occurrences of the synthetic window split the file into eleven parts, so "
+                            + "there is exactly one per record and no twelfth part from a stray copy")
+                    .hasSize(CREDENTIAL_RECORD_COUNT + 1);
+            assertThat(content)
+                    .as("the file is exactly ten records of the declared width, so nothing was "
+                            + "appended past the stride where a scan of the windows alone would miss it")
+                    .hasSize(CREDENTIAL_TOTAL_BYTES);
         }
 
         @Test

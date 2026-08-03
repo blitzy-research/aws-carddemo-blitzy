@@ -39,10 +39,11 @@ import org.slf4j.LoggerFactory;
  *
  * <h2>The gap this closes, which no configuration value can</h2>
  *
- * <p>{@link FlywayConfig} holds two configuration controls that between them make a seed script
- * unreachable from a production deployment: the resolved location list may not reach
- * {@value FlywayConfig#SEED_LOCATION}, and the resolved version ceiling may not reach a seed version.
- * Both act on <em>this process's</em> configuration, and both are therefore blind to the one path that
+ * <p>{@link FlywayConfig} holds configuration controls that between them make a seed script
+ * unreachable from a production deployment: the resolved location list must be exactly
+ * {@value FlywayConfig#SCHEMA_LOCATION}, and the resolved version ceiling must be exactly
+ * {@value FlywayConfig#SCHEMA_ONLY_TARGET}, which is below every seed version. All of them act on
+ * <em>this process's</em> configuration, and all of them are therefore blind to the one path that
  * matters most in practice: a database that was seeded <strong>before this process existed</strong>.
  *
  * <p>Re-pointing a connection string at a database a developer once ran under {@code local}, restoring
@@ -295,11 +296,18 @@ final class ProductionSeedRejectionCallback implements Callback {
     /**
      * Evaluates the three signals in order of authority.
      *
+     * <p>Package-private rather than private because it has a second caller:
+     * {@link FlywayConfig#requireUnseededProductionDatabase} runs the same inspection on every
+     * production start-up, including one where the migration tool was switched off and this callback
+     * is therefore never offered an event. The two callers share this method rather than each holding
+     * their own copy of the queries, so the three signals cannot be widened in one path and left
+     * narrow in the other.
+     *
      * @param connection the connection to inspect
      * @throws SQLException      when a read fails
      * @throws FlywayException   when a signal fires
      */
-    private void inspect(final Connection connection) throws SQLException {
+    void inspect(final Connection connection) throws SQLException {
         rejectAppliedSeedVersions(connection);
         rejectSeededSignOnIdentities(connection);
         rejectSeededReferenceVolumes(connection);

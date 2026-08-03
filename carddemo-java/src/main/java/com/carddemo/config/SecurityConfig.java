@@ -74,18 +74,27 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * someone deliberately adds a rule for it. The opposite arrangement - a permissive default with denials
  * listed - fails silently every time a route is added and forgotten.
  *
- * <p><strong>Exactly four kinds of surface are anonymous, and each is anonymous for a reason that can be
- * checked against a sibling file.</strong>
+ * <p><strong>At most four kinds of surface are anonymous, two of them unconditionally and two only where
+ * a profile opens them, and each is anonymous for a reason that can be checked against a sibling
+ * file.</strong>
  * <ul>
  *   <li>The health probe, because {@code carddemo-java/Dockerfile} names it as the image
  *       {@code HEALTHCHECK} and Compose services wait on it. A container that cannot answer its own
  *       health check never becomes ready, so requiring a credential here would break orchestration
  *       rather than protect anything: the aggregate body is a status word, and the shared baseline
  *       closes component detail so that it stays one.</li>
- *   <li>The metrics scrape endpoint, because {@code config/prometheus/prometheus.yml} resolves that path
- *       literally and the collector presents no credential. Permitting the scrape endpoint is the
- *       choice this module makes between the two the review offered - permit it, or authenticate the
- *       scraper - and it is the one the shipped collector configuration can actually satisfy.</li>
+ *   <li>The metrics scrape endpoint, <strong>and only where the running profile opens it.</strong> The
+ *       permit is conditional on {@code carddemo.security.anonymous-metrics-scrape}, which the shared
+ *       baseline and production leave closed and only the local and test overlays open - the same two
+ *       overlays that relax transport, and for the same reason: their collector is
+ *       {@code config/prometheus/prometheus.yml} running in the Compose stack on the same machine.
+ *       Production leaves it closed because the exposition is not a status word. It carries per-endpoint
+ *       request counts and latency distributions, per-step batch record counts, data-source pool
+ *       saturation and JVM internals, which between them let an unauthenticated network client profile
+ *       transaction volume, infer business activity and time an attack against a deployment it has no
+ *       credential for. The endpoint remains PUBLISHED in production - a collector that presents a
+ *       bearer token still collects, so the performance gate is unaffected - and what closes is
+ *       collection by a client that presents nothing.</li>
  *   <li>The interface description, <strong>and only where the running profile publishes it.</strong> The
  *       permit is conditional on the same switch that decides whether the document is served at all, so
  *       a profile that does not publish it does not have an anonymous rule for it either. The shared
@@ -208,6 +217,9 @@ public class SecurityConfig {
     /** Whether the running profile publishes the interface description. */
     private final boolean apiDocsPublished;
 
+    /** Whether the running profile lets a collector scrape the metrics endpoint without a credential. */
+    private final boolean anonymousMetricsScrape;
+
     /** Address the interface description is published at, when it is published. */
     private final String apiDocsPath;
 
@@ -232,6 +244,10 @@ public class SecurityConfig {
      *                           production, cleared by the local and test overlays
      * @param apiDocsPublished   whether the running profile serves the interface description, which is
      *                           the same switch that decides whether it may be fetched anonymously
+     * @param anonymousMetricsScrape whether the running profile lets the metrics endpoint be scraped
+     *                           without a credential; bound with NO default so that a profile which
+     *                           says nothing cannot silently open it, and set only by the two overlays
+     *                           whose collector runs on the same machine
      * @param apiDocsPath        address the interface description is served from
      * @param managementBasePath base path the management endpoints are served beneath
      * @param servletPath        path the dispatching servlet is mapped at; every rule below is expressed
@@ -242,6 +258,8 @@ public class SecurityConfig {
             final ObjectMapper objectMapper,
             @Value("${carddemo.security.require-https}") final boolean requireHttps,
             @Value("${springdoc.api-docs.enabled:false}") final boolean apiDocsPublished,
+            @Value("${carddemo.security.anonymous-metrics-scrape}")
+                    final boolean anonymousMetricsScrape,
             @Value("${springdoc.api-docs.path:/v3/api-docs}") final String apiDocsPath,
             @Value("${management.endpoints.web.base-path:/actuator}") final String managementBasePath,
             @Value("${spring.mvc.servlet.path:/}") final String servletPath) {
@@ -249,6 +267,7 @@ public class SecurityConfig {
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
         this.requireHttps = requireHttps;
         this.apiDocsPublished = apiDocsPublished;
+        this.anonymousMetricsScrape = anonymousMetricsScrape;
         this.apiDocsPath = Objects.requireNonNull(apiDocsPath, "apiDocsPath must not be null");
         this.managementBasePath =
                 Objects.requireNonNull(managementBasePath, "managementBasePath must not be null");
@@ -323,7 +342,15 @@ public class SecurityConfig {
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(requests -> {
                     requests.requestMatchers(matcher(healthPath), matcher(healthSubPaths)).permitAll();
-                    requests.requestMatchers(matcher(prometheusPath)).permitAll();
+                    if (this.anonymousMetricsScrape) {
+                        // Only where the collector runs on the same machine as the application. When
+                        // this is not set - the shared baseline and production - no permit is added and
+                        // the scrape path falls through to the management rule below, which
+                        // authenticates it. The endpoint stays PUBLISHED either way, so a collector
+                        // that presents a bearer token still collects; what changes is whether one that
+                        // presents nothing does.
+                        requests.requestMatchers(matcher(prometheusPath)).permitAll();
+                    }
                     if (this.apiDocsPublished) {
                         requests.requestMatchers(matcher(this.apiDocsPath),
                                 matcher(this.apiDocsPath + "/**")).permitAll();
@@ -351,9 +378,10 @@ public class SecurityConfig {
             http.redirectToHttps(Customizer.withDefaults());
         }
 
-        LOG.info("HTTP security configured: anonymous surfaces are the health probe, the metrics scrape "
-                        + "endpoint{}, and the sign-on route; every other route requires a bearer token; "
-                        + "secure channel required: {}",
+        LOG.info("HTTP security configured: anonymous surfaces are the health probe{}{}, and the sign-on "
+                        + "route; every other route requires a bearer token, the metrics scrape endpoint "
+                        + "included unless named here; secure channel required: {}",
+                this.anonymousMetricsScrape ? ", the metrics scrape endpoint" : "",
                 this.apiDocsPublished ? ", the interface description" : "",
                 this.requireHttps);
         return http.build();

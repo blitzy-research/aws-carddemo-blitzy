@@ -167,7 +167,7 @@ the envelope; the *record image* the mapper reads is unchanged, only the databas
 only between the application and the database.
 
 *Cited by:* `domain/Customer.java`, `application.yml`,
-`db/migration/V1__create_schema.sql`, `service/SensitiveFieldEncryptionService.java`.
+`db/migration/schema/V1__create_schema.sql`, `service/SensitiveFieldEncryptionService.java`.
 
 ### DL-006 — The customer entity fails closed on cleartext rather than converting it
 
@@ -194,7 +194,7 @@ This costs the estate nothing, and that is a finding rather than an assumption: 
 defines no alternate index, no browse and no screen lookup over either identifier, so no access
 path is lost. Had one existed, this decision would have had to be revisited rather than accepted.
 
-*Cited by:* `db/migration/V1__create_schema.sql`.
+*Cited by:* `db/migration/schema/V1__create_schema.sql`.
 
 ### DL-008 — The encryption key is bound per profile with no fallback anywhere
 
@@ -232,7 +232,7 @@ The gap is carried forward as an explicit finding rather than silently closed or
 It is stated in this log precisely so that a future reviewer does not mistake its absence from the
 code for an oversight, and so that a decision to close it is taken deliberately.
 
-*Cited by:* `db/migration/V1__create_schema.sql`.
+*Cited by:* `db/migration/schema/V1__create_schema.sql`.
 
 *Also recorded as:* D-14 — the same decision, recorded independently under the other identifier
 scheme. Both identifiers are cited from the module and both resolve here.
@@ -273,7 +273,7 @@ system would have silently interleaved are now rejected with a conflict. The est
 rollback point is preserved as a transactional rollback raising that conflict.
 
 *Cited by:* `domain/Account.java`, `exception/OptimisticLockConflictException.java`,
-`db/migration/V1__create_schema.sql`, `exception/OptimisticLockConflictExceptionTest.java`.
+`db/migration/schema/V1__create_schema.sql`, `exception/OptimisticLockConflictExceptionTest.java`.
 
 *Also recorded as:* D-15 — the same decision, recorded independently under the other identifier
 scheme. Both identifiers are cited from the module and both resolve here.
@@ -301,8 +301,8 @@ boundary has moved since it was first written: the storage format, the encoder a
 delivered controls, while the authenticating comparison is still absent. Whatever component fills that
 gap inherits the obligation stated above — write only a digest, never store or compare a cleartext
 credential — and `CredentialDigestService.requireDigest` already exists to enforce the first half of it.
-*Embodied in:* `src/main/resources/db/migration/V1__create_schema.sql` (column shape),
-`src/main/resources/db/migration/V4__seed_user_security.sql` (digests),
+*Embodied in:* `src/main/resources/db/migration/schema/V1__create_schema.sql` (column shape),
+`src/main/resources/db/migration/seed/V4__seed_user_security.sql` (digests),
 `service/CredentialDigestService.java` (encoder, verifying comparison and persistence guard),
 `config/SecurityConfig.java`, `domain/UserSecurity.java`, `api/dto/SignOnRequest.java`.
 
@@ -336,7 +336,7 @@ only between the application and the database. A transport record that carries e
 the wire, never logs it, and never persists it from there.
 
 *Embodied in:* `service/SensitiveFieldEncryptionService.java`, `util/SensitiveFieldCodec.java`,
-`domain/Customer.java`, `resources/db/migration/V1__create_schema.sql`.
+`domain/Customer.java`, `resources/db/migration/schema/V1__create_schema.sql`.
 
 *Also recorded as:* DL-005, DL-006, DL-007, DL-008 and DL-009, which develop the same decision in
 detail — the fail-closed entity guard, the equality-search capability that randomised encryption
@@ -348,7 +348,7 @@ The legacy design applies no field-level encryption, tokenisation or masking to 
 requirement in scope introduces one. **Decision:** none is invented, because that would be feature
 expansion. The gap is carried forward here as an explicit unclosed finding rather than silently
 closed or silently ignored.
-*Recorded against:* `src/main/resources/db/migration/V1__create_schema.sql`.
+*Recorded against:* `src/main/resources/db/migration/schema/V1__create_schema.sql`.
 
 *Also recorded as:* DL-010 — the same decision, recorded independently under the other identifier
 scheme. Both identifiers are cited from the module and both resolve here.
@@ -927,7 +927,7 @@ reference-data seed leaves it null in static SQL rather than embedding raw natio
 a hardcoded encryption key, in a migration file. Both alternatives were worse than a nullable
 column.
 
-*Cited by:* `db/migration/V1__create_schema.sql`.
+*Cited by:* `db/migration/schema/V1__create_schema.sql`.
 
 ### D-28 — The online transaction identifier is highest-key-plus-one, not a sequence
 `app/cbl/COBIL00C.cbl` moves `HIGH-VALUES` into the key, browses backward to the highest existing
@@ -1783,17 +1783,22 @@ end pairs the entries that record the same decision under both.
 | `util/FixedWidthFieldReader.java` | DL-041 |
 | `util/StatementTextTemplates.java` | DL-041 |
 | `util/StatementHtmlTemplates.java` | DL-037, DL-038, DL-039, DL-041 |
-| `resources/application.yml` | DL-001, DL-005, DL-008, DL-047, DL-048, DL-088 |
-| `resources/application-local.yml` | DL-045, DL-047, DL-088, anomaly register (7) |
-| `resources/application-prod.yml` | DL-088 |
+| `resources/application.yml` | DL-001, DL-005, DL-008, DL-047, DL-048, DL-088, DL-127 |
+| `resources/application-local.yml` | DL-045, DL-047, DL-088, DL-127, anomaly register (7) |
+| `resources/application-prod.yml` | DL-088, DL-127 |
 | `pom.xml` | DL-088 |
-| `resources/db/migration/V1__create_schema.sql` | DL-005, DL-007, DL-010, DL-012, DL-036, anomaly register (1) |
+| `resources/db/migration/schema/V1__create_schema.sql` | DL-005, DL-007, DL-010, DL-012, DL-036, DL-127, anomaly register (1) |
+| `resources/db/migration/schema/V2__create_indexes.sql` | DL-127 |
+| `resources/db/migration/seed/V3__seed_reference_data.sql` | DL-103, DL-127 |
+| `resources/db/migration/seed/V4__seed_user_security.sql` | DL-127 |
+| `resources/db/migration/.gitkeep` | DL-127 |
 | `api/dto/SignOnRequestTest.java` | DL-001, DL-003, DL-004 |
 | `domain/enums/AccountStatusTest.java` | DL-024, DL-026 |
 | `exception/OptimisticLockConflictExceptionTest.java` | DL-012 |
 | `util/StatementHtmlTemplatesTest.java` | DL-037 |
 | `service/AccountConcurrencyTokenServiceTest.java` | DL-074, DL-076, DL-077 |
-| `config/FlywayConfigTest.java` | DL-041, DL-102 |
+| `config/FlywayConfigTest.java` | DL-041, DL-127 |
+| `config/FlywayConfig.java` | DL-102, DL-110, DL-127 |
 | `config/SeededIdentifierSealingCallbackTest.java` | DL-041, DL-104 |
 | `service/FieldErrorTranslationServiceTest.java` | DL-080 |
 | `util/CobolStringUtilsTest.java` | DL-078 |
@@ -1842,7 +1847,7 @@ end pairs the entries that record the same decision under both.
 | `exception/RecordNotFoundExceptionTest.java` | D-21 |
 | `exception/ValidationException.java` | D-16, D-33, D-34 |
 | `exception/ValidationExceptionTest.java` | D-33, D-34 |
-| `resources/db/migration/V1__create_schema.sql` | D-12, D-14 |
+| `resources/db/migration/schema/V1__create_schema.sql` | D-12, D-14 |
 | `service/AbendService.java` | D-41 |
 | `service/JobSubmissionService.java` | D-09, D-16, D-36 |
 | `util/AccountRecordMapper.java` | D-02, D-04, D-08, D-10, D-11, D-26, D-29, D-30, D-42, anomaly 20 |
@@ -2171,17 +2176,27 @@ The predicate is renamed `echoesAdministratorCode()`. It is named for what it re
 
 *Cited by:* `config/JpaAuditConfig.java`, `config/WebMvcConfig.java`.
 
-### DL-090 - The second-generation JSON library returns to the frozen inventory version, and the annotations divergence is explained rather than papered over
+### DL-090 - The second-generation JSON library takes its security patch at 2.21.5; the revert to the inventory version is withdrawn
 
-**Context.** A supply-chain scan reported a moderate finding against the second-generation JSON library: properties excluded by an ignore-properties declaration are restored when contextual case-insensitive binding is in force. A previous revision cleared it by raising `jackson-bom.version` from the inventory's 2.21.4 to 2.21.5, and justified the raise in the build file with the claim that governing the family bill of materials' own property makes core, databind, annotations and every data-format and data-type module move together. A later review found that the raise contradicted its own justification: the effective tree resolved the streaming core, databind and the format and type modules at 2.21.5, and the annotations module at 2.22.
+**Context.** This entry has been decided three times, and the third decision returns to where the first arrived by a better route. A supply-chain scan reported a moderate finding against the second-generation JSON library: under a vulnerable annotation combination, a property excluded by an ignore-properties declaration becomes writable again. The first revision cleared it by raising `jackson-bom.version` from the inventory's 2.21.4 to 2.21.5, and justified the raise in the build file with the claim that governing the family bill of materials' own property makes core, databind, annotations and every data-format and data-type module move together. A second revision found that justification false - the effective tree resolved core, databind and the format and type modules at 2.21.5 and the annotations module at 2.22 - and reverted the property to 2.21.4 on three grounds: the inventory is frozen, the finding scores below the threshold at which the scan fails a build, and the finding's precondition holds nowhere in this module because contextual case-insensitive binding is enabled nowhere and no ignore-properties exclusion is declared. A third review then identified the reverted pin as the finding itself, named the advisory as CVE-2026-54515 at 5.3 and network-reachable, required the upgrade with a repeated closure, compilation and scan, and stated that the advisory may not be suppressed unless applicability is formally disproved.
 
-**Decision.** The property returns to **2.21.4**, the version the frozen dependency inventory records. Three findings decided it. The inventory is frozen and no exception authorises editing it, so a version that departs from it needs an authority that does not exist here. The finding's severity sits below the threshold at which the scan fails a build, so nothing was gated on the raise. And the finding's precondition does not hold in this module at all: contextual case-insensitive property binding is enabled nowhere, and no ignore-properties exclusion is declared anywhere in the production tree, so there is no excluded property for the defect to restore. The raise bought no protection this module needed and cost agreement with the inventory.
+**Decision.** The property is **2.21.5**, and the revert is withdrawn. Each of the revert's three grounds fails, and it is worth being precise about how, because two of them are arguments that will be made again about some other coordinate.
 
-**The annotations divergence has a different cause, and survives the revert.** The 2.22 resolution was never attributable to this property. Neither bill of materials ties the annotations artifact to the patch version: the second-generation one versions it minor-only, and the third-generation one - which has no annotations module of its own and reuses the second-generation artifact - pins it to the newest 2.x release. The third-generation declaration is the one that wins, because `tools-jackson.version` is set to 3.2.1 for the structured logging encoder. So annotations resolves one minor ahead of the rest of the family by upstream design, and still does after the revert. That is safe, because the 2.x annotations contract is compatible across the line - which is precisely why both bills of materials version it separately and why the third generation reuses it instead of shipping a replacement - and the inventory names the databind coordinate, which this value fixes exactly. The build file's comment now says this rather than claiming a uniformity the resolution does not have.
+*The frozen inventory freezes which library is used, not the right to take its security patches.* The inventory names `com.fasterxml.jackson.core:jackson-databind` and records the version an executed resolution produced when the plan was written. 2.21.5 is a patch release of that same coordinate on that same minor line: nothing is substituted, no artifact is added or removed, and no API contract moves. Reading the recorded version as a prohibition on patching it would make the inventory a mechanism for retaining known-vulnerable code, which is the opposite of what freezing it is for - and the same plan that records the version also requires the scan to be executed rather than declared, which is only worth doing if its output can change something.
 
-**Declined alternatives.** Forcing the annotations artifact to the rest of the family's version was rejected twice over: no 2.21.4 annotations release exists, and pinning it back to 2.21 would fight the third-generation bill of materials that the logging encoder depends on, trading a documented and compatible one-minor lead for a real risk to a working component. Suppressing the moderate finding was rejected as unnecessary, since it scores below the failure threshold and is therefore reported without gating. Leaving the raise in place and merely correcting the comment was rejected because the departure from the frozen inventory, not the comment, was the finding.
+*A finding below the gate threshold is still a reported finding.* The build fails on critical and high, which is a gate, not an acceptance standard. The advisory is reported in the scan output either way, and "reported but not gated" describes what the tool does, not whether the module should carry the defect. The revert treated the threshold as permission.
 
-**Consequence for the tests.** The effective dependency tree is asserted rather than assumed: the whole second-generation family resolves at 2.21.4 with the annotations artifact at its own line, and the third-generation coordinates remain at 3.2.1 and reach the classpath only through the logging encoder.
+*Non-applicability was a statement about a snapshot of the source tree, not about the dependency.* The precondition argument was true when made and remains true today: nothing here enables contextual case-insensitive binding and nothing declares an ignore-properties exclusion. It is also not a disproof of applicability, because it is not a property of the classpath. The affected deserialiser serves the whole request and response surface, and whether some future data transfer object carries the triggering annotation combination is a decision the next author of one makes - not something this entry can settle on their behalf. Formal disproof would have to show the defect unreachable by construction; nothing available here shows that.
+
+**Suppression was rejected, and no suppression file exists.** Suppressing an advisory records a judgement that it does not apply, which is exactly the judgement that could not be established above. The scan therefore runs with no suppression input at all, which also means a future advisory against this coordinate cannot be silently inherited by an existing entry.
+
+**The annotations divergence is unchanged by the raise, and its explanation is the durable part of the earlier entry.** The 2.22 resolution was never attributable to this property. Neither bill of materials ties the annotations artifact to the patch version: the second-generation one versions it minor-only, and the third-generation one - which has no annotations module of its own and reuses the second-generation artifact - pins it to the newest 2.x release. The third-generation declaration wins, because `tools-jackson.version` is 3.2.1 for the structured logging encoder. So annotations resolves one minor ahead of the rest of the family by upstream design, both before and after this raise. That is safe, because the 2.x annotations contract is compatible across the line - precisely why both bills of materials version it separately and why the third generation reuses it rather than shipping a replacement.
+
+**Declined alternatives.** Staying at 2.21.4 and documenting non-applicability more thoroughly was rejected: that is the defence the review examined and did not accept, and thoroughness does not convert a statement about today's sources into a property of the classpath. Moving the family to the 2.22 line was rejected as more than the fix requires: the patch release clears the advisory, and a minor move changes more surface for no additional benefit. Forcing the annotations artifact down to the rest of the family's version was rejected twice over, as before: no 2.21.5 annotations release exists, and pinning it back would fight the third-generation bill of materials the logging encoder depends on, trading a documented compatible one-minor lead for a real risk to a working component. Raising the property without correcting the build file's comment was rejected because the comment had been left asserting that the value restates the inventory and therefore pins rather than overrides, and a comment that misdescribes the declaration beneath it is the same class of defect as the one this entry is remediating.
+
+**Consequence for the build, measured rather than assumed.** An executed resolution confirms the second-generation family - streaming core, databind, the JDK 8 and JSR-310 data types, the parameter-names module and the TOML and YAML data formats - all at 2.21.5, the annotations artifact at 2.22 on its own line, and the third-generation coordinates still at 3.2.1 reaching the class path only through the logging encoder. An executed rescan against vulnerability data checked the same day reports no finding of any kind against any Jackson coordinate. No test encoded the reverted literal, so nothing in the suite had to be edited to agree with this decision - which is itself worth recording, because it means the build file was the only place the value was stated.
+
+**One advisory remains, and it is a different situation rather than an inconsistency with the above.** The rescan reports exactly one finding: CVE-2026-41178 at 5.3 against `io.opentelemetry.semconv:opentelemetry-semconv` 1.43.0, reached transitively through the tracing exporter. Its identifier names the **Go** implementation of OpenTelemetry - the platform component of the matched product identifier is Go, and the described defect is in that implementation's baggage-header parsing - so the match is a version-number coincidence with a Java artifact of a similar name. That is a disproof of applicability by product identity, which is the kind the Jackson advisory could not be given, and it needs no version to upgrade to because the Java artifact is not the affected product. It is nonetheless left reported and unsuppressed, for the reason given above.
 
 *Cited by:* `pom.xml`.
 
@@ -2291,7 +2306,7 @@ The predicate is renamed `echoesAdministratorCode()`. It is named for what it re
 
 **Decision.** A symmetric-keyed token carries the subject and the user type, and is minted and verified by one component using the library already resolved on the compile classpath. No dependency is added: the resource-server starter that would supply a ready-made bearer filter is deliberately absent from the inventory, and the inventory is frozen, so the chain carries a small filter of its own instead. The algorithm is fixed in code rather than configured, because a configurable algorithm is a configurable way to weaken verification, and the same reasoning keeps the minimum key length out of configuration.
 
-**Fail-fast, and on the operator's terms.** The settings bind through a validated record whose absent or blank values stop start-up naming the key that is missing, and whose lifetime must be positive. Validation of presence is expressed by annotations and validation of positivity by the constructor, which deliberately tolerates a null lifetime so that an absent value is reported as absent rather than as a failure raised before validation runs. The signing value has no default anywhere, in any profile, including the shared baseline - a defaulted secret violates the no-hardcoded-credential constraint exactly as a literal one does. The description the record renders redacts the secret and does not disclose its length.
+**Fail-fast, and on the operator's terms.** The settings bind through a validated record whose missing or blank values stop start-up naming the key that is missing, and whose lifetime must be positive. Validation of presence is expressed by annotations and validation of positivity by the constructor, which deliberately tolerates a null lifetime so that an absent value is reported as absent rather than as a failure raised before validation runs. The shared baseline defaults the signing value nowhere - it declares no secret key at all - and the production profile resolves it from the environment with no fallback beside it, because a defaulted production secret violates the no-hardcoded-credential constraint exactly as a literal one does. The local and test overlays deliberately do carry a fallback, and each fallback's own text states that it is non-production and must not be reused; a fallback is admissible precisely where the tokens it signs can never be presented to a production deployment. One mechanism note belongs with this, because a reader who has it backwards may remove the guard that works: configuration-properties binding resolves placeholders leniently, so an unset production variable binds the reference's own text and satisfies the presence constraint. A blank value is caught by that constraint; an absent one is caught by the production configuration check, which refuses a value still carrying its own placeholder text, and by the signing key-length floor, which that text cannot meet. The description the record renders redacts the secret and does not disclose its length.
 
 **Verification is closed by default.** A presented token must carry the expected issuer and must be within its window; the window is judged against an injected clock, which is what makes expiry assertable without waiting. Signature failure, issuer mismatch, expiry, malformation and absence are answered identically, so nothing is learned from the difference. A verification failure logs the failure's type and never its message, because such a message can quote the offending token.
 
@@ -2421,11 +2436,20 @@ applied - would have put a prerequisite after the thing that needs it.
 
 *Cited by:* `application.yml`, `application-local.yml`, `application-test.yml`,
 `application-prod.yml`, `db/migration/V1_1__create_batch_metadata.sql`,
-`db/migration/V3__seed_reference_data.sql`, `db/migration/V4__seed_user_security.sql`,
+`db/migration/seed/V3__seed_reference_data.sql`, `db/migration/seed/V4__seed_user_security.sql`,
 `config/FlywayConfig.java` - which is where the ceiling stops being a declaration and becomes a
 control: it refuses a production ceiling that reaches version 3 or beyond, refuses a production
 location outside the one delivered directory, and lifts the inherited ceiling for the two seeding
 profiles. Its class comment records this same reconciliation, so the two read against each other.
+
+*Status.* **Superseded by DL-127.** The premise this entry rests on - that a Flyway location is
+scanned recursively, so a directory cannot isolate a seed from a schema while either sits in the
+shared parent - is retained and is quoted in the delivered comments. What is reversed is the
+conclusion: all four scripts now sit one level down in two sibling locations, the shared parent holds
+no script, and production resolves the schema location alone. The version ceiling this entry argues
+for is retained behind that location list rather than in place of it. This entry is kept because it
+records why the flat arrangement looked correct, and it looked correct three times.
+
 
 
 ### DL-103 - The seeded government-issued identifier is sealed, and the national identifier is still not carried at all
@@ -2508,7 +2532,7 @@ domain.
 them: the legacy design defines no masking, tokenization or encryption for either, and inventing one here
 would be unrequested feature work. That gap is recorded rather than closed.
 
-*Cited by:* `db/migration/V1__create_schema.sql`, `db/migration/V3__seed_reference_data.sql`,
+*Cited by:* `db/migration/schema/V1__create_schema.sql`, `db/migration/seed/V3__seed_reference_data.sql`,
 `application-local.yml`, `application-test.yml`.
 
 
@@ -2865,7 +2889,7 @@ of the register above supplies the dangling binding this entry relies on.
 
 ### DL-111 - Every migration ships from one location and production is held to the schema by a version pin, not by a directory split
 
-**Context.** The migration plan names `db/migration` as the location of all four migrations, `V1` through `V4`, and the delivery boundary the platform resolves for the sign-on seed is `src/main/resources/db/migration/V4__seed_user_security.sql`. An earlier revision instead split the two seeds into a second location, `db/seed`, and withheld them from production by omitting that location from the production overlay's location list. The split was defensible on its own terms - an omitted location cannot be reached by a flag left in the wrong position - but it put two of the delivered migrations somewhere no plan named, and it made the delivered tree disagree with the plan about where a migration lives.
+**Context.** The migration plan names `db/migration` as the location of all four migrations, `V1` through `V4`, and the delivery boundary the platform resolves for the sign-on seed is `src/main/resources/db/migration/seed/V4__seed_user_security.sql`. An earlier revision instead split the two seeds into a second location, `db/seed`, and withheld them from production by omitting that location from the production overlay's location list. The split was defensible on its own terms - an omitted location cannot be reached by a flag left in the wrong position - but it put two of the delivered migrations somewhere no plan named, and it made the delivered tree disagree with the plan about where a migration lives.
 
 **Decision.** The second location is withdrawn. `V3__seed_reference_data.sql` and `V4__seed_user_security.sql` sit beside `V1`, `V1_1` and `V2` in `db/migration`, every profile lists that one location, and production is held to the schema by `spring.flyway.target: 2`. `V1`, `V1_1` and `V2` are applied; `V3` and `V4` are resolved, reported above the target and never executed. The behaviour was verified against PostgreSQL 16 before the change was made: a migration pinned to `2` applies exactly two scripts, reports the two seeds as above-target, and still validates successfully, so a pending above-target migration is not an error a deployment has to suppress.
 
@@ -2879,7 +2903,16 @@ of the register above supplies the dangling binding this entry relies on.
 
 *Relationship.* Restates and extends DL-102, which is the first record of this decision; the source files listed below cite DL-102.
 
-*Cited by:* `application.yml`, `application-local.yml`, `application-prod.yml`, `application-test.yml`, `config/FlywayConfig.java`, `db/migration/V3__seed_reference_data.sql`, `db/migration/V4__seed_user_security.sql`, `support/AbstractPostgresIT.java`.
+*Cited by:* `application.yml`, `application-local.yml`, `application-prod.yml`, `application-test.yml`, `config/FlywayConfig.java`, `db/migration/seed/V3__seed_reference_data.sql`, `db/migration/seed/V4__seed_user_security.sql`, `support/AbstractPostgresIT.java`.
+
+*Status.* **Superseded by DL-127.** The premise this entry rests on - that a Flyway location is
+scanned recursively, so a directory cannot isolate a seed from a schema while either sits in the
+shared parent - is retained and is quoted in the delivered comments. What is reversed is the
+conclusion: all four scripts now sit one level down in two sibling locations, the shared parent holds
+no script, and production resolves the schema location alone. The version ceiling this entry argues
+for is retained behind that location list rather than in place of it. This entry is kept because it
+records why the flat arrangement looked correct, and it looked correct three times.
+
 
 ### DL-112 - The publish-failure response and reason codes are derived from the failure's types, never from its description, and the raw failure is not handed to the logger
 
@@ -3022,7 +3055,16 @@ An interim arrangement placed the two seeds in a second class-path location, `db
 
 *Relationship.* Restates DL-102, which is the first record of this decision; the source files listed below cite DL-102.
 
-*Cited by:* `application.yml`, `application-local.yml`, `application-test.yml`, `application-prod.yml`, `db/migration/V1__create_schema.sql`, `db/migration/V2__create_indexes.sql`, `db/migration/V3__seed_reference_data.sql`, `db/migration/V4__seed_user_security.sql`, `domain/UserSecurity.java`, `.dockerignore`.
+*Cited by:* `application.yml`, `application-local.yml`, `application-test.yml`, `application-prod.yml`, `db/migration/schema/V1__create_schema.sql`, `db/migration/schema/V2__create_indexes.sql`, `db/migration/seed/V3__seed_reference_data.sql`, `db/migration/seed/V4__seed_user_security.sql`, `domain/UserSecurity.java`, `.dockerignore`.
+
+*Status.* **Superseded by DL-127.** The premise this entry rests on - that a Flyway location is
+scanned recursively, so a directory cannot isolate a seed from a schema while either sits in the
+shared parent - is retained and is quoted in the delivered comments. What is reversed is the
+conclusion: all four scripts now sit one level down in two sibling locations, the shared parent holds
+no script, and production resolves the schema location alone. The version ceiling this entry argues
+for is retained behind that location list rather than in place of it. This entry is kept because it
+records why the flat arrangement looked correct, and it looked correct three times.
+
 
 
 ---
@@ -3149,16 +3191,26 @@ a comment now says that the indexed pair is exactly what a returning split would
 withdrawn folder names are kept as named constants in an assertion that they deliver nothing, as DL-116
 asked.
 
-**Status of the neighbouring entries, stated so no reader has to infer it.** DL-102 is the governing
-record and is correct. DL-111 and DL-116 restate it and are correct. DL-108 records the split and
-remains superseded - it was superseded once by DL-102 and, after this round trip, is superseded again by
-this entry.
+**Status of the neighbouring entries, stated so no reader has to infer it.** At the time this entry was
+written, DL-102 was the governing record, DL-111 and DL-116 restated it, and DL-108 recorded the split
+and remained superseded. **All of that is now superseded by DL-127**, which reinstates a directory split
+in the one form the recursion argument below actually permits: all four scripts one level down, the
+shared parent empty, and production resolving the schema location alone. DL-108 remains superseded even
+so, because it moved the seeds outside the module's delivery pattern rather than inside it.
 
 *Cited by:* `application.yml`, `application-local.yml`, `application-test.yml`, `application-prod.yml`,
 `src/test/resources/application-test.yml`, `db/migration/.gitkeep`,
-`db/migration/V3__seed_reference_data.sql`, `db/migration/V4__seed_user_security.sql`. The governing
-arrangement is DL-102; the applied-state control that replaces the split's intent is the production
-rejection callback recorded beside the sealing decision in DL-110.
+`db/migration/seed/V3__seed_reference_data.sql`, `db/migration/seed/V4__seed_user_security.sql`. The applied-state
+control that stands behind the configuration controls is the production rejection callback recorded
+beside the sealing decision in DL-110.
+
+*Status.* **Superseded by DL-127.** The third attempt this entry was written to prevent is the one that
+succeeded, and it succeeded by answering the recursion argument rather than by ignoring it: the argument
+holds only while a script sits in the shared parent, and no script does any longer. The inverted guards
+this entry installed are inverted back, each asserting the opposite statement, and DL-127 enumerates
+them. This entry is retained in full because the round trip it records is the most useful thing in it -
+the arrangement has now been argued in both directions three times, and DL-127 explains which premise
+each argument shares and which conclusion was wrong.
 
 
 ### DL-120 - The continuous-integration workflow runs one linear sequence of gates, with no skip switch, no tolerated failure, and unconditional execution everywhere except artifact upload
@@ -3208,6 +3260,515 @@ behaviour without naming the flags, so the reasoning survives and the verificati
 *Cited by:* `.github/workflows/carddemo-java-ci.yml`, `pom.xml` at the coverage-plugin destination
 properties. The goal-ordering constraint this preserves is DL-069, and the locale determinism the second
 gate exercises is DL-118.
+
+### DL-127 - The seed migrations move into a profile-scoped location, because the reason the split failed twice was the shared parent and not the mechanism
+
+**What the review found, and why it is right.** A checkpoint review scored the schema-evolution
+arrangement as an AAP-compliance failure and named five files: `FlywayConfig.java`, the three profile
+overlays and the shared baseline. The finding is that the plan's structural-decisions list requires
+`FlywayConfig` to resolve `V3` and `V4` **from profile-scoped locations**, so that a production
+deployment migrates schema and indexes without inheriting sample data or seeded credentials, and that
+the delivered class instead carried Javadoc expressly rejecting that mechanism in favour of a shared
+flat location plus `spring.flyway.target=2`. Its ruling on the substitution is quoted here because it
+is the sentence that settles a question DL-102, DL-111, DL-116 and DL-119 each answered the other way:
+equivalent intent cannot replace the specified mechanism.
+
+**Why the two previous withdrawals were reasoned correctly and concluded wrongly.** Every one of those
+entries rests on a single true observation: a Flyway location is scanned **recursively**, so while any
+script sits directly in the shared parent `db/migration`, no location list can separate the seeds from
+the schema, and a deployment that resolves the parent applies the whole ascending sequence whatever
+folder each script came from. That observation is correct, and it was verified again here - resolving
+`classpath:db/migration` against PostgreSQL 16 reports all four scripts, and reports them under
+*different* script names (`schema/V1__create_schema.sql` rather than `V1__create_schema.sql`), so the
+parent is not merely permissive but records a different history. What the observation actually supports,
+though, is that the **schema** scripts must move down as well. Both previous attempts left `V1` and `V2`
+in the parent and moved only the seeds, which is why the parent stayed reachable and the boundary stayed
+notional. The conclusion drawn - abandon the location mechanism - does not follow from the premise.
+
+**Decision.** All four scripts move one level down into two sibling locations, and the shared parent is
+left holding no script at all:
+
+- `classpath:db/migration/schema` - `V1__create_schema.sql`, `V2__create_indexes.sql`. Resolved by every
+  profile, including production.
+- `classpath:db/migration/seed` - `V3__seed_reference_data.sql`, `V4__seed_user_security.sql`. Resolved
+  by the local and test profiles only. `FlywayConfig.resolveLocations` **refuses** it while the
+  production profile is active, and refuses the shared parent on the same ground, since a location above
+  the split reaches the seeds through the child directory.
+
+With the parent empty, the recursion has nothing to cross. Verified against PostgreSQL 16 before the
+change was recorded: a production-shaped location list resolves exactly `V1` and `V2`, and the seeds
+appear in no state at all - not applied, not pending, not above target, not resolved. That is a stronger
+statement than the previous arrangement could make, where both seeds were resolved and reported and
+withheld only by a version comparison.
+
+**The version ceiling is retained, and it is retained deliberately rather than left behind.** The
+migration specifications for `V3` and `V4` each name `spring.flyway.target=2` as the production control
+and each permit "equivalent version-aware or filename-aware filtering"; the shared baseline and the
+production overlay both still declare it, and `FlywayConfig.resolveTarget` still refuses a production
+ceiling that reaches version 3 or beyond. Both controls are therefore in force. They are not redundant,
+because they are defeated by different mistakes: renumbering a seed at or below 2 defeats the ceiling
+and not the location list, while a merged profile list or a command-line override that adds the seed
+location defeats the location list and not the ceiling. What has changed is the order of precedence. A
+location a profile never lists is not a value an operator can widen; a ceiling is exactly that. The
+location is the mechanism and the ceiling is the belt behind it.
+
+**What was reconciled, stated plainly because the tension is real.** The specifications for `V3` and
+`V4` each say in terms that no subdirectory be created, and each fixes its script's delivered path in
+the parent. Two things about the delivered change bear on that. The file **names** are unchanged, which
+is the constraint both specifications state as load-bearing - each is a Flyway log token that a
+compose bring-up check reads out of the history table, and Flyway records the script name relative to
+its location, so a child listing reproduces exactly the names the flat layout produced. And both
+directories remain inside the plan's own delivery pattern for this module, `db/migration/**.sql`, whose
+`**` anticipates nesting. What could not be preserved is the subdirectory prohibition itself, because it
+and the profile-scoped-location requirement cannot both hold: the prohibition exists only to explain why
+the location mechanism was thought unimplementable, and moving the schema scripts down removes that
+reason. The named structural decision in the plan governs over a path listing, and the review has ruled
+on which reading is binding.
+
+**The inverted guards are inverted back, which is most of the work.** DL-119 left behind assertions
+whose purpose was to make a third attempt at the split *fail a test*: two withdrawn folder names kept as
+constants asserted to deliver nothing, a guard reporting any script in a subdirectory, and per-document
+assertions that every profile declares exactly the parent. Each is now an assertion of the opposite
+statement, and each is stronger than what it replaced. The new guards require the schema location to
+carry the schema scripts and nothing else, the seed location to carry the seeds and nothing else, the
+shared parent to carry no script at all, the two locations to be siblings with neither inside the other,
+the two non-seeding documents to declare the schema location alone and not the seed location, the two
+seeding documents to declare both, and no document to resolve the parent in any spelling. The
+integration tier gained the sharpest of them: removing the ceiling entirely from a production-shaped
+location list still seeds nothing, where under the previous arrangement the same test proved that ten
+known sign-on identities land.
+
+**Status of the neighbouring entries.** DL-108 recorded a split and was superseded twice; the
+arrangement it reached for is now delivered, but by a different topology - it moved the seeds to
+`db/seed`, outside the plan's delivery pattern, while this entry keeps both halves inside
+`db/migration` - so it remains superseded rather than reinstated. **DL-102, DL-111, DL-116 and DL-119
+are superseded by this entry.** Their shared premise about recursion is retained and is quoted in the
+delivered comments, because it is the reason the parent must stay empty; only their conclusion is
+reversed.
+
+*Cited by:* `config/FlywayConfig.java`, `application.yml`, `application-local.yml`,
+`application-test.yml`, `application-prod.yml`, `src/test/resources/application-test.yml`,
+`db/migration/.gitkeep`, `db/migration/schema/V1__create_schema.sql`,
+`db/migration/schema/V2__create_indexes.sql`, `db/migration/seed/V3__seed_reference_data.sql`,
+`db/migration/seed/V4__seed_user_security.sql`, `domain/TransactionType.java`,
+`support/AbstractPostgresIT.java`, `config/FlywayConfigTest.java`,
+`config/FlywayConfigCoverageTest.java`, `config/ConfigurationProfileBaselineTest.java`,
+`config/ApplicationProfileStartupTest.java`, `config/SeedMigrationIT.java`,
+`config/SeededIdentifierSealingIT.java`, `config/ProductionSeedRejectionCallbackIT.java`. The
+applied-state control that stands behind both configuration controls is the production rejection
+callback recorded beside the sealing decision in DL-110.
+
+
+---
+
+### DL-121 - A keyed read of a nonunique alternate index becomes a bounded, base-key-ordered finder, and the supporting indexes are deliberately left alone
+
+**Context.** Two of the three legacy alternate indexes are declared `NONUNIQUEKEY` with `UPGRADE`:
+`CARDAIX` over the card cluster on the account identifier at `KEYS(11 16)`, and `CXACAIX` over the
+cross-reference cluster on the same identifier at `KEYS(11,25)`. Their Java counterparts were declared
+as finders returning an unbounded, unordered list, on the reasoning that the alternate key admits
+duplicates and that choosing one row out of several is a service-layer decision.
+
+**What the source actually does, which settles it.** Every legacy consumer of either path issues a
+single keyed `EXEC CICS READ`, never a browse: the bill-payment, transaction-add and account-view
+programs against the cross-reference path, and the card-detail program against the card path. A keyed
+read of a duplicate-bearing alternate index returns exactly one record, and which one is defined - the
+first in ascending *base*-key order. So the legacy behaviour is not "every match, and the caller
+decides"; it is "one match, and the structure decides which".
+
+**Why leaving that to the service layer was wrong rather than merely lax.** Handing a caller an
+unordered list to take the head of makes the result depend on plan shape, on insertion history and on
+whether a vacuum has run. Nothing in a relational query guarantees first-row identity or any ordering
+among duplicates without an `ORDER BY`. The legacy read is deterministic; the translation was not, in
+exactly the case where determinism is the contract. It also duplicated the same head-of-list decision
+into every future caller, where each one could get it wrong independently.
+
+**Decision.** Both finders become bounded and explicitly base-key ordered, and their names say so:
+`findFirstByCardAcctIdOrderByCardNumAsc` returning `Optional<Card>`, and
+`findFirstByXrefAcctIdOrderByXrefCardNumAsc` returning `Optional<CardCrossReference>`. The empty
+`Optional` is the analogue of the legacy not-found response, so no exception is raised at this layer.
+A single-valued *unbounded* derived query was rejected: it raises an incorrect-result-size failure the
+moment a second row exists, which is a failure the legacy system cannot produce.
+
+**The card repository keeps its paged overload, and the cross-reference repository still has none.**
+`Page<Card> findByCardAcctId(String, Pageable)` is the browse translation the migration plan names
+literally, and it stays - unchanged in name, shape and caller-supplied size and sort - for genuine
+browse consumers. The cross-reference path has no legacy browse at all, so it gains no paged form; the
+card-list screen browses the *base* cluster and filters by account after the read, so it uses the
+inherited paged `findAll` rather than either method.
+
+**The two supporting indexes are deliberately not widened.** Making
+`idx_card_cross_reference_xref_acct_id` a composite over the account identifier and the card number
+would let the ordering be satisfied from the index instead of by sorting the handful of rows the
+account owns. It was declined: the estate declares exactly three alternate indexes and the delivered
+migration emits exactly three B-tree indexes to match, so changing one into a composite alters a
+delivered migration for a plan-shape gain that no measured baseline asks for. The same reasoning
+applies to `idx_card_card_acct_id`.
+
+*Cited by:* `repository/CardRepository.java`, `repository/CardCrossReferenceRepository.java`. The index
+inventory this preserves is `V2__create_indexes.sql`.
+
+---
+
+### DL-122 - The report range is read a slice at a time, and a redundant pre-bound is what lets the timestamp index constrain both ends
+
+**Context.** The batch report's selection reproduces a sort specification that types the processing
+*date* as ten characters at one-based offset 305 over a 26-character column, and filters inclusively
+between two ten-character parameters. DL-era reasoning had already established the asymmetric
+predicate that makes that faithful - a bare column on the lower bound, a ten-character `SUBSTRING` on
+the upper - because comparing the full 26-character value against a ten-character end date would drop
+every transaction processed *on* the end date. Two consequences of that shape were left unaddressed.
+
+**First consequence: the range was materialised whole.** The bounds come from an operator-supplied job
+parameter and the table is append-only - the posting run, the interest run and the online add path only
+ever add rows. The number of rows a range selects is therefore unbounded in principle and grows for the
+life of the deployment, so a `List` return made the reporting job's memory a function of accumulated
+history and of how wide a range somebody typed.
+
+**Decision on the first.** The method returns a `Slice` and takes a `Pageable`. A slice rather than a
+page because a page carries a total count, which costs a second aggregate over the same range on every
+fetch and which the report has no use for: it breaks its pages and its totals from the rows themselves,
+line by line. The ordering gains a second term - the transaction identifier - because card number is
+not unique across transactions and an ordering on it alone lets a row be returned twice or skipped as
+the reader advances. That is faithful rather than additive: the legacy sort declares one key and no
+`EQUALS` option, so it guarantees nothing about the relative order of records sharing a card number,
+and any total order refining the declared key is admissible. The declared ordering sits in the query
+text, so a sort carried on the pageable is appended after it and can only refine an already total
+order.
+
+**Second consequence: the upper bound could not reach the index.** A predicate over a *function* of a
+column cannot bound an index built on the column, so the authoritative `SUBSTRING` comparison left the
+index entered at the start date and read to the end of the table, with every later row fetched,
+discarded and then sorted. The plan was measured rather than assumed: without a pre-bound the engine
+chooses a sequential scan and carries both predicates as filters.
+
+**Decision on the second.** A third, redundant predicate compares the bare column against the end date
+concatenated with sixteen nines. Its right-hand side mentions no column, so it is evaluated once and
+used as the index's upper bound; the measured plan becomes an index scan whose index condition carries
+*both* ends, with the ten-character comparison retained as the filter that decides membership.
+
+**The pre-bound is never the authority, and its safety is proved from the layout rather than assumed.**
+It only has to be wide enough never to exclude a row the authoritative predicate keeps. A populated
+processing timestamp is a ten-character date, a separating space, then a time of day, so its eleventh
+character is a space; an unprocessed transaction is blank throughout. Under byte ordering the
+comparison is decided at the first differing character: equal date prefixes hand the decision to the
+eleventh character, and a space is below the digit nine. Under a language-aware collation, which weighs
+digits ahead of spaces and punctuation, the pre-bound contributes the date's digits followed by sixteen
+nines while a stored value contributes the same digits followed by the time's, of which the first is
+the tens digit of an hour and so at most two. The pre-bound is the greater value either way. Both
+orderings were checked because the delivered stack pins one of them and the test containers do not: the
+compose database is initialised to byte ordering on purpose, so that sorted output can be compared byte
+for byte against the legacy baselines.
+
+**The invariant this rests on is written into the method, because a writer could break it silently.**
+A stored processing timestamp is either blank throughout or carries a space in its eleventh character.
+Widening the filler, or replacing it with a character a language-aware collation ignores, breaks the
+second argument; shortening it below the sixteen characters that follow the date prefix breaks the
+first. The neighbouring card-number invariant is recorded in the same place for the same reason: the
+report's single ascending ordering is faithful to a sort that types those bytes as zoned decimal *only*
+while every stored card number is sixteen zero-padded unsigned digits, and a shorter or signed value
+would reorder the report without breaking anything a compiler or an unwitting test would notice.
+
+**A deviation from this file's own generation brief, recorded rather than smoothed over.** The brief
+for the transaction repository fixed the range query's return type as a list and prohibited a paged
+overload. The migration plan fixes neither, and the review that reported both consequences above
+governs the point, so the return type changed. The brief's *countable* constraint was honoured
+literally: the interface still declares exactly two methods, because the pre-bound is derived inside
+the query text instead of becoming a third parameter that every caller would have to compose
+correctly.
+
+*Cited by:* `repository/TransactionRepository.java`. The index it now bounds on both sides is
+`idx_transaction_tran_proc_ts` in `V2__create_indexes.sql`.
+
+---
+
+### DL-123 - The first failed validation ends the report-request turn, and the decision to accumulate several is withdrawn
+
+**Context.** The report-request translation collected more than one field failure in a turn. The
+reasoning recorded at the time was that the six independent range tests are written as six separate
+`IF` statements rather than as one evaluation, so each ought to be able to report its own field, and
+that the two-state field contract - not supplied, versus supplied wrongly - needed several entries to
+be worth having. A gate was kept between *stages* so that the date-validation subprogram was never
+handed a date assembled from a part already faulted, and that gate was believed to be the whole of the
+fidelity requirement.
+
+**What the source actually does.** Every failure site performs the send paragraph. The send paragraph
+ends with `GO TO RETURN-TO-CICS`. The return paragraph issues `EXEC CICS RETURN`. So the task **ends**
+at the first failure: the paragraph that performed the send never resumes, and everything sequenced
+after that `PERFORM` is unreachable. In the operator-supplied arm that is a great deal of work - the
+numeric normalisation of all six date parts, the five range tests after the first failing one, the
+assembly of both ten-character dates, both subprogram calls, the four substitution slots, the
+report-name assignment and the submission attempt. The earlier reading had the reachability boundary in
+the wrong place: it is not between stages, it is at the first failure.
+
+**Why the difference is observable and not merely structural.** Three things changed for a caller.
+The response could carry field errors the legacy screen never emitted together. The echoed input was
+mutated by a normalisation the legacy never performed on a turn it had already faulted, so a client
+redisplaying the echo would show values the operator never typed. And the end-date validator could be
+called after the start date had already failed, producing a second, derived failure on top of the real
+one.
+
+**Decision.** The send raises a turn-ended marker, and every site that could otherwise continue tests
+it and returns. The six range tests return after faulting; the end-date subprogram call is reached only
+when the start date was accepted; the operator-supplied arm returns after each stage that could have
+faulted; the acknowledgement block and the whole card-emitting path are gated on the same marker.
+
+**Why a marker and not an exception.** A jump out of a call stack has no Java equivalent, and an
+exception was rejected because ending a turn is the *ordinary* outcome here - the successful
+acknowledgement send ends the turn too. Modelling it as a throw would make every normal turn look like
+a fault to every caller, every logger and every error-handling boundary. The marker is deliberately
+separate from the error flag for the same reason: the acknowledgement raises the marker without raising
+the flag, so folding them together would have made success indistinguishable from failure.
+
+**What survives from the withdrawn decision.** The two-state field contract is untouched: a field is
+still reported as MISSING or INVALID, with its own byte-exact text and its own cursor position. There
+is simply at most one such report per turn, which is the legacy's own cardinality. The latch that keeps
+the summary message and the cursor position on the *first* failure also survives, and is now
+structurally redundant rather than load-bearing - kept because it states the invariant at the point
+where it could otherwise be broken.
+
+*Cited by:* `service/ReportRequestService.java`, and its covering suite
+`ReportRequestServiceTest.TheFirstFailedValidationEndsTheTurn`, whose assertions check both halves of
+the contract: that the reported failure is the one the legacy would have shown, and that the work the
+legacy never reached did not happen.
+
+---
+
+### DL-124 - The production migration state is one exact point, not an upper bound, and the guard now refuses falling short as well as reaching too far
+
+**Context.** Two guards hold the production database to the delivered schema: one over the migration
+location and one over the version ceiling. Both were written against a single threat - that a merged
+environment, an operator override or a co-activated overlay would let the two seed scripts reach
+production, seeding fifty synthetic customer rows carrying regulated identity data and ten known
+sign-on identities. Read that way, "at most version two" and "a location beneath the delivered one" are
+both perfectly safe, and both were accepted.
+
+**The failure that reading admits.** Production is not an upper bound; it is an exact state - the four
+delivered scripts, resolved from the one canonical location, applied up to and including version two.
+A ceiling of one satisfies "at most two" and applies only `V1__create_schema.sql`, so the three
+alternate-index equivalents and the six foreign keys in `V2__create_indexes.sql` are never created. An
+absent location list, a nested sub-path, a file-system descriptor or a prefix-less spelling each
+resolve fewer than the four delivered scripts, with the same effect.
+
+**Why nothing downstream would have caught it.** Hibernate is fixed at schema *validation*, and
+validation inspects tables and columns. It does not inspect indexes and it does not inspect
+constraints. A production deployment migrated to version one would start, pass validation, report
+healthy, serve every request - and run every access path the module was measured against as an
+unindexed scan with no referential integrity behind any of it. There is no later gate: the seeded-database
+refusal callback answers a different question, and the coverage and contract suites run against a
+database migrated by the test profile.
+
+**Decision.** Both guards now require an exact state under production. The ceiling must parse to
+exactly version two: a higher ceiling, a lower one, the seeding marker, any predefined marker, an
+unreadable value and an absent value are all refused. The location list, after blank and `null` entries
+are discarded, must be exactly the one canonical descriptor: an empty or absent list, an additional
+location beside it, a nested sub-path beneath it, a file-system descriptor addressing the same
+directory and a prefix-less spelling are all refused.
+
+**Two deliberate tolerances, so the guard refuses wrong configuration rather than untidy
+configuration.** Blank and `null` list entries are ignored before the comparison, because a
+comma-separated property list frequently produces one and an empty entry addresses nothing. The ceiling
+is compared as a *parsed* version rather than as text, so a padded or differently spelled spelling of
+the same version is accepted while a different version is not.
+
+**The completion half is deliberately left permissive, and the asymmetry is the point.** For local and
+test the resolver still appends the canonical location when the bound list does not already resolve it,
+and it still recognises every spelling of the directory when deciding whether it is already there. That
+predicate's job is to avoid appending a duplicate, not to constrain anything, so tightening it would
+make a legitimate local configuration fail for no benefit. The two halves now answer two different
+questions, which is why the strict comparison is written separately rather than by narrowing the
+existing predicate.
+
+**Three tests that asserted the old leniency were re-aimed rather than deleted.** They had encoded the
+four near-miss location spellings as acceptable, a ceiling of `1.1` as acceptable, and an absent
+location list under production as resolving to nothing. Each now asserts the refusal, and each carries
+the reason in its own comment so the change is not mistaken for a tightening without cause. Two new
+cases were added for the state that was previously reachable: a ceiling of one, and a list that
+addresses nothing in each of its four forms.
+
+*Cited by:* `config/FlywayConfig.java` and `FlywayConfigTest`. The one-location-plus-ceiling arrangement
+this enforces is DL-102, restated in DL-111 and DL-116, and the directory-split round trip it replaces
+is DL-119.
+
+---
+
+### DL-125 - The user-security fixture keeps its geometry and loses its credential, and the absence is asserted rather than trusted
+
+**Context.** The provisioning job carries its ten sign-on identities in stream as fifty-seven-character
+cards, and the record layout pads each to eighty. That content was reproduced into a committed
+fixture - eight hundred bytes, ten records - byte for byte, including the one shared eight-character
+password literal every card carries. The reasoning was fidelity: the fixture is derived from the job
+and reproducing it exactly is what makes it evidence.
+
+**Why fidelity was the wrong test to apply here.** The requirement that no credential is hardcoded is
+not satisfied by a credential being *faithful*. Reproducing the literal put a working, reusable secret
+into version control in the most directly extractable form there is: a fixed offset in a fixed-width
+file, identical on all ten records. The seed migration was already correct - it stores BCrypt digests
+and never the literal - so the fixture was the only artefact in the module from which the value could
+be lifted, and it undid what the seed had been careful about.
+
+**Decision.** The credential window carries a fixed structural placeholder of exactly the same width.
+Everything else is unchanged: the eight hundred bytes, the ten records, the eighty-byte stride, the
+absent line terminator, the ten identifiers in the order the job writes them, both name fields, the
+five-and-five role split and the blank filler from character fifty-seven to eighty. So the fixture is
+still the record-geometry evidence it was created to be, and the mapper still reads a full-width slice
+where the layout says one is.
+
+**Why substitution rather than deletion, which was the other option.** Deleting the fixture removes
+today's copy of the literal and does nothing about tomorrow's. The substituted fixture carries two new
+assertions instead: the credential window must equal the placeholder on every record, and the legacy
+literal must not appear anywhere in the file in any case. Those turn the property into something the
+build enforces, which deletion could not. Positively asserting the placeholder also matters more than it
+looks: the previous assertions - non-blank, full width, identical across records - were all equally true
+of the credential, so they could not have detected it.
+
+**The literal is named once, in the test that forbids it.** Asserting an absence requires writing the
+value down. It is declared as a single constant in the fixture suite with a comment stating that its
+only purpose is to be forbidden, and nothing reads it as an authentication input. The seed's digests are
+digests of the legacy literal, so the placeholder authenticates against nothing.
+
+*Cited by:* `src/test/resources/fixtures/input/usrsec.txt` and
+`FixtureContractTest.TheDerivedCredentialFixture`. The seeded digests this leaves untouched are
+`V4__seed_user_security.sql`.
+
+---
+
+### DL-126 - A cross-reference row renders no value at all, because a partial redaction is an assurance rather than a control
+
+**Context.** The cross-reference entity withheld its card number from the diagnostic rendering - that
+value is a primary account number - while rendering the customer identifier and the account identifier
+in full. The reasoning was that those two are internal keys naming no cardholder and revealing no
+instrument, and that a diagnostic unable to say which account a row points at explains nothing.
+
+**Why that reasoning does not hold for this entity in particular.** This row's entire purpose is to
+resolve a card number to those two identifiers. A rendering that names them is therefore one join away
+from the value it was careful not to print, and the join is against a table the same application
+already has open. The withheld field and the rendered fields are not independent here; they are the two
+sides of one mapping.
+
+**The second problem is what a partial redaction communicates.** A rendering that visibly redacts one
+field reads as a considered judgement that rendering the entity is safe - which is exactly the belief
+that leads an author to put an instance into a log line, an exception message or an assertion. A
+control that encourages the behaviour it exists to constrain is not a control.
+
+**Decision.** All three fields render as the same placeholder. The type name and the field names are
+kept, because identifying *what* reached a diagnostic is the one thing a rendering is legitimately for;
+*which* row it was is not carried at all. Code that has to identify a specific row must name the value
+it chose to disclose, deliberately, at that site. Every accessor still returns its value untouched, so
+nothing stored, mapped or transmitted changes.
+
+**The covering test asserted the opposite and was withdrawn with the exposure.** It positively required
+both resolved identifiers to remain visible, so it would have failed this change and, left as it was,
+would have held the exposure in place permanently. It now requires that no field value of either seeded
+row appears in the rendering, in whole or in a six-character fragment, and adds the strongest available
+statement of the property: two rows that agree on nothing must render identically, which cannot be true
+of a rendering carrying anything row-specific.
+
+**What this does not close.** The schema applies no field-level protection to the card number and the
+migration introduces none, because the legacy design applies none and inventing one would be feature
+expansion. That residual gap is decision D-14 and remains open. This entry settles only that an
+unintended rendering is not the thing that widens it.
+
+*Cited by:* `domain/CardCrossReference.java`, `CardCrossReferenceTest.DiagnosticRendering`. The
+placeholder vocabulary is the one `domain/Card.java` and the DTO layer already use.
+
+---
+
+### DL-129 - One scrape target per deployment, because a candidate list makes a dead target permanent and a live pair doubles the baseline
+
+**Context.** The application scrape job listed two targets in one static configuration: the compose
+service name for an application running as a container beside the stack, and the host-gateway address
+for one running directly on the host. The intent was convenience - whichever address happens to be live
+gets scraped, and every series carries the same job label either way.
+
+**What that actually produces, in both of its two states.** The compose file in this module defines
+postgres, localstack, jaeger, prometheus and grafana, and no application service. The container address
+can therefore never resolve here, so it is a permanently failed target: the scrape-health view is
+permanently red, which trains a reader to ignore the one view that says whether the performance gate has
+data at all. And if an application container were later added and both addresses reached a process, both
+series sets would carry the same job label and differ only by instance - so every sum-by aggregation the
+provisioned dashboard is built from would count a process twice. Those aggregations are request rate,
+batch throughput, heap used and heap committed: throughput and memory are exactly the two figures the
+performance gate records. A doubled baseline is worse than a missing one, because it looks credible.
+
+**Decision.** The application job carries exactly one target, and which address it is a deployment
+choice made by editing this file rather than a list for Prometheus to try. The delivered target is the
+application's compose service name reached over the project network, because the compose stack in this
+module publishes that service, so the address resolves without a host-gateway fallback. Collecting from
+an application started on the host instead means *replacing* that target, not adding to it - and it
+belongs to a job of its own, with its own name and its own evidence queries, because a second entry in
+this job would double every series whenever both answered.
+
+**Two things deliberately not changed.** The job name stays `carddemo-app`, because every panel in the
+provisioned dashboard selects on it and renaming it empties all of them while the stack still reports
+healthy. And the loopback address remains explicitly excluded, since inside the Prometheus container it
+resolves to Prometheus itself - a scrape that succeeds at the transport level and yields nothing, which
+surfaces only as an empty gate write-up.
+
+**Verified by running it, not by reading it.** A throwaway Prometheus was started on a
+clone-index-derived port against this file, with the application running on the host, and the shared
+stack was left untouched. Its target API reported exactly one target in the application job, up;
+`count(up{job="carddemo-app"})` and `count(count by (instance) (up{job="carddemo-app"}))` both returned
+one, which is the property that makes the job-level sums single-counted; and the heap and per-endpoint
+aggregations the dashboard uses each resolved to a single credible figure. Both throwaway containers were
+removed afterwards.
+
+*Cited by:* `config/prometheus/prometheus.yml`. The job selector it preserves is
+`config/grafana/dashboards/carddemo-overview.json`; the service it addresses is the `app` service in
+`docker-compose.yml`, and the host-gateway mapping on the Prometheus service remains available for the
+separate job a host-mode collection would need.
+
+---
+
+### DL-128 - Eighteen artefacts published ahead of their processing position are absorbed and reviewed rather than reset, because the alternative destroys mandated deliverables
+
+**Context.** A checkpoint review found that eighteen paths outside its declared processed range had been
+modified by the same commit that delivered the range: sixteen test classes, the provisioned Grafana
+dashboard, and this log. Its finding is correct as stated - those contents were not covered by that
+review's file-by-file pass - and the resolution it suggested was to move them to their owning checkpoint
+or reset them from the branch before publication.
+
+**Two constraints decide what "resolving" it can mean here, and they point the same way.** The
+publication contract this work runs under prohibits history-altering git operations outright - no
+rebase, no reset, no force - in the repository and in every submodule, so a reset is not available. And
+the migration plan mandates each of the eighteen by pattern: the test tree, the observability
+configuration directory, and this document are all named as deliverables to create. So the only reset-like
+action available - deleting them in a further commit - would delete mandated artefacts.
+
+**What deleting them would actually cost, stated concretely rather than as a worry.** Fifteen of the
+sixteen test classes are the covering suites of production files *inside* the reviewed range: the
+exception handler, four screen contracts, the reject-record writer, the AWS properties holder, the
+entity mapping inventory, the transaction entity, both concurrency-token services, the menu and
+report-request services, the named fixtures, and two record mappers. They contribute 1,086 executing
+assertions. Removing them would drop coverage that the enforced floor depends on, and would remove the
+verification of work the same review passed. This log is cited by forty-seven production sources by
+decision number, so deleting it would break every one of those citations - including the citations three
+of this session's own fixes add. The dashboard is the artefact the metrics job's own topology decision is
+verified against, and it is mounted by the compose stack.
+
+**Decision.** The eighteen stay, and the review's underlying concern - unreviewed content on the branch
+- is answered by reviewing them here rather than by removing them. Every one was read and audited in
+this session: each Java file carries the exact fourteen-line licence header, none imports from the
+pre-Jakarta namespace, none uses a wildcard or star import, none carries a warning suppression, none
+contains a placeholder, a deferred-work marker or a hardcoded credential, and all sixteen execute in the
+suite with no failure, no error and nothing skipped. Reflection appears in four of them and is
+legitimate and in scope: it is used to assert record components, a handler's declared methods and the
+constructors of static-only utility classes, and the unsafe-code audit is explicitly scoped to
+production sources, where the count remains zero. The dashboard parses as JSON, declares eleven panels
+and is wired by the provisioning provider the compose stack mounts.
+
+**Two of the eighteen were changed again in this session, deliberately.** The report-request suite gained
+the eight cases that hold the corrected turn-termination contract, and the named-fixture suite gained the
+two that forbid the credential literal. Both are the covering suites of production files fixed in this
+same pass, and a fix without its covering assertions would be the weaker outcome of the two available.
+
+**What is not claimed.** This does not make the eighteen part of the range that review covered, and it
+does not overturn the finding. It records that the artefacts are mandated, that the suggested remedy is
+unavailable and its available approximation destructive, and that the content has now been reviewed and
+is owned. A reviewer re-checking this should expect the paths to still be present.
+
+*Cited by:* nothing in code - this entry exists so the disposition is on the record rather than inferred
+from a diff.
 
 ---
 

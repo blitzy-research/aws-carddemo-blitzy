@@ -17,10 +17,13 @@
 --
 -- Loads the nine measured ASCII reference datasets of the legacy estate into the schema created by
 -- V1__create_schema.sql and constrained by V2__create_indexes.sql. Exactly 626 rows across exactly
--- nine tables, and nothing else. All four migrations are intentionally flat in the one directory
--- db/migration: directory-scoped Flyway locations alone cannot separate V3/V4 from V1/V2, so production
--- must enforce spring.flyway.target=2 (preferred) or equivalent version-aware or filename-aware
--- filtering. Do not create a subdirectory. See PROFILE APPLICABILITY below:
+-- nine tables, and nothing else. This file lives in db/migration/seed, a location that ONLY the local
+-- and test profiles resolve and that production is refused outright; the schema scripts live beside it
+-- in db/migration/schema, which every profile resolves. Production ALSO enforces
+-- spring.flyway.target=2, so the location and the ceiling are belt and braces rather than alternatives.
+-- Do not place a script in the shared parent db/migration: a location is scanned recursively, so a
+-- script there - or a profile that listed the parent - would reach across the split. See PROFILE
+-- APPLICABILITY below:
 --
 --     customer                      50      account                       50
 --     card                          50      card_cross_reference          50
@@ -37,22 +40,28 @@
 -- They exist so that the eight validation gates can be executed locally against a real database with
 -- no mainframe and no production system in the loop. They are deliberately unavailable to production.
 --
--- HOW THAT IS ENFORCED - A PROFILE-SCOPED LOCATION, A VERSION CEILING BESIDE IT, AND TWO REFUSALS IN
--- CODE BEHIND BOTH.
+-- HOW THAT IS ENFORCED - A PROFILE-SCOPED LOCATION FIRST, A VERSION CEILING BEHIND IT, AND REFUSALS
+-- IN CODE BEHIND BOTH.
 --
---   The four migrations occupy ONE FLAT LOCATION and the separation is by VERSION, which is what this
---   file's own specification requires: the four migrations are physically flat in one db/migration
---   directory, no subdirectory is to be created, and production must enforce spring.flyway.target=2.
---   What AAP 0.3.1 and 0.4.2 call profile-scoped resolution - "FlywayConfig resolves V3 and V4 from
---   profile-scoped locations so a production deployment migrates schema and indexes without inheriting
---   sample data or seeded credentials" - is delivered as a profile-scoped CEILING:
+--   The separation is by LOCATION, which is what AAP 0.3.1 and 0.4.2 require - "FlywayConfig resolves
+--   V3 and V4 from profile-scoped locations so a production deployment migrates schema and indexes
+--   without inheriting sample data or seeded credentials" - and the version ceiling is retained behind
+--   it:
 --
---       classpath:db/migration  -> declared by EVERY profile
+--       classpath:db/migration/schema  -> resolved by EVERY profile
 --           V1__create_schema.sql             \
---           V2__create_indexes.sql             >  at or below the ceiling: APPLIED everywhere
---       ------------------------------------------- spring.flyway.target: 2 (application.yml, -prod)
---           V3__seed_reference_data.sql       \  above the ceiling: resolved, reported above target,
---           V4__seed_user_security.sql         >  and never applied under production
+--           V2__create_indexes.sql             >  APPLIED everywhere
+--       -------------------------------------------
+--       classpath:db/migration/seed    -> resolved by LOCAL and TEST ONLY; production is REFUSED it
+--           V3__seed_reference_data.sql       \  not resolved under production, therefore never
+--           V4__seed_user_security.sql         >  reported and never applied there
+--       ------------------------------------------- and, behind that, spring.flyway.target: 2
+--                                                   (application.yml, application-prod.yml)
+--
+--   The shared parent db/migration holds NO script. That is what makes the location list a boundary at
+--   all: a location is scanned recursively, so a parent listing would reach the seeds through the child
+--   directory. FlywayConfig therefore refuses the parent under production exactly as it refuses the seed
+--   location itself.
 --
 --   application.yml carries target 2 as the SHARED DEFAULT, so a profile that stays silent inherits a
 --   schema-only migration rather than an unnoticed seeding run, and application-prod.yml re-states it so
@@ -61,29 +70,26 @@
 --   set is exactly {1, 2}, versions 3 and 4 are reported above target, and the migration still validates
 --   successfully - so a pending above-target script is not a condition a deployment has to suppress.
 --
---   WHY A CEILING AND NOT A SEPARATE DIRECTORY. A location is scanned RECURSIVELY, so a directory
---   boundary is not a boundary the migration tool enforces: any deployment that resolved both
---   directories - a merged location list, a wildcard location, a filesystem: location, or an operator
---   running the migration tool directly against the packaged artefact - would apply 1 through 4 in
---   ascending order whatever folder each script came from. An earlier revision of this file did sit in a
---   db/migration/seed directory; that arrangement is withdrawn, because it bought the APPEARANCE of
---   isolation and thereby discouraged setting the pin that actually holds. See docs/decision-log.md
---   DL-119. A version number orders the whole history rather than one folder of it, so it holds however
---   the location list was assembled.
+--   WHY BOTH, AND WHY THE LOCATION COMES FIRST. A script that is never resolved cannot be applied by
+--   any ceiling, and a location a profile never listed is not a value an operator can widen by mistake -
+--   whereas a ceiling is exactly that. A location is scanned recursively, so the split holds only while
+--   the shared parent stays empty; with the parent empty, the recursion has nothing to cross. The ceiling
+--   is kept behind the location because it is the control that still holds if a seed is ever renumbered
+--   or a seed location is ever added back by an override. See docs/decision-log.md DL-127.
 --
---   WHAT MUST NOT CHANGE. Do not raise or remove target on the base or production profile, do not
---   renumber this file to a version at or below 2 - checksum validation is on, so that attempt stops a
---   deployment rather than passing quietly - and do not move this file into a subdirectory. Any further
---   seed script must carry a version above 2. An equivalent version-aware or filename-aware filter is
---   acceptable for a deployment that does not read these profiles; running with no control is not.
+--   WHAT MUST NOT CHANGE. Do not move this file out of db/migration/seed, do not place any script in the
+--   shared parent, do not add the seed location to the base or production profile, do not raise or remove
+--   target on the base or production profile, and do not renumber this file to a version at or below 2 -
+--   checksum validation is on, so that attempt stops a deployment rather than passing quietly. Any
+--   further seed script belongs in this directory and must carry a version above 2.
 --
 --   AND THE CEILING IS CHECKED IN CODE, WHICH IS WHY A CONFIGURATION EDIT ALONE CANNOT REACH THIS FILE.
 --   com.carddemo.config.FlywayConfig inspects the ceiling AFTER it is bound, and under the production
 --   profile it REFUSES to start when that ceiling reaches version 3 or beyond. An absent, predefined or
 --   unreadable ceiling counts as reaching version 3, because the migration tool migrates to the latest
---   version when no ceiling is set: silence is the dangerous case. The same class refuses a resolved
---   location outside classpath:db/migration, because a location the ceiling never measured can carry a
---   script the ceiling does not cap. The controls fail in the same direction and none is relied on
+--   version when no ceiling is set: silence is the dangerous case. The same class refuses any resolved
+--   location outside classpath:db/migration/schema - which refuses this file's own location by name, and
+--   refuses the shared parent too, because a location above the split reaches this file recursively. The controls fail in the same direction and none is relied on
 --   alone: the setting is visible in the profile documents and invisible in code, and the refusals are
 --   unconditional in code and invisible in the documents.
 --

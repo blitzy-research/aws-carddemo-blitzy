@@ -65,7 +65,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Two artefacts are compared, and neither is derived from the other. The subject is the mapping
  * the persistence provider itself computes from the annotations on the entity classes, obtained by
  * bootstrapping Hibernate's metadata offline. The oracle is
- * {@code src/main/resources/db/migration/V1__create_schema.sql}, read through
+ * {@code src/main/resources/db/migration/schema/V1__create_schema.sql}, read through
  * {@link SchemaColumnCatalog}, which parses the shipped data-definition text. The migration is
  * authored by hand and owns the database; the annotations are authored by hand on the entities. They
  * are two independent statements of the same contract, so agreement between them is evidence rather
@@ -1121,10 +1121,16 @@ final class EntityPersistenceMappingTest {
             assertThat(bindingOf(entityFor(table)).getVersion().getName()).isEqualTo("version");
         }
 
-        /** Exactly two of the ten mapped tables carry a counter. */
+        /** Exactly two of the eleven mapped tables carry a counter. */
         @Test
-        @DisplayName("exactly two of the ten mapped tables carry a counter")
-        void exactlyTwoOfTheTenMappedTablesCarryACounter() {
+        @DisplayName("exactly two of the eleven mapped tables carry a counter")
+        void exactlyTwoOfTheElevenMappedTablesCarryACounter() {
+            assertThat(ENTITY_TABLES)
+                    .as("the count in this test's own name is part of the claim, so it is asserted "
+                            + "rather than restated: an entity added or removed must be accounted for "
+                            + "here before the two-of-eleven statement below means anything")
+                    .hasSize(11);
+
             final Set<String> versioned = new TreeSet<>();
             ENTITY_TABLES.forEach((entity, table) -> {
                 if (bindingOf(entity).getVersion() != null) {
@@ -1132,7 +1138,11 @@ final class EntityPersistenceMappingTest {
                 }
             });
 
-            assertThat(versioned).isEqualTo(new TreeSet<>(VERSIONED_TABLES)).hasSize(2);
+            assertThat(versioned)
+                    .as("only the two records the online tier updates in place carry a counter; the "
+                            + "other nine are read, seeded or appended and have nothing to contend over")
+                    .isEqualTo(new TreeSet<>(VERSIONED_TABLES))
+                    .hasSize(2);
         }
     }
 

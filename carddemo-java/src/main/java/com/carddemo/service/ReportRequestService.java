@@ -22,7 +22,6 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,6 +34,7 @@ import com.carddemo.domain.enums.ReportPeriod;
 import com.carddemo.exception.JobSubmissionException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.util.CobolStringUtils;
+import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.JclCardImageBuilder;
 
 /**
@@ -129,12 +129,14 @@ import com.carddemo.util.JclCardImageBuilder;
  *       zero;</li>
  *   <li>this member declares no clear-key arm, so the clear key reaches the catch-all and produces the
  *       invalid-key message; no arm the source lacks was added;</li>
- *   <li>the send paragraph populates the outbound result instead of ending the turn, so a re-submission
- *       can report every faulted field, with the summary message and the cursor position latched at the
- *       first failure to keep the operator-visible pair byte-identical;</li>
- *   <li>within the operator-supplied cascade, accumulation happens inside a stage while the gate between
- *       stages remains the legacy's, so the subprogram is never handed a date assembled from a part
- *       already faulted;</li>
+ *   <li>the send paragraph ends the turn, because the legacy's jumps to the return and the return issues
+ *       {@code EXEC CICS RETURN}; so the <em>first</em> failed validation is the last thing that happens
+ *       in the turn, with the summary message and the cursor position latched from it, and no later
+ *       normalisation, validation, report-name assignment or submission runs;</li>
+ *   <li>consequently the operator-supplied cascade reports at most one field failure per turn, which is
+ *       the legacy's own cardinality: the six emptiness tests are an ordered evaluation that fires once,
+ *       and the six range tests and the two subprogram calls each stop at their own first failure
+ *       because each ends in a send;</li>
  *   <li>the numeric conversion of an argument that is not a well-formed numeric lexeme is undefined in
  *       the language, and the field is left as transmitted so the following numeric test fires.</li>
  * </ol>
@@ -384,30 +386,28 @@ public final class ReportRequestService {
     /** Zero-based offset of the two-digit year within the four-character year, {@code year(3:2)}. */
     private static final int YEAR_SHORT_FORM_OFFSET = 2;
 
-    // ==========================================================================================
-    // Submission loop constants
-    // ==========================================================================================
-
-    /** The one-based first card slot, {@code PERFORM VARYING WS-IDX FROM 1} at line 498. */
-    private static final int FIRST_CARD_SLOT = 1;
+    /*
+     * The emitting loop's own two constants - the one-based first slot at line 498 and the card-slot
+     * ceiling that line also tests, which comes from the JOB-LINES OCCURS 1000 TIMES redefinition at
+     * line 127 - used to be declared here, because the loop was iterated here. It is not: the whole
+     * card stream is now handed to the bridge in one call, so the loop, its guard, its slot index and
+     * its ceiling all live in the bridge, which is also where the sentinel test and the write-error
+     * flag already lived. The full-width sentinel record this file also declared, and the predicate
+     * that compared against it, went with them for the same reason.
+     *
+     * Nothing about the legacy bound or the sentinel is lost: JclCardImageBuilder still publishes the
+     * first slot, the ceiling, the sentinel card and the card width, and the bridge still applies the
+     * sentinel test to a card before writing it, which is what transmits the sentinel. Only the second,
+     * now unreachable, declarations are gone. See writeJobSubmissionTdq for why the stream is published
+     * as one submission.
+     */
 
     /**
-     * The legacy card-slot ceiling tested at line 498. It comes from {@code JOB-LINES OCCURS 1000
-     * TIMES} at line 127, an oversized redefinition laid over a group of only seventeen
-     * eighty-character cards, so it is a defensive upper bound and never the condition that stops a
-     * well-formed submission. It is <strong>not</strong> a tuning value and must not be treated as
-     * one.
+     * Separator between the two date slots of a derived submission identity. An underscore keeps the
+     * identity legible in a diagnostic and cannot be confused with the hyphen the bridge appends the
+     * card slot with when it composes a deduplication identifier.
      */
-    private static final int OVERSIZED_REDEFINE_CARD_BOUND =
-            JclCardImageBuilder.OVERSIZED_REDEFINE_CARD_BOUND;
-
-    /**
-     * The end-of-stream card at its full record width, as the comparison at line 502 sees it: the
-     * five-character sentinel literal extended with spaces to the eighty-character record.
-     */
-    private static final String EOF_SENTINEL_RECORD = JclCardImageBuilder.EOF_SENTINEL_CARD
-            + " ".repeat(JclCardImageBuilder.CARD_IMAGE_WIDTH
-                    - JclCardImageBuilder.EOF_SENTINEL_CARD.length());
+    private static final String SUBMISSION_IDENTITY_SEPARATOR = "_";
 
     /** Accepted affirmative confirmation, upper case, compared at line 478. */
     private static final String CONFIRM_YES_UPPER = "Y";
@@ -855,6 +855,12 @@ public final class ReportRequestService {
             sendTrnrptScreen(state);
         }
 
+        // A send inside any arm above ended the task at line 580, so line 445 is not reached at all
+        // and the acknowledgement below cannot overwrite the failure text the operator was shown.
+        if (state.screenSent) {
+            return;
+        }
+
         if (!state.errorFlag) {
             // Lines 445 to 456: clear the screen, recolour the message field and compose the
             // acknowledgement from the space-delimited report name.
@@ -950,29 +956,43 @@ public final class ReportRequestService {
      * set at line 433, and submission is attempted only while the error flag is clear, at lines 434 to
      * 436.
      *
-     * <p><strong>Accumulation is within a stage; the gate between stages is the legacy's.</strong> In
-     * the source every failure sends the screen and the send jumps to the return, so the task ends and
-     * no later stage runs at all. This translation continues <em>within</em> a stage so that the six
-     * independent range tests can each report their own field, which is what the two-state field
-     * contract needs. It does not continue <em>past</em> a stage into the subprogram calls, and that
-     * restraint is deliberate: handing the subprogram a date assembled from a part the range stage has
-     * already faulted would submit an input the legacy never submitted, and would report a second,
-     * derived failure on top of the real one. The decision is recorded in the decision log.
+     * <p><strong>The first failure ends the turn, and that is true between stages and within
+     * them.</strong> Every failure site in this arm performs the send, and the send closes with
+     * {@code GO TO RETURN-TO-CICS}, which ends the task - so in the source the very first failing test
+     * is the last thing the turn does. Nothing later is normalised, no later bound is compared, neither
+     * subprogram is called, no substitution slot is written, the report name is not set and no
+     * submission is attempted. Each stage below is therefore entered only while the turn is still
+     * running, and the stages that hold several independent tests stop at the first one that fires
+     * rather than reporting all of them: reporting the rest would put field errors in the response that
+     * the legacy never evaluated, and continuing past them would return normalised values it never
+     * produced. The two-state field contract still distinguishes a field that was not supplied from one
+     * supplied wrongly; what it does not do is report more fields in one turn than the legacy screen
+     * could carry.
      *
      * @param state the turn's working storage
      */
     private void operatorSuppliedPeriod(final TurnState state) {
         editSuppliedDateParts(state);
-        normaliseSuppliedDateParts(state);
-        editDatePartRanges(state);
+        if (state.screenSent) {
+            return;
+        }
 
-        // Lines 381 to 386: assemble both ten-character dates from the normalised parts. Assembled
-        // unconditionally, as the source assembles them, so the turn reports back what it built.
+        normaliseSuppliedDateParts(state);
+
+        editDatePartRanges(state);
+        if (state.screenSent) {
+            return;
+        }
+
+        // Lines 381 to 386: assemble both ten-character dates from the normalised parts. Reached only
+        // while the turn is still running, which is the only condition under which the source reaches
+        // the corresponding moves.
         state.startDate = assembleDate(state.startYear, state.startMonth, state.startDay);
         state.endDate = assembleDate(state.endYear, state.endMonth, state.endDay);
 
-        if (!state.errorFlag) {
-            editSuppliedDates(state);
+        editSuppliedDates(state);
+        if (state.screenSent) {
+            return;
         }
 
         // Lines 429 to 432. Each move writes both occurrences of its slot in one statement, so the
@@ -984,6 +1004,9 @@ public final class ReportRequestService {
         state.reportPeriod = ReportPeriod.CUSTOM;
         state.reportName = moveToField(ReportPeriod.CUSTOM.getValue(), REPORT_NAME_WIDTH);
 
+        // IF NOT ERR-FLG-ON PERFORM SUBMIT-JOB-TO-INTRDR at lines 434 to 436. The flag cannot be
+        // raised at this point without the send having ended the turn above, so the test is the
+        // source's own and is kept rather than assumed away.
         if (!state.errorFlag) {
             submitJobToIntrdr(state);
         }
@@ -1045,35 +1068,58 @@ public final class ReportRequestService {
     /**
      * The six range checks at lines 329 to 379.
      *
-     * <p>Six independent tests rather than an ordered evaluation, so every one that fails is
-     * reported. A month must be digits and no greater than the twelfth, a day must be digits and no
-     * greater than the thirty-first, and a year must be digits with no upper bound &mdash; the source
-     * tests no year range. The bound comparisons are text comparisons against the two-character
-     * literals the source writes, matching how it compares its fixed-width fields.
+     * <p>Six separate statements rather than one ordered evaluation, so each is reached only if the
+     * one before it did not fire. A month must be digits and no greater than the twelfth, a day must be
+     * digits and no greater than the thirty-first, and a year must be digits with no upper bound
+     * &mdash; the source tests no year range. The bound comparisons are text comparisons against the
+     * two-character literals the source writes, matching how it compares its fixed-width fields.
+     *
+     * <p>The source writes these as six independent statements rather than as an evaluation, which
+     * would suggest that all six run and all six report. They do not, and the reason is the send: each
+     * failing statement performs it, and the send ends the task, so the first statement to fire is the
+     * last one reached. Each test below is therefore guarded on the turn still running, which reproduces
+     * that without pretending the source wrote an evaluation it did not write.
+     *
+     * <p><strong>Only the first failing test is reported, because its send ends the turn.</strong> The
+     * six statements are written sequentially rather than as an evaluation, which reads as though every
+     * failure would be collected - but each of the six ends in a send, and a send ends the task, so the
+     * five that follow the first failure are never reached. Each test therefore returns after faulting,
+     * which reproduces that reachability exactly.
      *
      * @param state the turn's working storage
      */
     private void editDatePartRanges(final TurnState state) {
+        // IF at lines 329 to 336.
         if (!isAllDigits(state.startMonth) || state.startMonth.compareTo(MONTH_UPPER_BOUND) > 0) {
             faultField(state, MSG_START_DATE_MONTH_INVALID, PROPERTY_START_MONTH, FIELD_START_MONTH,
                     ValidationException.FieldState.INVALID);
+            return;
         }
+        // IF at lines 338 to 345.
         if (!isAllDigits(state.startDay) || state.startDay.compareTo(DAY_UPPER_BOUND) > 0) {
             faultField(state, MSG_START_DATE_DAY_INVALID, PROPERTY_START_DAY, FIELD_START_DAY,
                     ValidationException.FieldState.INVALID);
+            return;
         }
+        // IF at lines 347 to 353.
         if (!isAllDigits(state.startYear)) {
             faultField(state, MSG_START_DATE_YEAR_INVALID, PROPERTY_START_YEAR, FIELD_START_YEAR,
                     ValidationException.FieldState.INVALID);
+            return;
         }
+        // IF at lines 355 to 362.
         if (!isAllDigits(state.endMonth) || state.endMonth.compareTo(MONTH_UPPER_BOUND) > 0) {
             faultField(state, MSG_END_DATE_MONTH_INVALID, PROPERTY_END_MONTH, FIELD_END_MONTH,
                     ValidationException.FieldState.INVALID);
+            return;
         }
+        // IF at lines 364 to 371.
         if (!isAllDigits(state.endDay) || state.endDay.compareTo(DAY_UPPER_BOUND) > 0) {
             faultField(state, MSG_END_DATE_DAY_INVALID, PROPERTY_END_DAY, FIELD_END_DAY,
                     ValidationException.FieldState.INVALID);
+            return;
         }
+        // IF at lines 373 to 379.
         if (!isAllDigits(state.endYear)) {
             faultField(state, MSG_END_DATE_YEAR_INVALID, PROPERTY_END_YEAR, FIELD_END_YEAR,
                     ValidationException.FieldState.INVALID);
@@ -1089,8 +1135,11 @@ public final class ReportRequestService {
      * output area. The selector is the hyphenated ten-character form the work field at line 72 holds;
      * the compact form the procedural copybook uses is a different contract and is not this caller's.
      *
-     * <p>Both calls run, so a bad end date is reported even when the start date is also bad: the
-     * source performs them as two independent statement groups rather than as an evaluation.
+     * <p><strong>The second call is reached only when the first date is accepted.</strong> The two are
+     * written as independent statement groups, but the first group's rejection performs the send, and
+     * the send ends the task, so a rejected start date is the end of the turn and the end date is never
+     * offered to the subprogram at all. Guarding the second call is what keeps the number of
+     * subprogram invocations, and the number of reported failures, the same as the legacy's.
      *
      * @param state the turn's working storage
      */
@@ -1100,6 +1149,7 @@ public final class ReportRequestService {
                 DateFormat.YYYY_MM_DD))) {
             faultField(state, MSG_START_DATE_INVALID, PROPERTY_START_DATE, FIELD_START_MONTH,
                     ValidationException.FieldState.INVALID);
+            return;
         }
 
         // Lines 408 to 426.
@@ -1178,10 +1228,15 @@ public final class ReportRequestService {
             state.raiseError(FRAGMENT_CONFIRM_PROMPT_PREFIX + delimitedBySpace(state.reportName)
                     + FRAGMENT_CONFIRM_PROMPT_SUFFIX, FIELD_CONFIRM);
             sendTrnrptScreen(state);
+            // The send ended the task, so the two remaining parts are unreachable rather than merely
+            // guarded. Returning here is what the jump at line 580 did.
+            return;
         }
 
-        // IF NOT ERR-FLG-ON at line 476 guards both remaining parts.
-        if (state.errorFlag) {
+        // The send above ends the task, so nothing below it is reachable once the confirmation was
+        // blank. IF NOT ERR-FLG-ON at line 476 is the source's own guard over both remaining parts and
+        // is kept alongside it.
+        if (state.screenSent || state.errorFlag) {
             return;
         }
 
@@ -1207,35 +1262,52 @@ public final class ReportRequestService {
             sendTrnrptScreen(state);
         }
 
+        // Either of the two refusing arms above sent the screen, and the send ended the task, so part
+        // three is not reached at all - not even to build the card images. The emitting loop's own
+        // guard on the error flag would have suppressed every write, but the cards would still have
+        // been assembled, which is work the legacy never did on a refused confirmation.
+        if (state.screenSent) {
+            return;
+        }
+
         // SET END-LOOP-NO TO TRUE at line 496.
         state.endLoop = false;
+
+        // The emitting loop's guard at lines 498 and 499 tests the error flag, and the guard is
+        // evaluated BEFORE the first card. Part two's negative and unrecognised arms both raise that
+        // flag, so either of them skips the loop entirely without a single write - which is why a
+        // declined or mistyped confirmation publishes nothing at all. Evaluating the condition here is
+        // the whole of what the guard did on its first iteration; the remaining conditions bound the
+        // iteration itself and belong with the loop, which is now the bridge's.
+        if (state.errorFlag) {
+            return;
+        }
 
         // The seventeen eighty-column cards, with the start and end dates placed into their four
         // substitution slots. No card, no column frame and no slot is assembled here.
         final List<String> cardImages =
                 JclCardImageBuilder.build(state.parmStartDate, state.parmEndDate);
-        final String submissionIdentity = newSubmissionIdentity();
+        final String submissionIdentity =
+                newSubmissionIdentity(state.parmStartDate, state.parmEndDate);
 
-        // PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > 1000 OR END-LOOP-YES OR ERR-FLG-ON, at
-        // lines 498 and 499. The supplied card count bounds the iteration; the legacy slot ceiling is
-        // carried alongside it as the defensive bound the oversized redefinition implies.
-        for (int cardSlot = FIRST_CARD_SLOT;
-                cardSlot <= cardImages.size()
-                        && cardSlot <= OVERSIZED_REDEFINE_CARD_BOUND
-                        && !state.endLoop
-                        && !state.errorFlag;
-                cardSlot++) {
-
-            // MOVE JOB-LINES(WS-IDX) TO JCL-RECORD at line 501.
-            final String jclRecord = cardImages.get(cardSlot - FIRST_CARD_SLOT);
-
-            // Lines 502 to 505. Set before the write, which is what transmits the sentinel.
-            if (isEndOfCardStream(jclRecord)) {
-                state.endLoop = true;
-            }
-
-            writeJobSubmissionTdq(state, submissionIdentity, jclRecord, cardSlot);
-        }
+        // Lines 498 to 509, the emitting loop - published as ONE SUBMISSION rather than card by card.
+        //
+        // An earlier revision iterated the slots here and called the bridge's single-card entry point
+        // once per card. Every card of every submission carries one stable message group, which is what
+        // preserves the append order the legacy queue's disposition guarantees, so a first-in-first-out
+        // queue records whatever order the sends arrive in. This service is a singleton and two request
+        // threads reaching this paragraph concurrently interleave their sends, after which the queue
+        // preserves the interleaving: the batch tier reads back a job card followed by another
+        // submission's library card, which is not a degraded job stream but an unparseable one, and both
+        // requests answer successfully because the queue is ignore-on-error. Deduplication identifiers
+        // do not close it - they make a retry of ONE submission idempotent and say nothing about two.
+        //
+        // Handing the whole stream to the bridge makes the submission the unit of publication, and the
+        // bridge holds one submission at a time. The legacy loop's own semantics are preserved there
+        // rather than lost: the end-of-stream test is applied to a card BEFORE that card is written, so
+        // the sentinel is transmitted and a complete submission is seventeen messages; and a refused
+        // write raises the loop's error flag, so the cards that would have followed are never sent.
+        writeJobSubmissionTdq(state, submissionIdentity, cardImages);
     }
 
     // ==========================================================================================
@@ -1250,57 +1322,103 @@ public final class ReportRequestService {
      * spelling so the mapping stays findable, and it is deliberately not carried into a Java
      * identifier.
      *
-     * <p>The paragraph writes one eighty-character record to the queue while capturing the response
-     * and reason codes, then evaluates the response: a normal response simply continues, and anything
-     * else displays both codes, raises the error flag, sets the queue-write message, repositions the
-     * cursor on the first report-type field and sends.
+     * <p>The paragraph writes eighty-character records to the queue while capturing the response and
+     * reason codes, then evaluates the response: a normal response simply continues, and anything else
+     * displays both codes, raises the error flag, sets the queue-write message, repositions the cursor
+     * on the first report-type field and sends.
+     *
+     * <p><strong>It writes the whole stream in one call rather than one call per card, and that is a
+     * correctness requirement rather than a tidiness one.</strong> An earlier revision called the
+     * bridge's single-card entry point once per slot from the emitting loop. Every card of every
+     * submission carries one stable message group - which is what preserves the append order the legacy
+     * queue's disposition guarantees - so a first-in-first-out queue records whatever order the sends
+     * arrive in. This is a singleton service, so two request threads reaching this paragraph
+     * concurrently interleave their sends and the queue then preserves the interleaving: the batch tier
+     * reads back a job card followed by another submission's library card, which is not a degraded job
+     * stream but an unparseable one, and both requests answer successfully because the queue is
+     * ignore-on-error. Deduplication identifiers do not close that - they make a retry of ONE
+     * submission idempotent and say nothing about two distinct ones. Handing the bridge the whole
+     * stream makes the submission the unit of publication, and the bridge admits one submission at a
+     * time.
+     *
+     * <p>The legacy loop's own semantics are preserved by the bridge rather than lost. The
+     * end-of-stream test is applied to a card <em>before</em> that card is written, so the sentinel is
+     * transmitted and a complete submission is {@code JclCardImageBuilder.CARD_COUNT} messages; and a
+     * refused write raises the write-error flag the guard observes, so the cards that would have
+     * followed are never sent, which is why a failure reports fewer cards published than requested.
      *
      * <p><strong>There is no abend and no re-raise.</strong> Three consequences follow and all three
-     * are reproduced. The failure is logged rather than displayed. The remaining cards are not sent,
-     * because the emitting loop's guard observes the error flag. And control returns normally, so the
-     * caller receives a result and not an exception &mdash; which is why a submission exception is
-     * caught and logged here and never leaves this service. That is the queue's own
-     * ignore-on-error definition at {@code app/csd/CARDDEMO.CSD} lines 499 to 505, so no retry,
-     * backoff, timeout or delay is applied either.
+     * are reproduced. The failure is logged rather than displayed. The remaining cards are not sent.
+     * And control returns normally, so the caller receives a result and not an exception &mdash; which
+     * is why a submission exception is caught and logged here and never leaves this service. That is
+     * the queue's own ignore-on-error definition at {@code app/csd/CARDDEMO.CSD} lines 499 to 505, so
+     * no retry, backoff, timeout or delay is applied either.
+     *
+     * <p>The failure object is never handed to the logger. It carries the underlying cloud-client
+     * cause, whose message this module did not author and which can hold an endpoint, a request
+     * identifier, a signed header fragment or an arbitrarily large payload echo. The bounded reason
+     * codes the bridge already derived, plus the sanitised chain of failure types, say everything the
+     * diagnostic needs and nothing that was not composed here. See {@link FailureDiagnostics}.
      *
      * @param state              the turn's working storage
-     * @param submissionIdentity the identity of this submission, combined with the slot to form the
-     *                           card's deduplication identifier
-     * @param jclRecord          the eighty-character card to write
-     * @param cardSlot           the card's one-based slot, matching the legacy card index
+     * @param submissionIdentity the identity of this submission, combined with each card's slot to form
+     *                           that card's deduplication identifier
+     * @param cardImages         the complete ordered card stream, each card eighty characters wide
      */
     private void writeJobSubmissionTdq(final TurnState state, final String submissionIdentity,
-            final String jclRecord, final int cardSlot) {
-        boolean written;
+            final List<String> cardImages) {
+        final JobSubmissionService.SubmissionResult submission;
         try {
             // EXEC CICS WRITEQ TD QUEUE('JOBS') FROM(JCL-RECORD) LENGTH(LENGTH OF JCL-RECORD)
-            // RESP(WS-RESP-CD) RESP2(WS-REAS-CD) at lines 517 to 523. The queue name, the record
-            // width and the message grouping all belong to the bridge, not here.
-            written = jobSubmissionService.writeJobSubmissionQueue(submissionIdentity, jclRecord,
-                    cardSlot);
+            // RESP(WS-RESP-CD) RESP2(WS-REAS-CD) at lines 517 to 523, once per card. The queue name,
+            // the record width, the message grouping and the one-submission-at-a-time exclusion all
+            // belong to the bridge, not here.
+            submission = jobSubmissionService.submitCanonicalJobImage(submissionIdentity, cardImages);
         } catch (final JobSubmissionException publishFailure) {
             // Defensive: the bridge reports a publish failure as a value. Should it ever raise
             // instead, the outcome must still be the legacy's - logged, non-fatal, and the write
             // treated as refused.
             LOG.error("Job-submission queue write raised on card slot {}: queue={} response={}"
-                            + " reason={}",
-                    cardSlot, publishFailure.queueName(), publishFailure.responseCode(),
-                    publishFailure.reasonCode(), publishFailure);
-            written = false;
-        }
-
-        // EVALUATE WS-RESP-CD at lines 525 to 535.
-        if (written) {
-            // WHEN DFHRESP(NORMAL) at lines 526 and 527: CONTINUE.
-            state.cardsPublished++;
+                            + " reason={} failureChain={}",
+                    publishFailure.failedCardOrdinal(), publishFailure.queueName(),
+                    publishFailure.responseCode(), publishFailure.reasonCode(),
+                    FailureDiagnostics.failureChainOf(publishFailure));
+            refuseSubmission(state, 0);
             return;
         }
 
-        // WHEN OTHER at lines 528 to 534. The DISPLAY of the response and reason codes becomes a log
-        // record; nothing is written to a console stream.
-        LOG.error("Job-submission queue write refused on card slot {} after {} of {} cards;"
-                        + " the remaining cards are not sent",
-                cardSlot, state.cardsPublished, JclCardImageBuilder.CARD_COUNT);
+        // MOVE: the loop's own post-condition, restored from the outcome the bridge reports.
+        state.cardsPublished = submission.cardsPublished();
+
+        // EVALUATE WS-RESP-CD at lines 525 to 535.
+        if (submission.failed()) {
+            refuseSubmission(state, submission.cardsPublished());
+            return;
+        }
+
+        // WHEN DFHRESP(NORMAL) at lines 526 and 527: CONTINUE. The loop ended because the sentinel card
+        // was reached and written, which is the only other way out of the legacy guard.
+        // SET END-LOOP-YES TO TRUE at lines 503 to 505.
+        state.endLoop = true;
+    }
+
+    /**
+     * The refusal arm of the queue-write paragraph, at lines 528 to 534.
+     *
+     * <p>The response and reason codes were already recorded at the publish boundary, which is where
+     * they exist; this records the submission-level consequence and then does exactly what the
+     * paragraph does - raises the error flag, sets the queue-write message, repositions the cursor on
+     * the first report-type field and sends. The error flag is also what the emitting loop's guard
+     * observed, which is why the cards after the failing one are not sent.
+     *
+     * @param state          the turn's working storage
+     * @param cardsPublished how many cards the queue accepted before refusing
+     */
+    private void refuseSubmission(final TurnState state, final int cardsPublished) {
+        state.cardsPublished = cardsPublished;
+        LOG.error("Job-submission queue write refused after {} of {} cards; the remaining cards are"
+                        + " not sent",
+                cardsPublished, JclCardImageBuilder.CARD_COUNT);
         state.raiseError(MSG_UNABLE_TO_WRITE_TDQ, FIELD_MONTHLY);
         sendTrnrptScreen(state);
     }
@@ -1356,12 +1474,19 @@ public final class ReportRequestService {
      * reachable and the attribute itself has no equivalent in a machine contract, which is why it is
      * documented here rather than modelled.
      *
-     * <p>The paragraph ends at line 580 with a jump to the return paragraph, so in the legacy the
-     * performing paragraph never resumes and the task ends at the first send. This translation instead
-     * <strong>populates the outbound result and lets control continue</strong>, so a re-submission can
-     * report every field it faulted rather than only the first. What the operator sees is unchanged:
-     * the summary message and the cursor position are latched at the first failure, which is exactly
-     * the pair the legacy screen carried.
+     * <p><strong>The paragraph ends at line 580 with {@code GO TO RETURN-TO-CICS}, and that makes the
+     * send terminal.</strong> The paragraph it jumps to issues {@code EXEC CICS RETURN TRANSID} at
+     * lines 587 to 590, which ends the task, so the performing paragraph never resumes and nothing
+     * after the first send executes: no later validation stage runs, no later field is normalised, no
+     * later output field is written and no submission is attempted. The jump leaves the performed range
+     * rather than reaching an exit label within it, so a {@code return} from this method could not
+     * express it - every caller up the chain has to see that the turn is over. This method therefore
+     * populates the outbound result, as a rendering step must, and additionally <strong>latches the
+     * turn-ended state</strong> that its callers test. An earlier revision let control continue past a
+     * send so that a re-submission could report every faulted field; that reported field errors the
+     * legacy never evaluated and returned normalised values it never produced, so it is withdrawn. The
+     * operator-visible pair is unchanged either way, because the summary text and the cursor position
+     * were already latched at the first failure.
      *
      * @param state the turn's working storage
      */
@@ -1371,7 +1496,9 @@ public final class ReportRequestService {
         // MOVE WS-MESSAGE TO ERRMSGO OF CORPT0AO at line 560.
         state.errorMessageField = moveToField(state.message, ERROR_MESSAGE_WIDTH);
 
-        // GO TO RETURN-TO-CICS at line 580.
+        // GO TO RETURN-TO-CICS at line 580: the task ends here, so the turn is over for every
+        // paragraph that is still notionally on the stack.
+        state.screenSent = true;
         returnToCics(state);
     }
 
@@ -1504,10 +1631,16 @@ public final class ReportRequestService {
 
     /**
      * Records one field failure: raises the error flag, latches the summary text and cursor position
-     * if this is the first failure of the turn, adds the per-field entry, and re-presents the screen.
+     * if this is the first failure of the turn, adds the per-field entry, and sends the screen.
      *
      * <p>Every failure site in the source does these four things in the same order, which is why they
      * live here once rather than being restated a dozen times.
+     *
+     * <p><strong>This method is terminal, because the send it ends with is terminal.</strong> The send
+     * closes with the jump to the return paragraph, which ends the task, so a caller must treat a call
+     * to this method as the end of the turn: it either returns immediately or tests the turn-ended state
+     * before doing anything else. Nothing here can enforce that on a caller's behalf, which is why the
+     * state is latched rather than left implicit.
      *
      * @param state      the turn's working storage
      * @param message    the failure's own text, byte exact
@@ -1743,36 +1876,57 @@ public final class ReportRequestService {
         return String.valueOf(SPACE).repeat(width);
     }
 
+
     /**
-     * Reproduces the end-of-stream test at lines 502 and 503: the record is the end-of-stream card, or
-     * it is wholly spaces, or it is wholly low values.
+     * Derives the identity of one submission from the two date slots it submits, deterministically.
      *
-     * <p>The comparison against the sentinel is made at the full record width, because the source
-     * compares an eighty-character record against a five-character literal that the language extends
-     * with spaces.
+     * <p>The bridge composes each card's deduplication identifier from this identity plus the card's
+     * one-based slot, and the bridge's own contract forbids a random value in the identity's place
+     * because a random identity defeats idempotency. So the identity is a pure function of the request:
+     * the same period always yields the same identity, and therefore the same seventeen deduplication
+     * identifiers. A caller that resubmits an interrupted request - one whose loop stopped part way
+     * because a write was refused at line 499 - reissues exactly the identifiers the first pass used,
+     * so the queue collapses the cards that already landed and the stream is completed rather than
+     * doubled behind itself.
      *
-     * @param jclRecord the eighty-character record about to be written
-     * @return {@code true} when this record ends the stream
+     * <p>The legacy queue had no notion of identity at all: a second request for the same period was
+     * appended and the job ran again. That remains reachable, and it remains an explicit act rather
+     * than an accident of implementation - the two dates are the identity, so a genuinely new
+     * submission of one period is a decision for whatever owns the request to express, not something
+     * this screen manufactures on every pass. Minting a fresh value per call would have answered that
+     * question silently, and in the one direction that cannot be corrected afterwards: a suppressed
+     * submission can be reissued, a duplicated batch run cannot be un-run.
+     *
+     * <p>Whitespace is removed because the slots are fixed-width values that may be space-padded while
+     * the bridge requires an identity free of whitespace. Only the identity is condensed; no card is,
+     * because a card's padding is contractual. The two date slots have already been shaped and
+     * validated by the time they reach here, so the derived value is printable single-byte text, as
+     * the bridge requires.
+     *
+     * @param startDate the start-date slot the submission carries
+     * @param endDate   the end-date slot the submission carries
+     * @return a whitespace-free identity, identical for every submission of the same period
      */
-    private static boolean isEndOfCardStream(final String jclRecord) {
-        return EOF_SENTINEL_RECORD.equals(jclRecord) || isBlankField(jclRecord);
+    private static String newSubmissionIdentity(final String startDate, final String endDate) {
+        return withoutWhitespace(startDate) + SUBMISSION_IDENTITY_SEPARATOR
+                + withoutWhitespace(endDate);
     }
 
     /**
-     * Mints the identity of one submission.
+     * Returns a value with every whitespace character removed.
      *
-     * <p>The legacy queue had no notion of identity: a second request for the same period was appended
-     * and the job ran again. A fresh identity per call is what preserves that, because the bridge uses
-     * it, with each card's slot, to form the deduplication identifiers, so two requests for the same
-     * period enqueue two independent card streams. The value is hexadecimal, which keeps it free of
-     * whitespace and inside printable single-byte characters, as the bridge requires.
-     *
-     * @return a whitespace-free identity, distinct on every call
+     * @param value the value to condense
+     * @return {@code value} without whitespace
      */
-    private static String newSubmissionIdentity() {
-        final UUID unique = UUID.randomUUID();
-        return Long.toHexString(unique.getMostSignificantBits())
-                + Long.toHexString(unique.getLeastSignificantBits());
+    private static String withoutWhitespace(final String value) {
+        final StringBuilder condensed = new StringBuilder(value.length());
+        for (int index = 0; index < value.length(); index++) {
+            final char character = value.charAt(index);
+            if (!Character.isWhitespace(character)) {
+                condensed.append(character);
+            }
+        }
+        return condensed.toString();
     }
 
     /**
@@ -1944,6 +2098,20 @@ public final class ReportRequestService {
         /** Whether control was transferred, which is what makes a return unreachable for this turn. */
         private boolean transferred;
 
+        /**
+         * Whether the screen has been sent, which in the legacy is the end of the task.
+         *
+         * <p>The send paragraph closes with {@code GO TO RETURN-TO-CICS} at line 580, and the
+         * paragraph it jumps to issues {@code EXEC CICS RETURN TRANSID} at lines 587 to 590, so the
+         * task ends at the <strong>first</strong> send: the paragraph that performed it never resumes,
+         * and no statement after that point in the procedure division executes at all. That jump is a
+         * genuine transfer out of a performed range rather than an exit label, so it cannot be
+         * translated as a {@code return} from one method - every caller in the chain has to observe it.
+         * This flag is how they observe it. It is latched once and never cleared, and every stage that
+         * could otherwise run after a send tests it first.
+         */
+        private boolean screenSent;
+
         /** {@code CARDDEMO-COMMAREA}, the navigation state the turn carries. */
         private NavigationContext context = NavigationContext.empty();
 
@@ -1959,17 +2127,23 @@ public final class ReportRequestService {
          */
         private NavigationService.Route route = NavigationService.Route.REPORT_REQUEST;
 
-        /** The per-field detail, accumulated in the order the source checks the fields. */
+        /**
+         * The per-field detail. A list because the outbound contract carries a list, and because the
+         * catch-all report-type failure records one entry while the cascade records one of its own -
+         * but never more than one entry in a single turn, because the send that follows every failure
+         * ends the turn.
+         */
         private final List<ValidationException.FieldError> fieldErrors = new ArrayList<>();
 
         /**
          * Raises the error flag and latches the summary text and cursor position on the first failure
          * of the turn.
          *
-         * <p>Latching is what keeps the operator-visible outcome byte-identical to the legacy's. There
-         * the first send ends the task, so the screen carried the first failure's text and the first
-         * failure's cursor position; here the cascade continues so that every faulted field can be
-         * reported, and the pair stays the first failure's.
+         * <p>Latching is what keeps the operator-visible outcome byte-identical to the legacy's: the
+         * screen carries the first failure's text and the first failure's cursor position. Since the
+         * first send now ends the turn as the legacy's does, only one failure can be recorded per turn
+         * anyway, and the latch is what guarantees it stays the first one even where a caller sets a
+         * message before delegating.
          *
          * @param text       the failure's text, byte exact
          * @param cursorField the screen field the cursor is positioned on

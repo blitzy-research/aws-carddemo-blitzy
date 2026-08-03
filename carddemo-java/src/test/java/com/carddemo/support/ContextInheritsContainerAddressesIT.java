@@ -184,6 +184,20 @@ class ContextInheritsContainerAddressesIT extends AbstractPostgresIT {
         }
 
         @Test
+        @DisplayName("is what this module's own settings key resolves to as well, so a component that "
+                + "asks the settings type is told what the clients were told")
+        void isWhatTheModulesOwnSettingsKeyResolvesTo() {
+            assertThat(environment.getProperty("carddemo.aws.endpoint-override"))
+                    .as("carddemo.aws.endpoint-override is the key com.carddemo.config.AwsProperties"
+                            + " binds, and both copies of this profile floor it at the emulator's fixed"
+                            + " port. Observing the ephemeral address of the container this JVM started"
+                            + " proves the registration reaches it too - without which the clients would"
+                            + " address one emulator while the settings type reported another")
+                    .isNotNull()
+                    .isEqualTo(AbstractLocalStackIT.emulatorEndpoint());
+        }
+
+        @Test
         @DisplayName("comes with the emulator's own region and credentials, so the default credential "
                 + "chain is never consulted")
         void comesWithTheEmulatorsRegionAndCredentials() {

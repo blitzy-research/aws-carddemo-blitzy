@@ -37,25 +37,34 @@
 -- predictable logins, five of them able to reach the administrative user-management surface. That
 -- is a credential incident, not untidiness, and no work factor changes it.
 --
--- THE FOUR MIGRATIONS ARE INTENTIONALLY FLAT IN ONE DIRECTORY. Directory-scoped Flyway locations
--- cannot isolate V3/V4 from V1/V2, so production must enforce spring.flyway.target=2 (preferred) or
--- equivalent version-aware or filename-aware filtering. Do not create a subdirectory.
+-- THIS FILE LIVES IN A SEED LOCATION PRODUCTION IS REFUSED. The two seeds sit in
+-- classpath:db/migration/seed and the schema scripts sit beside them in classpath:db/migration/schema.
+-- The shared parent db/migration holds NO script, because a Flyway location is scanned recursively and
+-- a script in the parent - or a profile that listed the parent - would reach across the split. Do not
+-- place a script in the parent and do not move this file out of the seed location.
 --
--- HOW THE EXCLUSION IS ENFORCED - TWO CONTROLS: a PROFILE-SCOPED VERSION CEILING, and refusals in code
--- that read that ceiling back after it is bound and additionally inspect the database itself. Both are
--- recorded in docs/decision-log.md DL-102, and the withdrawal of a third, weaker one is DL-119.
+-- HOW THE EXCLUSION IS ENFORCED - THREE CONTROLS: a PROFILE-SCOPED LOCATION first, a PROFILE-SCOPED
+-- VERSION CEILING behind it, and refusals in code that read both back after binding and additionally
+-- inspect the database itself. All are recorded in docs/decision-log.md DL-127, which supersedes
+-- DL-102 and DL-119.
 --
---   CONTROL 1 - THE CEILING. This is what AAP 0.3.1 and 0.4.2 mean by resolving the seeds "from
---   profile-scoped locations": the scoping is by profile-scoped TARGET, which is the control this file's
---   own specification names. All four migrations sit flat in one location and this file is separated
---   from the schema by its VERSION:
+--   CONTROL 1 - THE LOCATION. This is what AAP 0.3.1 and 0.4.2 require directly: "FlywayConfig resolves
+--   V3 and V4 from profile-scoped locations so a production deployment migrates schema and indexes
+--   without inheriting sample data or seeded credentials." Production resolves the schema location
+--   alone, so this file is not resolved there, not reported there and not applicable there.
 --
---        classpath:db/migration  -> declared by EVERY profile
+--        classpath:db/migration/schema  -> resolved by EVERY profile
 --            V1__create_schema.sql              \
---            V2__create_indexes.sql              >  at or below the ceiling: APPLIED everywhere
---        ---------------------------------------- spring.flyway.target: 2 (application.yml, -prod)
---            V3__seed_reference_data.sql        \  above the ceiling: resolved, reported above target,
---            V4__seed_user_security.sql (this)   >  never applied under production
+--            V2__create_indexes.sql              >  APPLIED everywhere
+--        ----------------------------------------
+--        classpath:db/migration/seed    -> resolved by LOCAL and TEST ONLY; production REFUSED
+--            V3__seed_reference_data.sql        \  never resolved under production
+--            V4__seed_user_security.sql (this)   >
+--        ---------------------------------------- and behind it, spring.flyway.target: 2
+--                                                 (application.yml, application-prod.yml)
+--
+--   CONTROL 2 - THE CEILING, retained behind the location as belt and braces. This file is separated
+--   from the schema by its VERSION as well as by its directory:
 --
 --   application.yml carries target 2 as the shared default, so a profile that stays silent inherits a
 --   schema-only migration, and application-prod.yml re-states it so the production posture is legible
@@ -65,27 +74,28 @@
 --   a target does not weaken validation - an unapplied script above the ceiling is not a validation
 --   failure; only a CHANGED already-applied script is.
 --
---   WHY NOT A SEPARATE DIRECTORY AS WELL, since an earlier revision of this file argued for exactly
---   that and counted it as a second control. It is not one. A location is scanned RECURSIVELY, so any
---   deployment that resolved both directories - a merged location list, a wildcard location, a
---   filesystem: location, or an operator running the migration tool directly against the packaged
---   artefact - applies 1 through 4 in ascending order whatever folder each script came from. The split
---   bought the APPEARANCE of isolation, and its real cost was that it invited the confidence that stops
---   anyone from setting the pin. A version number orders the whole history rather than one folder of it,
---   so it holds however the location list was assembled. DL-119 records the withdrawal; do not restore
---   the folder as belt and braces.
+--   WHY BOTH, AND WHY THE DIRECTORY COMES FIRST. Two earlier revisions kept all four scripts flat in
+--   one directory and relied on the ceiling alone, on the ground that a location is scanned RECURSIVELY
+--   and a directory boundary is therefore not one the migration tool enforces. That ground was correct
+--   about a flat parent, and the conclusion it actually supports is that the SCHEMA scripts must move
+--   down as well - which is what has now been done. With the parent empty of scripts the recursion has
+--   nothing to cross, and a deployment that lists the schema location cannot see this file at all. The
+--   ceiling is kept behind the directory because it is the control that still holds if a seed is ever
+--   renumbered, or if a seed location is ever added back by a merged list or a command-line override.
+--   The two fail in the same direction. DL-127 records the reinstatement and supersedes DL-119.
 --
---   THE RULE FOR A NEW SEED, and it is the whole rule: number it above 2. Raise the ceiling only in the
---   same commit that adds a production-required script above it, and never to admit a seed.
+--   THE RULE FOR A NEW SEED: put it in this directory and number it above 2. Raise the ceiling only in
+--   the same commit that adds a production-required script above it, and never to admit a seed.
 --
---   CONTROL 2 - THE REFUSALS IN CODE, which cover a deployment whose configuration was edited, merged
+--   CONTROL 3 - THE REFUSALS IN CODE, which cover a deployment whose configuration was edited, merged
 --   or overridden on the command line, an operator running the migration tool directly against the
 --   packaged artefact, and a database that was seeded before the process started.
 --   com.carddemo.config.FlywayConfig inspects the BOUND ceiling and, under the production profile,
 --   refuses to start when it reaches version 3 or beyond. An absent, predefined or unreadable ceiling is
 --   refused on the same ground, since the migration tool migrates to the latest version when none is
---   set. The same class refuses a resolved location outside classpath:db/migration, because a location
---   the ceiling never measured can carry a script the ceiling does not cap.
+--   set. The same class refuses any resolved location outside classpath:db/migration/schema - which
+--   refuses this file's own location by name, and refuses the shared parent too, because a location
+--   above the split reaches this file recursively.
 --   com.carddemo.config.ProductionSeedRejectionCallback then covers what no
 --   configuration value reaches AND what the migration tool does not reach either: a production
 --   start-up whose migration history already records a seed version, whose user_security table holds
@@ -94,8 +104,8 @@
 --   than assumed - validate-on-migrate does NOT reject an already-seeded database, because version 11
 --   of the migration tool ignores future migrations by default, so the migration reports success over
 --   applied versions 3 and 4 that the schema location cannot resolve. No control is relied on alone:
---   controls 1 and 2 are explicit and reviewable but are properties of configuration, and control 3 is
---   unconditional in code but appears in no configuration file. A refusal rather than a silent
+--   controls 1 and 2 are explicit and reviewable but are properties of configuration, and the
+--   database-state refusal is unconditional in code but appears in no configuration file. A refusal rather than a silent
 --   correction is deliberate - a deployment whose declared migration scope and actual migration scope
 --   differ should stop, not proceed quietly.
 --

@@ -46,171 +46,96 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 /**
  * Unit tests for {@link SignOnResponse}, the outbound contract of legacy transaction {@code CC00}.
  *
- * <p>A pure unit test. It starts no application context, opens no connection, launches no container
- * and touches no security type: it constructs the record directly and, where the wire shape is the
- * thing under test, serialises through a mapper configured by hand in this file to match the four
- * serialisation settings the module declares in {@code src/main/resources/application.yml} &mdash;
- * absent properties omitted, dates not written as timestamps, unknown incoming properties tolerated,
- * and plain rendering of arbitrary-precision numbers. Nothing here is shared with another test.
+ * <p>Two properties belong to this file.
  *
- * <h2>Every expectation is an independent oracle</h2>
+ * <p><strong>A failed credential comparison is not a general error.</strong> The program raises its
+ * error flag on five of its eight outcomes and leaves it lowered on three, and the failed comparison
+ * is one of the three: that path composes a message and moves the cursor without assigning the flag at
+ * all. So "carries a message" and "is an error" are different facts, the flag must be its own explicit
+ * primitive, and it must never be derived from the presence of a message. {@link WrongCredentialArm}
+ * pins that down and {@link ErrorFlagAsymmetry} proves the asymmetry is modelled rather than
+ * accidental.
  *
- * <p>A test that reads its expectations out of the type it is testing asserts nothing. Every width,
- * every field identity and every message text below is therefore restated here from the legacy
- * artefacts rather than borrowed from the class under test: {@code app/cbl/COSGN00C.cbl} for the
- * behaviour and the five direct texts, {@code app/cpy-bms/COSGN00.CPY} for the symbolic map,
- * {@code app/cpy/CSMSG01Y.cpy} for the two shared texts, {@code app/cpy/COCOM01Y.cpy} for the
- * user-type codes and {@code app/cpy/CSUSR01Y.cpy} for their persisted origin. No generated
- * value-producer of any kind is used as the source of an expectation.
+ * <p><strong>The two shared texts are fifty characters, not forty-nine.</strong> Each is written as a
+ * forty-nine-character literal inside a fifty-character field, so the stored value is the literal
+ * followed by one filling space. {@link PaddedCommonMessages} asserts all fifty survive construction
+ * and both wire directions with the pad intact, and that the fifty-character family is never conflated
+ * with the unrelated forty-character title family declared in a different copybook.
  *
- * <h2>The two properties this file owns</h2>
+ * <p>Every width, field identity and message text is restated here from the legacy artefacts rather
+ * than borrowed from the class under test - {@code app/cbl/COSGN00C.cbl} for the behaviour and the five
+ * direct texts, {@code app/cpy-bms/COSGN00.CPY} for the symbolic map, {@code app/cpy/CSMSG01Y.cpy} for
+ * the two shared texts, {@code app/cpy/COCOM01Y.cpy} for the user-type codes and
+ * {@code app/cpy/CSUSR01Y.cpy} for their persisted origin.
  *
- * <ol>
- *   <li><em>A failed credential comparison is not a general error.</em> The program raises its error
- *       flag on five of its eight outcomes and leaves it lowered on three, and the failed comparison
- *       is one of the three: that path composes a message and moves the cursor without assigning the
- *       flag at all. So "carries a message" and "is an error" are different facts, the flag must be
- *       its own explicit primitive, and it must never be derived from the presence of a message.
- *       {@link WrongCredentialArm} pins that down and {@link ErrorFlagAsymmetry} proves the
- *       asymmetry is modelled rather than accidental.</li>
- *   <li><em>The two shared texts are fifty characters, not forty-nine.</em> Each is written as a
- *       forty-nine-character literal inside a fifty-character field, so the stored value is the
- *       literal followed by one filling space. {@link PaddedCommonMessages} asserts that all fifty
- *       survive construction, serialisation and deserialisation with the trailing pad intact, and
- *       that the fifty-character family is never conflated with the unrelated forty-character title
- *       family declared in a different copybook.</li>
- * </ol>
- *
- * <h2>Why nothing here introspects the type</h2>
- *
- * <p>No component of this file interrogates the record's shape at run time. The component inventory, the
- * absence of a credential and the absence of terminal furniture are established from the
- * <em>serialised payload</em> of a fully populated instance, which is both the stronger statement and
- * the one a client can actually observe: a component that reaches no client cannot leak to one, and a
- * component that reaches a client appears as a property name. Immutability is likewise demonstrated
- * by construction &mdash; deriving a modified nested state leaves the original response untouched
- * &mdash; rather than by interrogating the class for setters.
- *
- * <p>Source checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Those identifiers are provenance prose for a
- * reader and are deliberately not declared as constants of this file.
+ * <p>A pure unit test that starts no context, container or connection and touches no security type.
+ * Nothing interrogates the record's shape at run time: the component inventory, the absence of a
+ * credential and the absence of terminal furniture are established from the <em>serialised payload</em>
+ * of a fully populated instance, which is what a client can actually observe - a component that reaches
+ * no client cannot leak to one. Immutability is shown by construction, deriving a modified nested state
+ * and finding the original untouched. The mapper is configured by hand here to match the four
+ * serialisation settings the module declares in {@code src/main/resources/application.yml}.
  */
 @DisplayName("SignOnResponse - the outbound contract of legacy transaction CC00")
 class SignOnResponseTest {
-
-    // -----------------------------------------------------------------------------------------
-    // Independent oracles: the seven texts Gate 5 verifies, restated from the legacy artefacts.
-    // -----------------------------------------------------------------------------------------
-
-    /** Prompt for an empty user id, from line 120 of the program. Twenty-four characters. */
     private static final String ORACLE_MSG_PROMPT_USERID = "Please enter User ID ...";
 
-    /** Prompt for an empty entry field, from line 125 of the program. Twenty-five characters. */
     private static final String ORACLE_MSG_PROMPT_ENTRY = "Please enter Password ...";
 
-    /** Text for a failed comparison, from line 242 of the program. Twenty-nine characters. */
     private static final String ORACLE_MSG_COMPARISON_FAILED = "Wrong Password. Try again ...";
 
-    /** Text for a missing record, from line 249 of the program. Twenty-nine characters. */
     private static final String ORACLE_MSG_USER_NOT_FOUND = "User not found. Try again ...";
 
-    /** Text for any other read failure, from line 254 of the program. Twenty-nine characters. */
     private static final String ORACLE_MSG_UNABLE_TO_VERIFY = "Unable to verify the User ...";
 
-    /**
-     * The thank-you text exactly as the value clause of the shared-message copybook writes it:
-     * forty-nine characters, being the sentence followed by six spaces. The field that holds it is
-     * one character wider, so this is not the stored value - {@link #ORACLE_MSG_THANK_YOU_STORED} is.
-     */
     private static final String ORACLE_MSG_THANK_YOU_AS_WRITTEN =
             "Thank you for using CardDemo application...      ";
 
-    /**
-     * The invalid-key text exactly as written: forty-nine characters, being the sentence followed by
-     * nine spaces. Stored one character wider, as {@link #ORACLE_MSG_INVALID_KEY_STORED}.
-     */
     private static final String ORACLE_MSG_INVALID_KEY_AS_WRITTEN =
             "Invalid key pressed. Please see below...         ";
 
-    /**
-     * The single space a fifty-character field adds to a forty-nine-character literal. Declared
-     * rather than written into the literals above so the forty-nine versus fifty relationship is
-     * visible to a reader instead of hidden in a run of trailing spaces nobody can count.
-     */
     private static final String ORACLE_FIELD_PAD = " ";
 
-    /** The thank-you text as the fifty-character field stores it: forty-nine as written, plus one pad. */
     private static final String ORACLE_MSG_THANK_YOU_STORED =
             ORACLE_MSG_THANK_YOU_AS_WRITTEN + ORACLE_FIELD_PAD;
 
-    /** The invalid-key text as the fifty-character field stores it. */
     private static final String ORACLE_MSG_INVALID_KEY_STORED =
             ORACLE_MSG_INVALID_KEY_AS_WRITTEN + ORACLE_FIELD_PAD;
 
-    // -----------------------------------------------------------------------------------------
-    // Independent oracles: measured lengths and widths.
-    // -----------------------------------------------------------------------------------------
-
-    /** Measured length of the user-id prompt. */
     private static final int ORACLE_LENGTH_PROMPT_USERID = 24;
 
-    /** Measured length of the entry-field prompt. */
     private static final int ORACLE_LENGTH_PROMPT_ENTRY = 25;
 
-    /** Measured length of each of the three failure texts. */
     private static final int ORACLE_LENGTH_FAILURE_TEXT = 29;
 
-    /** Declared width of each shared message, and therefore the length of its stored value. */
     private static final int ORACLE_COMMON_MESSAGE_WIDTH = 50;
 
-    /** Length of each shared message as its value clause writes it, one short of the field width. */
     private static final int ORACLE_COMMON_MESSAGE_LITERAL_LENGTH = 49;
 
-    /** Width of the unrelated title family, in a different copybook. Never the width above. */
     private static final int ORACLE_SCREEN_TITLE_WIDTH = 40;
 
-    /** Width of the message the program composes. */
     private static final int ORACLE_MESSAGE_WIDTH = 80;
 
-    /** Width of the map item the message is rendered through, two characters narrower. */
     private static final int ORACLE_SCREEN_MESSAGE_WIDTH = 78;
 
-    /** Width of the echoed user identifier, agreed by the map, the mapset and the work field. */
     private static final int ORACLE_USER_ID_WIDTH = 8;
 
-    /** Width of the user-type code, in the security record and in the communication area alike. */
     private static final int ORACLE_USER_TYPE_WIDTH = 1;
 
-    /** Widest symbolic field name in the sign-on mapset. */
     private static final int ORACLE_SCREEN_FIELD_ID_WIDTH = 7;
 
-    /** Width of the echoed transaction identifier. */
     private static final int ORACLE_TRANSACTION_NAME_WIDTH = 4;
 
-    /** Width shared by the program name, the rendered date and the two region identifiers. */
     private static final int ORACLE_EIGHT_CHARACTER_WIDTH = 8;
 
-    /** Width of the rendered time on this mapset, and on no other in the estate. */
     private static final int ORACLE_CURRENT_TIME_WIDTH = 9;
 
-    /** Width of the echoed account identifier on the successor state. */
     private static final int ORACLE_ACCOUNT_ID_WIDTH = 11;
 
-    /** Width of the echoed customer identifier on the successor state. */
     private static final int ORACLE_CUSTOMER_ID_WIDTH = 9;
 
-    /** Width of the echoed card number on the successor state. */
     private static final int ORACLE_CARD_NUMBER_WIDTH = 16;
 
-    // -----------------------------------------------------------------------------------------
-    // Independent oracles: the wire vocabulary and the sample values.
-    // -----------------------------------------------------------------------------------------
-
-    /**
-     * The fifteen property names a fully populated response publishes, in declaration order. This
-     * list is the component inventory: it is what a client sees, and asserting the payload's key set
-     * against it establishes both that every component is published and that nothing else is.
-     */
     private static final List<String> ORACLE_PUBLISHED_PROPERTIES = List.of(
             "message",
             "generalError",
@@ -228,75 +153,41 @@ class SignOnResponseTest {
             "applicationId",
             "systemId");
 
-    /** The eleven value items the symbolic map declares, used to rule out generated furniture. */
     private static final List<String> ORACLE_MAP_ITEM_NAMES = List.of(
             "TRNNAME", "TITLE01", "CURDATE", "PGMNAME", "TITLE02", "CURTIME",
             "APPLID", "SYSID", "USERID", "PASSWD", "ERRMSG");
 
-    /**
-     * The per-item control-byte suffixes the generated map declares: length, flag and attribute on
-     * the input side, and colour, highlight, outline and validation on the output side. None of the
-     * seven is a value, and none may reach a client.
-     */
     private static final List<String> ORACLE_CONTROL_BYTE_SUFFIXES =
             List.of("L", "F", "A", "C", "P", "H", "V");
 
-    /** A representative identifier at the full declared width. */
     private static final String SAMPLE_USER_ID = "ADMIN001";
 
-    /** The one code the program's single two-way decision tests for. */
     private static final String CODE_ADMINISTRATOR = "A";
 
-    /** The code every standard-user record carries. */
     private static final String CODE_STANDARD_USER = "U";
 
-    /** A code the security record never defines, which the program still routes rather than rejects. */
     private static final String CODE_UNDECLARED = "Z";
 
-    /** The destination the administrator outcome nominates, opaque to this contract. */
     private static final String ROUTE_ADMIN_MENU = "/api/v1/menu/admin";
 
-    /** The destination every other outcome nominates, opaque to this contract. */
     private static final String ROUTE_USER_MENU = "/api/v1/menu/user";
 
-    /** Symbolic name of the field the cursor returned to on a failed comparison. */
     private static final String FIELD_ENTRY = "PASSWD";
 
-    /** Symbolic name of the field the cursor returned to on a missing or empty identifier. */
     private static final String FIELD_USER_ID = "USERID";
 
-    /** The first title line, forty characters including its own padding. */
     private static final String SAMPLE_TITLE_01 = "      AWS Mainframe Modernization       ";
 
-    /** The active second title line, forty characters. The copybook's alternative stays inactive. */
     private static final String SAMPLE_TITLE_02 = "              CardDemo                  ";
 
-    /** The rendered date, eight characters of text and never a temporal value. */
     private static final String SAMPLE_CURRENT_DATE = "01/31/24";
 
-    /**
-     * The rendered time as the nine-character field holds it: eight characters of clock text plus one
-     * pad. No temporal type could carry this value, which is precisely why it is the one asserted.
-     */
     private static final String SAMPLE_CURRENT_TIME = "12:34:56 ";
 
-    /** A region application identifier. */
     private static final String SAMPLE_APPLICATION_ID = "CICSAWS1";
 
-    /** A region system identifier. */
     private static final String SAMPLE_SYSTEM_ID = "AWS1";
 
-    // -----------------------------------------------------------------------------------------
-    // Local mapper and validator. Built per call: no shared, mutable, order-dependent state.
-    // -----------------------------------------------------------------------------------------
-
-    /**
-     * A mapper configured by hand to match the four serialisation settings the module declares, so
-     * that what this test observes is what a client would receive. Nothing is inherited from a
-     * framework slice and nothing is auto-configured.
-     *
-     * @return a mapper equivalent to the module's own
-     */
     private static ObjectMapper moduleEquivalentMapper() {
         return JsonMapper.builder()
                 .defaultPropertyInclusion(
@@ -308,60 +199,26 @@ class SignOnResponseTest {
                 .build();
     }
 
-    /**
-     * Serialises a response and reparses it, so assertions read the wire form rather than the object.
-     *
-     * @param response the response to publish
-     * @return the parsed payload
-     * @throws JsonProcessingException if the response cannot be written or reparsed
-     */
     private static JsonNode payloadOf(SignOnResponse response) throws JsonProcessingException {
         ObjectMapper mapper = moduleEquivalentMapper();
         return mapper.readTree(mapper.writeValueAsString(response));
     }
 
-    /**
-     * Serialises a response to its raw text, for scans that must see the whole document.
-     *
-     * @param response the response to publish
-     * @return the serialised document
-     * @throws JsonProcessingException if the response cannot be written
-     */
     private static String documentOf(SignOnResponse response) throws JsonProcessingException {
         return moduleEquivalentMapper().writeValueAsString(response);
     }
 
-    /**
-     * Writes a response and reads it back into a new instance through the module's shape.
-     *
-     * @param response the response to round-trip
-     * @return the instance rebuilt from the serialised form
-     * @throws JsonProcessingException if the response cannot be written or rebuilt
-     */
     private static SignOnResponse roundTrip(SignOnResponse response) throws JsonProcessingException {
         ObjectMapper mapper = moduleEquivalentMapper();
         return mapper.readValue(mapper.writeValueAsString(response), SignOnResponse.class);
     }
 
-    /**
-     * Collects the property names a payload publishes, in the order it publishes them.
-     *
-     * @param payload the parsed payload
-     * @return the published property names
-     */
     private static List<String> propertyNamesOf(JsonNode payload) {
         List<String> names = new ArrayList<>();
         payload.fieldNames().forEachRemaining(names::add);
         return names;
     }
 
-    /**
-     * Validates a response with a standalone validator, built and closed per call. Not a framework
-     * validator: nothing about this measurement depends on an application context.
-     *
-     * @param response the response to measure
-     * @return the violations raised, which for this contract are width violations only
-     */
     private static Set<ConstraintViolation<SignOnResponse>> violationsOf(SignOnResponse response) {
         try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
             Validator validator = factory.getValidator();
@@ -369,13 +226,6 @@ class SignOnResponseTest {
         }
     }
 
-    /**
-     * Collects the component names the violations of a response name, so a bound can be attributed to
-     * the component it belongs to rather than merely counted.
-     *
-     * @param response the response to measure
-     * @return the violated component names
-     */
     private static Set<String> violatedComponentsOf(SignOnResponse response) {
         Set<String> components = new LinkedHashSet<>();
         for (ConstraintViolation<SignOnResponse> violation : violationsOf(response)) {
@@ -384,56 +234,22 @@ class SignOnResponseTest {
         return components;
     }
 
-    /**
-     * Builds a string of a given length, for probing a declared width without writing an unreadable
-     * run of characters into a literal.
-     *
-     * @param length how many characters the value should have
-     * @return a value of exactly that length
-     */
     private static String valueOfLength(int length) {
         return "X".repeat(length);
     }
 
-    // -----------------------------------------------------------------------------------------
-    // Fixtures, one per legacy outcome. Each names the arm it reproduces and the flag state the
-    // program leaves behind on that arm, so a reader can check the fixture against the source.
-    // -----------------------------------------------------------------------------------------
-
-    /**
-     * The failed-comparison outcome: the text is composed and the cursor moves to the entry field,
-     * and the error flag is <strong>not</strong> raised. No route, because the screen is redisplayed.
-     *
-     * @return the response the failed-comparison arm produces
-     */
     private static SignOnResponse comparisonFailedArm() {
         return redisplay(ORACLE_MSG_COMPARISON_FAILED, false, FIELD_ENTRY);
     }
 
-    /**
-     * The missing-record outcome, which unlike the failed comparison does raise the error flag.
-     *
-     * @return the response the missing-record arm produces
-     */
     private static SignOnResponse userNotFoundArm() {
         return redisplay(ORACLE_MSG_USER_NOT_FOUND, true, FIELD_USER_ID);
     }
 
-    /**
-     * The catch-all read-failure outcome, which also raises the error flag.
-     *
-     * @return the response the catch-all arm produces
-     */
     private static SignOnResponse unableToVerifyArm() {
         return redisplay(ORACLE_MSG_UNABLE_TO_VERIFY, true, FIELD_USER_ID);
     }
 
-    /**
-     * The exit-key outcome: the shared thank-you text is sent and the flag stays lowered. The
-     * identifier is not echoed, because this path leaves the screen rather than redisplaying it.
-     *
-     * @return the response the exit-key arm produces
-     */
     private static SignOnResponse exitKeyArm() {
         return new SignOnResponse(ORACLE_MSG_THANK_YOU_STORED, false, null, null, null,
                 null, null, SignOnResponse.TRANSACTION_NAME, SignOnResponse.PROGRAM_NAME,
@@ -441,25 +257,10 @@ class SignOnResponseTest {
                 SAMPLE_APPLICATION_ID, SAMPLE_SYSTEM_ID);
     }
 
-    /**
-     * The unmapped-key outcome: the shared invalid-key text is sent, the screen is redisplayed and
-     * the flag <strong>is</strong> raised.
-     *
-     * @return the response the unmapped-key arm produces
-     */
     private static SignOnResponse unmappedKeyArm() {
         return redisplay(ORACLE_MSG_INVALID_KEY_STORED, true, null);
     }
 
-    /**
-     * A redisplay of the sign-on screen: header values echoed, identifier restated so the operator
-     * need not retype what did not fail, no route and no successor state.
-     *
-     * @param message            the text the screen displayed
-     * @param generalError       the flag state the legacy arm left behind
-     * @param focusScreenFieldId the field the cursor returned to, or {@code null} for none
-     * @return the redisplay response
-     */
     private static SignOnResponse redisplay(String message, boolean generalError,
             String focusScreenFieldId) {
         return new SignOnResponse(message, generalError, focusScreenFieldId, null, null,
@@ -468,15 +269,6 @@ class SignOnResponseTest {
                 SAMPLE_APPLICATION_ID, SAMPLE_SYSTEM_ID);
     }
 
-    /**
-     * A successful sign-on for the given code: the successor state is assembled and a destination is
-     * nominated. The caller supplies both the code and the destination, because the split between
-     * them belongs to the service and this contract only carries whatever pair it is handed.
-     *
-     * @param userTypeCode the raw one-character code the security record stored
-     * @param nextRoute    the destination the navigation service nominated
-     * @return the successful sign-on response
-     */
     private static SignOnResponse successfulSignOn(String userTypeCode, String nextRoute) {
         return new SignOnResponse(null, false, null, nextRoute,
                 successorState(userTypeCode), SAMPLE_USER_ID, userTypeCode,
@@ -485,15 +277,6 @@ class SignOnResponseTest {
                 SAMPLE_APPLICATION_ID, SAMPLE_SYSTEM_ID);
     }
 
-    /**
-     * The successor state a successful sign-on assembles: originating transaction and program, the
-     * identifier, the raw code, and first entry into the destination screen. The selection
-     * identifiers are populated with leading-zero values because preserving a rendered leading zero
-     * is the whole reason they cross the boundary as text.
-     *
-     * @param userTypeCode the raw one-character code
-     * @return the successor state
-     */
     private static NavigationContext successorState(String userTypeCode) {
         return new NavigationContext(
                 SignOnResponse.TRANSACTION_NAME,
@@ -514,39 +297,16 @@ class SignOnResponseTest {
                 "COSGN00");
     }
 
-    /**
-     * A response with every component absent, which is a legal state on this contract because every
-     * component is optional in the legacy sense. The flag is a primitive and cannot be absent.
-     *
-     * @return the wholly absent response
-     */
     private static SignOnResponse whollyAbsent() {
         return new SignOnResponse(null, false, null, null, null, null, null, null, null,
                 null, null, null, null, null, null);
     }
 
-    /**
-     * A response carrying only a message and a flag state, for the many assertions that are about the
-     * pairing of those two and nothing else.
-     *
-     * @param message      the text
-     * @param generalError the flag state
-     * @return a response carrying exactly those two facts
-     */
     private static SignOnResponse messageOnly(String message, boolean generalError) {
         return new SignOnResponse(message, generalError, null, null, null, null, null, null, null,
                 null, null, null, null, null, null);
     }
 
-    /**
-     * A response with every one of the fifteen components populated, so that the published key set is
-     * the full component inventory rather than whatever a single legacy arm happens to fill in. Not a
-     * legacy state - no arm both redisplays and nominates a destination - and deliberately so: the
-     * inventory has to be observed with nothing omitted.
-     *
-     * @param message the text to carry, which some scans need to choose for themselves
-     * @return a response with no component absent
-     */
     private static SignOnResponse fullyPopulatedWith(String message) {
         return new SignOnResponse(message, true, FIELD_ENTRY, ROUTE_ADMIN_MENU,
                 successorState(CODE_ADMINISTRATOR), SAMPLE_USER_ID, CODE_ADMINISTRATOR,
@@ -555,20 +315,9 @@ class SignOnResponseTest {
                 SAMPLE_SYSTEM_ID);
     }
 
-    /**
-     * The failed-comparison outcome, which is the subtlest fact in the whole sign-on contract and the
-     * one this file exists to pin down.
-     *
-     * <p>The program composes its text and moves the cursor to the entry field, and it assigns nothing
-     * to the error flag on that path. The flag was lowered on entry and stays lowered. So a response
-     * that carries a message with the flag {@code false} is not a contradiction to be tidied away - it
-     * is the exact shape of a failed credential comparison, and any implementation that derives the
-     * flag from the presence of a message reverses it.
-     */
     @Nested
     @DisplayName("The failed-comparison outcome carries a message with the flag lowered")
     class WrongCredentialArm {
-
         @Test
         @DisplayName("carries the failure text byte for byte, at its measured length, untrimmed")
         void carriesTheFailureTextByteForByte() {
@@ -580,9 +329,6 @@ class SignOnResponseTest {
                     .isEqualTo(ORACLE_MSG_COMPARISON_FAILED)
                     .hasSize(ORACLE_LENGTH_FAILURE_TEXT);
 
-            // The program composes the text into an eighty-character field, so the value it actually
-            // holds is the text followed by fifty-one spaces. Carrying that padded form proves the
-            // absence of a trim far better than carrying a value that has nothing to trim.
             String paddedToProgramWidth = ORACLE_MSG_COMPARISON_FAILED
                     + ORACLE_FIELD_PAD.repeat(ORACLE_MESSAGE_WIDTH - ORACLE_LENGTH_FAILURE_TEXT);
             SignOnResponse padded = messageOnly(paddedToProgramWidth, false);
@@ -665,17 +411,9 @@ class SignOnResponseTest {
         }
     }
 
-    /**
-     * The asymmetry across the eight outcomes, asserted arm by arm so that it is demonstrably modelled
-     * rather than accidentally true of one fixture.
-     *
-     * <p>Five arms raise the flag and three leave it lowered. Two of the three carry a message while
-     * doing so, which is why no rule of the form "a message implies an error" can hold.
-     */
     @Nested
     @DisplayName("The error flag is asymmetric across the eight outcomes")
     class ErrorFlagAsymmetry {
-
         @Test
         @DisplayName("raises the flag on the missing-record arm, which carries the same text length")
         void raisesTheFlagOnTheMissingRecordArm() {
@@ -788,25 +526,9 @@ class SignOnResponseTest {
         }
     }
 
-    /**
-     * The two shared texts, carried at fifty characters and never at forty-nine.
-     *
-     * <p>Both facts about them are true at once and neither may be dropped: the literal each value
-     * clause writes is forty-nine characters long, and the field that holds it is fifty characters
-     * wide, so the stored content is the literal followed by one filling space. Fifty is what a client
-     * receives. The trailing pad is part of the value, not noise around it, and nothing on this
-     * contract trims, strips, re-fills or blank-collapses it.
-     *
-     * <p>These fifty-character values belong to one family. A separate forty-character family lives in
-     * a different copybook, names the application by an older abbreviation, and includes its own
-     * courtesy text that reads almost the same. <strong>The two families must never be merged,
-     * cross-referenced or de-duplicated</strong>, which is why the last test here asserts the
-     * inequality rather than leaving it to a reader's care.
-     */
     @Nested
     @DisplayName("The two shared texts are fifty characters, and the pad is part of the value")
     class PaddedCommonMessages {
-
         @Test
         @DisplayName("relates forty-nine as written to fifty as stored, for both texts")
         void relatesFortyNineAsWrittenToFiftyAsStored() {
@@ -926,11 +648,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("keeps the fifty-character family separate from the forty-character title family")
         void keepsTheFiftyCharacterFamilySeparateFromTheTitleFamily() {
-            // Two different copybooks, two different widths, two different texts. The forty-character
-            // courtesy title reads almost the same as the fifty-character thank-you and names the
-            // application by an older abbreviation. Merging or de-duplicating the two families would
-            // silently substitute one contract for the other, so the inequality is asserted here
-            // rather than left to a reader's care.
             List<String> fiftyCharacterFamily =
                     List.of(ORACLE_MSG_THANK_YOU_STORED, ORACLE_MSG_INVALID_KEY_STORED);
             List<String> fortyCharacterFamily = List.of(MessageCatalogService.CCDA_THANK_YOU,
@@ -964,20 +681,9 @@ class SignOnResponseTest {
         }
     }
 
-    /**
-     * All seven texts the sign-on transaction can emit, driven through the contract and asserted at
-     * their measured lengths. Five are written directly in the program and two come from the shared
-     * copybook, and the seven measure 24, 25, 29, 29, 29, 50 and 50 characters respectively.
-     *
-     * <p>Character-for-character fidelity is what this part of the acceptance criteria verifies, so
-     * every assertion here compares against a literal restated in this file rather than against the
-     * constant the contract publishes. Where the contract does publish a constant, its value is
-     * checked against the restated literal too, so a drift in either direction fails.
-     */
     @Nested
     @DisplayName("All seven message texts are representable byte for byte")
     class GateFiveMessageContract {
-
         @Test
         @DisplayName("publishes the five direct texts exactly as the program writes them")
         void publishesTheFiveDirectTextsExactly() {
@@ -1077,9 +783,6 @@ class SignOnResponseTest {
         @DisplayName("keeps the two prompts distinct, because the ordered cascade stops at the first "
                 + "match")
         void keepsTheTwoPromptsDistinct() {
-            // The program evaluates its clauses top down and stops at the first that matches, so a
-            // submission with both entry fields empty yields the identifier prompt and never the
-            // second one. The two texts therefore have to remain separately representable.
             assertThat(ORACLE_MSG_PROMPT_USERID).isNotEqualTo(ORACLE_MSG_PROMPT_ENTRY);
             assertThat(ORACLE_LENGTH_PROMPT_USERID).isNotEqualTo(ORACLE_LENGTH_PROMPT_ENTRY);
 
@@ -1105,9 +808,6 @@ class SignOnResponseTest {
                     ORACLE_MSG_THANK_YOU_STORED,
                     ORACLE_MSG_INVALID_KEY_STORED);
 
-            // The composed field is two characters wider than the item it is rendered through. That
-            // difference is recorded rather than enforced, and it is harmless precisely because no
-            // text the transaction can emit is long enough to be affected by it.
             assertThat(ORACLE_MESSAGE_WIDTH).isGreaterThan(ORACLE_SCREEN_MESSAGE_WIDTH);
             assertThat(texts).allSatisfy(text -> assertThat(text.length())
                     .as("[%s] is short enough that the two-character difference cannot bite", text)
@@ -1115,26 +815,9 @@ class SignOnResponseTest {
         }
     }
 
-    /**
-     * The destination is data this contract echoes, never a decision it makes.
-     *
-     * <p>On a successful comparison the program makes a single two-way decision: the administrator code
-     * transfers control to the administrative menu, and the alternative transfers control to the user
-     * main menu. That alternative is <strong>unconditional</strong> - it is not a second test of the
-     * standard-user condition - so there is no third branch and no failure path, and every code that is
-     * not the administrator code reaches the main menu rather than an error.
-     *
-     * <p>The decision itself belongs to the service layer, and the route vocabulary belongs to the
-     * navigation service. This type holds an opaque value. The tests below establish that behaviourally
-     * rather than by inspecting the class: a value from no vocabulary survives, an arbitrarily long
-     * value raises no violation, and a deliberately mismatched code-and-destination pair is carried
-     * faithfully instead of being corrected. A route enumeration could not accept the first, a declared
-     * bound would reject the second, and any dispatch at all would rewrite the third.
-     */
     @Nested
     @DisplayName("The destination is a declarative value, not a decision")
     class DeclarativeRouting {
-
         @Test
         @DisplayName("carries the administrative destination and the main-menu destination as data")
         void carriesBothDestinationsAsData() {
@@ -1152,7 +835,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("routes every code other than the administrator code to the main menu")
         void routesEveryOtherCodeToTheMainMenu() {
-            // The alternative arm is unconditional, so an undeclared code is routed and not rejected.
             List<String> everythingElse = List.of(CODE_STANDARD_USER, CODE_UNDECLARED, "a", " ");
 
             assertThat(everythingElse).allSatisfy(code -> {
@@ -1210,8 +892,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("carries a mismatched code and destination faithfully, so it performs no dispatch")
         void carriesAMismatchedPairFaithfully() {
-            // A contract that re-derived the destination from the code would correct this pairing.
-            // Carrying it unchanged is the proof that no dispatch, route table or lookup runs here.
             SignOnResponse mismatched = successfulSignOn(CODE_ADMINISTRATOR, ROUTE_USER_MENU);
 
             assertThat(mismatched.userType()).isEqualTo(CODE_ADMINISTRATOR);
@@ -1271,23 +951,9 @@ class SignOnResponseTest {
         }
     }
 
-    /**
-     * The user-type contract: two declared codes, no synthetic third state, and a lookup that never
-     * throws.
-     *
-     * <p>The persisted field is a single character and the communication area declares exactly two
-     * condition names over it. The response carries the raw character rather than a resolved role, so a
-     * code the record never defines survives the round trip instead of being erased, and interpretation
-     * happens through the successor state's own lookup where it belongs.
-     *
-     * <p>The lookup returning an absent result for an unrecognised code is not a convenience: it is
-     * what the unconditional alternative encodes. A throwing lookup would be the more conventional Java
-     * shape and it would abort a sign-on the legacy program completes.
-     */
     @Nested
     @DisplayName("The user type declares exactly two codes and never throws")
     class UserTypeContract {
-
         @Test
         @DisplayName("declares exactly two constants and no synthetic fallback")
         void declaresExactlyTwoConstants() {
@@ -1360,9 +1026,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("yields a non-administrator outcome for an absent or unrecognised code")
         void yieldsANonAdministratorOutcomeForAnUnrecognisedCode() {
-            // This composition is the unconditional alternative, expressed in Java: an absent result
-            // can never answer true to the administrator predicate, because there is no instance on
-            // which to ask.
             List<String> unresolvable = Arrays.asList(CODE_UNDECLARED, "a", "", " ", "AU", null);
 
             assertThat(unresolvable).allSatisfy(code -> assertThat(
@@ -1419,19 +1082,9 @@ class SignOnResponseTest {
         }
     }
 
-    /**
-     * The successor state is carried, never re-implemented.
-     *
-     * <p>Every identifier the legacy area holds is a fixed-width numeric field whose rendered form
-     * includes its leading zeros, so each crosses this boundary as bounded text. A numeric Java type
-     * would drop those zeros irrecoverably, and no amount of formatting on the way out would tell a
-     * client whether the original had them. The tests below carry a leading-zero value all the way
-     * through the wire and assert both that it is unchanged and that it was published as text.
-     */
     @Nested
     @DisplayName("The successor state is carried whole, with leading zeros intact")
     class EchoedNavigationState {
-
         @Test
         @DisplayName("carries the successor state a successful sign-on assembled")
         void carriesTheSuccessorState() {
@@ -1544,25 +1197,9 @@ class SignOnResponseTest {
         }
     }
 
-    /**
-     * What never reaches a client: no credential in any form, and no generated terminal furniture.
-     *
-     * <p>The symbolic map declares an eight-character output item for the operator's credential
-     * immediately after the one for the identifier and at the same width. One of those two is carried
-     * and the other must never be, and being declared by a generated map is no argument either way.
-     *
-     * <p>The map also declares, for each of its eleven value items, a per-item length, flag and
-     * attribute group on the input side and a colour, highlight, outline and validation group on the
-     * output side, plus a twelve-byte terminal area filler at the head of each map. None of that is a
-     * value. The assertions here work from the published payload, which is the strongest available
-     * statement: the key set is pinned to exactly fifteen names, so anything else - a credential, a
-     * control byte, a filler, a cursor coordinate, an attribute or an edit mask - cannot be present
-     * without failing.
-     */
     @Nested
     @DisplayName("No credential and no terminal furniture reaches a client")
     class NoCredentialOrScreenFurniture {
-
         @Test
         @DisplayName("publishes exactly the fifteen components, in declaration order and no others")
         void publishesExactlyTheFifteenComponents() throws JsonProcessingException {
@@ -1580,10 +1217,6 @@ class SignOnResponseTest {
         @Test
         @DisplayName("publishes no credential component under any spelling")
         void publishesNoCredentialComponentUnderAnySpelling() throws JsonProcessingException {
-            // The missing-record arm is used rather than the failed-comparison arm because the latter's
-            // mandated interface wording legitimately contains the word this scan looks for. Mentioning
-            // it in a sentence the screen displayed is not publishing a credential; the following test
-            // asserts that distinction explicitly.
             SignOnResponse fullyPopulated = fullyPopulatedWith(ORACLE_MSG_USER_NOT_FOUND);
             List<String> credentialSpellings = List.of(
                     "password", "Password", "passwd", "Passwd", "pwd", "Pwd",
@@ -1609,9 +1242,6 @@ class SignOnResponseTest {
 
             JsonNode payload = payloadOf(response);
 
-            // Two permitted mentions, both metadata rather than data: the mandated interface wording
-            // the screen displayed, and the symbolic name of the field the cursor returned to. Neither
-            // is a credential, and no component of this contract holds one.
             assertThat(payload.get("message").asText())
                     .as("mandated wording, reproduced verbatim because it is an external interface")
                     .isEqualTo(ORACLE_MSG_COMPARISON_FAILED);
@@ -1702,9 +1332,6 @@ class SignOnResponseTest {
                     .isEqualTo(SAMPLE_CURRENT_DATE)
                     .hasSize(ORACLE_EIGHT_CHARACTER_WIDTH);
 
-            // The time value carries the pad the nine-character field adds. No temporal type could
-            // hold it, and none would return it unchanged, so this is the assertion that proves the
-            // component is text and that no formatter sits in the path.
             assertThat(payload.get("currentTime").isTextual()).isTrue();
             assertThat(payload.get("currentTime").asText())
                     .isEqualTo(SAMPLE_CURRENT_TIME)
@@ -1748,21 +1375,9 @@ class SignOnResponseTest {
         }
     }
 
-    /**
-     * Bean Validation is used for measurement only, and a width constraint is essentially the only kind
-     * that appears.
-     *
-     * <p>Every component of this contract is optional in the legacy sense: each can legitimately be
-     * absent, empty or space-filled, because the screen it came from allowed all three. A presence, a
-     * pattern or a format constraint would therefore reject input the legacy accepted, and the legacy
-     * cascade is ordered and first-error-wins in any case, so a declarative constraint set could not
-     * reproduce it. The tests here establish that the only thing being measured is width, and that the
-     * measurement never alters a value.
-     */
     @Nested
     @DisplayName("Validation measures width and nothing else")
     class ValidationIsMeasurementOnly {
-
         @Test
         @DisplayName("raises no violation for a response with every component absent")
         void raisesNoViolationForAWhollyAbsentResponse() {
@@ -1878,19 +1493,9 @@ class SignOnResponseTest {
         }
     }
 
-    /**
-     * Value semantics: nullable throughout, immutable by construction, absent keys omitted, unknown
-     * incoming keys tolerated.
-     *
-     * <p>Immutability is demonstrated here by <em>building</em> rather than by interrogating. Deriving a
-     * modified successor state from the one a response holds produces a new state and leaves the
-     * response's own untouched, which is the property that actually matters: no holder of a reference
-     * to this response can change what it says.
-     */
     @Nested
     @DisplayName("Value semantics: nullable, immutable, omitting and tolerant")
     class ValueSemantics {
-
         @Test
         @DisplayName("tolerates a null in every component, one component at a time")
         void toleratesANullInEveryComponent() {
@@ -2096,23 +1701,11 @@ class SignOnResponseTest {
         }
     }
 
-    /**
-     * Builds a response carrying only an identifier, for probing that component's declared width.
-     *
-     * @param userId the identifier to carry
-     * @return a response carrying only that identifier
-     */
     private static SignOnResponse withUserId(String userId) {
         return new SignOnResponse(null, false, null, null, null, userId, null, null, null, null,
                 null, null, null, null, null);
     }
 
-    /**
-     * Builds a response carrying only a user-type code, for probing that component's declared width.
-     *
-     * @param userType the raw code to carry
-     * @return a response carrying only that code
-     */
     private static SignOnResponse withUserType(String userType) {
         return new SignOnResponse(null, false, null, null, null, null, userType, null, null, null,
                 null, null, null, null, null);

@@ -37,78 +37,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Unit tests for {@link ErrorResponse}, the REST error body of the screen-derived endpoints.
  *
- * <p>This is a pure unit test. It starts no application context, opens no connection and launches no
- * container: it constructs the type directly and, where the wire shape is the thing under test,
- * serialises it with a local mapper configured by hand to match the four serialisation settings the
- * module declares in {@code application.yml}. Nothing here shares state with any other test.</p>
+ * <p>The two-state contract is what these tests protect: the legacy macro coloured a field when its
+ * validation flag was not-OK and additionally marked it when the flag was specifically blank, so
+ * MISSING and INVALID must stay distinct named values rather than collapsing into a boolean. The
+ * state crosses the wire as its own textual name, so a client cannot come to depend on an ordinal.
  *
- * <p>The contract under defence comes from the parameterised procedural macro
- * {@code app/cpy/CSSETATY.cpy}, whose executable body occupies lines 18 to 27 and fires when a
- * field's validation flag is either not-OK or blank. In both firing states it writes an error
- * highlight into the field's colour sub-field; in the blank state <em>only</em>, a nested condition
- * additionally writes a single-character marker into the field's displayed-value sub-field, and
- * {@code app/cpy-bms/COACTUP.CPY} supplies both sub-fields - its output redefinition begins at line
- * 343 and, for the account status field alone, declares the colour sub-field at line 388 and the
- * displayed-value sub-field at line 392. That extra marker is the entire justification for two
- * states rather than one boolean: it is the observable difference between "you left this out" and
- * "what you typed is wrong", and the remedies a client must offer the operator differ accordingly.
- * The observable contract therefore has exactly three shapes, and every one is asserted below: an
- * undecorated first submission carrying no field error at all, a re-entry decoration without the
- * marker which is {@link ErrorResponse.FieldState#INVALID}, and a re-entry decoration with the
- * marker which is {@link ErrorResponse.FieldState#MISSING}.</p>
- *
- * <p><strong>The decorated set is 39, not 43.</strong> The macro is expanded exactly 39 times in
- * {@code app/cbl/COACTUPC.cbl} between lines 3208 and 3432, while
- * {@code app/bms/COACTUP.bms} declares 43 unprotected input fields; the four
- * unprotected-but-undecorated fields are {@code ACCTSID}, {@code AADDGRP}, {@code ACSTNUM} and
- * {@code ACSGOVT}. A reader who expects 43 decorable fields is reading the map rather than the
- * expansions, and {@link #THIRTY_NINE_DECORATED_SCREEN_FIELDS} lists the 39 in expansion order -
- * an order that is itself irregular and is reproduced exactly as it is. Two of the 39 are decorated
- * but never validated, the source saying so directly at line 3345 for the middle name
- * ({@code ACSMNAM}) and at line 3369 for the second address line ({@code ACSADL2}), so they can
- * reach a decorated state only through decoration and never through a rule;
- * {@link #noDeclarativeConstraintFiresOnAnyValueHoweverBlankOrOdd()} proves that this type attaches
- * no constraint to them.</p>
- *
- * <p><strong>The duplicated state enum is deliberate - do not de-duplicate it.</strong> The
- * validation-failure carrier in the {@code com.carddemo.exception} package declares a structurally
- * identical two-constant state enum of its own, because the module's layering forbids
- * {@code api.dto} from depending on the failure-carrier package and collapsing the two would invert
- * the dependency direction. This test therefore references <em>only</em> the enum nested inside
- * {@link ErrorResponse} and imports nothing at all from {@code com.carddemo.exception}: the absence
- * of that import is part of what is being asserted, so a future "de-duplication" that reaches for it
- * fails here rather than shipping. Only the enums coincide in any case - the two nested field-error
- * carriers name their components differently.</p>
- *
- * <p>This test deliberately does not evaluate the re-entry gate: whether field errors may be
- * populated at all is decided by the service from the re-enter condition echoed back in the
- * navigation context, and that gating is tested there, so here it is enough that the type can
- * faithfully represent "no field errors". It also asserts no throughput, latency or timing figure and
- * reads no clock, because this type carries no temporal component.</p>
+ * <p>One summary line coexists with many field errors, and a response may legitimately report the
+ * two fields the legacy source decorates but never validates.
  */
 @DisplayName("ErrorResponse :: two-state per-field error body of the screen-derived endpoints")
 class ErrorResponseTest {
-
-    /**
-     * The 39 screen field identifiers the macro decorates, in expansion order as read from
-     * {@code app/cbl/COACTUPC.cbl} lines 3208 to 3432.
-     *
-     * <p>The irregular sequence is deliberate and is reproduced verbatim: {@code ACSSTTE}
-     * sits between the two address lines, and {@code ACSZIPC} precedes {@code ACSCITY} and
-     * {@code ACSCTRY}. This list lives in the test because the test has to know the legacy
-     * expansion set in order to prove the response echoes a caller's entries untouched. It
-     * must never migrate into the production type: {@link ErrorResponse} is a value object and
-     * holds no registry of decorable fields.</p>
-     *
-     * <p>It is used <em>only</em> as an input: every test that reads it pushes it through
-     * {@link FieldErrorDecorator#mark(String, String, FieldErrorDecorator.FlagState)} and then
-     * asserts on what the production types produced. No test asserts a relationship between
-     * this constant and itself, because such an assertion would hold whatever the production
-     * types did. The same 39 identifiers, in the same order, are pinned by a SHA-256 literal
-     * against a fixture extracted mechanically from the legacy program in
-     * {@code FieldErrorDecoratorTest}, so this list cannot drift away from the source
-     * unnoticed.</p>
-     */
     private static final List<String> THIRTY_NINE_DECORATED_SCREEN_FIELDS = List.of(
             "ACSTTUS", "OPNYEAR", "OPNMON", "OPNDAY", "ACRDLIM", "EXPYEAR", "EXPMON",
             "EXPDAY", "ACSHLIM", "RISYEAR", "RISMON", "RISDAY", "ACURBAL", "ACRCYCR",
@@ -117,169 +55,75 @@ class ErrorResponseTest {
             "ACSZIPC", "ACSCITY", "ACSCTRY", "ACSPH1A", "ACSPH1B", "ACSPH1C", "ACSPH2A",
             "ACSPH2B", "ACSPH2C", "ACSPFLG", "ACSEFTC");
 
-    /**
-     * The four unprotected-but-undecorated fields of the map, recorded so that the difference
-     * between 43 unprotected fields and 39 decorated ones is never mistaken for an omission.
-     */
     private static final List<String> FOUR_EDITABLE_BUT_UNDECORATED_SCREEN_FIELDS =
             List.of("ACCTSID", "AADDGRP", "ACSTNUM", "ACSGOVT");
 
-    /** The single summary line a service composes for the whole response. */
     private static final String SUMMARY = "Account update rejected - correct the marked fields";
 
-    /** A second, different summary line, used to prove the summary is carried and not derived. */
     private static final String OTHER_SUMMARY = "Account update rejected - re-key the account";
 
-    /** Screen field identifier for the account status - the first of the 39 expansions. */
     private static final String SCREEN_ACCT_STATUS = "ACSTTUS";
 
-    /** Request-contract property name paired with the account status screen field. */
     private static final String PROP_ACCT_STATUS = "acctStatus";
 
-    /** Caller-composed wording for a blank account status. Nothing is synthesised. */
     private static final String ACCT_STATUS_MESSAGE = "Account status must be supplied";
 
-    /** Screen field identifier for the credit limit. */
     private static final String SCREEN_CREDIT_LIMIT = "ACRDLIM";
 
-    /** Request-contract property name paired with the credit limit screen field. */
     private static final String PROP_CREDIT_LIMIT = "creditLimit";
 
-    /** Caller-composed wording for a credit limit that failed its edit. */
     private static final String CREDIT_LIMIT_MESSAGE = "Credit limit must be a signed amount";
 
-    /** Screen field identifier for the middle name - decorated, never validated. */
     private static final String SCREEN_MIDDLE_NAME = "ACSMNAM";
 
-    /** Request-contract property name for the middle name. No constraint may be attached. */
     private static final String PROP_MIDDLE_NAME = "middleName";
 
-    /** Screen field identifier for the second address line - decorated, never validated. */
     private static final String SCREEN_ADDRESS_LINE_2 = "ACSADL2";
 
-    /** Request-contract property name for the second address line. No constraint may attach. */
     private static final String PROP_ADDRESS_LINE_2 = "addressLine2";
 
-    /** Screen field identifier the transposed commentary mislabels as the transfer account. */
     private static final String SCREEN_PRIMARY_CARDHOLDER = "ACSPFLG";
 
-    /** Request-contract property name for the primary-cardholder flag. */
     private static final String PROP_PRIMARY_CARDHOLDER = "primaryCardholder";
 
-    /** Screen field identifier the transposed commentary mislabels as the primary cardholder. */
     private static final String SCREEN_EFT_ACCOUNT_ID = "ACSEFTC";
 
-    /** Request-contract property name for the electronic-transfer account identifier. */
     private static final String PROP_EFT_ACCOUNT_ID = "eftAccountId";
 
-    /** Wording used where a field is decorated for display although no rule produced it. */
     private static final String DECORATION_ONLY_MESSAGE = "Field marked for operator attention";
 
-    /**
-     * The single-character marker the legacy macro wrote into a blank field's displayed-value
-     * sub-field. It is <em>evidence for</em> the missing state and is deliberately not a member
-     * of the response: it appears here only so that its absence from the payload can be
-     * asserted.
-     */
     private static final String LEGACY_BLANK_MARKER = "*";
 
-    /** Top-level payload property carrying the one summary line. */
     private static final String KEY_MESSAGE = "message";
 
-    /** Top-level payload property carrying the per-field errors. */
     private static final String KEY_FIELD_ERRORS = "fieldErrors";
 
-    /** Top-level payload property carrying the focus hint. */
     private static final String KEY_FOCUS = "focusScreenFieldId";
 
-    /** Per-entry payload property carrying the request-contract property name. */
     private static final String KEY_FIELD_NAME = "fieldName";
 
-    /** Per-entry payload property carrying the legacy screen field identifier. */
     private static final String KEY_SCREEN_FIELD_ID = "screenFieldId";
 
-    /** Per-entry payload property carrying the two-state field state. */
     private static final String KEY_STATE = "state";
 
-    /**
-     * The five property names of the standard problem-detail representation, which this body
-     * is deliberately <em>not</em>. They are listed so their joint absence can be asserted
-     * rather than assumed.
-     */
     private static final List<String> PROBLEM_DETAIL_PROPERTIES =
             List.of("type", "title", "status", "detail", "instance");
 
-    /**
-     * A mapper configured by hand to the four serialisation settings the module declares, so
-     * that every payload assertion below is made against the shape a client actually receives.
-     *
-     * <p>The four settings are, in the order the configuration file declares them: omit a
-     * property whose value is {@code null} and nothing else; render a date as text rather than
-     * as an epoch number; ignore an unknown property on the way in so a client may echo back a
-     * field this endpoint does not consume; and write a decimal in plain notation so a
-     * fixed-scale amount carried from a zoned-decimal field cannot be corrupted into
-     * scientific notation. The last two matter to this type only as proof that its own shape
-     * survives them: it carries no date and no decimal.</p>
-     *
-     * <p>No application context is started, because this file is a unit test. The four settings come
-     * from {@link JsonContractSupport#declaredSettingsMapper()}, which is the single place in the
-     * test tree where they are written out by hand, so this file cannot transcribe them differently
-     * from any sibling suite.</p>
-     *
-     * <p>This mapper evidences the shape this type takes <em>under those settings</em>, and nothing
-     * more; it is not evidence about the mapper a deployed instance holds. Two facts in
-     * {@link ApplicationJsonContractTest} carry that burden, both against a mapper obtained from a
-     * real context that has read the module's {@code application.yml}: one compares that mapper's
-     * output with this very factory's output, so an edit to the module's file fails there rather
-     * than quietly making this stand-in unrepresentative; the other binds this type through the
-     * deployed object directly.</p>
-     *
-     * @return a mapper carrying the module's four declared serialisation settings
-     */
     private static ObjectMapper moduleEquivalentMapper() {
         return JsonContractSupport.declaredSettingsMapper();
     }
 
-    /**
-     * Serialises a response and parses it straight back into a tree, which is how every
-     * payload-shape assertion below inspects the wire form.
-     *
-     * @param response the response to render
-     * @return the parsed payload
-     * @throws JsonProcessingException if rendering or parsing fails, which is itself a failure
-     */
     private static JsonNode payloadOf(ErrorResponse response) throws JsonProcessingException {
         ObjectMapper mapper = moduleEquivalentMapper();
         return mapper.readTree(mapper.writeValueAsString(response));
     }
 
-    /**
-     * Collects the property names of an object node in the order they were written, so that a
-     * test can pin the exact property set instead of probing for names one at a time. Pinning
-     * the whole set is what makes the negative assertions airtight: a property that is not in
-     * the expected list cannot hide, whatever it might be called.
-     *
-     * @param node the object node to read
-     * @return its property names, in payload order
-     */
     private static List<String> propertyNamesOf(JsonNode node) {
         List<String> names = new ArrayList<>();
         node.fieldNames().forEachRemaining(names::add);
         return names;
     }
 
-    /**
-     * Reads a property the contract requires to be present, failing with a diagnostic that names
-     * the missing property and lists what was actually there.
-     *
-     * <p>Reading straight through a missing property would surface a later regression as a bare
-     * null dereference, which says nothing about the contract that broke. This helper turns that
-     * into a sentence a reader can act on.</p>
-     *
-     * @param node         the object node to read
-     * @param propertyName the property that must be present
-     * @return the property's value
-     */
     private static JsonNode requiredProperty(JsonNode node, String propertyName) {
         assertThat(node.has(propertyName))
                 .as("the payload must carry the property %s, but carried %s",
@@ -288,14 +132,6 @@ class ErrorResponseTest {
         return node.get(propertyName);
     }
 
-    /**
-     * Reads one entry of the field-error array, failing with a diagnostic that names the index and
-     * the size when the entry is not there.
-     *
-     * @param entries the field-error array
-     * @param index   the entry to read
-     * @return the entry at that position
-     */
     private static JsonNode entryAt(JsonNode entries, int index) {
         assertThat(entries.isArray())
                 .as("the field errors must be rendered as an array")
@@ -306,26 +142,15 @@ class ErrorResponseTest {
         return entries.get(index);
     }
 
-    /**
-     * Reads the first field-error entry of a payload, which is the entry most assertions here work
-     * with.
-     *
-     * @param payload the whole payload
-     * @return its first field-error entry
-     */
     private static JsonNode firstEntryOf(JsonNode payload) {
         return entryAt(requiredProperty(payload, KEY_FIELD_ERRORS), 0);
     }
-
-    // 1. The nested state enum carries exactly two constants
 
     @Test
     @DisplayName("FieldState declares exactly two constants, MISSING then INVALID, because the macro had "
             + "exactly two firing states - a field that passed its edits decorates nothing and so has no "
             + "representation in an error enum at all")
     void fieldStateDeclaresExactlyTheTwoLegacyFiringStatesInDeclarationOrder() {
-        // containsExactly pins membership, order and size in one assertion, so adding a third
-        // constant or reordering the two fails here rather than silently widening the contract.
         assertThat(ErrorResponse.FieldState.values())
                 .containsExactly(ErrorResponse.FieldState.MISSING,
                         ErrorResponse.FieldState.INVALID);
@@ -340,9 +165,6 @@ class ErrorResponseTest {
             + "DEFAULT are all rejected by name, so a synthetic constant cannot be introduced without "
             + "breaking this test")
     void noThirdStateConstantExistsUnderAnyOfTheNamesAReaderMightReachFor() {
-        // A default clause inside a switch over these two constants is legitimate. A synthetic
-        // third CONSTANT is not: it would be unreachable state that every client would have to
-        // handle for no reason, and it would blur the two remedies the operator needs.
         List<String> forbiddenNames =
                 List.of("OK", "VALID", "NONE", "UNKNOWN", "BLANK", "NOT_OK", "WARNING", "DEFAULT");
 
@@ -358,8 +180,6 @@ class ErrorResponseTest {
                 .isSameAs(ErrorResponse.FieldState.INVALID);
     }
 
-    // 2. The two states are never conflated, and the carrier is not boolean based
-
     @Test
     @DisplayName("MISSING and INVALID are distinct values with distinct ordinals and neither is derived "
             + "from the other, so no code path can silently coerce one into the other")
@@ -372,8 +192,6 @@ class ErrorResponseTest {
         assertThat(missing.ordinal()).isNotEqualTo(invalid.ordinal());
         assertThat(missing.compareTo(invalid)).isNotZero();
 
-        // Declaration order is itself part of the contract: the state that carries the extra
-        // marker is declared first, matching the nested condition in the macro body.
         assertThat(missing.ordinal()).isZero();
         assertThat(invalid.ordinal()).isEqualTo(1);
     }
@@ -392,9 +210,6 @@ class ErrorResponseTest {
         assertThat(blank.state()).isSameAs(ErrorResponse.FieldState.MISSING);
         assertThat(badlyFilled.state()).isSameAs(ErrorResponse.FieldState.INVALID);
 
-        // Same property, same screen field, same wording - only the state differs, and that is
-        // enough to make the two entries unequal. A boolean here would make them identical and
-        // would erase the marker semantics the legacy screen showed the operator.
         assertThat(blank.fieldName()).isEqualTo(badlyFilled.fieldName());
         assertThat(blank.screenFieldId()).isEqualTo(badlyFilled.screenFieldId());
         assertThat(blank.message()).isEqualTo(badlyFilled.message());
@@ -443,8 +258,6 @@ class ErrorResponseTest {
         assertThat(badlyFilledState.isNumber()).isFalse();
         assertThat(badlyFilledState.asText()).isEqualTo("INVALID");
 
-        // The two rendered states differ, which is the wire-level restatement of the point: a
-        // boolean carrier would have rendered the same token twice.
         assertThat(blankState.asText()).isNotEqualTo(badlyFilledState.asText());
     }
 
@@ -461,8 +274,6 @@ class ErrorResponseTest {
         assertThat(state).isNotInstanceOf(String.class);
         assertThat(state).isNotInstanceOf(Number.class);
     }
-
-    // 3. A first submission carries no field error at all
 
     @Test
     @DisplayName("The summary-only constructor is the first-submission shape: a summary line and an empty "
@@ -492,8 +303,6 @@ class ErrorResponseTest {
         assertThat(nullThroughShortForm.hasFieldErrors()).isFalse();
         assertThat(nullThroughFullForm.hasFieldErrors()).isFalse();
 
-        // All three are the same value, which is what makes "no field errors" a single shape
-        // rather than three near-misses a client would have to distinguish.
         assertThat(explicitlyEmpty).isEqualTo(nullThroughShortForm);
         assertThat(explicitlyEmpty).isEqualTo(nullThroughFullForm);
     }
@@ -528,15 +337,11 @@ class ErrorResponseTest {
         assertThat(response.fieldErrors().get(1).screenFieldId())
                 .isEqualTo(SCREEN_ADDRESS_LINE_2);
 
-        // Both are among the 39 decorated fields, and neither is among the four the map leaves
-        // unprotected but the program never decorates.
         assertThat(THIRTY_NINE_DECORATED_SCREEN_FIELDS)
                 .contains(SCREEN_MIDDLE_NAME, SCREEN_ADDRESS_LINE_2);
         assertThat(FOUR_EDITABLE_BUT_UNDECORATED_SCREEN_FIELDS)
                 .doesNotContain(SCREEN_MIDDLE_NAME, SCREEN_ADDRESS_LINE_2);
     }
-
-    // 4. One summary message, carried and never synthesised
 
     @Test
     @DisplayName("One summary line coexists with many independent field errors: the legacy cascades stopped "
@@ -571,8 +376,6 @@ class ErrorResponseTest {
         assertThat(response.message()).doesNotContain(ACCT_STATUS_MESSAGE);
         assertThat(response.message()).doesNotContain(CREDIT_LIMIT_MESSAGE);
 
-        // The per-field wordings survive untouched on their own entries, which is the other half
-        // of the same point: the two channels are independent, not one derived from the other.
         assertThat(response.fieldErrors().get(0).message()).isEqualTo(ACCT_STATUS_MESSAGE);
         assertThat(response.fieldErrors().get(1).message()).isEqualTo(CREDIT_LIMIT_MESSAGE);
     }
@@ -610,15 +413,11 @@ class ErrorResponseTest {
         assertThat(summary.isObject()).isFalse();
         assertThat(summary.asText()).isEqualTo(SUMMARY);
 
-        // There is exactly one summary property, next to an array of two entries: one to N, not
-        // N to N, and no second summary channel anywhere in the payload.
         assertThat(propertyNamesOf(payload))
                 .containsExactly(KEY_MESSAGE, KEY_FIELD_ERRORS)
                 .containsOnlyOnce(KEY_MESSAGE);
         assertThat(requiredProperty(payload, KEY_FIELD_ERRORS)).hasSize(2);
     }
-
-    // 5. Absent optional members are omitted from the payload, never rendered as null
 
     @Test
     @DisplayName("A response with no summary, no entries and no focus hint renders only the field-error "
@@ -692,8 +491,6 @@ class ErrorResponseTest {
         assertThat(absent.has(KEY_MESSAGE)).isFalse();
     }
 
-    // 6. The body is not a problem document
-
     @Test
     @DisplayName("The payload carries none of the five standard problem-detail properties, at the top level "
             + "or on an entry: this type is the error body, not a wrapper for another representation")
@@ -715,8 +512,6 @@ class ErrorResponseTest {
                     .isFalse();
         }
 
-        // Pinning the whole property set is what makes the negative airtight: the five names
-        // cannot appear under any spelling, because these are the only properties there are.
         assertThat(propertyNamesOf(payload))
                 .containsExactly(KEY_MESSAGE, KEY_FIELD_ERRORS, KEY_FOCUS)
                 .doesNotContainAnyElementsOf(PROBLEM_DETAIL_PROPERTIES);
@@ -735,8 +530,6 @@ class ErrorResponseTest {
                                 ErrorResponse.FieldState.INVALID, CREDIT_LIMIT_MESSAGE)),
                         SCREEN_CREDIT_LIMIT));
 
-        // A media-type marker, a document URI or a numeric status would all have to appear as
-        // text somewhere in the rendered body. None of them does.
         assertThat(rendered).doesNotContain("problem+json");
         assertThat(rendered).doesNotContain("about:blank");
         assertThat(rendered).doesNotContain("httpStatus");
@@ -744,14 +537,9 @@ class ErrorResponseTest {
         assertThat(rendered).doesNotContain("timestamp");
         assertThat(rendered).doesNotContain("path");
 
-        // Every value used here is deliberately digit-free, so any digit in the rendered body
-        // would have had to come from the type itself - a status code, an enum ordinal or a
-        // length. There is none, and the one summary text appears exactly once.
         assertThat(rendered).doesNotContainPattern("[0-9]");
         assertThat(rendered).containsOnlyOnce(SUMMARY);
     }
-
-    // 7. The field-error collection is immutable and tolerant of a null collection
 
     @Test
     @DisplayName("The accessor hands back an unmodifiable collection: adding, removing or clearing through "
@@ -844,7 +632,6 @@ class ErrorResponseTest {
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("state");
 
-        // The three-component convenience form is guarded identically, since it delegates.
         assertThatThrownBy(() -> new ErrorResponse.FieldError(
                 PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, null))
                 .isInstanceOf(NullPointerException.class)
@@ -859,8 +646,6 @@ class ErrorResponseTest {
                 PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, ErrorResponse.FieldState.MISSING);
         ErrorResponse original = new ErrorResponse(SUMMARY, List.of(carried), SCREEN_ACCT_STATUS);
 
-        // Building a second response from the first's own exposed collection must not couple the
-        // two: the copy is taken again, and the original is unaffected by anything done later.
         ErrorResponse rebuilt =
                 new ErrorResponse(OTHER_SUMMARY, original.fieldErrors(), SCREEN_CREDIT_LIMIT);
 
@@ -871,8 +656,6 @@ class ErrorResponseTest {
         assertThat(rebuilt.fieldErrors()).isEqualTo(original.fieldErrors());
         assertThat(rebuilt).isNotEqualTo(original);
     }
-
-    // 8. Identity values round trip untrimmed, unfolded and with leading zeros intact
 
     @Test
     @DisplayName("Trailing spaces survive byte for byte on every text component, because the legacy screen "
@@ -961,8 +744,6 @@ class ErrorResponseTest {
         assertThat(entry.message()).isEqualTo(leadingZeroIdentifier);
         assertThat(response.focusScreenFieldId()).isEqualTo(leadingZeroIdentifier);
 
-        // On the wire the value must be a quoted string. A numeric node would render 42 and the
-        // seven leading zeros would be gone for good.
         JsonNode payload = payloadOf(response);
         JsonNode rendered = firstEntryOf(payload);
         assertThat(requiredProperty(rendered, KEY_FIELD_NAME).isTextual()).isTrue();
@@ -993,8 +774,6 @@ class ErrorResponseTest {
                 .hasSize(PROP_ACCT_STATUS.length() + 1);
         assertThat(entry.message()).isEqualTo(embeddedSpaces).hasSize(9);
     }
-
-    // 9. Every component, accessor and generated member is exercised
 
     @Test
     @DisplayName("The full constructor carries all three response components and all four entry components "
@@ -1074,8 +853,6 @@ class ErrorResponseTest {
         assertThat(entryText).contains(KEY_SCREEN_FIELD_ID + "=" + SCREEN_ACCT_STATUS);
         assertThat(entryText).contains(KEY_STATE + "=MISSING");
 
-        // No class name, no package, no object identity hash and no stack detail: the text form
-        // is a value rendering, never a diagnostic dump.
         assertThat(responseText).doesNotContain("com.carddemo");
         assertThat(responseText).doesNotContain("Exception");
         assertThat(responseText).doesNotContain("@");
@@ -1142,15 +919,11 @@ class ErrorResponseTest {
         assertThat(received.focusScreenFieldId()).isNull();
     }
 
-    // 10. What the response must NOT carry
-
     @Test
     @DisplayName("No declarative constraint fires on any value, however blank or odd, because the legacy "
             + "cascades are ordered and stop at the first match - constraints would fire out of order and "
             + "report several failures at once")
     void noDeclarativeConstraintFiresOnAnyValueHoweverBlankOrOdd() {
-        // The two fields named here are the ones the source decorates but never validates. If a
-        // constraint were ever attached to either, this test is where it would surface.
         ErrorResponse blankThroughout = new ErrorResponse("", List.of(
                 new ErrorResponse.FieldError("", "", ErrorResponse.FieldState.INVALID, ""),
                 new ErrorResponse.FieldError(PROP_MIDDLE_NAME, SCREEN_MIDDLE_NAME,
@@ -1184,8 +957,6 @@ class ErrorResponseTest {
                         ErrorResponse.FieldState.MISSING, ACCT_STATUS_MESSAGE)),
                 SCREEN_ACCT_STATUS);
 
-        // The property sets are closed, which is the structural proof: there is simply nowhere
-        // for a colour value, an attribute byte or a marker to live.
         JsonNode payload = payloadOf(response);
         assertThat(propertyNamesOf(payload))
                 .containsExactly(KEY_MESSAGE, KEY_FIELD_ERRORS, KEY_FOCUS);
@@ -1202,8 +973,6 @@ class ErrorResponseTest {
         assertThat(rendered).doesNotContainIgnoringCase("cursor");
         assertThat(rendered).doesNotContainIgnoringCase("mapset");
 
-        // The marker is evidence for the missing state, never a value the response repeats: the
-        // entry above is in that very state and the payload still contains no marker at all.
         assertThat(response.fieldErrors().get(0).state())
                 .isSameAs(ErrorResponse.FieldState.MISSING);
     }
@@ -1222,9 +991,6 @@ class ErrorResponseTest {
         assertThat(propertyNamesOf(payloadOf(reSubmission)))
                 .containsExactly(KEY_MESSAGE, KEY_FIELD_ERRORS);
 
-        // The only observable difference between the two shapes is whether the collection is
-        // populated. No flag distinguishes them, which is exactly right: the two are the same
-        // type in two states, and the decision that produced each one was made upstream.
         assertThat(firstSubmission.hasFieldErrors()).isFalse();
         assertThat(reSubmission.hasFieldErrors()).isTrue();
         String rendered = moduleEquivalentMapper().writeValueAsString(reSubmission);
@@ -1239,9 +1005,6 @@ class ErrorResponseTest {
     void theResponseHoldsNoRegistryOfTheThirtyNineDecoratedFields() {
         List<ErrorResponse.FieldError> everyDecoratedField = new ArrayList<>();
         for (String screenField : THIRTY_NINE_DECORATED_SCREEN_FIELDS) {
-            // The property name is derived by prefixing rather than by case folding: no value in
-            // this file is ever case folded, because the legacy conversions are table driven and
-            // a locale-aware fold is not their equivalent.
             everyDecoratedField.add(new ErrorResponse.FieldError(
                     "propertyFor" + screenField, screenField,
                     ErrorResponse.FieldState.INVALID));
@@ -1255,15 +1018,11 @@ class ErrorResponseTest {
                 .extracting(ErrorResponse.FieldError::screenFieldId)
                 .containsExactlyElementsOf(THIRTY_NINE_DECORATED_SCREEN_FIELDS);
 
-        // One entry stays one entry: nothing back-fills the other 38, which is what "no registry"
-        // means in practice.
         ErrorResponse justOne = new ErrorResponse(SUMMARY, List.of(
                 new ErrorResponse.FieldError(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS,
                         ErrorResponse.FieldState.MISSING)));
         assertThat(justOne.fieldErrors()).hasSize(1);
 
-        // And a repeated field is carried twice rather than collapsed, because de-duplication is
-        // the caller's decision and the legacy set 39 independent flags.
         ErrorResponse repeated = new ErrorResponse(SUMMARY, List.of(
                 new ErrorResponse.FieldError(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS,
                         ErrorResponse.FieldState.MISSING),
@@ -1276,13 +1035,13 @@ class ErrorResponseTest {
     @DisplayName("The expansion order of the 39 fields survives the production decoration path and the "
             + "hand-off into this response, including the two irregular placements, and none of the four "
             + "undecorated fields appears")
+    // This is an integration-path test over ordering, not an independent oracle. The 39 identifiers
+            // are an INPUT: they are pushed through the production decorator one at a time in legacy
+            // expansion order, and the assertions read back what the decorator and this response produced,
+            // so what is proved is that neither reorders, adds nor drops an entry. The same 39 are pinned
+            // by digest against a fixture extracted from the legacy program in FieldErrorDecoratorTest,
+            // which is where the list's own provenance is established.
     void theIrregularExpansionOrderSurvivesTheProductionDecorationPath() {
-        // The 39 identifiers are an INPUT here, never an expectation: they are pushed through the
-        // production decorator one at a time, in legacy expansion order, and every assertion below
-        // reads what the decorator and this response actually produced. Asserting the constant
-        // against itself would pass whatever the production types did, which is precisely the
-        // defect this shape avoids. The same 39 are pinned by digest against a fixture extracted
-        // from the legacy program in FieldErrorDecoratorTest, so the input itself cannot drift.
         FieldErrorDecorator decorated = FieldErrorDecorator.none();
         for (String screenField : THIRTY_NINE_DECORATED_SCREEN_FIELDS) {
             decorated = decorated.mark("propertyFor" + screenField, screenField,
@@ -1299,9 +1058,6 @@ class ErrorResponseTest {
                 .as("the response echoes the decorator's own sequence, adding and removing nothing")
                 .containsExactlyElementsOf(THIRTY_NINE_DECORATED_SCREEN_FIELDS);
 
-        // The state field sits between the two address lines, and the postal code precedes city
-        // and country. Both placements are odd, both are the source's own, and both are read here
-        // off the produced entries rather than off the input list.
         int addressLine1 = reported.indexOf("ACSADL1");
         int state = reported.indexOf("ACSSTTE");
         int addressLine2 = reported.indexOf(SCREEN_ADDRESS_LINE_2);
@@ -1312,13 +1068,9 @@ class ErrorResponseTest {
         assertThat(state).isGreaterThan(addressLine1).isLessThan(addressLine2);
         assertThat(postalCode).isLessThan(city).isLessThan(country);
 
-        // The last two expansions are the pair whose descriptive lines are transposed. Following
-        // the substitution tokens puts the primary-cardholder flag first.
         assertThat(reported).startsWith(SCREEN_ACCT_STATUS);
         assertThat(reported).endsWith(SCREEN_PRIMARY_CARDHOLDER, SCREEN_EFT_ACCOUNT_ID);
 
-        // Every produced entry carries the not-OK translation and no wording of its own, because
-        // the macro emitted no text and this response synthesises none.
         assertThat(response.fieldErrors())
                 .extracting(ErrorResponse.FieldError::state)
                 .containsOnly(ErrorResponse.FieldState.INVALID);
@@ -1391,8 +1143,6 @@ class ErrorResponseTest {
         assertThat(requiredProperty(payload, KEY_MESSAGE).isNumber()).isFalse();
         assertThat(requiredProperty(entry, KEY_STATE).isNumber()).isFalse();
 
-        // The credit limit is the account update's monetary field, and even an error about it
-        // carries no amount: the response names the field and never repeats its value.
         String rendered = moduleEquivalentMapper().writeValueAsString(response);
         assertThat(rendered).doesNotContainPattern("[0-9]");
     }

@@ -20,13 +20,14 @@
 -- alternate indexes, then exactly six foreign keys. No fourth index, no seventh foreign key, no new
 -- table and no data.
 --
--- APPLIES TO ALL PROFILES. V1 and V2 are resolved from classpath:db/migration, the one flat Flyway
+-- APPLIES TO ALL PROFILES. V1 and V2 are resolved from classpath:db/migration/schema, the Flyway
 -- location EVERY profile configures, and both sit at or below the production version ceiling of
 -- spring.flyway.target: 2, so every profile receives an identical schema and integrity layer. Sample
--- rows and sign-on identities are V3 and V4 in the same directory and are numbered ABOVE that ceiling,
--- which is what keeps them out of production; the migration specifications for V3 and V4 require that
--- flat layout and direct that no subdirectory be created, because a location is scanned recursively and
--- a directory therefore cannot isolate them.
+-- rows and sign-on identities are V3 and V4 and sit in a SEPARATE location,
+-- classpath:db/migration/seed, that only the local and test profiles resolve and that production is
+-- refused outright; they are also numbered ABOVE that ceiling. The shared parent db/migration holds no
+-- script, because a location is scanned recursively and anything in the parent would be reached from
+-- both sides of the split.
 --
 -- V1 IS A REQUIRED PREDECESSOR. Every statement below names a table, column or primary key that V1
 -- creates and none is guarded, so applying V2 without V1 fails immediately and visibly. Flyway

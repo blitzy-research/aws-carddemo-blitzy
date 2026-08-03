@@ -37,135 +37,52 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit test for {@link TransactionCategoryBalanceId}, the composite identifier class of the
- * transaction-category-balance table.
+ * Unit tests for {@link TransactionCategoryBalanceId}, the 17-byte composite key of the
+ * category-balance table.
  *
- * <p>Two independent legacy authorities fix the same key geometry and this test pins both, so each
- * one checks the other rather than restating it. Copybook member {@code CVTRA01Y} describes a
- * 50-byte record whose leading key group carries an 11-digit account identifier, a 2-byte
- * transaction type code and a 4-digit transaction category code, ahead of an 11-byte signed
- * category balance and a 22-byte trailing filler. The {@code TCATBALF} cluster definition states
- * the same geometry from the other direction, declaring the key length, the key offset and the
- * record length independently of the copybook, so the declared key length of 17 and the summed
- * component widths of 11 + 2 + 4 come from two different files and are asserted to agree. A third
- * and equally independent decomposition appears in the file description of the interest-calculation
- * batch program, which splits the same 50 bytes into the same 17-byte key group followed by a
- * single 33-byte data area; both splits close on 50 and their remainders reconcile because
- * 11 + 22 = 33. All three sums are asserted below.
- *
- * <p>This key group and the key group of the transaction-category reference record carry the
- * identical legacy name yet are unrelated: this one is 17 bytes and leads with an account
- * identifier, that one is 6 bytes and carries none, so the 6-byte form is not a prefix, sub-key or
- * reusable fragment of this one. Disambiguation is by copybook member name and declared group
- * length only, never by inspecting content, and this file never names or instantiates the 6-byte
- * key's own class: the two lengths appear here as plain integers.
- *
- * <p>The fifty distinct keys asserted here are the measured key column of a fixture holding 50 rows
- * of 50 bytes each. Every row carries the same type code and the same category code, so the account
- * identifier alone supplies all fifty distinctions - which is why the fixture on its own cannot show
- * that the type and category components participate in equality, and why the tests for those two
- * components are built from constructed variants instead.
- *
- * <p>A pure in-process unit test: no application context, persistence unit, database, file, network
- * or container, because the class under test is a plain serializable value holder depending only on
- * {@code java.io.Serializable} and {@code java.util.Objects}. It performs no introspection of its
- * own either - the single metadata lookup, in {@link SerializationContract}, goes through the
- * serialization API and not the low-level introspection API, so the module's zero budget for the
- * latter is left untouched.
- *
- * <p>Every expected value below is a literal typed out in this source and traceable to a measured
- * legacy fact. None is produced by calling the class under test, none is assembled by formatting,
- * padding or repetition, and no assertion compares a computed value with a second evaluation of the
- * same computation. Where two keys are involved they are constructed independently.
+ * <p>Component order is the contract - account identifier, then transaction type, then transaction
+ * category, as the copybook declares them - and a transposed constructor call is detectable only by
+ * width, which is why the widths are asserted alongside the values. All three components stay text so
+ * a four-character category code is never narrowed to a number, and the constructor stores them
+ * verbatim: no trim, no pad, no case fold. Null components are accepted and returned unchanged,
+ * because the persistence provider instantiates the type before populating it.
  */
 @DisplayName("TransactionCategoryBalanceId :: 17-byte composite key of the category-balance table")
 class TransactionCategoryBalanceIdTest {
-
-    // Two aspects were optional in the class's own contract and this test follows what the class
-    // actually declares: it overrides the string-representation method, so a group covering that
-    // method is present below, and it exposes no mutator, so none is exercised - immutability after
-    // construction is part of the contract and the only writer is the provider.
-
     private static final int ACCOUNT_ID_WIDTH = 11;
 
     private static final int TYPE_CODE_WIDTH = 2;
 
     private static final int CATEGORY_CODE_WIDTH = 4;
 
-    /**
-     * Key length declared by the cluster definition independently of the copybook. Held separately from
-     * the three component widths on purpose: the test asserts that the widths sum to this figure.
-     */
     private static final int DECLARED_KEY_LENGTH = 17;
 
-    /**
-     * Key offset declared by the same definition. Every base cluster in the estate declares offset 0;
-     * only the alternate-index definitions carry a non-zero offset.
-     */
     private static final int DECLARED_KEY_OFFSET = 0;
 
     private static final int BALANCE_INTEGER_DIGITS = 9;
 
-    /**
-     * Fractional digits of the same balance; the implied decimal separator consumes no byte of its own.
-     */
     private static final int BALANCE_DECIMAL_DIGITS = 2;
 
-    /**
-     * Stored width of the balance; the overpunched sign consumes no byte of its own either.
-     */
     private static final int BALANCE_WIDTH = BALANCE_INTEGER_DIGITS + BALANCE_DECIMAL_DIGITS;
 
-    /**
-     * Unnamed trailing filler completing the record, carried by no property of the key or the entity.
-     */
     private static final int FILLER_WIDTH = 22;
 
-    /**
-     * Record length declared by the cluster definition, held separately so the widths can be summed to it.
-     */
     private static final int DECLARED_RECORD_LENGTH = 50;
 
-    /**
-     * Data-area width declared by the interest-calculation batch program, which divides the same 50
-     * bytes into two parts rather than the copybook's four: an independent cross-check that 17 + 33
-     * reaches the record length and that 33 equals the balance width plus the filler width.
-     */
     private static final int FILE_DESCRIPTION_DATA_WIDTH = 33;
 
     private static final int REFERENCE_ROW_COUNT = 50;
 
-    /**
-     * Measured byte length of the fixture, one line terminator included per row.
-     */
     private static final int MEASURED_FIXTURE_BYTES = 2550;
 
     private static final String FIXTURE_TYPE_CODE = "01";
 
-    /**
-     * The single category code every fixture row carries, its leading zeros intact.
-     */
     private static final String FIXTURE_CATEGORY_CODE = "0001";
 
-    /**
-     * Key length of the transaction-category key group, and below it the disclosure-group key length.
-     * Both are present only as integers, recording that they differ from this key's length despite the
-     * shared legacy name; neither of those classes is referenced from this file.
-     */
     private static final int CATEGORY_KEY_LENGTH = 6;
 
     private static final int DISCLOSURE_KEY_LENGTH = 16;
 
-    /**
-     * Builds the fifty distinct reference keys, one per fixture row, in fixture order.
-     *
-     * <p>Each is constructed from three typed-out literals so the exact bytes are visible here:
-     * nothing is assembled by formatting, padding or repetition and no value is read from a file. The
-     * type and category codes are identical on every row, a measured property of the fixture rather
-     * than a simplification made here.
-     *
-     * @return the fifty reference keys, in the order the fixture holds them
-     */
     private static List<TransactionCategoryBalanceId> referenceKeys() {
         return List.of(
                 new TransactionCategoryBalanceId("00000000001", "01", "0001"),
@@ -220,13 +137,6 @@ class TransactionCategoryBalanceIdTest {
                 new TransactionCategoryBalanceId("00000000050", "01", "0001"));
     }
 
-    /**
-     * Counts keys carrying both the given type code and the given category code. The comparison is
-     * exact: nothing in this file trims, folds or converts, because every character of a legacy
-     * fixed-width component is significant.
-     *
-     * @return the number of keys whose type and category components both match exactly
-     */
     private static int countOfTypeAndCategory(final List<TransactionCategoryBalanceId> keys,
             final String typeCode, final String categoryCode) {
         int matches = 0;
@@ -239,12 +149,6 @@ class TransactionCategoryBalanceIdTest {
         return matches;
     }
 
-    /**
-     * Collects the distinct account identifier components, which is what shows that component supplies
-     * every distinction among the fixture rows.
-     *
-     * @return the distinct account identifier components, compared as exact strings
-     */
     private static Set<String> distinctAccountIdsOf(final List<TransactionCategoryBalanceId> keys) {
         final Set<String> accountIds = new HashSet<>();
         for (final TransactionCategoryBalanceId key : keys) {
@@ -253,23 +157,14 @@ class TransactionCategoryBalanceIdTest {
         return accountIds;
     }
 
-    /**
-     * Component-level contract: how the three key components are bound, exposed and stored.
-     */
     @Nested
     @DisplayName("Component contract of the 17-byte CVTRA01Y key group")
     class ComponentContract {
-
         @Test
         @DisplayName("all-args constructor binds components in CVTRA01Y declaration order - account "
                 + "identifier first, type code second, category code third - and never in the order "
                 + "some program happens to assign them in")
         void allArgsConstructorBindsComponentsPositionally() {
-            // The contractual order is the copybook declaration order, which the cluster definition's
-            // key geometry and the primary-key column order both agree with. It is NOT the assignment
-            // order in the interest-calculation batch program, which populates the related
-            // disclosure-group key as component 1, then 3, then 2; an implementation inferred from that
-            // sequence would carry a transposed signature. Hence literals distinguishable by width.
             final TransactionCategoryBalanceId key =
                     new TransactionCategoryBalanceId("00000000042", "07", "0003");
 
@@ -313,9 +208,6 @@ class TransactionCategoryBalanceIdTest {
         @DisplayName("no-arg constructor leaves all three components null, because the persistence "
                 + "provider populates an identifier class after instantiating it")
         void noArgConstructorLeavesAllThreeComponentsNull() {
-            // This constructor exists solely so a persistence provider can instantiate the type, and is
-            // the reason it is a class rather than a record. It is reached with no introspection at all:
-            // this test shares the package and protected access includes package access.
             final TransactionCategoryBalanceId empty = new TransactionCategoryBalanceId();
 
             assertThat(empty.getTrancatAcctId()).isNull();
@@ -330,8 +222,6 @@ class TransactionCategoryBalanceIdTest {
             final TransactionCategoryBalanceId key =
                     new TransactionCategoryBalanceId("00000000042", "07", "0003");
 
-            // No numeric parse appears anywhere in this file. Every digit-only legacy lexeme maps to
-            // a bounded character column, so the external text width is part of the contract.
             assertThat(key.getTrancatCd()).isEqualTo("0003");
             assertThat(key.getTrancatCd()).isNotEqualTo("3");
             assertThat(key.getTrancatTypeCd()).isEqualTo("07");
@@ -352,9 +242,6 @@ class TransactionCategoryBalanceIdTest {
                 + "fold and no validation - because altering a caller's value would change lookup "
                 + "semantics")
         void constructorStoresComponentsVerbatim() {
-            // Values chosen to expose normalisation: a lower-case type code a case fold would alter, and
-            // components a trim or a numeric narrowing would alter. A blank is likewise significant in a
-            // fixed-width space-padded layout. Neither the class nor this test applies any of those.
             final TransactionCategoryBalanceId unaltered =
                     new TransactionCategoryBalanceId("0000000004x", "ab", "0090");
 
@@ -397,20 +284,13 @@ class TransactionCategoryBalanceIdTest {
         }
     }
 
-    /**
-     * Byte-width and offset contract: the geometry that the copybook, the cluster definition and the
-     * batch program's file description all have to agree on.
-     */
     @Nested
     @DisplayName("Byte geometry of the key and of the 50-byte record that carries it")
     class ByteWidthContract {
-
         @Test
         @DisplayName("the three component widths sum to the 17 declared by TCATBALF KEYS(17 0): the "
                 + "copybook and the cluster definition are independent authorities that agree")
         void componentWidthsSumToTheDeclaredKeyLength() {
-            // Every width here is measured in BYTES through an explicitly named charset, never in
-            // characters, because the legacy record is a byte image.
             final int accountIdWidth = "00000000042".getBytes(StandardCharsets.US_ASCII).length;
             final int typeCodeWidth = "07".getBytes(StandardCharsets.US_ASCII).length;
             final int categoryCodeWidth = "0003".getBytes(StandardCharsets.US_ASCII).length;
@@ -457,9 +337,6 @@ class TransactionCategoryBalanceIdTest {
                 + "with the copybook's 11 + 22 = 33; its data field carries a doubled name prefix in "
                 + "two programs, an anomaly recorded in docs/decision-log.md and never propagated")
         void theFileDescriptionSplitReconcilesWithTheCopybookSplit() {
-            // The batch file descriptions name that trailing data field with its prefix doubled. Only the
-            // NAME is malformed; the declared width is correct. Recorded in docs/decision-log.md, which
-            // this test cites and never edits, and not carried into Java.
             final int keyWidth = ACCOUNT_ID_WIDTH + TYPE_CODE_WIDTH + CATEGORY_CODE_WIDTH;
 
             assertThat(keyWidth + FILE_DESCRIPTION_DATA_WIDTH).isEqualTo(DECLARED_RECORD_LENGTH);
@@ -478,8 +355,6 @@ class TransactionCategoryBalanceIdTest {
             assertThat(DECLARED_KEY_LENGTH).isEqualTo(17);
             assertThat(DECLARED_KEY_OFFSET).isZero();
 
-            // Offset 0 means the key is the leading substring of the stored image, which is why the
-            // identifier is the business key itself and no surrogate is introduced.
             final int dataPortionWidth = DECLARED_RECORD_LENGTH - DECLARED_KEY_LENGTH;
 
             assertThat(dataPortionWidth).isEqualTo(BALANCE_WIDTH + FILLER_WIDTH);
@@ -491,8 +366,6 @@ class TransactionCategoryBalanceIdTest {
                 + "COBOL group name is declared in CVTRA01Y at 17 and in CVTRA04Y at 6, so "
                 + "disambiguation is by member name and declared length, never by content")
         void theThreeCompositeKeyLengthsArePairwiseDistinct() {
-            // Plain integers on purpose: the 6-byte and 16-byte keys have their own classes elsewhere in
-            // this package and neither is named or instantiated here.
             assertThat(DECLARED_KEY_LENGTH).isNotEqualTo(CATEGORY_KEY_LENGTH);
             assertThat(DECLARED_KEY_LENGTH).isNotEqualTo(DISCLOSURE_KEY_LENGTH);
             assertThat(CATEGORY_KEY_LENGTH).isNotEqualTo(DISCLOSURE_KEY_LENGTH);
@@ -501,9 +374,6 @@ class TransactionCategoryBalanceIdTest {
             assertThat(ACCOUNT_ID_WIDTH + TYPE_CODE_WIDTH + CATEGORY_CODE_WIDTH)
                     .isEqualTo(DECLARED_KEY_LENGTH);
 
-            // The 16-byte key leads with a 10-byte account group identifier instead, so it differs
-            // from this key by exactly one byte - the kind of near miss a type-blind mapping would
-            // let through.
             assertThat(10 + TYPE_CODE_WIDTH + CATEGORY_CODE_WIDTH).isEqualTo(DISCLOSURE_KEY_LENGTH);
             assertThat(DECLARED_KEY_LENGTH - DISCLOSURE_KEY_LENGTH).isEqualTo(1);
         }
@@ -532,14 +402,9 @@ class TransactionCategoryBalanceIdTest {
         }
     }
 
-    /**
-     * Equality and hashing contract: all three components participate, nothing is normalised, and the
-     * fifty reference keys stay fifty distinct keys inside a hash-based collection.
-     */
     @Nested
     @DisplayName("Equality and hashing across all three key components")
     class EqualityAndHashing {
-
         @Test
         @DisplayName("two independently constructed keys with identical components are equal and hash "
                 + "alike, which is what lets a freshly built key match a row already loaded")
@@ -557,9 +422,6 @@ class TransactionCategoryBalanceIdTest {
         @Test
         @DisplayName("a key equals itself, satisfying the reflexive clause of the equality contract")
         void aKeyEqualsItself() {
-            // Reflexivity is the specification's own "must be true", not a value computed by the class,
-            // and is deliberately NOT the proof that two equal keys compare equal - that is the preceding
-            // test, which builds its two keys independently.
             final TransactionCategoryBalanceId key =
                     new TransactionCategoryBalanceId("00000000017", "01", "0001");
 
@@ -663,8 +525,6 @@ class TransactionCategoryBalanceIdTest {
             assertThat(keys).hasSize(REFERENCE_ROW_COUNT);
             assertThat(distinct).hasSize(REFERENCE_ROW_COUNT);
 
-            // A defect dropping the account identifier from equality or hashing would collapse the fifty
-            // keys onto one.
             assertThat(distinctAccountIdsOf(keys)).hasSize(REFERENCE_ROW_COUNT);
         }
 
@@ -704,9 +564,6 @@ class TransactionCategoryBalanceIdTest {
             assertThat(countOfTypeAndCategory(keys, "02", FIXTURE_CATEGORY_CODE)).isZero();
             assertThat(countOfTypeAndCategory(keys, FIXTURE_TYPE_CODE, "0002")).isZero();
 
-            // The interest-calculation batch program moves this key's type and category components into
-            // the disclosure-group key at identical declared widths, which is why the same two lexemes
-            // legitimately appear in both keys' tests: correspondence between layouts, not duplication.
             assertThat(FIXTURE_TYPE_CODE.getBytes(StandardCharsets.US_ASCII).length)
                     .isEqualTo(TYPE_CODE_WIDTH);
             assertThat(FIXTURE_CATEGORY_CODE.getBytes(StandardCharsets.US_ASCII).length)
@@ -728,20 +585,13 @@ class TransactionCategoryBalanceIdTest {
         }
     }
 
-    /**
-     * Serialization contract: an identifier class must be serializable and must pin its version.
-     */
     @Nested
     @DisplayName("Serialization contract required of an identifier class")
     class SerializationContract {
-
         @Test
         @DisplayName("the serialization version identifier is pinned at 1, which the build also "
                 + "requires because an unpinned serializable class fails compilation under -Werror")
         void serializationVersionIdentifierIsPinnedAtOne() {
-            // The lookup goes through the serialization metadata API, which is NOT the low-level
-            // introspection API: nothing here is reflected over. The module's audited budget for
-            // introspection is zero and a test must never undermine a production gate.
             final ObjectStreamClass descriptor =
                     ObjectStreamClass.lookup(TransactionCategoryBalanceId.class);
 
@@ -775,8 +625,6 @@ class TransactionCategoryBalanceIdTest {
             final TransactionCategoryBalanceId restored;
             try (ObjectInputStream in =
                          new ObjectInputStream(new ByteArrayInputStream(buffer.toByteArray()))) {
-                // A checked cast on a non-generic type: it produces no unchecked-cast diagnostic and
-                // therefore needs no suppression.
                 restored = (TransactionCategoryBalanceId) in.readObject();
             }
 
@@ -815,22 +663,14 @@ class TransactionCategoryBalanceIdTest {
         }
     }
 
-    /**
-     * Documented absence: each test asserts an observable property of the class and records alongside
-     * it a thing that deliberately does not exist.
-     */
     @Nested
     @DisplayName("Deliberate absences recorded by this key type")
     class DocumentedAbsence {
-
         @Test
         @DisplayName("no surrogate identifier exists: TCATBALF KEYS(17 0) puts the key at offset 0 as "
                 + "the leading substring of the record, and the batch split 17 + 33 = 50 confirms it, "
                 + "so the composite business key IS the identifier")
         void noSurrogateIdentifierExists() {
-            // A surrogate would break the image-to-row correspondence that byte-parity verification of the
-            // migrated output depends on. What is asserted is behavioural: the three components the caller
-            // supplies are the whole of the key and come back unchanged.
             final TransactionCategoryBalanceId key =
                     new TransactionCategoryBalanceId("00000000033", "01", "0001");
 
@@ -867,8 +707,6 @@ class TransactionCategoryBalanceIdTest {
                 + "compares, hashes and serialises in a plain JVM, because the identifier-class "
                 + "declaration sits on the entity and never on the key")
         void theKeyNeedsNoFrameworkAtAll() throws IOException, ClassNotFoundException {
-            // Everything runs on the plain JVM the harness provides. Column names, widths, nullability and
-            // every other mapping concern belong to the entity and to the integration tier.
             final TransactionCategoryBalanceId key =
                     new TransactionCategoryBalanceId("00000000008", "01", "0001");
             final TransactionCategoryBalanceId twin =
@@ -895,21 +733,13 @@ class TransactionCategoryBalanceIdTest {
         }
     }
 
-    /**
-     * Diagnostic representation. This group exists because the class under test overrides the
-     * string-representation method; had it not, the group would be absent rather than asserting the
-     * inherited default.
-     */
     @Nested
     @DisplayName("Diagnostic representation of the key")
     class StringRepresentation {
-
         @Test
         @DisplayName("the representation carries all three key components, so a diagnostic line "
                 + "identifies the row without a lookup")
         void representationCarriesAllThreeComponents() {
-            // This triple is chosen because none of its three values is a substring of either of the
-            // others, so a containment assertion cannot pass by accident.
             final TransactionCategoryBalanceId key =
                     new TransactionCategoryBalanceId("00000000042", "07", "0003");
 

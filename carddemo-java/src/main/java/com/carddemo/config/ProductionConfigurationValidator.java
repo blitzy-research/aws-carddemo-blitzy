@@ -16,6 +16,7 @@
  */
 package com.carddemo.config;
 
+import com.carddemo.util.SqsNamingRules;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -122,6 +123,19 @@ public final class ProductionConfigurationValidator {
     /** Closing of the placeholder syntax. */
     private static final String PLACEHOLDER_SUFFIX = "}";
 
+    /** Key the job-submission queue destination is bound from, held to the production rule below. */
+    static final String QUEUE_DESTINATION_KEY = AwsProperties.Sqs.JOB_QUEUE_PROPERTY;
+
+    /**
+     * Key carrying the region every destination is checked against.
+     *
+     * <p>The region is guarded at {@code carddemo.aws.region}, which is where the production document
+     * writes the bare reference, and not at the cloud integration's own
+     * {@code spring.cloud.aws.region.static}: that key derives its value from this one, so the region is
+     * stated once per profile and the two namespaces cannot disagree.
+     */
+    static final String REGION_KEY = AwsProperties.REGION_PROPERTY;
+
     /**
      * Every setting the production profile requires from its environment, in the order they appear in
      * {@code application-prod.yml} so that a failure message reads down the document.
@@ -131,6 +145,13 @@ public final class ProductionConfigurationValidator {
      * message group, the notification topic and the token lifetime - are deliberately absent, because a
      * value that is allowed to default is by definition not required from the environment.
      *
+     * <p>The region is guarded at {@code carddemo.aws.region}, which is where the production document
+     * writes the bare reference, and <strong>not</strong> at the cloud integration's own
+     * {@code spring.cloud.aws.region.static}: that key derives its value from this one rather than
+     * restating it, so the region is stated once per profile and the two namespaces cannot disagree.
+     * Guarding both would name one environment variable twice, which is a duplicate this list forbids
+     * and a test asserts against.
+     *
      * <p>{@code ProductionConfigurationValidatorTest} compares this list against the document itself,
      * so a thirteenth bare reference added to the profile without a matching entry here fails the build
      * rather than going unguarded.
@@ -139,15 +160,44 @@ public final class ProductionConfigurationValidator {
             new RequiredSetting("spring.datasource.url", "CARDDEMO_DB_URL"),
             new RequiredSetting("spring.datasource.username", "CARDDEMO_DB_USERNAME"),
             new RequiredSetting("spring.datasource.password", "CARDDEMO_DB_PASSWORD"),
-            new RequiredSetting("spring.cloud.aws.region.static", "AWS_REGION"),
             new RequiredSetting("server.ssl.key-store", "CARDDEMO_TLS_KEYSTORE"),
             new RequiredSetting("server.ssl.key-store-password", "CARDDEMO_TLS_KEYSTORE_PASSWORD"),
             new RequiredSetting("server.ssl.key-store-type", "CARDDEMO_TLS_KEYSTORE_TYPE"),
             new RequiredSetting("server.ssl.key-alias", "CARDDEMO_TLS_KEY_ALIAS"),
             new RequiredSetting("management.otlp.tracing.endpoint", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"),
-            new RequiredSetting("carddemo.aws.sqs.job-submission-queue", "CARDDEMO_SQS_QUEUE"),
+            new RequiredSetting(REGION_KEY, "AWS_REGION"),
+            new RequiredSetting(QUEUE_DESTINATION_KEY, "CARDDEMO_SQS_QUEUE"),
             new RequiredSetting("carddemo.security.jwt.secret", "CARDDEMO_JWT_SECRET"),
             new RequiredSetting("carddemo.security.field-encryption.key", "CARDDEMO_FIELD_ENCRYPTION_KEY"));
+
+    /**
+     * Every configuration key that redirects a cloud client away from the endpoint its region resolves
+     * to, global first and then one per client.
+     *
+     * <p><strong>Production may declare none of them, and the difference between "declares none" and
+     * "may declare none" is this list.</strong> The production profile document happens to declare no
+     * endpoint key, and an earlier revision treated that as the control. A document cannot see the
+     * environment: an override supplied as {@code SPRING_CLOUD_AWS_SQS_ENDPOINT}, as a command-line
+     * property, or by a co-activated overlay binds perfectly well for a key no document mentions, and
+     * every client then addresses whatever host it names.
+     *
+     * <p>What that costs is specific rather than theoretical. The queue is the estate's single
+     * online-to-batch bridge, and every message on it is an eighty-column job-control card naming the
+     * job, the procedure library, the step and the reporting period. A redirected queue client sends
+     * those cards to the named host and reports success, because the queue is defined ignore-on-error;
+     * the operator sees report requests completing and no job ever running. A redirected object-store
+     * client writes statements, reports and rejected records - which carry account identifiers, card
+     * numbers and monetary balances - to the named host just as quietly.
+     *
+     * <p>The per-client keys are listed alongside the global one because either alone redirects that
+     * client, so refusing only the global key would leave three ways to do the same thing.
+     */
+    static final List<String> FORBIDDEN_PRODUCTION_KEYS = List.of(
+            AwsProperties.ENDPOINT_OVERRIDE_PROPERTY,
+            "spring.cloud.aws.endpoint",
+            "spring.cloud.aws.s3.endpoint",
+            "spring.cloud.aws.sqs.endpoint",
+            "spring.cloud.aws.sns.endpoint");
 
     /**
      * Creates the configuration class.
@@ -167,13 +217,123 @@ public final class ProductionConfigurationValidator {
      * in a bean-creation failure, whereas one raised from the post-processor arrives as itself, which is
      * what a deployer reads in the log and what a test asserts on.
      *
+     * <p>Two checks run, in this order and for a reason. The required settings are validated first,
+     * because the outbound-trust check compares a destination against the configured region and a
+     * missing region should be reported as a missing region rather than as an uncheckable destination.
+     *
      * @param environment resolved environment for the active profiles, supplied by the container
-     * @return a post-processor that validates the required settings and changes no bean definition
+     * @return a post-processor that validates the production posture and changes no bean definition
      */
     @Bean
     static BeanFactoryPostProcessor productionConfigurationGuard(final Environment environment) {
         Objects.requireNonNull(environment, "environment");
-        return beanFactory -> validateRequiredSettings(environment);
+        return beanFactory -> {
+            validateRequiredSettings(environment);
+            validateOutboundTrust(environment);
+        };
+    }
+
+    /**
+     * Refuses a production deployment that redirects a cloud client, or that aims the job-submission
+     * queue at a destination this deployment cannot have meant.
+     *
+     * <h2>The gap this closes</h2>
+     *
+     * <p>Two configuration facts were previously left to a document's silence rather than enforced. The
+     * first is the endpoint override, addressed on {@link #FORBIDDEN_PRODUCTION_KEYS}. The second is
+     * the destination itself: the queue property was checked for shape - non-blank, a recognisable form,
+     * a first-in-first-out name - and shape cannot distinguish a destination that names this
+     * deployment's own queue from one that names somebody else's host. The messaging client accepts any
+     * syntactically valid locator, so a plain-transport URL on an unrelated host whose last path
+     * segment ends in the required suffix passed every check and then received the job cards.
+     *
+     * <p>Both are refused here rather than in the settings type, because both are questions about the
+     * <em>deployment</em>. The local and test profiles legitimately declare an emulator endpoint and
+     * name an emulator queue, and a rule that refused those would refuse the two profiles the
+     * acceptance gates run in. Confining the rule to this class, which
+     * {@link Profile} already confines to production, is what lets it be strict without being wrong
+     * anywhere else.
+     *
+     * @param environment environment to read the settings from
+     * @throws IllegalStateException when an endpoint override is declared, or the queue destination is
+     *                              not one this deployment may send to; the message names each
+     *                              offending key and why it was refused, and never repeats a configured
+     *                              value
+     * @throws NullPointerException when {@code environment} is {@code null}
+     */
+    static void validateOutboundTrust(final Environment environment) {
+        Objects.requireNonNull(environment, "environment");
+
+        final List<String> faults = new ArrayList<>();
+        for (final String forbidden : FORBIDDEN_PRODUCTION_KEYS) {
+            final String declared = resolveLeniently(environment, forbidden);
+            if (isSuppliedValue(forbidden, declared)) {
+                faults.add("  " + forbidden + ": an endpoint override redirects a cloud client away"
+                        + " from the endpoint its region resolves to. A deployment may not declare one:"
+                        + " the queue carries the job-control cards of every batch submission and the"
+                        + " object store carries statements, reports and rejected records. Remove the"
+                        + " key and every variable that supplies it");
+            }
+        }
+
+        final String destination = resolveLeniently(environment, QUEUE_DESTINATION_KEY);
+        if (isSuppliedValue(QUEUE_DESTINATION_KEY, destination)) {
+            final String region = resolveLeniently(environment, REGION_KEY);
+            try {
+                SqsNamingRules.requireProductionQueueDestination(destination.strip(),
+                        QUEUE_DESTINATION_KEY,
+                        isSuppliedValue(REGION_KEY, region) ? region.strip() : null);
+            } catch (final IllegalArgumentException refused) {
+                // The rule composes its own diagnostic and never echoes the configured value, so the
+                // message is carried through as the explanation rather than re-derived here.
+                faults.add("  " + refused.getMessage());
+            }
+        }
+
+        if (!faults.isEmpty()) {
+            throw new IllegalStateException(outboundTrustFailureMessage(faults));
+        }
+    }
+
+    /**
+     * Reports whether a key resolved to a value a deployment actually supplied.
+     *
+     * <p>Three non-values are recognised and all three mean "not supplied": the key's own placeholder,
+     * which is what an undeclared key resolves to; text still containing placeholder syntax, which is a
+     * declared key whose variable nothing set; and blank text. The distinction matters in both
+     * directions here - an unset endpoint variable must not be reported as an override, and a declared
+     * destination whose variable is unset is already reported by the required-settings sweep.
+     *
+     * @param propertyKey the key that was read
+     * @param resolved    the text {@link #resolveLeniently} produced
+     * @return {@code true} when the value was genuinely supplied
+     */
+    private static boolean isSuppliedValue(final String propertyKey, final String resolved) {
+        return resolved != null
+                && !resolved.equals(PLACEHOLDER_PREFIX + propertyKey + PLACEHOLDER_SUFFIX)
+                && !resolved.contains(PLACEHOLDER_PREFIX)
+                && !resolved.isBlank();
+    }
+
+    /**
+     * Assembles the outbound-trust failure text.
+     *
+     * @param faults one line per refusal, already indented
+     * @return a message that states the count, explains what class of fault it is, lists every fault
+     *         and points at the recorded decision
+     */
+    private static String outboundTrustFailureMessage(final List<String> faults) {
+        return "The '" + PRODUCTION_PROFILE + "' profile cannot start: " + faults.size()
+                + " outbound-destination setting(s) would send data somewhere this deployment does not"
+                + " own." + System.lineSeparator()
+                + "A destination is not validated by its shape alone, because a correctly formed value"
+                + " can name any host at all, and the job-submission queue carries the job-control"
+                + " cards of every batch submission." + System.lineSeparator()
+                + String.join(System.lineSeparator(), faults)
+                + System.lineSeparator()
+                + "Correct the settings named above and start again. "
+                + "See docs/decision-log.md DL-105 and the variable list at the head of "
+                + "application-prod.yml.";
     }
 
     /**

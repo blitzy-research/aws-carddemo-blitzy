@@ -20,130 +20,56 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * The transaction-report period selector - {@code Monthly}, {@code Yearly} or {@code Custom} -
- * translated from the CardDemo report-request program {@code CORPT00C} (legacy CICS transaction
- * {@code CR00}). That program assigns one of these three literals to its report-name work field
- * {@code WS-REPORT-NAME} according to which report type the operator selected, and the selected
- * literal then appears in the text the operator reads back.
+ * Transaction-report period selector, carried as the literal the legacy report-request program
+ * {@code CORPT00C} (transaction {@code CR00}) moves into its report-name work field and echoes back
+ * to the operator.
  *
- * <p><strong>Why these literals are bare rather than space padded.</strong> The legacy receiving
- * field is declared {@code PIC X(10)} and initialised to spaces (member {@code CORPT00C}, line
- * 58). On its own that would argue for padding every value out to ten characters, and three
- * sibling enums in this package do pad for exactly that reason. This enum deliberately differs,
- * and the divergence is the conclusion of tracing every one of the six references the program
- * makes to that field:
- * <ul>
- *   <li>line 58 - the declaration, ten characters wide, initialised to spaces;</li>
- *   <li>lines 214, 240 and 433 - the only three writes, assigning the three literals below;</li>
- *   <li>line 449 - a read that assembles the submission acknowledgement shown to the operator,
- *       consuming the field delimited by space;</li>
- *   <li>line 468 - the only other read, inside the job-submission paragraph, assembling the
- *       confirmation prompt and likewise consuming the field delimited by space.</li>
- * </ul>
- * Two facts follow, and together they settle the question. First, the field is write-only as a
- * discriminator: the program never compares it against a literal, so no branch anywhere depends
- * on its width. Second, both of its two read sites consume it delimited by space, so assembly
- * stops at the first space and the trailing padding is discarded before it can reach any output.
- * The padding is therefore an artefact of the fixed-width work field rather than part of the
- * contract, and the bare literal - seven, six and six characters - is the semantically
- * meaningful form. Do not "correct" these values by padding them to ten characters: that would
- * emit trailing spaces the legacy program never produced.
+ * <p>The literals are bare rather than padded to the ten-character width of that work field. Both
+ * of the program's read sites consume the field delimited by space, so the padding never reaches
+ * output, and the field is write-only as a discriminator - no branch anywhere compares it - so no
+ * behaviour depends on its width. Padding these values would emit trailing spaces the legacy
+ * program never produced. The mixed casing is what the operator sees and is therefore reproduced
+ * literally rather than derived from the constant names; no folding or normalisation is applied.
  *
- * <p><strong>The mixed casing is equally load bearing.</strong> A capital initial letter followed
- * by a lowercase remainder is exactly what the legacy program moves into the work field, and
- * therefore exactly what the operator sees. Deriving the value from the enum constant name - the
- * natural Java shortcut - would yield all-uppercase text and change observable output, so each
- * constant carries its literal explicitly and no case folding and no whitespace normalisation
- * are applied anywhere in this type.
- *
- * <p><strong>Scope.</strong> This enum names the three periods and stops there. Which period
- * applies is decided by the report-request service layer, whose ordered evaluation of the screen
- * options - monthly tested first, yearly second, custom third, followed by a catch-all for the
- * case where no report type was supplied - is that layer's contract and not this type's. The
- * custom period's start-and-end date pair, the error-flag guard that precedes submission, the
- * operator confirmation gate and the job submission itself all likewise belong to the service and
- * utility layers. The catch-all branch is an input-validation outcome that yields an error
- * message rather than a fourth report type, which is why {@link #fromValue(String)} models an
- * unrecognised value as an empty result instead of as a synthetic constant.
- *
- * <p>This is a pure value type: no framework annotation, no persistence mapping and no schema
- * binding. It models a transient request selector, not stored data. Instances are immutable and
- * the type is therefore safe to share across threads.
+ * <p>Constant order is the order the legacy program tests the screen options in - monthly, then
+ * yearly, then custom - and it stops at the first that is set. Which period applies, the custom
+ * period's date pair and the submission gate all belong to the report-request service; the
+ * program's catch-all branch is an input-validation outcome rather than a fourth period, which is
+ * why {@link #fromValue(String)} models an unrecognised value as an empty {@link Optional} instead
+ * of a synthetic constant.
  */
 public enum ReportPeriod {
-
-    /**
-     * Month-to-date report period. Carries the literal {@code Monthly} (seven characters),
-     * assigned at member {@code CORPT00C} line 214.
-     */
     MONTHLY("Monthly"),
 
-    /**
-     * Year-to-date report period. Carries the literal {@code Yearly} (six characters), assigned
-     * at member {@code CORPT00C} line 240.
-     */
     YEARLY("Yearly"),
 
-    /**
-     * Operator-supplied date-range report period. Carries the literal {@code Custom} (six
-     * characters), assigned at member {@code CORPT00C} line 433. The date range that accompanies
-     * this period in the legacy program is not modelled here; it belongs to the service layer
-     * that builds the submitted job stream.
-     */
     CUSTOM("Custom");
 
-    /**
-     * Immutable reverse index from the legacy literal to the constant that carries it, built once
-     * during class initialisation. Enum constants are initialised before any subsequent static
-     * initialiser runs, so each constant's own literal is the key and no string is duplicated
-     * here - a duplicated literal could drift away from the constant it indexes.
-     */
     private static final Map<String, ReportPeriod> BY_VALUE = Map.of(
             MONTHLY.value, MONTHLY,
             YEARLY.value, YEARLY,
             CUSTOM.value, CUSTOM);
 
-    /** The legacy literal exactly as the report-request program writes it, bare and unpadded. */
     private final String value;
 
-    /**
-     * Binds a constant to the legacy literal it carries.
-     *
-     * @param value the exact legacy literal, supplied bare and already in its contractual casing
-     */
     ReportPeriod(String value) {
         this.value = value;
     }
 
     /**
-     * Returns the legacy literal this period is represented by, exactly as the report-request
-     * program writes it into its report-name work field: mixed case, with a capital initial
-     * letter, and bare rather than padded to the ten characters of the legacy field.
-     *
-     * @return the exact legacy literal, never {@code null} and never blank
+     * @return the literal the operator reads back, exactly as the legacy program emits it
      */
     public String getValue() {
         return value;
     }
 
     /**
-     * Resolves a raw legacy literal to its period, tolerating an unmapped value rather than
-     * failing on one.
+     * Resolves a literal exactly as stored, applying no folding or trimming.
      *
-     * <p>An unrecognised or absent value is a legitimate input state: the legacy program reaches
-     * its catch-all branch when the operator selected no report type at all, and that outcome is
-     * an error message produced by the service layer rather than a report type in its own right.
-     * This method therefore reports absence explicitly and never throws, so callers decide how to
-     * handle a miss. Matching is exact - the argument is compared as supplied, with no case
-     * folding and no whitespace normalisation - because the mixed casing of each literal is part
-     * of the contract.
-     *
-     * @param value the raw literal to resolve; may be {@code null}
-     * @return the matching period, or an empty {@link Optional} if {@code value} is {@code null}
-     *         or matches none of the three literals
+     * @param value the report-name value, which may be {@code null}
+     * @return the matching constant, or empty when the value is absent or unrecognised
      */
     public static Optional<ReportPeriod> fromValue(String value) {
-        // The reverse index rejects a null probe, so the null case is answered before the lookup.
         if (value == null) {
             return Optional.empty();
         }

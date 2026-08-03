@@ -162,8 +162,23 @@ final class ApplicationProfileStartupTest {
     /** The property that selects a profile, set on the environment before the loader runs. */
     private static final String KEY_ACTIVE_PROFILES = "spring.profiles.active";
 
-    /** The one location every profile migrates from, holding all four delivered scripts flat. */
-    private static final String SCHEMA_LOCATION = "classpath:db/migration";
+    /** The schema location every profile migrates from, holding the two schema scripts. */
+    private static final String SCHEMA_LOCATION = "classpath:db/migration/schema";
+
+    /**
+     * The seed location only the local and test profiles add, holding the two seed scripts, and which
+     * a production profile is refused.
+     */
+    private static final String SEED_LOCATION = "classpath:db/migration/seed";
+
+    /**
+     * The shared parent of the two, which no profile may resolve. Flyway scans a location recursively,
+     * so a profile naming the parent reaches the seeds through the child directory.
+     */
+    private static final String PARENT_LOCATION = "classpath:db/migration";
+
+    /** The two delivered locations a seeding profile resolves, in the order the overlay declares them. */
+    private static final List<String> SEEDING_LOCATIONS = List.of(SCHEMA_LOCATION, SEED_LOCATION);
 
     /** The pin that applies the schema and leaves both seeds pending. */
     private static final String SCHEMA_ONLY_TARGET = "2";
@@ -225,6 +240,9 @@ final class ApplicationProfileStartupTest {
     /** The transport requirement. */
     private static final String KEY_REQUIRE_HTTPS = "carddemo.security.require-https";
 
+    /** Whether the metrics scrape endpoint answers a collector that presents no credential. */
+    private static final String KEY_ANONYMOUS_SCRAPE = "carddemo.security.anonymous-metrics-scrape";
+
     /** A static cloud access key, which production must resolve from no source. */
     private static final String KEY_CLOUD_ACCESS_KEY = "spring.cloud.aws.credentials.access-key";
 
@@ -284,7 +302,7 @@ final class ApplicationProfileStartupTest {
                     "carddemo-application"),
             new RequiredSecret("CARDDEMO_DB_PASSWORD", "spring.datasource.password",
                     "supplied-database-password"),
-            new RequiredSecret("AWS_REGION", "spring.cloud.aws.region.static", "eu-west-2"),
+            new RequiredSecret("AWS_REGION", "carddemo.aws.region", "eu-west-2"),
             new RequiredSecret("CARDDEMO_TLS_KEYSTORE", "server.ssl.key-store",
                     "file:/etc/carddemo/keystore.p12"),
             new RequiredSecret("CARDDEMO_TLS_KEYSTORE_PASSWORD", "server.ssl.key-store-password",
@@ -294,7 +312,7 @@ final class ApplicationProfileStartupTest {
             new RequiredSecret("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
                     "management.otlp.tracing.endpoint",
                     "http://collector.internal:4318/v1/traces"),
-            new RequiredSecret("CARDDEMO_SQS_QUEUE", "carddemo.aws.sqs.job-submission-queue",
+            new RequiredSecret("CARDDEMO_SQS_QUEUE", "carddemo.aws.sqs.job-queue",
                     "carddemo-jobs.fifo"),
             new RequiredSecret("CARDDEMO_JWT_SECRET", "carddemo.security.jwt.secret",
                     SUPPLIED_JWT_SECRET),
@@ -330,9 +348,10 @@ final class ApplicationProfileStartupTest {
                         .isEqualTo(SCHEMA_ONLY_TARGET);
                 assertThat(bound.getLocations())
                         .as("the schema location alone, so the seed scripts are not resolved at all - "
-                                + "and not the shared parent classpath:db/migration, which Flyway would "
-                                + "scan recursively and which would therefore reach them")
-                        .containsExactly(SCHEMA_LOCATION);
+                                + "and not the shared parent %s, which Flyway would scan recursively and "
+                                + "which would therefore reach them", PARENT_LOCATION)
+                        .containsExactly(SCHEMA_LOCATION)
+                        .doesNotContain(SEED_LOCATION, PARENT_LOCATION);
                 assertThat(bound.isCleanDisabled())
                         .as("a production migration must not be able to drop the schema it manages")
                         .isTrue();
@@ -347,7 +366,9 @@ final class ApplicationProfileStartupTest {
                 FlywayProperties bound = context.getBean(FlywayProperties.class);
 
                 assertThat(bound.getTarget()).isEqualTo(SCHEMA_ONLY_TARGET);
-                assertThat(bound.getLocations()).containsExactly(SCHEMA_LOCATION);
+                assertThat(bound.getLocations())
+                        .containsExactly(SCHEMA_LOCATION)
+                        .doesNotContain(SEED_LOCATION, PARENT_LOCATION);
                 assertThat(bound.isCleanDisabled()).isTrue();
             });
         }
@@ -365,10 +386,11 @@ final class ApplicationProfileStartupTest {
                                 + "profile seeded", profile)
                         .isEqualTo(HEAD_TARGET);
                 assertThat(bound.getLocations())
-                        .as("%s resolves the same single location production resolves - the lifted pin "
-                                + "above is the ONLY difference, which is what makes the pin the "
-                                + "control rather than a directory", profile)
-                        .containsExactly(SCHEMA_LOCATION);
+                        .as("%s resolves the seed location production is refused, which is the primary "
+                                + "difference and the reason a seed is resolvable here at all; the lifted "
+                                + "pin above is the second half of the same opt-in", profile)
+                        .containsExactly(SEEDING_LOCATIONS.toArray(String[]::new))
+                        .doesNotContain(PARENT_LOCATION);
                 assertThat(bound.isCleanDisabled())
                         .as("%s iterates on migrations, so dropping and re-applying is permitted here "
                                 + "and only here", profile)
@@ -419,16 +441,19 @@ final class ApplicationProfileStartupTest {
                     .isEqualTo(PRODUCTION);
         }
 
-        @ParameterizedTest(name = "{0} resolves exactly the one delivered location, never a subdirectory")
+        @ParameterizedTest(name = "{0} resolves only delivered locations, never the shared parent")
         @ValueSource(strings = {PRODUCTION, LOCAL, TEST})
-        @DisplayName("every profile resolves exactly the one delivered location, so the profiles differ "
-                + "in their ceiling alone and no document has drifted back to a directory split")
+        @DisplayName("every profile resolves only the delivered locations and never their shared parent, "
+                + "which Flyway would scan recursively across the split")
         void everyProfileResolvesOnlyDeliveredLocations(final String profile) {
             runner(MigrationSettings.class, profile).run(context ->
                     assertThat(context.getBean(FlywayProperties.class).getLocations())
                             .isNotEmpty()
                             .allSatisfy(location -> assertThat(location)
-                                    .isEqualTo(SCHEMA_LOCATION)));
+                                    .as("the parent resolves both halves of the split and so is never a "
+                                            + "legitimate declaration")
+                                    .isNotEqualTo(PARENT_LOCATION)
+                                    .isIn(SEEDING_LOCATIONS)));
         }
 
         @Test
@@ -443,13 +468,17 @@ final class ApplicationProfileStartupTest {
                                     FlywayConfig.SCHEMA_LOCATION)
                             .containsExactly(FlywayConfig.SCHEMA_LOCATION));
 
+            assertThat(FlywayConfig.SEED_LOCATION)
+                    .as("and the location the code control refuses must be the one the two seeding "
+                            + "overlays add, or the refusal would guard a directory nothing ships from")
+                    .isEqualTo(SEED_LOCATION);
+            assertThat(FlywayConfig.SEED_LOCATION)
+                    .as("the two must be siblings rather than nested, or one listing would resolve both "
+                            + "and production could not be given the schema alone")
+                    .doesNotStartWith(FlywayConfig.SCHEMA_LOCATION);
             assertThat(FlywayConfig.SCHEMA_LOCATION)
-                    .as("there is no second location: the delivered scripts are flat in one directory, "
-                            + "so a seeding profile differs from production in its CEILING alone. A "
-                            + "location naming a subdirectory would mean the withdrawn split had "
-                            + "returned")
-                    .doesNotContain("/schema")
-                    .doesNotContain("/seed");
+                    .doesNotStartWith(FlywayConfig.SEED_LOCATION)
+                    .isNotEqualTo(PARENT_LOCATION);
         }
     }
 
@@ -705,6 +734,11 @@ final class ApplicationProfileStartupTest {
                 assertThat(environment.getProperty(KEY_REQUIRE_HTTPS, Boolean.class))
                         .as("a token and a decrypted field both travel over this transport")
                         .isTrue();
+                assertThat(environment.getProperty(KEY_ANONYMOUS_SCRAPE, Boolean.class))
+                        .as("the exposition carries per-endpoint latency distributions, per-batch-step "
+                                + "record counts, pool saturation and JVM internals, so a collector "
+                                + "presenting nothing must not be answered")
+                        .isFalse();
                 assertThat(environment.getProperty(KEY_FLYWAY_CLEAN_DISABLED, Boolean.class)).isTrue();
                 assertThat(environment.getProperty(KEY_DDL_AUTO))
                         .as("schema arrives only through a reviewed migration, never from a mapping")
@@ -714,6 +748,9 @@ final class ApplicationProfileStartupTest {
                         .isFalse();
                 assertThat(environment.getProperty(KEY_FLYWAY_TARGET)).isEqualTo(SCHEMA_ONLY_TARGET);
                 assertThat(environment.getProperty(KEY_FLYWAY_LOCATIONS))
+                        .as("the schema location alone; resolving the seed location here is what would "
+                                + "put fifty synthetic customer rows and ten known sign-on identities "
+                                + "into a production database")
                         .isEqualTo(SCHEMA_LOCATION);
             });
         }
@@ -728,6 +765,10 @@ final class ApplicationProfileStartupTest {
                 assertThat(environment.getProperty(KEY_SHOW_DETAILS)).isEqualTo("always");
                 assertThat(environment.getProperty(KEY_API_DOCS_ENABLED, Boolean.class)).isTrue();
                 assertThat(environment.getProperty(KEY_REQUIRE_HTTPS, Boolean.class)).isFalse();
+                assertThat(environment.getProperty(KEY_ANONYMOUS_SCRAPE, Boolean.class))
+                        .as("the Compose collector runs on this machine and presents no credential, so "
+                                + "without this concession every dashboard panel resolves to nothing")
+                        .isTrue();
                 assertThat(environment.getProperty(KEY_FLYWAY_CLEAN_DISABLED, Boolean.class)).isFalse();
                 assertThat(environment.getProperty(KEY_DDL_AUTO))
                         .as("the one setting the local profile does not relax: even locally, schema "

@@ -59,74 +59,16 @@ import com.carddemo.support.SchemaColumnCatalog;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Unit tests for {@link JpaAuditConfig}, the module's single time source.
+ * Unit tests for the JPA configuration, which contributes one clock and nothing else.
  *
- * <p>Two contracts are owned here and nowhere else. The first is the clock abstraction: one injected
- * {@link Clock}, fixed to UTC, that every component needing the current date or time receives through
- * its constructor, replacing the date-and-time work area {@code app/cpy/CSDAT01Y.cpy} that all
- * seventeen online programs included textually. Counted with its three sibling wide-fan-out
- * copybooks - the communication area, the screen title and the common message catalog, each likewise
- * included by all seventeen - that family accounts for sixty-eight textual inclusions, every one of
- * which carried its own storage and filled it independently, and all sixty-eight collapse into the
- * one bean asserted below. The second contract is the guard that JPA auditing introduces no
- * schema-breaking audit column, which is what keeps the deliberate decision not to enable auditing
- * from being quietly reversed by a later change.</p>
- *
- * <p>The zone is part of the contract rather than a preference. {@code application.yml} pins the
- * persistence layer's own time zone to UTC, so a clock in any other zone would make a persisted
- * twenty-six-character timestamp text disagree with the value the JDBC layer reads back, and would
- * make the same batch job emit different bytes on two hosts whose regional settings differ - while
- * byte-equivalent output has to be reproducible from the input alone. The zone is consequently
- * asserted as an exact value rather than approximately, and the pairing between the bean's zone and
- * the configured JDBC zone is asserted as a cross-file guard rather than left as a comment. Recorded
- * as decision log entry D-35.</p>
- *
- * <p>The estate carries two timestamp layouts. Both occupy exactly twenty-six characters, both
- * discard the zone offset the current-date intrinsic returns, and both land in twenty-six-character
- * text columns. They are <em>not interchangeable</em>: emitting one where the other is expected
- * yields a value of the right length that is wrong byte for byte, which is the hardest kind of parity
- * defect to notice. The online image [{@code app/cpy/CSDAT01Y.cpy}] is
- * {@code YYYY-MM-DD HH:MM:SS.mmmmmm} - a space between the date and the time, colons between the time
- * parts, and a fraction of six genuine digits. The batch image [{@code app/cbl/CBTRN02C.cbl},
- * identically {@code app/cbl/CBACT04C.cbl}] is {@code YYYY-MM-DD-HH.MM.SS.mm0000} - a hyphen where
- * the online form has a space, dots between the time parts, and a fraction of only two significant
- * digits followed by a four-character constant tail, because the item feeding the fraction is itself
- * only two bytes wide. Neither shape is asserted here: rendering is the obligation of whichever
- * component owns the records the image appears on and is covered by that component's own tests, and
- * the layouts are described in this one place so every owner has a single authoritative description
- * to implement against. What this file establishes is the property those tests depend on, that the
- * clock behind them can be pinned, so an expected image never depends on when a test happened to
- * run.</p>
- *
- * <p>Auditing is off, and that is a strict improvement. {@code V1__create_schema.sql} defines no
- * creation-timestamp, modification-timestamp, creating-principal or modifying-principal column on any
- * application table, and {@code application.yml} runs the provider's schema check in validate mode,
- * so a persistent property mapped to a column the migrations never create aborts start-up rather than
- * degrading quietly. The only columns without a legacy counterpart are the optimistic-locking version
- * columns on the account and card tables, and those exist for a reason worth labelling: every
- * application file in the legacy resource definition was declared with uncommitted read integrity, no
- * recovery and no journaling, with correctness resting solely on the locking update model plus each
- * program's own before-and-after image comparison. PostgreSQL READ COMMITTED combined with a JPA
- * version check is therefore strictly stronger than the verified baseline - an improvement, not a
- * behavioral regression - and {@code docs/decision-log.md} says so explicitly so that a reviewer does
- * not read the stronger isolation as a change in behaviour.</p>
- *
- * <p>What this file deliberately does not assert: migration file layout and the production
- * seed-exclusion mechanism belong to the Flyway configuration suite; the applied-version set, the
- * application table count and the outcome of the provider's schema check belong to the application
- * integration suite; timestamp rendering belongs to the batch and service suites; version-conflict
- * behaviour at run time belongs to the repository integration tier. The schema is read here for
- * exactly two facts: that no audit column exists on any declared table, and that the version column
- * exists on precisely the two tables that carry optimistic locking.</p>
- *
- * <p>It is a plain unit test on the fast tier: no container, no connection, no bound port, and every
- * context built below holds only the class under test plus, where a substitution is being proved, a
- * local test-only configuration. Every expected value is a literal declared in this file, so the
- * oracle is independent of what it judges.</p>
+ * <p>The clock is UTC so a timestamp written by one host reads back identically on another, and it
+ * is published as a bean precisely so a test can substitute a fixed one - a service reading the
+ * system clock directly could not be pinned. The suite also asserts what this configuration does
+ * <em>not</em> contribute: no data source, entity manager, vendor adapter or transaction manager, and
+ * no entity scan, so importing it cannot map anything or open a connection.
  */
 @DisplayName("JPA configuration: one pinnable UTC clock, and no audit column for it to write into")
 class JpaAuditConfigTest {
-
     private static final String CLOCK_BEAN_NAME = "systemClock";
 
     private static final String CONFIGURATION_BEAN_NAME = "jpaAuditConfig";
@@ -139,41 +81,23 @@ class JpaAuditConfigTest {
 
     private static final String JDBC_TIME_ZONE_KEY = "spring.jpa.properties.hibernate.jdbc.time_zone";
 
-    /** The only schema-check mode that turns an unmapped column into a start-up failure. */
     private static final String EXPECTED_DDL_AUTO = "validate";
 
-    /** The zone the JDBC layer is pinned to, spelled as {@code application.yml} spells it. */
     private static final String EXPECTED_JDBC_TIME_ZONE = "UTC";
 
-    private static final String MIGRATION_NAME = "db/migration/V1__create_schema.sql";
+    private static final String MIGRATION_NAME = "db/migration/schema/V1__create_schema.sql";
 
-    /**
-     * Column names that framework-managed auditing would want and that the migration must never
-     * declare, because none of them has a legacy counterpart.
-     */
     private static final List<String> FORBIDDEN_AUDIT_COLUMNS =
             List.of("created_at", "created_by", "modified_at", "modified_by", "last_updated");
 
-    /** The optimistic-locking counter, the one column family that legitimately has no legacy source. */
     private static final String OPTIMISTIC_LOCK_COLUMN = "version";
 
     private static final String OPTIMISTIC_LOCK_TYPE = "BIGINT";
 
-    /** The only two application tables that carry the optimistic-locking counter. */
     private static final List<String> OPTIMISTICALLY_LOCKED_TABLES = List.of("account", "card");
 
-    /**
-     * A pinned instant, chosen as the moment of the upstream release stamp and carrying a non-zero
-     * microsecond component so that a consumer accidentally reading wall time is caught rather than
-     * coincidentally right.
-     */
     private static final Instant PINNED = Instant.parse("2022-07-19T23:15:58.123456Z");
 
-    /**
-     * A deliberately non-zero offset, the discriminator that distinguishes the published clock from one
-     * built on a business or host zone. It is the offset the upstream release stamp's local time
-     * carried, so the value is provenance rather than an arbitrary pick.
-     */
     private static final ZoneOffset NON_UTC_OFFSET = ZoneOffset.ofHours(-5);
 
     private final ApplicationContextRunner runner =
@@ -182,7 +106,6 @@ class JpaAuditConfigTest {
     @Nested
     @DisplayName("The published clock")
     class PublishedClock {
-
         @Test
         @DisplayName("is fixed to UTC, so a timestamp written by one host reads back identically on "
                 + "another")
@@ -258,7 +181,6 @@ class JpaAuditConfigTest {
     @Nested
     @DisplayName("Container wiring")
     class ContainerWiring {
-
         @Test
         @DisplayName("contributes exactly one clock, under the name every substitution relies on")
         void contributesExactlyOneClock() {
@@ -369,7 +291,6 @@ class JpaAuditConfigTest {
     @Nested
     @DisplayName("Pinning the clock, which is the reason the abstraction exists")
     class PinnedClockDeterminism {
-
         @Test
         @DisplayName("a pinned clock never advances, so a value derived from it is reproducible")
         void aPinnedClockNeverAdvances() {
@@ -452,7 +373,6 @@ class JpaAuditConfigTest {
     @Nested
     @DisplayName("Schema compatibility: auditing has nothing to write into, and must not acquire it")
     class SchemaCompatibilityGuard {
-
         @Test
         @DisplayName("no table declares an audit column, so no audited property can ever be mapped to "
                 + "one")
@@ -545,29 +465,6 @@ class JpaAuditConfigTest {
         }
     }
 
-    /**
-     * Asserts that a clock reports the present moment, by bracketing one reading of it between two
-     * readings of the system clock taken immediately either side.
-     *
-     * <p>This deliberately is not a comparison against a fixed calendar instant. Such a comparison
-     * carries two defects at once. It is satisfied by a clock frozen at any moment later than the
-     * instant chosen, which is exactly the condition it purports to exclude, so it does not
-     * discriminate. And its truth is a property of the calendar rather than of the clock, so it decays
-     * into a statement that nothing can falsify.</p>
-     *
-     * <p>A window measured around the reading has neither weakness. It is as narrow as the two
-     * surrounding reads allow, and it means the same thing on every future day it runs. Both bounds are
-     * inclusive, so a reading that coincides with either edge is accepted; only a reading that lies
-     * genuinely outside the interval fails.</p>
-     *
-     * <p>The window is shown to discriminate in the same breath rather than merely asserted to: a clock
-     * frozen at {@link #PINNED} is read through the identical accessor and its reading must fall
-     * strictly before the window opens. That companion claim is what keeps the check from being
-     * satisfiable by a window so wide it accepts anything.</p>
-     *
-     * @param clock what to read
-     * @param what  how to name the clock in a failure message
-     */
     private static void assertReportsThePresentMoment(final Clock clock, final String what) {
         final Instant before = Instant.now();
         final Instant observed = clock.instant();
@@ -583,12 +480,6 @@ class JpaAuditConfigTest {
                 .isBefore(before);
     }
 
-    /**
-     * Returns the bean definition names a slice contributes on top of container infrastructure.
-     * Framework-internal definitions are filtered by their fully qualified prefix rather than by an
-     * enumerated list, so a framework upgrade that adds or renames an internal processor cannot turn
-     * this into a false failure while still leaving a genuinely new application bean visible.
-     */
     private static List<String> applicationOwnedBeanNames(final String[] beanDefinitionNames) {
         final List<String> owned = new ArrayList<>();
         for (final String name : beanDefinitionNames) {
@@ -599,14 +490,6 @@ class JpaAuditConfigTest {
         return owned;
     }
 
-    /**
-     * Reads one property out of a shipped configuration document. The document is read from the class
-     * path exactly as the running application reads it, so the value asserted is the value that would
-     * take effect rather than a copy of it maintained here.
-     *
-     * @throws IllegalStateException if the document declares no value for the key, which would make an
-     *                               equality assertion over it silently vacuous
-     */
     private static String shippedProperty(final String document, final String key) {
         final Map<String, Object> properties = shippedProperties(document);
         final Object value = properties.get(key);
@@ -618,11 +501,6 @@ class JpaAuditConfigTest {
         return String.valueOf(value);
     }
 
-    /**
-     * Loads a shipped configuration document into a flat map of key to value. Every YAML document
-     * inside the file is merged in declaration order, so a file that later grows a second document is
-     * still read in full rather than silently truncated to its first.
-     */
     private static Map<String, Object> shippedProperties(final String document) {
         final ClassPathResource resource = new ClassPathResource(document);
         if (!resource.exists()) {
@@ -639,9 +517,6 @@ class JpaAuditConfigTest {
         return flattened;
     }
 
-    /**
-     * Loads every YAML document of a class-path resource as a property source.
-     */
     private static List<PropertySource<?>> loadYamlDocuments(final String document,
                                                              final ClassPathResource resource) {
         try {
@@ -652,15 +527,8 @@ class JpaAuditConfigTest {
         }
     }
 
-    /**
-     * A minimal stand-in for any component that needs the current moment. It covers two things a
-     * bean-definition assertion cannot: that the clock is reachable by constructor injection, and that
-     * a pinned clock reaches a real consumer unchanged.
-     */
     @Configuration(proxyBeanMethods = false)
     static class TimestampingConsumer {
-
-        /** The injected time source, required on the only construction path. */
         private final Clock clock;
 
         TimestampingConsumer(final Clock clock) {
@@ -672,16 +540,8 @@ class JpaAuditConfigTest {
         }
     }
 
-    /**
-     * Supplies a pinned clock preferred over the configuration's own, which is how a test fixes the
-     * moment without touching production wiring.
-     */
     @Configuration(proxyBeanMethods = false)
     static class PinnedClockConfiguration {
-
-        /**
-         * The pinned clock every consumer receives while this configuration is active.
-         */
         @Bean
         @Primary
         Clock pinnedClock() {

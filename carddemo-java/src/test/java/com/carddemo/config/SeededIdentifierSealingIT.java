@@ -62,7 +62,8 @@ import com.carddemo.util.SensitiveFieldCodec;
  * <h2>Why a database of its own</h2>
  *
  * <p>{@link AbstractPostgresIT} migrates the two delivered locations,
- * {@code classpath:db/migration} to the head of the sequence, and shares one server
+ * {@code classpath:db/migration/schema} and {@code classpath:db/migration/seed}, to the head of the
+ * sequence, and shares one server
  * across every integration test in the run, so applying the seeds to it would leave fifty customer
  * rows, fifty cross-reference rows and ten sign-on identities behind for whichever test ran next.
  * This test therefore creates a database beside it on the same server, migrates that one from both
@@ -215,7 +216,7 @@ class SeededIdentifierSealingIT extends AbstractPostgresIT {
     private static void migrate() {
         Flyway.configure()
                 .dataSource(seededJdbcUrl, databaseUser(), databasePassword())
-                .locations(FlywayConfig.SCHEMA_LOCATION)
+                .locations(FlywayConfig.SCHEMA_LOCATION, FlywayConfig.SEED_LOCATION)
                 .target(FlywayConfig.SEEDING_TARGET)
                 .callbacks(new SeededIdentifierSealingCallback(ENCRYPTION))
                 .load()
@@ -408,7 +409,7 @@ class SeededIdentifierSealingIT extends AbstractPostgresIT {
                         + "is content; only opening them sees the problem")
                 .isThrownBy(() -> Flyway.configure()
                         .dataSource(seededJdbcUrl, databaseUser(), databasePassword())
-                        .locations(FlywayConfig.SCHEMA_LOCATION)
+                        .locations(FlywayConfig.SCHEMA_LOCATION, FlywayConfig.SEED_LOCATION)
                         .target(FlywayConfig.SEEDING_TARGET)
                         .callbacks(new SeededIdentifierSealingCallback(
                                 new SensitiveFieldEncryptionService(FOREIGN_KEY)))

@@ -302,191 +302,103 @@ import java.util.Objects;
  * array or collection.
  */
 public final class ReportLineFormatter {
-
-    // Character constants. Several share an ASCII code point but carry distinct contractual
-    // roles, and are therefore named separately so that a change to one cannot silently move
-    // the other.
-
-    /** ASCII space, the padding character for every alphanumeric field and every group pad. */
     private static final char SPACE = ' ';
 
-    /** ASCII hyphen, the rule-line fill and the two detail-line filler separators. */
     private static final char HYPHEN = '-';
 
-    /** ASCII full stop, the total-line dot fill. */
     private static final char DOT = '.';
 
-    /** ASCII full stop in its role as the mask decimal point. */
     private static final char DECIMAL_POINT = '.';
 
-    /** ASCII comma, the mask group separator. */
     private static final char GROUP_SEPARATOR = ',';
 
-    /** ASCII plus, the always-signed total mask's non-negative sign. */
     private static final char PLUS_SIGN = '+';
 
-    /** ASCII hyphen in its role as the mask negative sign. */
     private static final char MINUS_SIGN = '-';
 
-    /** ASCII zero, the left-fill character of the {@code PIC 9(04)} category code. */
     private static final char ZERO_DIGIT = '0';
 
-    /** ASCII nine, the upper bound of the digit range accepted from a magnitude string. */
     private static final char NINE_DIGIT = '9';
 
-    /** Lowest character accepted in an alphanumeric field: ASCII space, 0x20. */
     private static final char FIRST_PRINTABLE_ASCII = ' ';
 
-    /** Highest character accepted in an alphanumeric field: ASCII tilde, 0x7E. */
     private static final char LAST_PRINTABLE_ASCII = '~';
 
-    // Record and group widths. [app/cbl/CBTRN03C.cbl:L85], [app/proc/TRANREPT.prc],
-    // [app/cpy/CVTRA07Y.cpy].
-
-    /** Width in bytes of every record written to the report: {@code PIC X(133)}. */
     public static final int REPORT_RECORD_WIDTH = 133;
 
-    /** Native width of the report name header group before padding. */
     public static final int NAME_HEADER_NATIVE_WIDTH = 115;
 
-    /** Native width of the transaction detail group before padding. */
     public static final int DETAIL_LINE_NATIVE_WIDTH = 114;
 
-    /** Native width of the column header group before padding. */
     public static final int COLUMN_HEADER_NATIVE_WIDTH = 114;
 
-    /** Native width of the rule line: the only group already at the record width. */
     public static final int RULE_LINE_NATIVE_WIDTH = 133;
 
-    /** Native width of the page-total group before padding. */
     public static final int PAGE_TOTAL_LINE_NATIVE_WIDTH = 112;
 
-    /** Native width of the account-total group before padding. */
     public static final int ACCOUNT_TOTAL_LINE_NATIVE_WIDTH = 112;
 
-    /** Native width of the grand-total group before padding. */
     public static final int GRAND_TOTAL_LINE_NATIVE_WIDTH = 112;
 
-    /** Spaces appended to the report name header to reach the record width. */
     public static final int NAME_HEADER_PAD_WIDTH = 18;
 
-    /** Spaces appended to the transaction detail line to reach the record width. */
     public static final int DETAIL_LINE_PAD_WIDTH = 19;
 
-    /** Spaces appended to the column header line to reach the record width. */
     public static final int COLUMN_HEADER_PAD_WIDTH = 19;
 
-    /** Spaces appended to the rule line to reach the record width: none. */
     public static final int RULE_LINE_PAD_WIDTH = 0;
 
-    /** Spaces appended to the page-total line to reach the record width. */
     public static final int PAGE_TOTAL_LINE_PAD_WIDTH = 21;
 
-    /** Spaces appended to the account-total line to reach the record width. */
     public static final int ACCOUNT_TOTAL_LINE_PAD_WIDTH = 21;
 
-    /** Spaces appended to the grand-total line to reach the record width. */
     public static final int GRAND_TOTAL_LINE_PAD_WIDTH = 21;
 
-    // Load-bearing offsets and field widths shared across groups.
-
-    /** Width of both numeric-edited amount masks: {@code PIC -ZZZ,ZZZ,ZZZ.ZZ} is 15 bytes. */
     public static final int AMOUNT_MASK_WIDTH = 15;
 
-    /**
-     * Offset of the detail line's first filler separator, which always holds a hyphen
-     * [app/cpy/CVTRA07Y.cpy:L21].
-     */
     public static final int TYPE_CODE_SEPARATOR_OFFSET = 31;
 
-    /**
-     * Offset of the detail line's second filler separator, which always holds a hyphen
-     * [app/cpy/CVTRA07Y.cpy:L25].
-     */
     public static final int CATEGORY_CODE_SEPARATOR_OFFSET = 52;
 
-    /**
-     * Offset at which the amount field begins in the detail line and in all three total lines.
-     * The shared offset is what aligns the four amount columns and their right edge at 111.
-     */
     public static final int AMOUNT_OFFSET = 97;
 
-    /** Dot-fill width of the page-total line [app/cpy/CVTRA07Y.cpy:L53]. 11 + 86 = 97. */
     public static final int PAGE_TOTAL_DOT_FILL_WIDTH = 86;
 
-    /** Dot-fill width of the account-total line [app/cpy/CVTRA07Y.cpy:L59]. 13 + 84 = 97. */
     public static final int ACCOUNT_TOTAL_DOT_FILL_WIDTH = 84;
 
-    /** Dot-fill width of the grand-total line [app/cpy/CVTRA07Y.cpy:L65]. 11 + 86 = 97. */
     public static final int GRAND_TOTAL_DOT_FILL_WIDTH = 86;
 
-    /** Width of the detail line's transaction type description: truncated from 50 bytes. */
     public static final int TYPE_DESCRIPTION_WIDTH = 15;
 
-    /** Width of the detail line's transaction category description: truncated from 50 bytes. */
     public static final int CATEGORY_DESCRIPTION_WIDTH = 29;
 
-    /** Width of a date field wherever one appears in the report or the parameter card. */
     public static final int DATE_WIDTH = 10;
 
-    /** Width of the detail line's transaction id field. */
     public static final int TRANSACTION_ID_WIDTH = 16;
 
-    /** Width of the detail line's account id field. */
     public static final int ACCOUNT_ID_WIDTH = 11;
 
-    /** Width of the detail line's transaction type code field. */
     public static final int TYPE_CODE_WIDTH = 2;
 
-    /**
-     * Width of the detail line's transaction category code field. The field is
-     * {@code PIC 9(04)}, so it is left zero-filled rather than space-padded.
-     */
     public static final int CATEGORY_CODE_WIDTH = 4;
 
-    /** Width of the detail line's transaction source field. */
     public static final int SOURCE_WIDTH = 10;
 
-    // Page break and date parameter contract. [app/cbl/CBTRN03C.cbl:L131],
-    // [app/cbl/CBTRN03C.cbl:L88], [app/cbl/CBTRN03C.cbl:L122-L125].
-
-    /**
-     * Report page size, 20 detail-and-header lines [app/cbl/CBTRN03C.cbl:L131]. Published for
-     * the service that owns the line counter and the modulo break test; this class implements
-     * neither. This is a factual layout constant read from the source, not a tuning figure.
-     */
     public static final int PAGE_SIZE = 20;
 
-    /**
-     * Structured width of the date-parameter record: a 10-byte start date, a one-byte space
-     * separator and a 10-byte end date [app/cbl/CBTRN03C.cbl:L122-L125]. 10 + 1 + 10 = 21.
-     */
     public static final int DATE_PARAMETER_STRUCTURED_WIDTH = 21;
 
-    /**
-     * Full width of the date-parameter card as the driver declares it
-     * [app/cbl/CBTRN03C.cbl:L88], which is also the width of card 15 of the job-submission
-     * image. This is the parameter card width and nothing else; it is not the statement text
-     * record width, and this class never emits a record of this width.
-     */
     public static final int DATE_PARAMETER_CARD_WIDTH = 80;
 
-    /** Width of the one-byte filler separating the two dates on the parameter card. */
     public static final int DATE_PARAMETER_SEPARATOR_WIDTH = 1;
 
-    /** Offset of the one-byte filler separating the two dates on the parameter card. */
     public static final int DATE_PARAMETER_SEPARATOR_OFFSET = 10;
 
-    /** Offset of the start date on the parameter card. */
     public static final int DATE_PARAMETER_START_DATE_OFFSET = 0;
 
-    /** Offset of the end date on the parameter card. */
     public static final int DATE_PARAMETER_END_DATE_OFFSET = 11;
 
-    /** Number of records in the header block: name header, blank line, column header, rule. */
     public static final int HEADER_BLOCK_RECORD_COUNT = 4;
-
-    // Group 1 - report name header field widths and offsets [app/cpy/CVTRA07Y.cpy:L4-L13].
 
     private static final int NAME_HEADER_SHORT_NAME_OFFSET = 0;
     private static final int NAME_HEADER_SHORT_NAME_WIDTH = 38;
@@ -504,8 +416,6 @@ public final class ReportLineFormatter {
     private static final String NAME_HEADER_DATE_LABEL_TEXT = "Date Range: ";
     private static final String NAME_HEADER_TO_LITERAL_TEXT = " to ";
 
-    // Group 2 - transaction detail field offsets [app/cpy/CVTRA07Y.cpy:L15-L31].
-
     private static final int DETAIL_TRANSACTION_ID_OFFSET = 0;
     private static final int DETAIL_FILLER_1_OFFSET = 16;
     private static final int DETAIL_ACCOUNT_ID_OFFSET = 17;
@@ -522,8 +432,6 @@ public final class ReportLineFormatter {
     private static final int DETAIL_FILLER_6_OFFSET = 112;
     private static final int DETAIL_FILLER_6_WIDTH = 2;
     private static final int SINGLE_BYTE_FILLER_WIDTH = 1;
-
-    // Group 3 - column header field widths and offsets [app/cpy/CVTRA07Y.cpy:L33-L46].
 
     private static final int COLUMN_HEADER_TRANSACTION_ID_OFFSET = 0;
     private static final int COLUMN_HEADER_TRANSACTION_ID_WIDTH = 17;
@@ -546,15 +454,7 @@ public final class ReportLineFormatter {
     private static final String COLUMN_HEADER_CATEGORY_TEXT = "Tran Category";
     private static final String COLUMN_HEADER_SOURCE_TEXT = "Tran Source";
 
-    /**
-     * The Amount column heading, carrying the eight leading spaces that right-align the word
-     * against the detail amount field [app/cpy/CVTRA07Y.cpy:L45-L46]. Placed at offset 98
-     * within a 16-byte field, the word occupies offsets 106 through 111.
-     */
     private static final String COLUMN_HEADER_AMOUNT_TEXT = "        Amount";
-
-    // Groups 5, 6 and 7 - total line label widths and offsets
-    // [app/cpy/CVTRA07Y.cpy:L50-L66].
 
     private static final int TOTAL_LINE_LABEL_OFFSET = 0;
     private static final int PAGE_TOTAL_LABEL_WIDTH = 11;
@@ -568,91 +468,50 @@ public final class ReportLineFormatter {
     private static final String ACCOUNT_TOTAL_LABEL_TEXT = "Account Total";
     private static final String GRAND_TOTAL_LABEL_TEXT = "Grand Total";
 
-    // Numeric-edit mask geometry. Both masks are PIC ?ZZZ,ZZZ,ZZZ.ZZ, differing only in the
-    // sign character emitted for a non-negative value.
-
-    /** The mask's sign position, a fixed insertion character that never floats. */
     private static final int MASK_SIGN_POSITION = 0;
 
-    /** The mask's decimal point position. */
     private static final int MASK_DECIMAL_POINT_POSITION = 12;
 
-    /** The mask's first fractional digit position. */
     private static final int MASK_FIRST_FRACTION_POSITION = 13;
 
-    /** The mask's second fractional digit position. */
     private static final int MASK_SECOND_FRACTION_POSITION = 14;
 
-    /** The mask's first group separator position, after the third integer digit. */
     private static final int MASK_FIRST_GROUP_SEPARATOR_POSITION = 4;
 
-    /** The mask's second group separator position, after the sixth integer digit. */
     private static final int MASK_SECOND_GROUP_SEPARATOR_POSITION = 8;
 
-    /** Integer digit index at or before which the first group separator still prints. */
     private static final int MASK_FIRST_GROUP_LAST_DIGIT_INDEX = 2;
 
-    /** Integer digit index at or before which the second group separator still prints. */
     private static final int MASK_SECOND_GROUP_LAST_DIGIT_INDEX = 5;
 
-    /** Integer digit count of the mask, matching {@code PIC S9(09)V99}. */
     private static final int MASK_INTEGER_DIGITS = 9;
 
-    /** Fractional digit count of the mask, matching {@code PIC S9(09)V99}. */
     private static final int MASK_FRACTION_DIGITS = 2;
 
-    /** Total significant digit count of the mask: 9 integer digits plus 2 fractional. */
     private static final int MASK_MAGNITUDE_DIGITS = 11;
 
-    /** The scale every amount must already carry when it reaches this class. */
     private static final int REQUIRED_AMOUNT_SCALE = 2;
 
-    /** Smallest value accepted in a {@code PIC 9(04)} category code field. */
     private static final int MINIMUM_CATEGORY_CODE = 0;
 
-    /** Largest value accepted in a {@code PIC 9(04)} category code field. */
     private static final int MAXIMUM_CATEGORY_CODE = 9999;
 
-    // Emitted constants. Built through the validating fill helper so that a width regression
-    // fails at class initialisation rather than at Gate 1.
-
-    /**
-     * The blank report record: 133 spaces [app/cbl/CBTRN03C.cbl:L133]. This is a real emitted
-     * record, the second of the four records in the header block, and not padding.
-     */
+    /** The blank line, 133 spaces: a real emitted record of the header block, not padding. */
     public static final String BLANK_LINE = fixedFill("BLANK_LINE", SPACE, REPORT_RECORD_WIDTH);
 
-    /**
-     * The report rule line: 133 hyphens [app/cpy/CVTRA07Y.cpy:L48]. The only group already at
-     * the record width, and not to be confused with the statement's 80-hyphen rule lines.
-     */
+    /** The rule line, 133 hyphens: the only group already 133 bytes wide, so never padded. */
     public static final String RULE_LINE = fixedFill("RULE_LINE", HYPHEN, RULE_LINE_NATIVE_WIDTH);
 
-    /** Not instantiable: this class exposes static members only and holds no state. */
     private ReportLineFormatter() {
         throw new AssertionError("ReportLineFormatter is a static utility and is not instantiable");
     }
 
-    // Group builders. One per report group, each returning exactly 133 encoded bytes.
-
     /**
-     * Builds the report name header, group 1 [app/cpy/CVTRA07Y.cpy:L4-L13]. Traces to the
-     * driver's header paragraph, originally named {@code 1120-WRITE-HEADERS}
-     * [app/cbl/CBTRN03C.cbl:L324-L341], where the two dates are moved into the group
-     * [app/cbl/CBTRN03C.cbl:L277-L278].
+     * Builds group 1, the report name header: 115 native bytes padded to 133.
      *
-     * <p>The group is 115 bytes wide natively and is padded with 18 spaces to the record width.
-     * Each date is moved into a 10-byte alphanumeric field, so a shorter date is space-padded on
-     * the right and a longer one is truncated, exactly as the legacy move does.
-     *
-     * @param startDate the reporting window's inclusive start date, carried through verbatim as
-     *                  a 10-byte character field; never parsed or reformatted here
-     * @param endDate   the reporting window's inclusive end date, same treatment
-     * @return the 133-byte report name header record, without a line terminator
-     * @throws NullPointerException     if either date is {@code null}
-     * @throws IllegalArgumentException if either date contains a character outside printable
-     *                                  US-ASCII
-     * @throws IllegalStateException    if an internal width invariant is breached
+     * @param startDate the ten-character start date placed at offset 91
+     * @param endDate the ten-character end date placed at offset 105
+     * @return the 133-byte record
      */
     public static String buildReportNameHeader(String startDate, String endDate) {
         Objects.requireNonNull(startDate, "startDate must not be null for the report name header");
@@ -687,40 +546,21 @@ public final class ReportLineFormatter {
     }
 
     /**
-     * Builds the transaction detail line, group 2 [app/cpy/CVTRA07Y.cpy:L15-L31]. Traces to the
-     * driver's detail paragraph, originally named {@code 1120-WRITE-DETAIL}
-     * [app/cbl/CBTRN03C.cbl:L361-L374] - one of the three paragraphs sharing the 1120 prefix.
+     * Builds group 2, the transaction detail line: 114 native bytes padded to 133.
      *
-     * <p>The group is 114 bytes wide natively and is padded with 19 spaces to the record width.
-     * Three behaviours are load-bearing and are reproduced unconditionally:
-     * <ul>
-     *   <li>a hyphen is written at offset 31 and at offset 52. Both are declared as filler with
-     *       a literal value, and the driver's initialise of the group does not touch filler, so
-     *       they survive every re-use of the group;</li>
-     *   <li>the category code is left zero-filled because the field is {@code PIC 9(04)};</li>
-     *   <li>the type description is truncated to 15 bytes and the category description to 29,
-     *       both silently, both from 50-byte reference fields.</li>
-     * </ul>
+     * <p>The two hyphens at offsets 31 and 52 are emitted unconditionally, the category code is left
+     * zero-filled to four digits because it is the layout's only numeric-display field, and the two
+     * descriptions are right-truncated at 15 and 29 bytes exactly as a COBOL move performs it.
      *
-     * @param transactionId                   transaction identifier, moved into 16 bytes
-     * @param accountId                       account identifier, moved into 11 bytes
-     * @param transactionTypeCode             transaction type code, moved into 2 bytes
-     * @param transactionTypeDescription      transaction type description, truncated to 15 bytes
-     * @param transactionCategoryCode         transaction category code, an unsigned value that
-     *                                        must fit four digits, left zero-filled
-     * @param transactionCategoryDescription  transaction category description, truncated to 29
-     *                                        bytes
-     * @param transactionSource               transaction source, moved into 10 bytes
-     * @param amount                          the transaction amount, already scaled to two
-     *                                        decimal places and already rounded down by the
-     *                                        codec, rendered with the detail mask
-     * @return the 133-byte transaction detail record, without a line terminator
-     * @throws NullPointerException     if any reference argument is {@code null}
-     * @throws IllegalArgumentException if any text contains a character outside printable
-     *                                  US-ASCII, if the category code is negative or exceeds
-     *                                  four digits, or if the amount's scale is not exactly 2
-     *                                  or its integer part exceeds nine digits
-     * @throws IllegalStateException    if an internal width invariant is breached
+     * @param transactionId the sixteen-character identifier at offset 0
+     * @param accountId the eleven-character account identifier at offset 17
+     * @param transactionTypeCode the two-character type code at offset 29
+     * @param transactionTypeDescription the type description, truncated into 15 bytes at offset 32
+     * @param transactionCategoryCode the category code, rendered as four digits at offset 48
+     * @param transactionCategoryDescription the category description, truncated into 29 bytes at 53
+     * @param transactionSource the ten-character source at offset 83
+     * @param amount the amount rendered through the detail mask at offset 97
+     * @return the 133-byte record
      */
     public static String buildTransactionDetailLine(String transactionId,
                                                     String accountId,
@@ -757,8 +597,6 @@ public final class ReportLineFormatter {
                 moveToAlphanumeric("transactionTypeCode", transactionTypeCode, TYPE_CODE_WIDTH),
                 TYPE_CODE_WIDTH, "transactionTypeCode");
 
-        // The two hyphen separators are fixed layout bytes: filler carrying a literal value,
-        // untouched by the driver's initialise, and therefore emitted unconditionally.
         placeField(group, TYPE_CODE_SEPARATOR_OFFSET, singleHyphen(), SINGLE_BYTE_FILLER_WIDTH,
                 "typeCodeSeparator");
 
@@ -798,17 +636,10 @@ public final class ReportLineFormatter {
     }
 
     /**
-     * Builds the column header line, group 3 [app/cpy/CVTRA07Y.cpy:L33-L46]. Traces to the
-     * driver's header paragraph [app/cbl/CBTRN03C.cbl:L333].
+     * Builds group 3, the column header line: 114 native bytes padded to 133. The eight leading
+     * spaces inside the amount literal are what right-align it with the detail amount field.
      *
-     * <p>The group is fully literal: it takes no argument and is 114 bytes wide natively, padded
-     * with 19 spaces to the record width. Two details are load-bearing: the filler at offset 97
-     * is a bare {@code PIC X} and therefore exactly one byte, and the Amount heading carries
-     * eight leading spaces so that the word lands on offsets 106 through 111 - the same right
-     * edge as the detail amount field.
-     *
-     * @return the 133-byte column header record, without a line terminator
-     * @throws IllegalStateException if an internal width invariant is breached
+     * @return the 133-byte record
      */
     public static String buildColumnHeaderLine() {
         char[] group = blankGroup(COLUMN_HEADER_NATIVE_WIDTH);
@@ -845,37 +676,18 @@ public final class ReportLineFormatter {
     }
 
     /**
-     * Builds the rule line, group 4 [app/cpy/CVTRA07Y.cpy:L48]: 133 hyphens. Traces to the
-     * driver, which writes it after the column header and again after each total line
-     * [app/cbl/CBTRN03C.cbl:L337], [app/cbl/CBTRN03C.cbl:L300],
-     * [app/cbl/CBTRN03C.cbl:L312].
-     *
-     * <p>This is the only group already at the record width, so no padding is applied.
-     *
-     * @return the 133-byte rule line record, without a line terminator
-     * @throws IllegalStateException if the rule line no longer measures the record width
+     * @return group 4, the 133-hyphen rule line
      */
     public static String buildRuleLine() {
         return padToRecordWidth("ruleLine", RULE_LINE, RULE_LINE_NATIVE_WIDTH, RULE_LINE_PAD_WIDTH);
     }
 
     /**
-     * Builds the page-total line, group 5 [app/cpy/CVTRA07Y.cpy:L50-L54]. Traces to the driver
-     * paragraph originally named {@code 1110-WRITE-PAGE-TOTALS} [app/cbl/CBTRN03C.cbl:L293] -
-     * the first of the two paragraphs sharing the 1110 prefix.
+     * Builds group 5, the page total line: an 11-byte label, 86 dots and the always-signed total
+     * mask, so the amount begins at offset 97 like every other amount in the report.
      *
-     * <p>An 11-byte label, then 86 dots, then the always-signed amount mask at offset 97;
-     * 11 + 86 + 15 = 112 natively, padded with 21 spaces to the record width. The 86 is
-     * hardcoded from the copybook and is neither derived from nor shared with the other two
-     * dot fills.
-     *
-     * @param amount the page total, already scaled to two decimal places, rendered with the
-     *               always-signed total mask
-     * @return the 133-byte page-total record, without a line terminator
-     * @throws NullPointerException     if the amount is {@code null}
-     * @throws IllegalArgumentException if the amount's scale is not exactly 2 or its integer
-     *                                  part exceeds nine digits
-     * @throws IllegalStateException    if an internal width invariant is breached
+     * @param amount the page total, at scale 2
+     * @return the 133-byte record
      */
     public static String buildPageTotalLine(BigDecimal amount) {
         Objects.requireNonNull(amount, "amount must not be null for the page total line");
@@ -885,22 +697,11 @@ public final class ReportLineFormatter {
     }
 
     /**
-     * Builds the account-total line, group 6 [app/cpy/CVTRA07Y.cpy:L56-L60]. Traces to the
-     * driver paragraph originally named {@code 1120-WRITE-ACCOUNT-TOTALS}
-     * [app/cbl/CBTRN03C.cbl:L306] - one of the three paragraphs sharing the 1120 prefix.
+     * Builds group 6, the account total line: a 13-byte label and 84 dots, which is how its amount
+     * still begins at offset 97.
      *
-     * <p>A 13-byte label, then 84 dots, then the always-signed amount mask at offset 97;
-     * 13 + 84 + 15 = 112 natively, padded with 21 spaces to the record width. The 84 differs
-     * from the other two fills precisely because this label is two bytes wider, which is what
-     * keeps the amount at offset 97.
-     *
-     * @param amount the account total, already scaled to two decimal places, rendered with the
-     *               always-signed total mask
-     * @return the 133-byte account-total record, without a line terminator
-     * @throws NullPointerException     if the amount is {@code null}
-     * @throws IllegalArgumentException if the amount's scale is not exactly 2 or its integer
-     *                                  part exceeds nine digits
-     * @throws IllegalStateException    if an internal width invariant is breached
+     * @param amount the account total, at scale 2
+     * @return the 133-byte record
      */
     public static String buildAccountTotalLine(BigDecimal amount) {
         Objects.requireNonNull(amount, "amount must not be null for the account total line");
@@ -911,20 +712,10 @@ public final class ReportLineFormatter {
     }
 
     /**
-     * Builds the grand-total line, group 7 [app/cpy/CVTRA07Y.cpy:L62-L66]. Traces to the driver
-     * paragraph originally named {@code 1110-WRITE-GRAND-TOTALS} [app/cbl/CBTRN03C.cbl:L318] -
-     * the second of the two paragraphs sharing the 1110 prefix.
+     * Builds group 7, the grand total line: an 11-byte label and 86 dots.
      *
-     * <p>An 11-byte label, then 86 dots, then the always-signed amount mask at offset 97;
-     * 11 + 86 + 15 = 112 natively, padded with 21 spaces to the record width.
-     *
-     * @param amount the grand total, already scaled to two decimal places, rendered with the
-     *               always-signed total mask
-     * @return the 133-byte grand-total record, without a line terminator
-     * @throws NullPointerException     if the amount is {@code null}
-     * @throws IllegalArgumentException if the amount's scale is not exactly 2 or its integer
-     *                                  part exceeds nine digits
-     * @throws IllegalStateException    if an internal width invariant is breached
+     * @param amount the grand total, at scale 2
+     * @return the 133-byte record
      */
     public static String buildGrandTotalLine(BigDecimal amount) {
         Objects.requireNonNull(amount, "amount must not be null for the grand total line");
@@ -934,34 +725,20 @@ public final class ReportLineFormatter {
     }
 
     /**
-     * Returns the blank report record: 133 spaces [app/cbl/CBTRN03C.cbl:L133]. Provided as a
-     * method as well as a constant so that every emitted record is obtainable through a uniform
-     * accessor at the single write point.
-     *
-     * @return the 133-byte blank record, without a line terminator
+     * @return the blank line as an emitted record
      */
     public static String buildBlankLine() {
         return BLANK_LINE;
     }
 
     /**
-     * Returns the four records of the report header block, in the one order the driver writes
-     * them [app/cbl/CBTRN03C.cbl:L324-L341]: the report name header, the blank line, the column
-     * header, then the rule line. Each of the four increments the driver's line counter by one.
+     * Builds the four header records in their one legal order - name header, blank line, column
+     * header, rule line - so the order cannot be got wrong at a call site. Each record advances the
+     * driver's line counter by one.
      *
-     * <p>The order is published as an ordered, unmodifiable list precisely so that it cannot be
-     * got wrong at the call site. The line counter itself, and the modulo break test that
-     * consumes {@link #PAGE_SIZE}, both belong to the service layer and are not implemented
-     * here.
-     *
-     * @param startDate the reporting window's inclusive start date, 10-byte character field
-     * @param endDate   the reporting window's inclusive end date, 10-byte character field
-     * @return an unmodifiable list of exactly four records, each exactly 133 bytes
-     * @throws NullPointerException     if either date is {@code null}
-     * @throws IllegalArgumentException if either date contains a character outside printable
-     *                                  US-ASCII
-     * @throws IllegalStateException    if the block does not contain exactly four records of the
-     *                                  record width
+     * @param startDate the ten-character start date
+     * @param endDate the ten-character end date
+     * @return an unmodifiable four-element list of 133-byte records
      */
     public static List<String> buildHeaderBlock(String startDate, String endDate) {
         Objects.requireNonNull(startDate, "startDate must not be null for the header block");
@@ -984,25 +761,14 @@ public final class ReportLineFormatter {
         return block;
     }
 
-    // Date parameter record. [app/cbl/CBTRN03C.cbl:L88], [app/cbl/CBTRN03C.cbl:L122-L125].
-
     /**
-     * Builds the structured date-parameter record: a 10-byte start date, a one-byte space
-     * separator and a 10-byte end date, 21 bytes in total
-     * [app/cbl/CBTRN03C.cbl:L122-L125].
+     * Builds the 21 structured bytes of the date-parameter card: start date, a one-byte space
+     * separator, end date. These are the leading 21 bytes of card 15 of the job-submission image, so
+     * this class and the card-image builder must agree on them byte for byte.
      *
-     * <p>These 21 bytes are the leading 21 bytes of card 15 of the job-submission image built by
-     * the JCL card-image builder, so the two classes must agree on them byte for byte. The
-     * separator written here is always a single space, matching the bare one-byte filler in the
-     * source: never two spaces, never a tab and never a comma.
-     *
-     * @param startDate the inclusive start date, moved into a 10-byte character field
-     * @param endDate   the inclusive end date, moved into a 10-byte character field
-     * @return the 21-byte structured date-parameter record, without a line terminator
-     * @throws NullPointerException     if either date is {@code null}
-     * @throws IllegalArgumentException if either date contains a character outside printable
-     *                                  US-ASCII
-     * @throws IllegalStateException    if the result does not measure the structured width
+     * @param startDate the ten-character start date
+     * @param endDate the ten-character end date
+     * @return the 21-byte structured record
      */
     public static String buildDateParameterRecord(String startDate, String endDate) {
         Objects.requireNonNull(startDate,
@@ -1023,20 +789,12 @@ public final class ReportLineFormatter {
     }
 
     /**
-     * Extracts the start date from a date-parameter card, returning its 10 bytes verbatim.
+     * Reads the start date out of a date-parameter card. Reading is deliberately more permissive
+     * than writing: the legacy driver moves the card into the structured record without validating
+     * the separator byte, so no separator is required here.
      *
-     * <p>The card may be either the 21-byte structured record or the full 80-byte card
-     * [app/cbl/CBTRN03C.cbl:L88], because the structured prefix is identical in both. The 10
-     * bytes are returned without trimming, exactly as the legacy 10-byte character field holds
-     * them. The separator byte is deliberately not validated on the read path: the driver moves
-     * the card into the structured record without checking the filler, so reading stays faithful
-     * while writing stays canonical.
-     *
-     * @param dateParameterCard the parameter card, either 21 or 80 bytes wide
-     * @return the 10-byte start date field, untrimmed
-     * @throws NullPointerException     if the card is {@code null}
-     * @throws IllegalArgumentException if the card contains a character outside printable
-     *                                  US-ASCII or is neither 21 nor 80 bytes wide
+     * @param dateParameterCard the card, at least 21 characters wide
+     * @return the ten-character start date
      */
     public static String readStartDate(String dateParameterCard) {
         String card = requireDateParameterCard(dateParameterCard);
@@ -1045,16 +803,11 @@ public final class ReportLineFormatter {
     }
 
     /**
-     * Extracts the end date from a date-parameter card, returning its 10 bytes verbatim.
+     * Reads the end date out of a date-parameter card, on the same permissive terms as
+     * {@link #readStartDate(String)}.
      *
-     * <p>Accepts either the 21-byte structured record or the full 80-byte card, on the same
-     * terms as {@link #readStartDate(String)}.
-     *
-     * @param dateParameterCard the parameter card, either 21 or 80 bytes wide
-     * @return the 10-byte end date field, untrimmed
-     * @throws NullPointerException     if the card is {@code null}
-     * @throws IllegalArgumentException if the card contains a character outside printable
-     *                                  US-ASCII or is neither 21 nor 80 bytes wide
+     * @param dateParameterCard the card, at least 21 characters wide
+     * @return the ten-character end date
      */
     public static String readEndDate(String dateParameterCard) {
         String card = requireDateParameterCard(dateParameterCard);
@@ -1062,33 +815,13 @@ public final class ReportLineFormatter {
                 DATE_PARAMETER_END_DATE_OFFSET + DATE_WIDTH);
     }
 
-    // The two numeric-edited amount masks.
-    //
-    // These two methods are deliberately NOT factored together. They differ in exactly one
-    // character position - the sign emitted for a non-negative value - and a shared helper
-    // taking a sign parameter, a boolean flag or an enum would make it possible to corrupt one
-    // mask while the other's tests still pass. The duplication below is the decision, not an
-    // oversight: see decision-log entries 1 and 2 in the class documentation. Only genuinely
-    // mask-agnostic primitives are shared, namely scale validation, magnitude extraction and
-    // width assertion; none of them knows the sign character or the field geometry.
-
     /**
-     * Renders an amount with the <strong>detail</strong> mask, {@code PIC -ZZZ,ZZZ,ZZZ.ZZ}
-     * [app/cpy/CVTRA07Y.cpy:L30]: a negative value places a minus in position 1 and a zero or
-     * positive value places a <strong>space</strong> there. This mask never emits a plus.
+     * Renders the detail mask: fifteen characters, a fixed leftmost sign position that carries a
+     * minus for a negative value and a <em>space</em> otherwise - never a plus - and fifteen spaces
+     * for a value of exactly zero.
      *
-     * <p>The sign is a fixed insertion character and does not float: a negative 603.22 renders
-     * as a minus, then eight spaces, then 603.22. A positive 500.47 renders as nine spaces then
-     * 500.47. A value of exactly zero renders as fifteen spaces, because every numeric position
-     * of the mask is a zero-suppression symbol.
-     *
-     * @param amount the amount to render, already scaled to two decimal places and already
-     *               rounded down by the codec
-     * @return exactly 15 bytes
-     * @throws NullPointerException     if the amount is {@code null}
-     * @throws IllegalArgumentException if the scale is not exactly 2, or the integer part
-     *                                  exceeds nine digits
-     * @throws IllegalStateException    if the rendered mask does not measure 15 bytes
+     * @param amount the amount, which must be at scale 2 with at most nine integer digits
+     * @return the fifteen-character rendering
      */
     public static String renderDetailAmount(BigDecimal amount) {
         Objects.requireNonNull(amount, "amount must not be null for the detail amount mask");
@@ -1098,7 +831,6 @@ public final class ReportLineFormatter {
         char[] mask = new char[AMOUNT_MASK_WIDTH];
         Arrays.fill(mask, SPACE);
 
-        // Zero blanks the entire item, editing characters included.
         if (amount.signum() != 0) {
             mask[MASK_SIGN_POSITION] = amount.signum() < 0 ? MINUS_SIGN : SPACE;
             mask[MASK_DECIMAL_POINT_POSITION] = DECIMAL_POINT;
@@ -1126,24 +858,14 @@ public final class ReportLineFormatter {
     }
 
     /**
-     * Renders an amount with the <strong>always-signed total</strong> mask,
-     * {@code PIC +ZZZ,ZZZ,ZZZ.ZZ} [app/cpy/CVTRA07Y.cpy:L54],
-     * [app/cpy/CVTRA07Y.cpy:L60], [app/cpy/CVTRA07Y.cpy:L66]: a negative value places a minus in
-     * position 1 and a zero or positive value places a <strong>plus</strong> there. All three
-     * total lines use this mask.
+     * Renders the totals mask: fifteen characters, always signed, so a non-negative value carries a
+     * plus where the detail mask carries a space. Zero blanks the whole field here too.
      *
-     * <p>The sign is a fixed insertion character and does not float: a positive 500.47 renders
-     * as a plus, then eight spaces, then 500.47. A value of exactly zero renders as fifteen
-     * spaces - no plus, no zero digit and no decimal point - because every numeric position of
-     * the mask is a zero-suppression symbol.
+     * <p>Deliberately independent of {@link #renderDetailAmount(BigDecimal)}: the two masks differ in
+     * sign presence, and a shared renderer with a flag would eventually apply the wrong one.
      *
-     * @param amount the amount to render, already scaled to two decimal places and already
-     *               rounded down by the codec
-     * @return exactly 15 bytes
-     * @throws NullPointerException     if the amount is {@code null}
-     * @throws IllegalArgumentException if the scale is not exactly 2, or the integer part
-     *                                  exceeds nine digits
-     * @throws IllegalStateException    if the rendered mask does not measure 15 bytes
+     * @param amount the total, which must be at scale 2 with at most nine integer digits
+     * @return the fifteen-character rendering
      */
     public static String renderTotalAmount(BigDecimal amount) {
         Objects.requireNonNull(amount, "amount must not be null for the total amount mask");
@@ -1153,7 +875,6 @@ public final class ReportLineFormatter {
         char[] mask = new char[AMOUNT_MASK_WIDTH];
         Arrays.fill(mask, SPACE);
 
-        // Zero blanks the entire item, editing characters included - including the plus sign.
         if (amount.signum() != 0) {
             mask[MASK_SIGN_POSITION] = amount.signum() < 0 ? MINUS_SIGN : PLUS_SIGN;
             mask[MASK_DECIMAL_POINT_POSITION] = DECIMAL_POINT;
@@ -1180,23 +901,6 @@ public final class ReportLineFormatter {
         return rendered;
     }
 
-    // Private layout primitives. Every width is measured as US-ASCII encoded bytes.
-
-    /**
-     * Assembles one of the three total lines: a label field, a dot fill, then the always-signed
-     * amount mask at offset 97. The dot-fill width is supplied by the caller from its own named
-     * constant, so that no total line can inherit another's fill.
-     *
-     * @param groupName    diagnostic name of the group under construction
-     * @param labelText    the label literal
-     * @param labelWidth   the label field's declared width
-     * @param dotFillOffset the dot fill's offset, which equals the label width
-     * @param dotFillWidth the dot fill's declared width, hardcoded per group
-     * @param nativeWidth  the group's native width before padding
-     * @param padWidth     the spaces required to reach the record width
-     * @param amount       the already-scaled total
-     * @return the 133-byte total record
-     */
     private static String buildTotalLine(String groupName,
                                          String labelText,
                                          int labelWidth,
@@ -1224,14 +928,6 @@ public final class ReportLineFormatter {
         return padToRecordWidth(groupName, new String(group), nativeWidth, padWidth);
     }
 
-    /**
-     * Returns a mutable working buffer of the requested width pre-filled with spaces. The buffer
-     * is local to the caller and is converted to a {@code String} before it leaves this class,
-     * so no mutable array escapes.
-     *
-     * @param width the group's native width
-     * @return a space-filled buffer of exactly {@code width} characters
-     */
     private static char[] blankGroup(int width) {
         if (width <= 0) {
             throw new IllegalStateException("Group width must be positive but is " + width);
@@ -1241,20 +937,6 @@ public final class ReportLineFormatter {
         return group;
     }
 
-    /**
-     * Places a field of exactly the declared width at the declared offset within a group,
-     * verifying both the field's encoded width and the group's capacity before writing. The
-     * verification is what makes the offset tables in the class documentation enforceable rather
-     * than merely descriptive.
-     *
-     * @param group     the working buffer
-     * @param offset    the field's zero-based offset within the group
-     * @param field     the field's fully fitted content
-     * @param width     the field's declared width
-     * @param fieldName diagnostic name of the field
-     * @throws IllegalStateException if the field does not measure its declared width, or does
-     *                               not fit the group at the requested offset
-     */
     private static void placeField(char[] group, int offset, String field, int width,
                                    String fieldName) {
         int measured = asciiWidth(field);
@@ -1272,18 +954,6 @@ public final class ReportLineFormatter {
         }
     }
 
-    /**
-     * Applies COBOL move semantics for a receiving {@code PIC X(n)} field: content longer than
-     * the field is truncated on the right, content shorter than the field is space-padded on the
-     * right. Truncation is silent, exactly as the legacy move is.
-     *
-     * @param fieldName diagnostic name of the receiving field
-     * @param value     the sending value
-     * @param width     the receiving field's width
-     * @return exactly {@code width} bytes
-     * @throws IllegalArgumentException if the value contains a character outside printable
-     *                                  US-ASCII
-     */
     private static String moveToAlphanumeric(String fieldName, String value, int width) {
         Objects.requireNonNull(fieldName, "fieldName must not be null");
         Objects.requireNonNull(value, "Value for field " + fieldName + " must not be null");
@@ -1307,17 +977,6 @@ public final class ReportLineFormatter {
         return fitted;
     }
 
-    /**
-     * Renders the {@code PIC 9(04)} transaction category code: a numeric-display field, and the
-     * only field in the layout that is left zero-filled rather than space-padded
-     * [app/cpy/CVTRA07Y.cpy:L24]. The picture is unsigned, so a negative value is rejected, and
-     * a value that will not fit four digits is rejected rather than truncated.
-     *
-     * @param fieldName    diagnostic name of the field
-     * @param categoryCode the category code
-     * @return exactly 4 bytes, left zero-filled
-     * @throws IllegalArgumentException if the code is negative or exceeds four digits
-     */
     private static String moveToCategoryCode(String fieldName, int categoryCode) {
         if (categoryCode < MINIMUM_CATEGORY_CODE || categoryCode > MAXIMUM_CATEGORY_CODE) {
             throw new IllegalArgumentException("Field " + fieldName
@@ -1337,20 +996,6 @@ public final class ReportLineFormatter {
         return fitted;
     }
 
-    /**
-     * Pads a completed group on the right with spaces to the 133-byte record width, reproducing
-     * a COBOL move of a short group into the {@code PIC X(133)} record
-     * [app/cbl/CBTRN03C.cbl:L85]. Both the group's native width and the resulting record width
-     * are asserted, so a layout regression cannot reach the writer.
-     *
-     * @param groupName   diagnostic name of the group
-     * @param group       the completed group at its native width
-     * @param nativeWidth the group's declared native width
-     * @param padWidth    the declared number of pad spaces
-     * @return exactly 133 bytes
-     * @throws IllegalStateException if the native width, the pad width or the record width does
-     *                               not hold
-     */
     private static String padToRecordWidth(String groupName, String group, int nativeWidth,
                                            int padWidth) {
         int measured = asciiWidth(group);
@@ -1370,27 +1015,6 @@ public final class ReportLineFormatter {
         return record;
     }
 
-    /**
-     * Validates the scale of an amount and returns its magnitude as an 11-character string of
-     * ASCII digits: nine integer digits followed by two fractional digits, left zero-filled,
-     * matching {@code PIC S9(09)V99}.
-     *
-     * <p>This primitive is mask-agnostic: it knows nothing of the sign character, the field
-     * geometry or the suppression rule, so sharing it between the two mask renderers cannot make
-     * one behave like the other.
-     *
-     * <p>The digits are taken from the unscaled value's absolute magnitude, whose radix-ten
-     * string form is specified to contain ASCII digits only and is therefore locale-independent -
-     * unlike {@code BigDecimal.toString()}, which may emit scientific notation, and unlike the
-     * {@code java.text} formatters, which substitute locale separators and minus glyphs. Every
-     * character is nevertheless validated before use.
-     *
-     * @param fieldName diagnostic name of the amount field
-     * @param amount    the amount
-     * @return exactly 11 ASCII digits
-     * @throws IllegalArgumentException if the scale is not exactly 2, or the integer part exceeds
-     *                                  nine digits
-     */
     private static String magnitudeDigits(String fieldName, BigDecimal amount) {
         if (amount.scale() != REQUIRED_AMOUNT_SCALE) {
             throw new IllegalArgumentException("Field " + fieldName + " requires an amount already"
@@ -1428,14 +1052,6 @@ public final class ReportLineFormatter {
         return padded;
     }
 
-    /**
-     * Returns the index of the first non-zero integer digit within an 11-digit magnitude, or -1
-     * when all nine integer digits are zero. Zero suppression runs from the left and stops at
-     * that digit, or at the decimal point when there is none.
-     *
-     * @param magnitude an 11-character digit string
-     * @return the index in the range 0 to 8, or -1 when the integer part is entirely zero
-     */
     private static int firstSignificantIntegerDigit(String magnitude) {
         for (int index = 0; index < MASK_INTEGER_DIGITS; index++) {
             if (magnitude.charAt(index) != ZERO_DIGIT) {
@@ -1445,29 +1061,10 @@ public final class ReportLineFormatter {
         return -1;
     }
 
-    /**
-     * Returns the mask positions of the nine integer digit symbols, in order. The two group
-     * separators sit at positions 4 and 8, which is why positions 4 and 8 are absent from this
-     * list. A fresh array is returned on each call so that no mutable static state exists and
-     * nothing shared can be modified.
-     *
-     * @return the nine integer digit positions within the 15-character mask
-     */
     private static int[] integerDigitPositions() {
         return new int[] {1, 2, 3, 5, 6, 7, 9, 10, 11};
     }
 
-    /**
-     * Builds a fixed run of one character and asserts its encoded width. Used for the dot fills,
-     * the rule line, the blank line and the multi-byte space fillers, so that any of them
-     * failing its declared width is caught at the point of construction.
-     *
-     * @param fieldName diagnostic name of the field
-     * @param fill      the fill character
-     * @param width     the required width
-     * @return exactly {@code width} bytes of {@code fill}
-     * @throws IllegalStateException if the width is negative or the result mismeasures
-     */
     private static String fixedFill(String fieldName, char fill, int width) {
         if (width < 0) {
             throw new IllegalStateException("Fill width for field " + fieldName
@@ -1478,29 +1075,14 @@ public final class ReportLineFormatter {
         return value;
     }
 
-    /** @return a one-byte space, the value of every bare single-byte space filler. */
     private static String singleSpace() {
         return fixedFill("singleSpaceFiller", SPACE, SINGLE_BYTE_FILLER_WIDTH);
     }
 
-    /**
-     * @return a one-byte hyphen, the literal value carried by the detail line's two filler
-     *         separators at offsets 31 and 52
-     */
     private static String singleHyphen() {
         return fixedFill("singleHyphenFiller", HYPHEN, SINGLE_BYTE_FILLER_WIDTH);
     }
 
-    /**
-     * Validates that a date-parameter card is either the 21-byte structured record or the full
-     * 80-byte card, and that it holds only printable US-ASCII.
-     *
-     * @param dateParameterCard the card
-     * @return the card, unchanged
-     * @throws NullPointerException     if the card is {@code null}
-     * @throws IllegalArgumentException if the card holds a character outside printable US-ASCII
-     *                                  or is neither 21 nor 80 bytes wide
-     */
     private static String requireDateParameterCard(String dateParameterCard) {
         Objects.requireNonNull(dateParameterCard, "dateParameterCard must not be null");
         requirePrintableAscii("dateParameterCard", dateParameterCard);
@@ -1515,22 +1097,7 @@ public final class ReportLineFormatter {
         return dateParameterCard;
     }
 
-    /**
-     * Rejects any character outside printable US-ASCII, that is outside the range from space to
-     * tilde. The report is a fixed-width print artefact in which a character outside that range
-     * has no defined rendering, and rejecting it keeps one encoded byte per character while
-     * structurally preventing a control character, a tab or a line terminator from entering the
-     * record.
-     *
-     * @param fieldName diagnostic name of the field
-     * @param value     the value to inspect
-     * @throws IllegalArgumentException on the first character outside the accepted range
-     */
     private static void requirePrintableAscii(String fieldName, String value) {
-        // The character count bounds this loop because the characters themselves are what must
-        // be inspected: encoding first would already have replaced an unmappable character. This
-        // is a charset check, not a width assertion - every width in this class is measured in
-        // encoded bytes by asciiWidth. Once this check passes, one character is one encoded byte.
         for (int index = 0; index < value.length(); index++) {
             char character = value.charAt(index);
             if (character < FIRST_PRINTABLE_ASCII || character > LAST_PRINTABLE_ASCII) {
@@ -1542,16 +1109,6 @@ public final class ReportLineFormatter {
         }
     }
 
-    /**
-     * Asserts that a value measures exactly the expected number of US-ASCII encoded bytes. Width
-     * is always measured in encoded bytes and never as a character count, because the 133-byte
-     * record is a byte contract.
-     *
-     * @param fieldName     diagnostic name of the field
-     * @param value         the value to measure
-     * @param expectedWidth the required width in encoded bytes
-     * @throws IllegalStateException if the measured width differs
-     */
     private static void requireExactWidth(String fieldName, String value, int expectedWidth) {
         int measured = asciiWidth(value);
         if (measured != expectedWidth) {
@@ -1560,25 +1117,10 @@ public final class ReportLineFormatter {
         }
     }
 
-    /**
-     * Measures a value in US-ASCII encoded bytes. The charset is named explicitly so that the
-     * platform default charset can never influence a width.
-     *
-     * @param value the value to measure
-     * @return the number of encoded bytes
-     */
     private static int asciiWidth(String value) {
         return value.getBytes(StandardCharsets.US_ASCII).length;
     }
 
-    /**
-     * Repeats a single character a given number of times.
-     *
-     * @param character the character to repeat
-     * @param count     the repetition count, which may be zero
-     * @return the resulting run, empty when the count is zero
-     * @throws IllegalStateException if the count is negative
-     */
     private static String repeated(char character, int count) {
         if (count < 0) {
             throw new IllegalStateException("Repetition count must not be negative but is "

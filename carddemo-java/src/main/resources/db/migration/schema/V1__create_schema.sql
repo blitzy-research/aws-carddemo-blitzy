@@ -20,15 +20,15 @@
 -- sequential daily-transaction input. Every primary key is the natural business key taken from the
 -- corresponding cluster key definition, whose width and offset are recorded per table below.
 --
--- APPLIES TO ALL PROFILES. All four migrations are physically flat in the one location
--- classpath:db/migration, which EVERY profile configures, so no profile can start without V1. Sample
--- rows and sign-on identities are V3 and V4 in that same directory, and they are excluded from
--- production by the version ceiling rather than by a directory: production sets
--- spring.flyway.target: 2, so it applies V1 and V2 and reports the two seeds as above target. The flat
--- layout is required by the migration specifications for V3 and V4, which direct that no subdirectory
--- be created because directory-scoped locations cannot isolate the seeds - a location is scanned
--- recursively. A production migration therefore inherits schema and indexes and nothing else. This
--- file inserts no row of any kind.
+-- APPLIES TO ALL PROFILES. V1 and V2 live in classpath:db/migration/schema, which EVERY profile
+-- resolves, so no profile can start without V1. Sample rows and sign-on identities are V3 and V4 and
+-- live in a SEPARATE location, classpath:db/migration/seed, which only the local and test profiles
+-- resolve: production is refused that location outright by FlywayConfig, so neither seed is resolved,
+-- reported or applied there. Production is additionally held below them by spring.flyway.target: 2, so
+-- the two controls are belt and braces rather than alternatives. The shared parent db/migration holds
+-- no script of any kind, because a Flyway location is scanned recursively and a script in the parent -
+-- or a profile that listed the parent - would reach across the split. A production migration therefore
+-- inherits schema and indexes and nothing else. This file inserts no row of any kind.
 --
 -- Forward-only and in order: no schema.sql, no data.sql, no container init mount, no repeatable
 -- migration and no undo migration exists in this module. The one framework-issued script in the

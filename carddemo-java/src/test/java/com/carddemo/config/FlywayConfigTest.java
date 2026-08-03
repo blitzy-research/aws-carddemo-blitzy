@@ -35,6 +35,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.boot.autoconfigure.flyway.FlywayConfigurationCustomizer;
@@ -57,14 +58,18 @@ import com.carddemo.service.SensitiveFieldEncryptionService;
  * matters - it is the only form that proves the refusal lands where a deployment would meet it - but
  * the first two are what make a failure legible when it happens.
  *
- * <p>The second group is the migration-scope resolution recorded as decision {@code DL-102} in
- * {@code docs/decision-log.md}. Every delivered script ships from one directory and the seeds are
- * excluded by a version ceiling, so the scope has two halves and both are asserted. Production
- * refusing a ceiling that reaches the seeds, and refusing a location outside the delivered one, are
- * both asserted against the merged, bound values rather than against a document, because inheritance
- * is what a running application resolves; and a non-production profile having its ceiling lifted for
- * it is asserted too, because a fixture-bearing profile that silently migrated no fixtures is also a
- * defect.
+ * <p>The second group is the migration-scope resolution recorded as decision {@code DL-127} in
+ * {@code docs/decision-log.md}. The delivered scripts ship from two sibling locations - the schema
+ * scripts from one, the seeds from the other, with no script in their shared parent - and production
+ * resolves the schema location alone, with the version ceiling retained behind it. The scope therefore
+ * has two halves and both are asserted. <strong>The load-bearing assertion is that production refuses
+ * the seed location outright</strong>, in every spelling, and refuses the shared parent too, since a
+ * location is scanned recursively and the parent would reach the seeds through the child directory: a
+ * script that is never resolved cannot be applied by any ceiling. Refusing a ceiling that reaches the
+ * seeds is asserted beside it as the retained second control. Both are asserted against the merged,
+ * bound values rather than against a document, because inheritance is what a running application
+ * resolves; and a non-production profile having both locations completed and its ceiling lifted for it
+ * is asserted too, because a fixture-bearing profile that silently seeded nothing is also a defect.
  *
  * <p>The third group is diagnostic hygiene under decision {@code DL-041}. The active-profile list,
  * the location list and the ceiling are all operator-supplied, so a refusal that echoed any of them
@@ -109,15 +114,27 @@ class FlywayConfigTest {
     }
 
     /**
-     * Builds a context runner over the class under test with the one collaborator it needs.
+     * Builds a context runner over the class under test with the one collaborator it needs, and with
+     * the three migration settings a production start-up must declare.
      *
-     * @return a runner that registers the configuration and an encryption service
+     * <p>The three settings are supplied because {@code ApplicationContextRunner} loads no profile
+     * document, so a runner-built production context carries none of them - and the guard published by
+     * the class under test refuses a production start-up that has not stated all three. Supplying them
+     * here is what lets the co-activation assertions below test co-activation rather than repeatedly
+     * re-testing the migration-source guard, which has its own nest.
+     *
+     * @return a runner that registers the configuration, an encryption service and the canonical
+     *         production migration settings
      */
     private static ApplicationContextRunner runner() {
         return new ApplicationContextRunner()
                 .withUserConfiguration(FlywayConfig.class)
                 .withBean(SensitiveFieldEncryptionService.class,
-                        () -> new SensitiveFieldEncryptionService(TEST_KEY));
+                        () -> new SensitiveFieldEncryptionService(TEST_KEY))
+                .withPropertyValues(
+                        "spring.flyway.enabled=true",
+                        "spring.flyway.target=" + FlywayConfig.SCHEMA_ONLY_TARGET,
+                        "spring.flyway.locations=" + FlywayConfig.SCHEMA_LOCATION);
     }
 
     @Nested
@@ -257,31 +274,102 @@ class FlywayConfigTest {
                     .containsExactly(FlywayConfig.SCHEMA_LOCATION);
         }
 
-        @ParameterizedTest(name = "production accepts the delivered location spelled [{0}]")
+        @ParameterizedTest(name = "production accepts the delivered location written [{0}]")
         @ValueSource(strings = {
+            "classpath:db/migration/schema",
+            " classpath:db/migration/schema",
+            "classpath:db/migration/schema ",
+            "\tclasspath:db/migration/schema\t"
+        })
+        @DisplayName("production accepts the delivered location and nothing more forgiving than "
+                + "surrounding whitespace, because a property value can pick up padding in transit")
+        void productionAcceptsTheDeliveredLocationAndOnlySurroundingWhitespace(final String written) {
+            assertThatNoException().isThrownBy(() -> FlywayConfig.resolveLocations(
+                    List.of(FlywayConfig.PRODUCTION_PROFILE), List.of(written)));
+        }
+
+        @ParameterizedTest(name = "production refuses the near-spelling [{0}]")
+        @ValueSource(strings = {
+            "classpath:db/migration/schema/",
+            "classpath:db/migration/schema/regional",
             "classpath:db/migration",
+            "classpath:db/migration/seed",
+            "filesystem:src/main/resources/db/migration/schema",
+            "filesystem:/tmp/attacker/db/migration/schema",
+            "db/migration/schema",
+            "classpath:/db/migration/schema",
+            "CLASSPATH:db/migration/schema"
+        })
+        @DisplayName("production refuses every near-spelling of the delivered location, because a "
+                + "containment test cannot separate the packaged directory from a look-alike on disk")
+        void productionRefusesEveryNearSpellingOfTheDeliveredLocation(final String nearSpelling) {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> FlywayConfig.resolveLocations(
+                            List.of(FlywayConfig.PRODUCTION_PROFILE), List.of(nearSpelling)))
+                    .withMessageContaining(FlywayConfig.SCHEMA_LOCATION)
+                    .satisfies(refusal -> assertCarriesNoRawTerminator(refusal.getMessage()));
+        }
+
+        @Test
+        @DisplayName("production refuses a file-system descriptor that ends in the packaged folder "
+                + "name, because an operator-writable directory can present its own V1 and V2")
+        void productionRefusesAFileSystemLookAlike() {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> FlywayConfig.resolveLocations(
+                            List.of(FlywayConfig.PRODUCTION_PROFILE),
+                            List.of("filesystem:/var/tmp/anywhere/db/migration/schema")))
+                    .satisfies(refusal -> assertThat(refusal.getMessage())
+                            .as("the refusal names the one accepted value and never the rejected one")
+                            .contains(FlywayConfig.SCHEMA_LOCATION)
+                            .doesNotContain("/var/tmp/anywhere"));
+        }
+
+        @ParameterizedTest(name = "production refuses the seed location spelled [{0}]")
+        @ValueSource(strings = {
+            "classpath:db/migration/seed",
+            "classpath:db/migration/seed/",
+            "filesystem:src/main/resources/db/migration/seed",
+            "db/migration/seed"
+        })
+        @DisplayName("production refuses the seed location in every spelling, which is the mechanism "
+                + "itself: a script that is never resolved cannot be applied by any ceiling")
+        void productionRefusesTheSeedLocationInEverySpelling(final String spelling) {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> FlywayConfig.resolveLocations(
+                            List.of(FlywayConfig.PRODUCTION_PROFILE),
+                            List.of(FlywayConfig.SCHEMA_LOCATION, spelling)))
+                    .withMessageContaining(FlywayConfig.SCHEMA_LOCATION)
+                    .withMessageContaining(FlywayConfig.SEED_LOCATION)
+                    .satisfies(refusal -> assertCarriesNoRawTerminator(refusal.getMessage()));
+        }
+
+        @ParameterizedTest(name = "production refuses the shared parent spelled [{0}]")
+        @ValueSource(strings = {
             "classpath:db/migration/",
-            "classpath:db/migration/regional",
             "filesystem:src/main/resources/db/migration",
             "db/migration"
         })
-        @DisplayName("production accepts every spelling of the delivered location, so a legitimate "
-                + "descriptor is not refused on a formatting difference")
-        void productionAcceptsEverySpellingOfTheDeliveredLocation(final String spelling) {
-            assertThatNoException().isThrownBy(() -> FlywayConfig.resolveLocations(
-                    List.of(FlywayConfig.PRODUCTION_PROFILE), List.of(spelling)));
+        @DisplayName("production refuses the shared parent of the two delivered locations, because a "
+                + "location is scanned recursively and the parent reaches the seeds through the child")
+        void productionRefusesTheSharedParent(final String spelling) {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> FlywayConfig.resolveLocations(
+                            List.of(FlywayConfig.PRODUCTION_PROFILE), List.of(spelling)))
+                    .withMessageContaining(FlywayConfig.SCHEMA_LOCATION)
+                    .satisfies(refusal -> assertCarriesNoRawTerminator(refusal.getMessage()));
         }
 
         @ParameterizedTest(name = "production refuses the location [{0}]")
         @ValueSource(strings = {
+            "classpath:db/migration/schemas",
             "classpath:db/migrations",
             "classpath:db/seed",
             "classpath:db/fixtures",
             "filesystem:/tmp/extra",
             "classpath:migration"
         })
-        @DisplayName("production refuses any location outside the one the delivered scripts occupy, "
-                + "because a location the ceiling never measured can carry a script it does not cap")
+        @DisplayName("production refuses any location outside the schema location, because a location "
+                + "the retained ceiling never measured can carry a script it does not cap")
         void productionRefusesAnyForeignLocation(final String foreignLocation) {
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> FlywayConfig.resolveLocations(
@@ -302,30 +390,54 @@ class FlywayConfigTest {
                             List.of("classpath:db/fixtures", FlywayConfig.SCHEMA_LOCATION)));
         }
 
-        @ParameterizedTest(name = "{0} has the delivered location completed for it")
+        @ParameterizedTest(name = "{0} has BOTH delivered locations completed for it")
         @ValueSource(strings = {"local", "test"})
-        @DisplayName("a non-production profile that resolved no location at all has the delivered "
-                + "location appended, because it would otherwise migrate nothing")
+        @DisplayName("a non-production profile that resolved no location at all has both delivered "
+                + "locations appended, because it would otherwise migrate nothing and seed nothing")
         void aNonProductionProfileWithNoLocationHasTheDeliveredOneAppended(final String profile) {
             assertThat(FlywayConfig.resolveLocations(List.of(profile), List.of()))
-                    .containsExactly(FlywayConfig.SCHEMA_LOCATION);
+                    .containsExactly(FlywayConfig.SCHEMA_LOCATION, FlywayConfig.SEED_LOCATION);
         }
 
-        @ParameterizedTest(name = "{0} keeps the delivered location it already declared")
+        @ParameterizedTest(name = "{0} has the seed location completed when it declared the schema one")
         @ValueSource(strings = {"local", "test"})
-        @DisplayName("a non-production profile that already resolved the delivered location is left "
-                + "alone, because there is no second location to append")
+        @DisplayName("a non-production profile that resolved the schema location alone has the seed "
+                + "location appended, because it would otherwise build an empty schema")
         void aNonProductionProfileWithTheDeliveredLocationIsLeftAlone(final String profile) {
             assertThat(FlywayConfig.resolveLocations(
                     List.of(profile), List.of(FlywayConfig.SCHEMA_LOCATION)))
-                    .containsExactly(FlywayConfig.SCHEMA_LOCATION);
+                    .containsExactly(FlywayConfig.SCHEMA_LOCATION, FlywayConfig.SEED_LOCATION);
+        }
+
+        @ParameterizedTest(name = "{0} has the schema location completed when it declared the seed one")
+        @ValueSource(strings = {"local", "test"})
+        @DisplayName("a non-production profile that resolved the seed location alone has the schema "
+                + "location appended, because seeding a database with no tables cannot succeed")
+        void aNonProductionProfileWithTheSeedLocationAloneHasTheSchemaOneAppended(
+                final String profile) {
+            assertThat(FlywayConfig.resolveLocations(
+                    List.of(profile), List.of(FlywayConfig.SEED_LOCATION)))
+                    .containsExactly(FlywayConfig.SEED_LOCATION, FlywayConfig.SCHEMA_LOCATION);
+        }
+
+        @ParameterizedTest(name = "{0} keeps both locations it already declared, in its own order")
+        @ValueSource(strings = {"local", "test"})
+        @DisplayName("a non-production profile that already resolved both delivered locations is left "
+                + "exactly alone, so nothing is appended twice")
+        void aNonProductionProfileWithBothLocationsIsLeftAlone(final String profile) {
+            final List<String> declared =
+                    List.of(FlywayConfig.SCHEMA_LOCATION, FlywayConfig.SEED_LOCATION);
+
+            assertThat(FlywayConfig.resolveLocations(List.of(profile), declared))
+                    .containsExactlyElementsOf(declared);
         }
 
         @Test
-        @DisplayName("a non-production profile already listing the delivered location is returned "
-                + "unchanged, so the declared order survives")
+        @DisplayName("a non-production profile already listing both delivered locations is returned "
+                + "unchanged, so the declared order survives alongside a foreign entry")
         void aNonProductionProfileListingTheDeliveredLocationIsUnchanged() {
-            final List<String> declared = List.of(FlywayConfig.SCHEMA_LOCATION, "classpath:db/extra");
+            final List<String> declared = List.of(FlywayConfig.SCHEMA_LOCATION,
+                    "classpath:db/extra", FlywayConfig.SEED_LOCATION);
 
             assertThat(FlywayConfig.resolveLocations(List.of(FlywayConfig.LOCAL_PROFILE), declared))
                     .containsExactlyElementsOf(declared);
@@ -342,23 +454,64 @@ class FlywayConfigTest {
                     .containsExactly(FlywayConfig.SCHEMA_LOCATION);
         }
 
-        @Test
-        @DisplayName("an absent location list resolves to no location rather than to a null")
-        void anAbsentLocationListResolvesToNoLocation() {
-            assertThat(FlywayConfig.resolveLocations(List.of(FlywayConfig.PRODUCTION_PROFILE), null))
-                    .isEmpty();
+        @ParameterizedTest(name = "production refuses a location list that addresses nothing: {0}")
+        @MethodSource("com.carddemo.config.FlywayConfigTest#emptyLocationLists")
+        @DisplayName("production refuses a list that addresses no location at all, because migrating "
+                + "from nowhere applies neither the schema nor the indexes")
+        void productionRefusesAListThatAddressesNothing(final String description,
+                final List<String> declared) {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("case: %s", description)
+                    .isThrownBy(() -> FlywayConfig.resolveLocations(
+                            List.of(FlywayConfig.PRODUCTION_PROFILE), declared))
+                    .withMessageContaining(FlywayConfig.SCHEMA_LOCATION);
         }
 
         @Test
-        @DisplayName("a blank or null location entry is ignored rather than refused as a foreign one")
-        void aBlankOrNullLocationEntryIsIgnored() {
+        @DisplayName("an absent location list resolves to no location rather than to a null when no "
+                + "profile is active, so a profile-less start is not handed a null")
+        void anAbsentLocationListResolvesToNoLocation() {
+            assertThat(FlywayConfig.resolveLocations(List.of(), null)).isEmpty();
+            assertThat(FlywayConfig.resolveLocations(null, null)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("production refuses an absent location list, because a production migration "
+                + "source is stated rather than inherited from a framework default")
+        void productionRefusesAnAbsentLocationList() {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> FlywayConfig.resolveLocations(
+                            List.of(FlywayConfig.PRODUCTION_PROFILE), null))
+                    .withMessageContaining(FlywayConfig.SCHEMA_LOCATION);
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> FlywayConfig.resolveLocations(
+                            List.of(FlywayConfig.PRODUCTION_PROFILE), List.of()))
+                    .withMessageContaining(FlywayConfig.SCHEMA_LOCATION);
+        }
+
+        @Test
+        @DisplayName("production refuses a blank or null entry alongside the delivered location, "
+                + "because a second entry is a second migration source whatever it holds")
+        void productionRefusesABlankOrNullEntryAlongsideTheDeliveredLocation() {
             final List<String> declared = new ArrayList<>();
             declared.add(FlywayConfig.SCHEMA_LOCATION);
             declared.add("   ");
             declared.add(null);
 
-            assertThatNoException().isThrownBy(() -> FlywayConfig.resolveLocations(
-                    List.of(FlywayConfig.PRODUCTION_PROFILE), declared));
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> FlywayConfig.resolveLocations(
+                            List.of(FlywayConfig.PRODUCTION_PROFILE), declared))
+                    .withMessageContaining(FlywayConfig.SCHEMA_LOCATION);
+        }
+
+        @Test
+        @DisplayName("production refuses the delivered location listed twice, because the guard "
+                + "counts entries rather than distinct values")
+        void productionRefusesTheDeliveredLocationListedTwice() {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> FlywayConfig.resolveLocations(
+                            List.of(FlywayConfig.PRODUCTION_PROFILE),
+                            List.of(FlywayConfig.SCHEMA_LOCATION, FlywayConfig.SCHEMA_LOCATION)));
         }
     }
 
@@ -374,13 +527,16 @@ class FlywayConfigTest {
                     .isEqualTo(FlywayConfig.SCHEMA_ONLY_TARGET);
         }
 
-        @Test
-        @DisplayName("production declaring a ceiling below the seeds is accepted, so a later schema "
-                + "version is not refused for being new")
-        void productionDeclaringALowerCeilingIsAccepted() {
-            assertThat(FlywayConfig.resolveTarget(
-                    List.of(FlywayConfig.PRODUCTION_PROFILE), "1.1"))
-                    .isEqualTo("1.1");
+        @ParameterizedTest(name = "production refuses the under-migrating ceiling [{0}]")
+        @ValueSource(strings = {"1", "1.1", "0", "1.9999", "2.0"})
+        @DisplayName("production refuses a ceiling below the schema-only one, because it stops before "
+                + "the indexes and constraints are created and reports success anyway")
+        void productionRefusesACeilingBelowTheSchemaOnlyOne(final String ceiling) {
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> FlywayConfig.resolveTarget(
+                            List.of(FlywayConfig.PRODUCTION_PROFILE), ceiling))
+                    .withMessageContaining(FlywayConfig.SCHEMA_ONLY_TARGET)
+                    .satisfies(refusal -> assertCarriesNoRawTerminator(refusal.getMessage()));
         }
 
         @ParameterizedTest(name = "production refuses the ceiling [{0}]")
@@ -452,10 +608,27 @@ class FlywayConfigTest {
             assertThat(Arrays.stream(configuration.getLocations())
                     .map(Location::getDescriptor)
                     .toList())
-                    .as("the location is left as handed over: lifting the ceiling is the whole of what "
-                            + "a seeding profile needs, because all four scripts sit in that one "
-                            + "location")
-                    .containsExactly(FlywayConfig.SCHEMA_LOCATION);
+                    .as("both halves are needed: the seed location makes the seeds resolvable and the "
+                            + "lifted ceiling makes them apply, and either alone leaves an unseeded "
+                            + "database")
+                    .containsExactly(FlywayConfig.SCHEMA_LOCATION, FlywayConfig.SEED_LOCATION);
+        }
+
+        @Test
+        @DisplayName("the published customizer refuses the seed location under production, which is "
+                + "the whole mechanism: the seeds are never resolved rather than merely not applied")
+        void thePublishedCustomizerRefusesTheSeedLocationUnderProduction() {
+            final MockEnvironment production = new MockEnvironment();
+            production.setActiveProfiles(FlywayConfig.PRODUCTION_PROFILE);
+            final FluentConfiguration configuration = new FluentConfiguration()
+                    .locations(FlywayConfig.SCHEMA_LOCATION, FlywayConfig.SEED_LOCATION)
+                    .target(FlywayConfig.SCHEMA_ONLY_TARGET);
+            final FlywayConfigurationCustomizer customizer =
+                    new FlywayConfig().migrationScopeResolvingCustomizer(production);
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> customizer.customize(configuration))
+                    .withMessageContaining(FlywayConfig.SEED_LOCATION);
         }
 
         @Test
@@ -668,12 +841,21 @@ class FlywayConfigTest {
         }
 
         @Test
-        @DisplayName("the one location is the one the delivered scripts occupy, and the two ceilings "
-                + "sit either side of the first seed version")
+        @DisplayName("the two locations are the two the delivered scripts occupy, they are siblings "
+                + "rather than nested, and the two ceilings sit either side of the first seed version")
         void theDeliveredLocationAndCeilingsAreTheShippedOnes() {
-            assertThat(FlywayConfig.SCHEMA_LOCATION).isEqualTo("classpath:db/migration");
+            assertThat(FlywayConfig.SCHEMA_LOCATION).isEqualTo("classpath:db/migration/schema");
             assertThat(new Location(FlywayConfig.SCHEMA_LOCATION).getPath())
-                    .isEqualTo("db/migration");
+                    .isEqualTo("db/migration/schema");
+            assertThat(FlywayConfig.SEED_LOCATION).isEqualTo("classpath:db/migration/seed");
+            assertThat(new Location(FlywayConfig.SEED_LOCATION).getPath())
+                    .isEqualTo("db/migration/seed");
+            assertThat(new Location(FlywayConfig.SEED_LOCATION).getPath())
+                    .as("neither delivered location may contain the other, or a single listing would "
+                            + "resolve both and the location list would stop being a boundary")
+                    .doesNotStartWith(new Location(FlywayConfig.SCHEMA_LOCATION).getPath());
+            assertThat(new Location(FlywayConfig.SCHEMA_LOCATION).getPath())
+                    .doesNotStartWith(new Location(FlywayConfig.SEED_LOCATION).getPath());
             assertThat(FlywayConfig.SCHEMA_ONLY_TARGET).isEqualTo("2");
             assertThat(FlywayConfig.SEEDING_TARGET).isEqualTo("latest");
             assertThat(MigrationVersion.fromVersion(FlywayConfig.SCHEMA_ONLY_TARGET)
@@ -710,5 +892,26 @@ class FlywayConfigTest {
                 org.junit.jupiter.params.provider.Arguments.of(
                         List.of(FlywayConfig.TEST_PROFILE, FlywayConfig.PRODUCTION_PROFILE),
                         FlywayConfig.TEST_PROFILE));
+    }
+
+    /**
+     * The four location lists that address no location at all.
+     *
+     * <p>Each is a different way for a merged configuration to end up migrating from nowhere: an
+     * absent property, a property bound to an empty list, a property whose only entry is blank, and a
+     * property whose only entry is {@code null}. All four have to be refused under production, because
+     * a deployment that migrates nothing applies neither the schema nor the indexes.
+     *
+     * @return one argument pair per list, each carrying a description used in the failure message
+     */
+    static List<org.junit.jupiter.params.provider.Arguments> emptyLocationLists() {
+        final List<String> onlyNull = new ArrayList<>();
+        onlyNull.add(null);
+        return List.of(
+                org.junit.jupiter.params.provider.Arguments.of("an absent property", null),
+                org.junit.jupiter.params.provider.Arguments.of("an empty list", List.of()),
+                org.junit.jupiter.params.provider.Arguments.of("a single blank entry",
+                        List.of("   ")),
+                org.junit.jupiter.params.provider.Arguments.of("a single null entry", onlyNull));
     }
 }

@@ -172,10 +172,10 @@ class UserResponseCoverageTest {
     /** The twelve declared width constants, by name. */
     private static final List<String> EXPECTED_WIDTH_CONSTANTS = List.of(
             "SELECTOR_LENGTH",
-            // The row count is a width in the same sense as the rest of this list: it is the number of
-            // row slots the list screen declares, and it is the value the constructor enforces a
-            // returned page against, so it belongs in the published set rather than beside it.
-            "ROW_COUNT",
+            // No row count appears in this list. Every constant here states the width of one screen
+            // item; the number of row slots the list screen declares is a screen dimension rather than
+            // a field width, and PageMetadata states it once for the whole module. Publishing it here
+            // as well would create a competing source of truth for the same measurement.
             "USER_ID_LENGTH",
             "FIRST_NAME_LENGTH",
             "LAST_NAME_LENGTH",
@@ -918,14 +918,16 @@ class UserResponseCoverageTest {
          * public, and a second internal static could not be added without this test failing and saying
          * which.</p>
          *
-         * <p>The thirteenth width is the row count. It is a width in the same sense as the others - it
-         * is the number of row slots the list screen declares - and it is the value the constructor
-         * enforces against, so it belongs in the published set rather than beside it.</p>
+         * <p>Every one of the twelve widths states the size of a single screen item. The number of row
+         * slots the list screen declares is deliberately not among them: it is a screen dimension rather
+         * than a field width, and the paging contract states it once for the whole module, so publishing
+         * it here as well would make this response body a second source of truth for the same
+         * measurement.</p>
          */
         @Test
-        @DisplayName("publishes thirteen widths and thirty-five texts, and declares exactly one "
+        @DisplayName("publishes twelve widths and thirty-five texts, and declares exactly one "
                 + "static for internal use")
-        void theStaticSurfaceIsThirteenWidthsAndThirtyFiveTexts() {
+        void theStaticSurfaceIsTwelveWidthsAndThirtyFiveTexts() {
             List<Field> statics =
                     Arrays.stream(UserResponse.class.getDeclaredFields())
                             .filter(field -> Modifier.isStatic(field.getModifiers()))
@@ -945,8 +947,12 @@ class UserResponseCoverageTest {
                             .toList();
 
             assertThat(widths).containsExactlyInAnyOrderElementsOf(EXPECTED_WIDTH_CONSTANTS);
+            assertThat(widths)
+                    .as("every published width names one screen item, so none of them is a count")
+                    .hasSize(12)
+                    .allMatch(name -> name.endsWith("_LENGTH"));
             assertThat(texts).hasSize(35).allMatch(name -> name.startsWith("MSG_"));
-            assertThat(statics).hasSize(49);
+            assertThat(statics).hasSize(48);
 
             List<String> internal =
                     statics.stream()
@@ -1647,27 +1653,27 @@ class UserResponseCoverageTest {
          * An over-deep page is refused rather than truncated or carried.
          *
          * <p>Three responses were available and only one of them states the invariant where it can
-         * still be acted on. Truncating would discard returned data silently. Carrying would defer the
-         * failure to whichever layer next assumed the page fitted the screen, which has a fixed number
-         * of row slots and cannot present more. Refusing names the offending count at the point the
-         * defect is introduced, and the message is asserted to carry that count so the diagnostic is
-         * actionable rather than merely a rejection.</p>
+         * still be acted on. Truncating would discard returned data silently, so the collection crosses
+         * intact. Reporting an over-deep page needs the screen's row count, and that figure is stated
+         * once by the paging contract rather than twice here, so the report belongs to the layer that
+         * already holds the dimension - which is also the layer that assembled the page.</p>
          */
         @Test
-        @DisplayName("refuses an over-deep page, and the refusal names how many rows arrived")
-        void anOverDeepPageIsRefused() {
+        @DisplayName("carries an over-deep page untouched, leaving the screen's depth to the contract "
+                + "that measures it")
+        void anOverDeepPageIsCarriedUntouched() {
             List<UserResponse.UserRow> twelve = new ArrayList<>(tenAscendingRows());
             twelve.add(row(" ", "USER0011", "First11", "Last11", "U"));
             twelve.add(row(" ", "USER0012", "First12", "Last12", "A"));
 
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> build(Map.of(), twelve, null, null, false, false, null))
-                    .withMessageContaining("at most " + UserResponse.ROW_COUNT)
-                    .withMessageContaining("it carries 12");
+            assertThat(build(Map.of(), twelve, null, null, false, false, null).rows())
+                    .as("truncating would discard returned data silently, so the collection crosses "
+                            + "intact and whoever knows the screen depth reports it")
+                    .hasSize(12);
 
             assertThat(build(Map.of(), tenAscendingRows(), null, null, false, false, null).rows())
-                    .as("a page at exactly the screen's depth is accepted, so the cap is inclusive")
-                    .hasSize(UserResponse.ROW_COUNT);
+                    .as("a page at exactly the screen's depth crosses unchanged too")
+                    .hasSize(PageMetadata.USER_LIST_PAGE_SIZE);
         }
 
         /** Nothing else is normalised; every other component crosses byte for byte. */

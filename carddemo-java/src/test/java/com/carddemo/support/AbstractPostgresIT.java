@@ -76,14 +76,16 @@ import com.carddemo.config.FlywayConfig;
  * integration test previously repeated. Flyway is idempotent, but running it once rather than once
  * per class also removes a source of ordering surprise.
  *
- * <h2>Why the migration runs to the head, and not to the production ceiling</h2>
- * The four delivered migrations sit flat in one location, {@code db/migration}: {@code V1} and
- * {@code V2} create the schema and the indexes, and {@code V3} and {@code V4} seed sample reference
- * rows and ten sign-on identities. What separates them is the version, not a directory - production
- * applies the first two only, by setting {@code spring.flyway.target: 2} in the shipped configuration,
- * with {@link FlywayConfig} refusing a production profile whose resolved ceiling reaches further. <strong>This base reproduces the
+ * <h2>Why the migration resolves both locations, and not the schema location alone</h2>
+ * The four delivered migrations sit in two sibling locations: {@code db/migration/schema} holds
+ * {@code V1} and {@code V2}, which create the schema and the indexes, and {@code db/migration/seed}
+ * holds {@code V3} and {@code V4}, which seed sample reference rows and ten sign-on identities. A
+ * directory is what separates them - production resolves the schema location alone, with
+ * {@link FlywayConfig} refusing it the seed location outright, and additionally sets
+ * {@code spring.flyway.target: 2}. <strong>This base reproduces the
  * TEST profile rather than the production one</strong>, because that is the posture the module actually
- * ships for tests: {@code src/test/resources/application-test.yml} lifts the ceiling to the head, and
+ * ships for tests: {@code src/test/resources/application-test.yml} declares both locations and lifts
+ * the ceiling to the head, and
  * the container-backed tier asserts against the seeded rows themselves - the fifty seeded customers and
  * their protected identifiers, the fifty seeded accounts, and the seventeen rows of each disclosure
  * group are read directly from this server by several subclasses. Pinning the shared server to the
@@ -91,8 +93,9 @@ import com.carddemo.config.FlywayConfig;
  * unrelated to what they test.
  *
  * <p>The production-shaped posture is nonetheless proven, and proven better than a pin here could prove
- * it: {@code SeedMigrationIT} migrates into a schema of its own, once to the ceiling and once to the
- * head, and asserts what each run applied and what it left pending. That keeps the claim about
+ * it: {@code SeedMigrationIT} migrates into a schema of its own, once with a production-shaped
+ * location list and once with the seeding one, and asserts what each run applied and what it left
+ * unresolved. That keeps the claim about
  * production in a test that is about production, and keeps this shared server predictable for every
  * subclass. A subclass that must observe an empty table therefore reserves a key range of its own and
  * asserts emptiness within that range - which is what every subclass here already does - rather than
@@ -130,11 +133,24 @@ public abstract class AbstractPostgresIT {
     protected static final String DATABASE_PASSWORD = "carddemo";
 
     /**
-     * The one location every shipped profile declares, holding all four delivered scripts flat. This
-     * base exists to reproduce a shipped profile rather than to invent a third arrangement, so it
-     * declares exactly what they declare and lets the ceiling decide how far the migration runs.
+     * The schema location every shipped profile declares, holding {@code V1} and {@code V2}.
+     *
+     * <p>This base exists to reproduce a shipped profile rather than to invent a third arrangement, so
+     * it declares exactly what the test profile declares: this location and {@link #SEED_LOCATION}. A
+     * production-shaped run declares this one alone.</p>
      */
-    protected static final String MIGRATION_LOCATION = "classpath:db/migration";
+    protected static final String MIGRATION_LOCATION = "classpath:db/migration/schema";
+
+    /**
+     * The seed location the local and test profiles add, holding {@code V3} and {@code V4}, and which
+     * a production profile is refused. Declared beside {@link #MIGRATION_LOCATION} here because the
+     * container-backed tier asserts against the seeded rows.
+     *
+     * <p>The shared parent {@code classpath:db/migration} is deliberately not used in its place: a
+     * Flyway location is scanned recursively, so naming the parent alongside either child would resolve
+     * every script twice and the migration tool would reject the repeated version.</p>
+     */
+    protected static final String SEED_LOCATION = "classpath:db/migration/seed";
 
     /**
      * The one server every subclass shares, started and migrated before any subclass is constructed.
@@ -175,7 +191,7 @@ public abstract class AbstractPostgresIT {
         container.start();
         Flyway.configure()
                 .dataSource(container.getJdbcUrl(), container.getUsername(), container.getPassword())
-                .locations(MIGRATION_LOCATION)
+                .locations(MIGRATION_LOCATION, SEED_LOCATION)
                 .load()
                 .migrate();
         return container;

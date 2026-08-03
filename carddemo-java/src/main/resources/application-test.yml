@@ -116,20 +116,29 @@
 #     management.*                              probe, meter and trace surface
 #     springdoc.*                               interface description
 #     logging.level.*                           verbosity only; appenders live in logback-spring.xml
-#     carddemo.aws.s3.bucket                    object-store bucket for batch file staging
-#     carddemo.aws.sqs.job-submission-queue     FIFO queue name; the .fifo suffix is REQUIRED
+#     carddemo.aws.endpoint-override            address that aims every client at the emulator; the
+#                                               ONE optional key under this prefix, and the one
+#                                               production leaves unset
+#     carddemo.aws.s3.batch-staging-bucket      object-store bucket for batch file staging
+#     carddemo.aws.sqs.job-queue                FIFO queue name; the .fifo suffix is REQUIRED
 #     carddemo.aws.sqs.message-group-id         one stable group id - this is what preserves order
 #     carddemo.aws.sns.job-notification-topic   topic for job-completion fan-out
 #     carddemo.security.jwt.*                   issuer, signing material, lifetime
 #     carddemo.security.field-encryption.key    AES-GCM key as Base64 decoding to exactly 32 bytes
 #     carddemo.security.require-https           transport expectation for this profile
+#     carddemo.security.anonymous-metrics-scrape  whether the exposition may be read without a
+#                                               credential - opened here, closed in the baseline
 #
 #   Two things are deliberately NOT restated here, and restating either would be a defect:
 #
-#     carddemo.aws.s3.prefix.*     the six per-output-family key prefixes are declared ONCE, in
-#                                  application.yml, and inherited unchanged. A partial
-#                                  re-declaration would silently drop the families it omitted and
-#                                  let one output family overwrite another.
+#     carddemo.aws.region          declared ONCE, in application.yml, and inherited unchanged. The
+#                                  spring.cloud.aws region setting below derives from it rather than
+#                                  restating the value, so the region is stated once per profile and
+#                                  the two namespaces cannot name different regions.
+#                                  The six s3.prefix.* keys an earlier revision declared under this
+#                                  prefix are gone rather than inherited: nothing bound them and no
+#                                  writer read one. The key each staged object is written under is
+#                                  composed by the job that writes it.
 #     spring.batch.job.enabled     the baseline already sets it to false and this overlay leaves it
 #                                  alone, exactly as application-local.yml does. See the batch
 #                                  block for why the value matters and how it is guaranteed.
@@ -212,26 +221,28 @@ spring:
         highlight_sql: false
 
   # -----------------------------------------------------------------------------------------------
-  # SCHEMA EVOLUTION - THE LOAD-BEARING SETTING IN THIS FILE IS THE LIFTED VERSION CEILING. WITHOUT IT
-  # THIS PROFILE MIGRATES AN UNSEEDED DATABASE.
+  # SCHEMA EVOLUTION - THE LOAD-BEARING SETTINGS IN THIS FILE ARE THE ADDED SEED LOCATION AND THE LIFTED
+  # VERSION CEILING. WITHOUT EITHER, THIS PROFILE MIGRATES AN UNSEEDED DATABASE.
   #
-  # One location, four scripts, and this profile applies all four:
+  # Two locations, split by purpose, and this profile resolves both:
   #
-  #   classpath:db/migration  - what every profile resolves
-  #     V1__create_schema.sql          the eleven application tables            EVERY profile
-  #     V2__create_indexes.sql         keys and alternate-index equivalents     EVERY profile
-  #     V3__seed_reference_data.sql    sample rows                              local and test ONLY
-  #     V4__seed_user_security.sql     sign-on identities, hashed               local and test ONLY
+  #   classpath:db/migration/schema  - what every profile resolves        EVERY profile
+  #     V1__create_schema.sql          the eleven application tables
+  #     V2__create_indexes.sql         keys and alternate-index equivalents
   #
-  # The shared baseline pins spring.flyway.target to "2" and the production overlay re-asserts it, so
-  # production applies 1 and 2 and reports 3 and 4 as above target - it migrates schema and indexes
-  # without inheriting sample rows or seeded identities. That ceiling is what AAP 0.3.1 and 0.4.2 mean
-  # by profile-scoped resolution, and it is what the migration specifications for V3 and V4 name
-  # directly; those same specifications require the four scripts to be flat in one directory and direct
-  # that no subdirectory be created, so there is no seed location to add here. See
-  # docs/decision-log.md DL-119. This profile raises the ceiling, which is exactly what admits the
-  # seeds. Any seed script added must therefore be numbered above 2 and must store a sign-on credential
-  # only as a hash.
+  #   classpath:db/migration/seed    - added by this profile              local and test ONLY
+  #     V3__seed_reference_data.sql    sample rows
+  #     V4__seed_user_security.sql     sign-on identities, hashed
+  #
+  # The production overlay resolves the schema location ALONE, so V3 and V4 are not resolved there at
+  # all - it migrates schema and indexes without inheriting sample rows or seeded identities. That is
+  # what AAP 0.3.1 and 0.4.2 require directly: FlywayConfig resolves V3 and V4 from profile-scoped
+  # locations, and it refuses the seed location outright while production is active. The shared baseline
+  # additionally pins spring.flyway.target to "2" and the production overlay re-asserts it, so the
+  # ceiling stands behind the location list rather than in place of it. See docs/decision-log.md DL-127,
+  # which supersedes DL-102 and DL-119. This profile adds the seed location AND raises the ceiling, and
+  # both are needed. Any seed script added belongs in the seed location, must be numbered above 2, and
+  # must store a sign-on credential only as a hash.
   #
   # LOSING THAT SETTING DOES NOT PRODUCE AN ERROR - IT PRODUCES EMPTY RESULT SETS. Without the
   # seeds the container-backed tiers have nothing to assert against: acceptance reads the seeded
@@ -326,14 +337,18 @@ spring:
   # a production migration however this file is edited.
   flyway:
     enabled: true
-    # See docs/decision-log.md DL-102.
+    # See docs/decision-log.md DL-127.
     #
-    # The one location every profile resolves, holding all four delivered scripts flat. Restated here
-    # rather than inherited so this document reads completely on its own.
-    locations: classpath:db/migration
-    # THIS IS THE ONE SETTING THAT ADMITS THE SEEDS. The shared baseline pins target at "2", so V3 and
-    # V4 are resolved, reported above target and never executed. This overlay lifts the pin for itself
-    # so the reference and sign-on seeds are applied and the fixtures have rows to assert against.
+    # BOTH DELIVERED LOCATIONS. The schema location is what every profile resolves; the seed location
+    # is added here, and adding it is what makes the reference and sign-on seeds resolvable at all so
+    # the fixtures have rows to assert against. Production is refused the seed location outright by
+    # FlywayConfig. Both are restated in full rather than inherited so this document reads on its own.
+    #
+    # The shared parent classpath:db/migration is never declared: a location is scanned recursively, so
+    # naming the parent beside a child would resolve every script twice.
+    locations: classpath:db/migration/schema,classpath:db/migration/seed
+    # AND THE CEILING IS LIFTED TO MATCH. The shared baseline pins target at "2", which would stop a
+    # migration at the schema even with the seed location resolved, so both halves are required here.
     target: latest
     baseline-on-migrate: false
     validate-on-migrate: true
@@ -397,7 +412,7 @@ spring:
   cloud:
     aws:
       region:
-        static: ${AWS_REGION:us-east-1}
+        static: ${carddemo.aws.region}
       credentials:
         access-key: ${AWS_ACCESS_KEY_ID:localstack-placeholder-not-a-real-key}
         secret-key: ${AWS_SECRET_ACCESS_KEY:localstack-placeholder-not-a-real-secret}
@@ -534,7 +549,8 @@ logging:
 #   carddemo-jobs.fifo           first-in-first-out submission queue
 #   carddemo-job-submission      message group id
 #   carddemo-job-notifications   notification topic
-#   us-east-1                    region, bound in the spring.cloud.aws block above
+#   us-east-1                    region, bound at carddemo.aws.region in application.yml and derived
+#                                from there by the spring.cloud.aws block above
 #
 # THE QUEUE IS AN EXTERNAL INTERFACE CONTRACT, AND ACCEPTANCE DRAINS A REAL QUEUE TO VERIFY IT. The
 # legacy estate wrote to a CICS transient-data queue from exactly ONE site in more than nineteen
@@ -559,15 +575,23 @@ logging:
 # MUST be one stable value, for the ordering reason above.
 #
 # The object store replaces the sequential output datasets and the generation bases that retained
-# their history; retention becomes object versioning on the staging bucket. The six per-family key
-# prefixes are declared once in application.yml and inherited here unchanged, so one output family
-# cannot overwrite another.
+# their history; retention becomes object versioning on the staging bucket. The key each staged object
+# is written under is composed by the job that writes it rather than configured, so no output family
+# depends on a prefix key staying in step with a writer.
+#
+# THE ENDPOINT OVERRIDE IS DECLARED HERE for the same reason the four spring.cloud.aws endpoint
+# settings above are: an absent AWS endpoint does not fail closed, it resolves the region's real public
+# endpoint. Both carry the same expression, built from the same two variables, so a differently
+# published emulator is addressed without editing either. A context-booting subclass of
+# AbstractLocalStackIT raises all of them to the ephemeral address of the emulator it started, at a
+# precedence above every property file. See docs/decision-log.md DL-104.
 carddemo:
   aws:
+    endpoint-override: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
     s3:
-      bucket: ${CARDDEMO_S3_BUCKET:carddemo-batch-staging}
+      batch-staging-bucket: ${CARDDEMO_S3_BUCKET:carddemo-batch-staging}
     sqs:
-      job-submission-queue: ${CARDDEMO_SQS_QUEUE:carddemo-jobs.fifo}
+      job-queue: ${CARDDEMO_SQS_QUEUE:carddemo-jobs.fifo}
       message-group-id: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:carddemo-job-submission}
       # The 80-character card width and the tolerate-a-publish-failure behaviour are NOT declared as
       # properties. Both are fixed by the legacy queue definition rather than chosen by a deployment,
@@ -631,3 +655,9 @@ carddemo:
     # interface by the process that started it and destroyed with the suite. Nothing else is relaxed.
     # Production does not re-require this - it inherits the requirement.
     require-https: false
+    # OPENS A CLOSED BASELINE, stated here so the concession is visible in the profile taking it.
+    # application.yml closes anonymous metrics scraping. A collector reached over the loopback
+    # interface by the process that started it, and destroyed with the suite, has no untrusted client
+    # on it - and a test that measures the exposition needs to be able to read the exposition. Nothing
+    # else is opened. Production does not open this.
+    anonymous-metrics-scrape: true

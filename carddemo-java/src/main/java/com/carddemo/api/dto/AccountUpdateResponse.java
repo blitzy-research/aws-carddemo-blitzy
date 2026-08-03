@@ -204,7 +204,7 @@ import jakarta.validation.constraints.Size;
  *
  * <h2>The control components</h2>
  *
- * <p>Six components carry no legacy field value and exist to make the response actionable.
+ * <p>Five components carry no legacy field value and exist to make the response actionable.
  *
  * <ul>
  *   <li><b>An explicit error indicator.</b> It is its own fact, supplied by the service, and is
@@ -229,50 +229,7 @@ import jakarta.validation.constraints.Size;
  *       echoed client state and not a server session, and its program-context condition is what
  *       gates whether field-level decoration is applied at all.</li>
  *   <li><b>The field-error collection</b>, always present, never {@code null}, never mutable.</li>
- *   <li><b>The echoed conversation token</b>, described in its own section below. Like the four
- *       above it, it is state the response has to carry for the next turn to be possible; unlike
- *       them it stands for something the map never showed.</li>
  * </ul>
- *
- * <h2>The conversation token, and why this response must carry it</h2>
- *
- * <p>This response has one component that is not a map field and not a control hint, and it is
- * here because the legacy transaction carries state across its turns that the screen never
- * displayed. {@code COACTUPC} declares a program communication-area extension at line 652 whose
- * leading group is the complete old image of the account and the customer as they stood when the
- * screen was presented. That extension is appended to the shared communication area and handed
- * back with the screen at lines 1010 to 1018, then sliced off again on the following turn at
- * lines 888 to 892. When the operator confirms, the program reads both records for update and
- * only then compares the freshly read records field by field against the carried old image, in
- * paragraph {@code 9700-CHECK-CHANGE-IN-REC} at line 4109 - reached from line 3947 and running
- * to its exit at 4193. Any single difference abandons the write.
- *
- * <p>Re-reading the records at the start of the confirming turn would not reproduce that, because
- * the whole purpose of the comparison is to detect a change made <em>after</em> the screen was
- * presented. The state being compared therefore has to travel with the conversation, which in a
- * stateless request-response contract means it has to leave on this response and come back on the
- * next request. {@link AccountUpdateRequest} already declares the returning half; without the
- * outbound half published here there is nothing for a client to return, and
- * {@code com.carddemo.service.AccountConcurrencyTokenService} treats an absent token as a
- * conflict - so the second turn of the transaction could never complete. The two halves are one
- * contract and only work as a pair.
- *
- * <p>In the legacy the carried image was safe because the communication area is held by the
- * transaction manager and the terminal never sees it. Handed to a client it would not be, so what
- * travels is not the image: the service seals a pair of digests into an opaque,
- * integrity-protected value that a client can return and cannot read, forge or edit. Nothing
- * about the records can be recovered from it.
- *
- * <p><strong>This remains a data carrier and performs no business logic.</strong> It does not
- * mint the token, does not verify it, does not compare images, does not detect change and holds
- * no record image, digest, sequence number or row-revision counter of any kind - the token is one
- * opaque string, and every mechanism behind it belongs to the service. For context only: the
- * estate's single rollback sits on the customer-rewrite failure arm at {@code COACTUPC} lines
- * 4095 to 4103, with the rollback itself at 4099 to 4101, while the account-rewrite failure arm
- * at 4076 to 4081 issues none - an asymmetry preserved in the update service, not here. When the
- * service finds that a record moved it raises the dedicated failure carrier from
- * {@code com.carddemo.exception}, which this file does not and may not import; the response
- * simply carries whatever resulting text reaches the summary slot.
  *
  * <h2>Validation policy</h2>
  *
@@ -424,12 +381,6 @@ import jakarta.validation.constraints.Size;
  *        none. Its program-context condition gates field-level decoration.
  * @param fieldErrors the independent per-field errors, never {@code null} and never mutable.
  *        Empty means no field-level error, which is also the first-submission case.
- * @param concurrencyToken the opaque, integrity-protected description of the account and customer
- *        records as they stood when this screen was presented, minted by
- *        {@code com.carddemo.service.AccountConcurrencyTokenService} and to be returned unchanged
- *        on {@link AccountUpdateRequest}. Not a map field, and {@code null} on a response that
- *        presents no record to confirm. Opaque by construction: nothing about the records can be
- *        read out of it.
  * @since 1.0.0
  */
 public record AccountUpdateResponse(
@@ -655,15 +606,7 @@ public record AccountUpdateResponse(
         NavigationContext navigationContext,
 
         /* 56. Independent per-field errors, normalized in the canonical constructor below. */
-        List<ErrorResponse.FieldError> fieldErrors,
-
-        /* 57. Not a map field. The outbound half of the program commarea extension COACTUPC
-         * carries across the pseudo-conversational turn, described on the type above. Declared
-         * last, matching the position its returning counterpart occupies on AccountUpdateRequest.
-         * Opaque and unbounded by design, and deliberately unannotated: it has no legacy width
-         * because it is not a legacy field, and its absence on a response that presents nothing
-         * to confirm is ordinary rather than a defect. */
-        String concurrencyToken) {
+        List<ErrorResponse.FieldError> fieldErrors) {
 
     /*
      * ================================================================================
@@ -1065,12 +1008,6 @@ public record AccountUpdateResponse(
      * the entries so that the volume of a diagnostic cannot grow with the number of mistakes an
      * operator made. The echoed conversation state is delegated to its own renderer, which applies
      * the same protection to its own identifying members.
-     *
-     * <p><strong>The conversation token is withheld as well</strong>, and for a different reason
-     * from the values. It discloses nothing about the records - that is what being an opaque
-     * sealed digest pair means - but it is a capability: whoever holds it can present it on the
-     * confirming turn. A diagnostic is the wrong place to leave one, and it is of no use to a
-     * reader who cannot read it, so it is covered by the same placeholder rather than rendered.
      *
      * <p>{@code equals} and {@code hashCode} are deliberately left as the record contract
      * generates them. They compare every component by value, which is what a wire contract

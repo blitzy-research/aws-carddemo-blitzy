@@ -30,6 +30,7 @@ import jakarta.validation.Validation;
 import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -59,13 +60,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * rather than assembled by any production helper, so the assertion is an independent oracle.
  *
  * <p><strong>The second thing pinned here is the shape of the echo.</strong> The screen presents
- * three report-type selectors and six separate date components, and the response echoes all nine
- * exactly as they arrived: three markers rather than one collapsed period, and six text components
- * rather than one merged date. Both reductions are tempting and both destroy information the legacy
- * screen carried - a submission that marked two selectors, and a leading zero on a single-digit
- * month. The date components are proven to be text by static typing: every read below is assigned to
- * an explicitly declared {@code String} local, so a future change to a calendar type could not
- * compile rather than merely failing an assertion.
+ * three mutually exclusive report-type positions and six separate date components. The three
+ * positions collapse into one enumerated period, because the program acts on exactly one of them and
+ * a single value therefore loses nothing the screen could mean while making a multiply-marked state
+ * unrepresentable. The six date components, by contrast, stay six text components rather than one
+ * merged date: that reduction <em>would</em> destroy information the legacy screen carried, namely the
+ * leading zero on a single-digit month and the ability to report which part failed. The date
+ * components are proven to be text by static typing: every read below is assigned to an explicitly
+ * declared {@code String} local, so a future change to a calendar type could not compile rather than
+ * merely failing an assertion. The derived report name is the period's own carried value rather than a
+ * component of its own, so it can neither drift from the period nor be submitted apart from it.
  *
  * <p><strong>The third is an asymmetry.</strong> An acknowledgement is not an error, and a silent
  * rejection is not a success. The legacy program sets its error flag independently of whether it
@@ -166,13 +170,26 @@ class ReportResponseTest {
     private static final List<String> REPORT_NAMES_IN_EVALUATION_ORDER =
             List.of("Monthly", "Yearly", "Custom");
 
+    /** The three periods, in the order the program's ordered evaluation reaches them. */
+    private static final List<ReportPeriod> PERIODS_IN_EVALUATION_ORDER =
+            List.of(ReportPeriod.MONTHLY, ReportPeriod.YEARLY, ReportPeriod.CUSTOM);
+
     /** Every component the contract publishes, in declaration order. */
     private static final List<String> ALL_COMPONENTS = List.of(
-            "monthlySelection", "yearlySelection", "customSelection", "reportName", "startMonth",
+            "reportPeriod", "startMonth",
             "startDay", "startYear", "endMonth", "endDay", "endYear", "confirm", "transactionName",
             "title01", "currentDate", "programName", "title02", "currentTime", "errorMessage",
             "submissionAccepted", "message", "generalError", "focusScreenFieldId", "nextRoute",
             "navigationContext");
+
+    /**
+     * The three per-position selector properties and the separate report-name property the collapse
+     * removed. Asserted absent, because their survival would reintroduce the multiply-marked state the
+     * single component exists to make unrepresentable, and would give the derived name a second, drifting
+     * source of truth.
+     */
+    private static final List<String> REMOVED_COMPONENTS = List.of(
+            "monthlySelection", "yearlySelection", "customSelection", "reportName");
 
     /** A 40-character screen title, at the exact width the symbolic map declares. */
     private static final String TITLE_UPPER = "      AWS Mainframe Modernization       ";
@@ -181,7 +198,7 @@ class ReportResponseTest {
     private static final String TITLE_LOWER = "         Transaction Reports            ";
 
     /**
-     * A response with every one of the twenty-four components populated.
+     * A response with every one of the twenty-one components populated.
      *
      * <p>Used wherever the assertion is about the wire form as a whole - that every component is
      * published under its own name, that the key count is exactly the component count, and that no
@@ -191,7 +208,7 @@ class ReportResponseTest {
      * @return a fully populated response
      */
     private static ReportResponse everyComponentPresent() {
-        return new ReportResponse("Y", "Y", "Y", "Custom", "07", "01", "2022", "07", "19", "2022",
+        return new ReportResponse(ReportPeriod.CUSTOM, "07", "01", "2022", "07", "19", "2022",
                 "Y", "CR00", TITLE_UPPER, "07/19/22", "CORPT00C", TITLE_LOWER, "19:27:53",
                 ACCEPTED_CUSTOM, true, ACCEPTED_CUSTOM, false,
                 ReportResponse.FIELD_MONTHLY_SELECTION, "/api/v1/reports", navigation());
@@ -201,29 +218,25 @@ class ReportResponseTest {
      * A response with every component absent and both flags clear.
      *
      * <p>This is a legitimate state rather than a degenerate one: after an accepted submission the
-     * legacy program wipes the three selectors, all six date components, the confirmation field and
-     * the message field before re-presenting the screen.
+     * legacy program wipes the three report-type positions, all six date components, the confirmation
+     * field and the message field before re-presenting the screen.
      *
      * @return an empty response
      */
     private static ReportResponse everyComponentAbsent() {
-        return new ReportResponse(null, null, null, null, null, null, null, null, null, null, null,
+        return new ReportResponse(null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, false, null, false, null, null, null);
     }
 
     /**
-     * A response carrying only the three echoed selectors and the derived report name.
+     * A response carrying only the echoed reporting period.
      *
-     * @param monthly the echoed monthly marker
-     * @param yearly the echoed yearly marker
-     * @param custom the echoed custom-range marker
-     * @param reportName the derived report name
-     * @return a response carrying the four values and nothing else
+     * @param period the echoed reporting period, or {@code null} for the unmarked state
+     * @return a response carrying that period and nothing else
      */
-    private static ReportResponse selecting(String monthly, String yearly, String custom,
-            String reportName) {
-        return new ReportResponse(monthly, yearly, custom, reportName, null, null, null, null, null,
-                null, null, null, null, null, null, null, null, null, false, null, false, null, null,
+    private static ReportResponse selecting(ReportPeriod period) {
+        return new ReportResponse(period, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null, false, null, false, null, null,
                 null);
     }
 
@@ -241,7 +254,7 @@ class ReportResponseTest {
      */
     private static ReportResponse echoing(String startMonth, String startDay, String startYear,
             String endMonth, String endDay, String endYear, String confirm) {
-        return new ReportResponse(null, null, null, null, startMonth, startDay, startYear, endMonth,
+        return new ReportResponse(null, startMonth, startDay, startYear, endMonth,
                 endDay, endYear, confirm, null, null, null, null, null, null, null, false, null,
                 false, null, null, null);
     }
@@ -260,7 +273,7 @@ class ReportResponseTest {
      */
     private static ReportResponse announcing(String text, boolean submissionAccepted,
             boolean generalError) {
-        return new ReportResponse(null, null, null, null, null, null, null, null, null, null, null,
+        return new ReportResponse(null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, text, submissionAccepted, text, generalError,
                 null, null, null);
     }
@@ -345,16 +358,22 @@ class ReportResponseTest {
     class DeclaredWidths {
 
         @Test
-        @DisplayName("declares one character for each of the three echoed selectors")
-        void declaresOneCharacterForEachSelector() {
-            assertThat(ReportResponse.SELECTION_LENGTH).isEqualTo(1);
+        @DisplayName("declares no width for the echoed period, because a member of a closed vocabulary "
+                + "is not a fixed-width screen value")
+        void declaresNoWidthForTheEchoedPeriod() {
+            assertThat(ReportPeriod.values())
+                    .as("the three one-character positions collapsed into one closed vocabulary, so "
+                            + "their shared width is gone and no selector width remains to declare")
+                    .hasSize(3);
+            assertThat(PERIODS_IN_EVALUATION_ORDER)
+                    .as("the period is carried as a vocabulary member, never as a bounded screen value")
+                    .containsExactly(ReportPeriod.MONTHLY, ReportPeriod.YEARLY, ReportPeriod.CUSTOM);
         }
 
         @Test
-        @DisplayName("declares the confirmation width apart from the selector width, though both are one")
-        void declaresTheConfirmationWidthApartFromTheSelectorWidth() {
+        @DisplayName("declares one character for the confirmation, the only remaining one-wide field")
+        void declaresOneCharacterForTheConfirmation() {
             assertThat(ReportResponse.CONFIRM_LENGTH).isEqualTo(1);
-            assertThat(ReportResponse.CONFIRM_LENGTH).isEqualTo(ReportResponse.SELECTION_LENGTH);
         }
 
         @Test
@@ -366,9 +385,16 @@ class ReportResponseTest {
         }
 
         @Test
-        @DisplayName("declares ten characters for the report-name work field the program derives")
-        void declaresTenCharactersForTheReportName() {
-            assertThat(ReportResponse.REPORT_NAME_LENGTH).isEqualTo(10);
+        @DisplayName("declares no width for the derived report name, because the name is the period's "
+                + "own carried value rather than a component of this contract")
+        void declaresNoWidthForTheDerivedReportName() {
+            assertThat(PERIODS_IN_EVALUATION_ORDER.stream().map(ReportPeriod::getValue).toList())
+                    .as("the vocabulary is the single declaration of the three names, because a second "
+                            + "declaration of a contractual literal is a second source of truth")
+                    .isEqualTo(REPORT_NAMES_IN_EVALUATION_ORDER);
+            assertThat(REPORT_NAMES_IN_EVALUATION_ORDER)
+                    .as("all three names are shorter than the ten-character legacy work item")
+                    .allSatisfy(name -> assertThat(name.length()).isLessThan(10));
         }
 
         @Test
@@ -403,13 +429,15 @@ class ReportResponseTest {
     class EchoedValuesRoundTrip {
 
         @Test
-        @DisplayName("echoes each single-character selector exactly as it arrived")
-        void echoesEachSelectorExactly() {
-            ReportResponse response = selecting("Y", "N", "S", null);
-
-            assertThat(response.monthlySelection()).isEqualTo("Y");
-            assertThat(response.yearlySelection()).isEqualTo("N");
-            assertThat(response.customSelection()).isEqualTo("S");
+        @DisplayName("echoes the chosen period exactly as it arrived, for each of the three")
+        void echoesTheChosenPeriodExactly() {
+            assertThat(selecting(ReportPeriod.MONTHLY).reportPeriod())
+                    .isSameAs(ReportPeriod.MONTHLY);
+            assertThat(selecting(ReportPeriod.YEARLY).reportPeriod()).isSameAs(ReportPeriod.YEARLY);
+            assertThat(selecting(ReportPeriod.CUSTOM).reportPeriod()).isSameAs(ReportPeriod.CUSTOM);
+            assertThat(selecting(null).reportPeriod())
+                    .as("the unmarked screen echoes absence, never a synthesised member")
+                    .isNull();
         }
 
         @Test
@@ -447,8 +475,8 @@ class ReportResponseTest {
 
             // The report name is shorter than its ten-character work field and stays that way: both
             // legacy reads consume the field up to its first space, so padding never reached a screen.
-            assertThat(selecting("Y", null, null, "Monthly").reportName()).isEqualTo("Monthly")
-                    .hasSize(7);
+            assertThat(selecting(ReportPeriod.MONTHLY).reportPeriod().getValue())
+                    .isEqualTo("Monthly").hasSize(7);
         }
 
         @Test
@@ -471,10 +499,11 @@ class ReportResponseTest {
             ReportResponse response = echoing(null, null, null, null, null, null, "y");
 
             assertThat(response.confirm()).isEqualTo("y").isNotEqualTo("Y");
-            assertThat(selecting("s", null, null, "Custom").monthlySelection()).isEqualTo("s")
-                    .isNotEqualTo("S");
-            assertThat(selecting(null, null, "Y", "Custom").reportName()).isEqualTo("Custom")
+            assertThat(selecting(ReportPeriod.CUSTOM).reportPeriod().getValue()).isEqualTo("Custom")
                     .isNotEqualTo("CUSTOM");
+            assertThat(ReportPeriod.fromValue("custom"))
+                    .as("recognition never folds case either, in either direction")
+                    .isEmpty();
         }
 
         @Test
@@ -535,74 +564,79 @@ class ReportResponseTest {
     }
 
     @Nested
-    @DisplayName("The three selectors stay three, and none is derived")
-    class TheThreeSelectorsStayIndependent {
+    @DisplayName("The three report-type positions collapse into one echoed period")
+    class TheThreePositionsCollapseIntoOnePeriod {
 
         @Test
-        @DisplayName("carries all three markers set at once, which one collapsed value could not")
-        void carriesAllThreeMarkersAtOnce() {
-            ReportResponse response = selecting("Y", "Y", "Y", "Monthly");
-
-            assertThat(response.monthlySelection()).isEqualTo("Y");
-            assertThat(response.yearlySelection()).isEqualTo("Y");
-            assertThat(response.customSelection()).isEqualTo("Y");
+        @DisplayName("carries exactly one period, for each of the three the screen names, and nothing "
+                + "combining two of them can be built")
+        void carriesExactlyOnePeriod() {
+            for (ReportPeriod period : PERIODS_IN_EVALUATION_ORDER) {
+                assertThat(selecting(period).reportPeriod()).isSameAs(period);
+            }
+            assertThat(ALL_COMPONENTS)
+                    .as("there is no second period component to combine with the first")
+                    .doesNotContainAnyElementsOf(REMOVED_COMPONENTS);
         }
 
         @Test
-        @DisplayName("leaves the two unmarked positions exactly as they arrived")
-        void leavesTheTwoUnmarkedPositionsAlone() {
-            ReportResponse response = selecting(null, "Y", null, "Yearly");
-
-            assertThat(response.monthlySelection()).isNull();
-            assertThat(response.yearlySelection()).isEqualTo("Y");
-            assertThat(response.customSelection()).isNull();
+        @DisplayName("carries the derived report name as the period's own value, so the two cannot "
+                + "disagree the way two separate components could")
+        void carriesTheDerivedNameAsThePeriodsOwnValue() {
+            for (int index = 0; index < PERIODS_IN_EVALUATION_ORDER.size(); index++) {
+                assertThat(PERIODS_IN_EVALUATION_ORDER.get(index).getValue())
+                        .isEqualTo(REPORT_NAMES_IN_EVALUATION_ORDER.get(index));
+            }
+            assertThat(ALL_COMPONENTS)
+                    .as("no separately settable name component exists to drift from the period")
+                    .doesNotContain("reportName");
         }
 
         @Test
-        @DisplayName("derives no marker from the report name, and no name from a marker")
-        void derivesNoMarkerFromTheReportName() {
-            // A deliberately inconsistent pairing: the custom position is marked while the name says
-            // monthly. Both values survive, which proves neither is computed from the other.
-            ReportResponse response = selecting(null, null, "Y", "Monthly");
-
-            assertThat(response.customSelection()).isEqualTo("Y");
-            assertThat(response.monthlySelection()).isNull();
-            assertThat(response.reportName()).isEqualTo("Monthly");
-
-            // And the converse: markers without a name.
-            ReportResponse unnamed = selecting("Y", null, null, null);
-
-            assertThat(unnamed.monthlySelection()).isEqualTo("Y");
-            assertThat(unnamed.reportName()).isNull();
+        @DisplayName("clears the period after an accepted request, as the program clears the three "
+                + "positions it echoes")
+        void clearsThePeriodAfterAnAcceptedRequest() {
+            assertThat(selecting(null).reportPeriod()).isNull();
+            assertThat(everyComponentAbsent().reportPeriod()).isNull();
         }
 
         @Test
-        @DisplayName("clears all three together, as the program clears them after an accepted request")
-        void clearsAllThreeTogether() {
-            ReportResponse cleared = selecting(null, null, null, null);
+        @DisplayName("publishes the period as one string carrying the bare mixed-case report name")
+        void publishesThePeriodAsOneString() throws JsonProcessingException {
+            JsonNode payload = payloadOf(selecting(ReportPeriod.YEARLY));
 
-            assertThat(cleared.monthlySelection()).isNull();
-            assertThat(cleared.yearlySelection()).isNull();
-            assertThat(cleared.customSelection()).isNull();
+            assertThat(payload.get("reportPeriod").isTextual()).isTrue();
+            assertThat(payload.get("reportPeriod").asText())
+                    .as("the wire form of a closed vocabulary is its member identifier")
+                    .isEqualTo("YEARLY");
+            assertThat(ReportPeriod.YEARLY.getValue())
+                    .as("the derived report name is the carried value, a different string")
+                    .isEqualTo("Yearly").isNotEqualTo("YEARLY");
+            assertThat(payload.size())
+                    .as("only the period and the two primitive flags are written")
+                    .isEqualTo(3);
         }
 
         @Test
-        @DisplayName("publishes the three markers as three independent strings on the wire")
-        void publishesThreeIndependentStrings() throws JsonProcessingException {
-            JsonNode payload = payloadOf(selecting("Y", "N", "Y", "Monthly"));
-
-            assertThat(payload.get("monthlySelection").asText()).isEqualTo("Y");
-            assertThat(payload.get("yearlySelection").asText()).isEqualTo("N");
-            assertThat(payload.get("customSelection").asText()).isEqualTo("Y");
-            assertThat(payload.get("monthlySelection").isTextual()).isTrue();
-        }
-
-        @Test
-        @DisplayName("publishes no collapsed period value beside the three markers")
-        void publishesNoCollapsedPeriodValue() throws JsonProcessingException {
+        @DisplayName("publishes no per-position marker and no separate report name beside the period")
+        void publishesNoPerPositionMarkerOrSeparateName() throws JsonProcessingException {
             assertThat(publishedNames(everyComponentPresent()))
-                    .doesNotContain("period", "reportPeriod", "reportType", "selection",
-                            "selectedPeriod");
+                    .contains("reportPeriod")
+                    .doesNotContainAnyElementsOf(REMOVED_COMPONENTS)
+                    .doesNotContain("reportType", "selection", "selectedPeriod");
+        }
+
+        @Test
+        @DisplayName("resolves an unrecognised value to absence without raising, so the catch-all "
+                + "message stays the service's to report")
+        void resolvesAnUnrecognisedValueToAbsence() {
+            assertThat(ReportPeriod.fromValue(null)).isEmpty();
+            assertThat(ReportPeriod.fromValue("")).isEmpty();
+            assertThat(ReportPeriod.fromValue("Y")).isEmpty();
+            assertThat(ReportPeriod.fromValue("MONTHLY")).isEmpty();
+            assertThat(Arrays.stream(ReportPeriod.values()).map(Enum::name).toList())
+                    .containsExactly("MONTHLY", "YEARLY", "CUSTOM")
+                    .doesNotContain("NONE", "UNKNOWN", "OTHER", "INVALID", "DEFAULT");
         }
     }
 
@@ -698,10 +732,10 @@ class ReportResponseTest {
         @Test
         @DisplayName("returns attention to the selector block, as the program's catch-all does")
         void returnsAttentionToTheSelectorBlock() {
-            ReportResponse response = new ReportResponse(null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, NO_SELECTION_TEXT,
-                    false, NO_SELECTION_TEXT, true, ReportResponse.FIELD_MONTHLY_SELECTION, null,
-                    null);
+            ReportResponse response = new ReportResponse(null, null, null, null, null, null, null, null,
+                                              null, null, null, null, null, null,
+                                              NO_SELECTION_TEXT, false, NO_SELECTION_TEXT, true,
+                                              ReportResponse.FIELD_MONTHLY_SELECTION, null, null);
 
             assertThat(response.focusScreenFieldId()).isEqualTo("MONTHLY");
             assertThat(response.generalError()).isTrue();
@@ -733,11 +767,11 @@ class ReportResponseTest {
         @Test
         @DisplayName("assembles byte for byte for each of the three report names")
         void assemblesForEachOfTheThreeReportNames() {
-            assertThat(ReportResponse.REPORT_NAME_MONTHLY + ReportResponse.FRAGMENT_SUBMITTED_SUFFIX)
+            assertThat(ReportPeriod.MONTHLY.getValue() + ReportResponse.FRAGMENT_SUBMITTED_SUFFIX)
                     .isEqualTo(ACCEPTED_MONTHLY).hasSize(41);
-            assertThat(ReportResponse.REPORT_NAME_YEARLY + ReportResponse.FRAGMENT_SUBMITTED_SUFFIX)
+            assertThat(ReportPeriod.YEARLY.getValue() + ReportResponse.FRAGMENT_SUBMITTED_SUFFIX)
                     .isEqualTo(ACCEPTED_YEARLY).hasSize(40);
-            assertThat(ReportResponse.REPORT_NAME_CUSTOM + ReportResponse.FRAGMENT_SUBMITTED_SUFFIX)
+            assertThat(ReportPeriod.CUSTOM.getValue() + ReportResponse.FRAGMENT_SUBMITTED_SUFFIX)
                     .isEqualTo(ACCEPTED_CUSTOM).hasSize(40);
         }
 
@@ -804,15 +838,15 @@ class ReportResponseTest {
         @DisplayName("assembles byte for byte for each of the three report names")
         void assemblesForEachOfTheThreeReportNames() {
             assertThat(ReportResponse.FRAGMENT_CONFIRM_PROMPT_PREFIX
-                    + ReportResponse.REPORT_NAME_MONTHLY
+                    + ReportPeriod.MONTHLY.getValue()
                     + ReportResponse.FRAGMENT_CONFIRM_PROMPT_SUFFIX)
                     .isEqualTo(CONFIRM_MONTHLY).hasSize(45);
             assertThat(ReportResponse.FRAGMENT_CONFIRM_PROMPT_PREFIX
-                    + ReportResponse.REPORT_NAME_YEARLY
+                    + ReportPeriod.YEARLY.getValue()
                     + ReportResponse.FRAGMENT_CONFIRM_PROMPT_SUFFIX)
                     .isEqualTo(CONFIRM_YEARLY).hasSize(44);
             assertThat(ReportResponse.FRAGMENT_CONFIRM_PROMPT_PREFIX
-                    + ReportResponse.REPORT_NAME_CUSTOM
+                    + ReportPeriod.CUSTOM.getValue()
                     + ReportResponse.FRAGMENT_CONFIRM_PROMPT_SUFFIX)
                     .isEqualTo(CONFIRM_CUSTOM).hasSize(44);
         }
@@ -834,9 +868,10 @@ class ReportResponseTest {
         @Test
         @DisplayName("is carried through the same single message component and returns focus to confirm")
         void isCarriedThroughTheSingleMessageComponent() {
-            ReportResponse response = new ReportResponse(null, null, null, "Monthly", null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, CONFIRM_MONTHLY,
-                    false, CONFIRM_MONTHLY, true, ReportResponse.FIELD_CONFIRM, null, null);
+            ReportResponse response = new ReportResponse(ReportPeriod.MONTHLY, null, null, null, null,
+                                              null, null, null, null, null, null, null, null,
+                                              null, CONFIRM_MONTHLY, false, CONFIRM_MONTHLY,
+                                              true, ReportResponse.FIELD_CONFIRM, null, null);
 
             assertThat(response.message()).isEqualTo(CONFIRM_MONTHLY);
             assertThat(response.errorMessage()).isEqualTo(CONFIRM_MONTHLY);
@@ -992,7 +1027,7 @@ class ReportResponseTest {
         @Test
         @DisplayName("carries the supplied character beside the text it was quoted into")
         void carriesTheSuppliedCharacterBesideTheText() {
-            ReportResponse response = new ReportResponse(null, null, null, "Yearly", null, null,
+            ReportResponse response = new ReportResponse(ReportPeriod.YEARLY, null, null,
                     null, null, null, null, "q", null, null, null, null, null, null,
                     INVALID_CONFIRM_LOWER, false, INVALID_CONFIRM_LOWER, true,
                     ReportResponse.FIELD_CONFIRM, null, null);
@@ -1020,7 +1055,7 @@ class ReportResponseTest {
         @Test
         @DisplayName("is constructible as an ordinary message, exactly like every other shape")
         void isConstructibleAsAnOrdinaryMessage() {
-            ReportResponse response = new ReportResponse(null, null, null, "Monthly", null, null,
+            ReportResponse response = new ReportResponse(ReportPeriod.MONTHLY, null, null,
                     null, null, null, null, null, null, null, null, null, null, null,
                     QUEUE_WRITE_FAILURE_TEXT, false, QUEUE_WRITE_FAILURE_TEXT, true,
                     ReportResponse.FIELD_MONTHLY_SELECTION, null, null);
@@ -1057,18 +1092,22 @@ class ReportResponseTest {
     class TheThreeReportNames {
 
         @Test
-        @DisplayName("publishes the three names the program writes, byte for byte")
+        @DisplayName("publishes the three names the program writes, byte for byte, from the vocabulary "
+                + "that is their single declaration")
         void publishesTheThreeNames() {
-            assertThat(ReportResponse.REPORT_NAME_MONTHLY).isEqualTo("Monthly").hasSize(7);
-            assertThat(ReportResponse.REPORT_NAME_YEARLY).isEqualTo("Yearly").hasSize(6);
-            assertThat(ReportResponse.REPORT_NAME_CUSTOM).isEqualTo("Custom").hasSize(6);
+            assertThat(ReportPeriod.MONTHLY.getValue()).isEqualTo("Monthly").hasSize(7);
+            assertThat(ReportPeriod.YEARLY.getValue()).isEqualTo("Yearly").hasSize(6);
+            assertThat(ReportPeriod.CUSTOM.getValue()).isEqualTo("Custom").hasSize(6);
+            assertThat(PERIODS_IN_EVALUATION_ORDER.stream().map(ReportPeriod::getValue).toList())
+                    .as("this response restates none of them, so neither copy can be corrected alone")
+                    .isEqualTo(REPORT_NAMES_IN_EVALUATION_ORDER);
         }
 
         @Test
         @DisplayName("pads no name out to the ten characters of the legacy work field")
         void padsNoNameOutToTheWorkFieldWidth() {
             for (String name : REPORT_NAMES_IN_EVALUATION_ORDER) {
-                assertThat(name.length()).isLessThan(ReportResponse.REPORT_NAME_LENGTH);
+                assertThat(name.length()).isLessThan(10);
                 assertThat(name).doesNotEndWith(" ");
             }
         }
@@ -1076,32 +1115,35 @@ class ReportResponseTest {
         @Test
         @DisplayName("keeps a capital initial letter and a lowercase remainder on every name")
         void keepsTheContractualCasing() {
-            assertThat(ReportResponse.REPORT_NAME_MONTHLY).isNotEqualTo("MONTHLY")
-                    .isNotEqualTo("monthly");
-            assertThat(ReportResponse.REPORT_NAME_YEARLY).isNotEqualTo("YEARLY")
-                    .isNotEqualTo("yearly");
-            assertThat(ReportResponse.REPORT_NAME_CUSTOM).isNotEqualTo("CUSTOM")
-                    .isNotEqualTo("custom");
+            assertThat(ReportPeriod.MONTHLY.getValue()).isNotEqualTo("MONTHLY")
+                    .isNotEqualTo("monthly").isNotEqualTo(ReportPeriod.MONTHLY.name());
+            assertThat(ReportPeriod.YEARLY.getValue()).isNotEqualTo("YEARLY")
+                    .isNotEqualTo("yearly").isNotEqualTo(ReportPeriod.YEARLY.name());
+            assertThat(ReportPeriod.CUSTOM.getValue()).isNotEqualTo("CUSTOM")
+                    .isNotEqualTo("custom").isNotEqualTo(ReportPeriod.CUSTOM.name());
         }
 
         @Test
-        @DisplayName("round-trips each name through the contract un-case-folded")
+        @DisplayName("round-trips each name through the contract un-case-folded, as the period's value")
         void roundTripsEachNameUnfolded() throws JsonProcessingException {
-            for (String name : REPORT_NAMES_IN_EVALUATION_ORDER) {
-                ReportResponse response = selecting("Y", null, null, name);
+            for (int index = 0; index < PERIODS_IN_EVALUATION_ORDER.size(); index++) {
+                ReportPeriod period = PERIODS_IN_EVALUATION_ORDER.get(index);
+                String name = REPORT_NAMES_IN_EVALUATION_ORDER.get(index);
+                ReportResponse response = selecting(period);
 
-                assertThat(response.reportName()).isEqualTo(name);
-                assertThat(payloadOf(response).get("reportName").asText()).isEqualTo(name);
+                assertThat(response.reportPeriod().getValue()).isEqualTo(name);
+                assertThat(payloadOf(response).get("reportPeriod").asText())
+                        .isEqualTo(period.name())
+                        .isNotEqualTo(name);
             }
         }
 
         @Test
-        @DisplayName("agrees with the domain period enumeration on all three literals")
-        void agreesWithTheDomainPeriodEnumeration() {
-            assertThat(ReportPeriod.MONTHLY.getValue())
-                    .isEqualTo(ReportResponse.REPORT_NAME_MONTHLY);
-            assertThat(ReportPeriod.YEARLY.getValue()).isEqualTo(ReportResponse.REPORT_NAME_YEARLY);
-            assertThat(ReportPeriod.CUSTOM.getValue()).isEqualTo(ReportResponse.REPORT_NAME_CUSTOM);
+        @DisplayName("derives every name from the period enumeration alone, in evaluation order")
+        void derivesEveryNameFromThePeriodEnumerationAlone() {
+            assertThat(PERIODS_IN_EVALUATION_ORDER)
+                    .extracting(ReportPeriod::getValue)
+                    .containsExactlyElementsOf(REPORT_NAMES_IN_EVALUATION_ORDER);
         }
 
         @Test
@@ -1287,9 +1329,9 @@ class ReportResponseTest {
         @DisplayName("leaves the unprojected text unbounded so a long text is not silently cut")
         void leavesTheUnprojectedTextUnbounded() {
             String longerThanTheScreen = "L".repeat(ReportResponse.ERROR_MESSAGE_LENGTH + 40);
-            ReportResponse response = new ReportResponse(null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, false,
-                    longerThanTheScreen, true, null, null, null);
+            ReportResponse response = new ReportResponse(null, null, null, null, null, null, null, null,
+                                              null, null, null, null, null, null, null, false,
+                                              longerThanTheScreen, true, null, null, null);
 
             assertThat(response.message()).hasSize(ReportResponse.ERROR_MESSAGE_LENGTH + 40);
             assertThat(violationsOf(response)).isEmpty();
@@ -1309,9 +1351,13 @@ class ReportResponseTest {
         }
 
         @Test
-        @DisplayName("reports no violation when all three selectors are marked at once")
-        void reportsNoViolationWhenAllThreeSelectorsAreMarked() {
-            assertThat(violationsOf(selecting("Y", "Y", "Y", "Monthly"))).isEmpty();
+        @DisplayName("reports no violation for any of the three periods the screen names")
+        void reportsNoViolationForAnyOfTheThreePeriods() {
+            for (ReportPeriod period : PERIODS_IN_EVALUATION_ORDER) {
+                assertThat(violationsOf(selecting(period)))
+                        .as("the %s period is always well formed at this boundary", period)
+                        .isEmpty();
+            }
         }
 
         @Test
@@ -1328,7 +1374,7 @@ class ReportResponseTest {
         void reportsNoViolationForBlankOrWhitespaceValues() {
             assertThat(violationsOf(echoing("", "", "", "", "", "", ""))).isEmpty();
             assertThat(violationsOf(echoing(" ", " ", "    ", " ", " ", "    ", " "))).isEmpty();
-            assertThat(violationsOf(selecting("", "", "", ""))).isEmpty();
+            assertThat(violationsOf(selecting(null))).isEmpty();
         }
 
         @Test
@@ -1338,24 +1384,28 @@ class ReportResponseTest {
         }
 
         @Test
-        @DisplayName("reports exactly one size violation for an over-long selector, and nothing else")
-        void reportsExactlyOneSizeViolationForAnOverLongSelector() {
+        @DisplayName("reports exactly one size violation for an over-long confirmation, and nothing "
+                + "else")
+        void reportsExactlyOneSizeViolationForAnOverLongConfirmation() {
             Set<ConstraintViolation<ReportResponse>> violations =
-                    violationsOf(selecting("YY", null, null, null));
+                    violationsOf(echoing(null, null, null, null, null, null, "YY"));
 
             assertThat(violations).hasSize(1);
             ConstraintViolation<ReportResponse> violation = violations.iterator().next();
-            assertThat(violation.getPropertyPath()).hasToString("monthlySelection");
+            assertThat(violation.getPropertyPath()).hasToString("confirm");
             // The message template names the constraint without inspecting the type's structure.
             assertThat(violation.getMessageTemplate())
                     .isEqualTo("{jakarta.validation.constraints.Size.message}");
         }
 
         @Test
-        @DisplayName("bounds the report name at the legacy work-field width")
-        void boundsTheReportNameAtTheWorkFieldWidth() {
-            assertThat(violationsOf(selecting(null, null, null, "0123456789"))).isEmpty();
-            assertThat(violationsOf(selecting(null, null, null, "01234567890"))).hasSize(1);
+        @DisplayName("bounds no value at the legacy report-name width, because the derived name is the "
+                + "period's own value and cannot be supplied over-long")
+        void boundsNoValueAtTheReportNameWidth() {
+            for (ReportPeriod period : PERIODS_IN_EVALUATION_ORDER) {
+                assertThat(violationsOf(selecting(period))).isEmpty();
+                assertThat(period.getValue().length()).isLessThan(10);
+            }
         }
 
         @Test
@@ -1363,9 +1413,10 @@ class ReportResponseTest {
         void boundsTheProjectedMessageAndTheFocusIdentity() {
             String tooWide = "E".repeat(ReportResponse.ERROR_MESSAGE_LENGTH + 1);
             ReportResponse overWideMessage = announcing(tooWide, false, true);
-            ReportResponse overWideFocus = new ReportResponse(null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, false,
-                    null, true, "TOOLONG1", null, null);
+            ReportResponse overWideFocus = new ReportResponse(null, null, null, null, null, null, null,
+                                                   null, null, null, null, null, null, null,
+                                                   null, false, null, true, "TOOLONG1", null,
+                                                   null);
 
             assertThat(violationsOf(overWideMessage)).hasSize(1);
             assertThat(violationsOf(overWideFocus)).hasSize(1);
@@ -1381,9 +1432,9 @@ class ReportResponseTest {
                     ReportResponse.FIELD_CONFIRM);
 
             for (String identity : identities) {
-                ReportResponse response = new ReportResponse(null, null, null, null, null, null,
-                        null, null, null, null, null, null, null, null, null, null, null, null,
-                        false, null, true, identity, null, null);
+                ReportResponse response = new ReportResponse(null, null, null, null, null, null, null,
+                                                  null, null, null, null, null, null, null,
+                                                  null, false, null, true, identity, null, null);
 
                 assertThat(identity.length())
                         .isLessThanOrEqualTo(ReportResponse.SCREEN_FIELD_ID_LENGTH);
@@ -1401,9 +1452,9 @@ class ReportResponseTest {
         @DisplayName("carries the state it was given, as the very same value")
         void carriesTheStateItWasGiven() {
             NavigationContext supplied = navigation();
-            ReportResponse response = new ReportResponse(null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, false, null,
-                    false, null, null, supplied);
+            ReportResponse response = new ReportResponse(null, null, null, null, null, null, null, null,
+                                              null, null, null, null, null, null, null, false,
+                                              null, false, null, null, supplied);
 
             assertThat(response.navigationContext()).isSameAs(supplied);
         }
@@ -1451,9 +1502,9 @@ class ReportResponseTest {
         @DisplayName("carries the empty state exactly as supplied, without substituting anything")
         void carriesTheEmptyStateAsSupplied() {
             NavigationContext empty = NavigationContext.empty();
-            ReportResponse response = new ReportResponse(null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, false, null,
-                    false, null, null, empty);
+            ReportResponse response = new ReportResponse(null, null, null, null, null, null, null, null,
+                                              null, null, null, null, null, null, null, false,
+                                              null, false, null, null, empty);
 
             assertThat(response.navigationContext()).isSameAs(empty);
             assertThat(response.navigationContext().userId()).isNull();
@@ -1490,7 +1541,7 @@ class ReportResponseTest {
         @Test
         @DisplayName("writes no null literal into the payload")
         void writesNoNullLiteral() throws JsonProcessingException {
-            assertThat(payloadOf(selecting("Y", null, null, "Monthly")).toString())
+            assertThat(payloadOf(selecting(ReportPeriod.MONTHLY)).toString())
                     .doesNotContain("null");
         }
 
@@ -1498,13 +1549,13 @@ class ReportResponseTest {
         @DisplayName("tolerates an unknown incoming property instead of rejecting the body")
         void toleratesAnUnknownIncomingProperty() throws JsonProcessingException {
             String body = """
-                    {"monthlySelection":"Y","reportName":"Monthly","generalError":false,\
+                    {"reportPeriod":"MONTHLY","monthlySelection":"Y","reportName":"Monthly",\
+                    "generalError":false,\
                     "submissionAccepted":true,"aPropertyThisContractDoesNotDeclare":"ignored"}""";
 
             ReportResponse bound = moduleEquivalentMapper().readValue(body, ReportResponse.class);
 
-            assertThat(bound.monthlySelection()).isEqualTo("Y");
-            assertThat(bound.reportName()).isEqualTo("Monthly");
+            assertThat(bound.reportPeriod()).isSameAs(ReportPeriod.MONTHLY);
             assertThat(bound.submissionAccepted()).isTrue();
             assertThat(bound.generalError()).isFalse();
         }
@@ -1566,9 +1617,10 @@ class ReportResponseTest {
         @Test
         @DisplayName("accepts any route value without validating it, since the vocabulary is elsewhere")
         void acceptsAnyRouteValueWithoutValidatingIt() {
-            ReportResponse response = new ReportResponse(null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, false, null,
-                    false, null, "/api/v1/reports/transaction-report", null);
+            ReportResponse response = new ReportResponse(null, null, null, null, null, null, null, null,
+                                              null, null, null, null, null, null, null, false,
+                                              null, false, null,
+                                              "/api/v1/reports/transaction-report", null);
 
             assertThat(response.nextRoute()).isEqualTo("/api/v1/reports/transaction-report");
             assertThat(violationsOf(response)).isEmpty();
@@ -1627,10 +1679,10 @@ class ReportResponseTest {
         }
 
         @Test
-        @DisplayName("publishes exactly the component count and no thirty-fifth member")
+        @DisplayName("publishes exactly the component count and no twenty-second member")
         void publishesExactlyTheComponentCount() throws JsonProcessingException {
             assertThat(publishedNames(everyComponentPresent())).hasSize(ALL_COMPONENTS.size());
-            assertThat(ALL_COMPONENTS).hasSize(24);
+            assertThat(ALL_COMPONENTS).hasSize(21);
         }
     }
 
@@ -1644,7 +1696,7 @@ class ReportResponseTest {
             ReportResponse response = everyComponentPresent();
 
             assertThat(response.message()).isEqualTo(response.message());
-            assertThat(response.reportName()).isEqualTo(response.reportName());
+            assertThat(response.reportPeriod()).isSameAs(response.reportPeriod());
             assertThat(response.navigationContext()).isSameAs(response.navigationContext());
             assertThat(response.generalError()).isEqualTo(response.generalError());
         }
@@ -1682,8 +1734,8 @@ class ReportResponseTest {
             assertThat(announcing(ACCEPTED_YEARLY, true, false)).isNotEqualTo(base);
             assertThat(announcing(ACCEPTED_CUSTOM, false, false)).isNotEqualTo(base);
             assertThat(announcing(ACCEPTED_CUSTOM, true, true)).isNotEqualTo(base);
-            assertThat(selecting("Y", null, null, "Custom"))
-                    .isNotEqualTo(selecting("Y", null, null, "Monthly"));
+            assertThat(selecting(ReportPeriod.CUSTOM))
+                    .isNotEqualTo(selecting(ReportPeriod.MONTHLY));
         }
 
         @Test
@@ -1702,7 +1754,8 @@ class ReportResponseTest {
             String rendered = everyComponentPresent().toString();
 
             assertThat(rendered).startsWith("ReportResponse[");
-            assertThat(rendered).contains("reportName=Custom");
+            assertThat(rendered).contains("reportPeriod=CUSTOM");
+            assertThat(rendered).doesNotContain("reportName=");
             assertThat(rendered).contains("submissionAccepted=true");
             assertThat(rendered).contains("generalError=false");
             assertThat(rendered).endsWith("]");
@@ -1713,14 +1766,12 @@ class ReportResponseTest {
         }
 
         @Test
-        @DisplayName("reads every one of the twenty-four components of a populated response")
+        @DisplayName("reads every one of the twenty-one components of a populated response")
         void readsEveryComponentOfAPopulatedResponse() {
             ReportResponse response = everyComponentPresent();
 
-            assertThat(response.monthlySelection()).isEqualTo("Y");
-            assertThat(response.yearlySelection()).isEqualTo("Y");
-            assertThat(response.customSelection()).isEqualTo("Y");
-            assertThat(response.reportName()).isEqualTo("Custom");
+            assertThat(response.reportPeriod()).isSameAs(ReportPeriod.CUSTOM);
+            assertThat(response.reportPeriod().getValue()).isEqualTo("Custom");
             assertThat(response.startMonth()).isEqualTo("07");
             assertThat(response.startDay()).isEqualTo("01");
             assertThat(response.startYear()).isEqualTo("2022");
@@ -1744,14 +1795,11 @@ class ReportResponseTest {
         }
 
         @Test
-        @DisplayName("tolerates an absent value in every one of the twenty-four positions")
+        @DisplayName("tolerates an absent value in every one of the twenty-one positions")
         void toleratesAnAbsentValueInEveryPosition() {
             ReportResponse response = everyComponentAbsent();
 
-            assertThat(response.monthlySelection()).isNull();
-            assertThat(response.yearlySelection()).isNull();
-            assertThat(response.customSelection()).isNull();
-            assertThat(response.reportName()).isNull();
+            assertThat(response.reportPeriod()).isNull();
             assertThat(response.startMonth()).isNull();
             assertThat(response.startDay()).isNull();
             assertThat(response.startYear()).isNull();

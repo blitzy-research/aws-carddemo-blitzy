@@ -519,25 +519,29 @@ class UserRequestCoverageTest {
     class WireShape {
 
         /**
-         * Eleven of the twelve components are written outbound; the credential is not one of them.
+         * All twelve components are written outbound, the credential included.
          *
-         * <p>The credential is bound write-only, so it is accepted from a client and never written
-         * back. That is a directional binding rather than a redaction: the value still reaches the
-         * service that hashes it, and only the outbound direction is closed, so a response echoing a
-         * submitted request cannot carry it. The count is therefore one fewer than the component count,
-         * and asserting the exact difference - rather than relaxing the count - is what makes a future
-         * change to the binding visible here.</p>
+         * <p>This transport type applies no directional binding to any component. A write-only
+         * credential would also strip the value from every body that was deserialized and
+         * re-serialized - a validation echo, a diagnostic view, a retry envelope - and an operation
+         * that cannot re-emit what it bound cannot be validated or retried. Outbound disclosure is
+         * prevented structurally instead: no response type in this package declares a credential
+         * component of any kind, so no serializer reaching a response can carry one. Asserting the
+         * exact component count rather than relaxing it is what makes a future directional binding
+         * visible here.</p>
          */
         @Test
-        @DisplayName("eleven of the twelve members are written outbound, the credential being bound "
-                + "write-only")
+        @DisplayName("all twelve members are written outbound, no component being bound in one "
+                + "direction only")
         void aFullyPopulatedRequestRendersAllTwelveMembers() throws JsonProcessingException {
             JsonNode payload = payloadOf(fullyPopulated());
 
-            assertThat(payload.size()).isEqualTo(EXPECTED_COMPONENTS.size() - 1);
+            assertThat(payload.size()).isEqualTo(EXPECTED_COMPONENTS.size());
             assertThat(payload.has("password"))
-                    .as("the one component not written outbound is the credential")
-                    .isFalse();
+                    .as("the credential is written like every other component; what withholds it is "
+                            + "the response contract, which declares no credential member at all")
+                    .isTrue();
+            assertThat(payload.get("password").asText()).isEqualTo(CREDENTIAL);
             assertThat(payload.get("userId").asText()).isEqualTo("ADMIN001");
             assertThat(payload.get("searchUserId").asText()).isEqualTo("SRCH0001");
             assertThat(payload.get("firstName").asText()).isEqualTo("FIRSTNAMEEXACTLY20AB");
@@ -550,33 +554,39 @@ class UserRequestCoverageTest {
         }
 
         /**
-         * The credential travels inbound and never outbound.
+         * The credential travels in both directions, and the diagnostic rendering withholds it.
          *
-         * <p>Both halves are asserted because either alone would be the wrong contract. Closing the
-         * inbound direction as well would leave the add and update screens unable to set a credential
-         * at all, which is why the binding is write-only rather than ignored; leaving the outbound
-         * direction open would let any surface that echoes a request repeat the credential, which is
-         * the exposure the binding closes. What reaches the service is unchanged - the accessor returns
-         * exactly what the client sent - so this is a narrowing of the serialised form and not of the
-         * type's behaviour.</p>
+         * <p>Both halves are asserted because either alone would be the wrong contract. The wire form
+         * must carry the credential in both directions, because closing the inbound direction would
+         * leave the add and update screens unable to set one and closing the outbound direction would
+         * strip it from every re-serialized body. The diagnostic rendering must withhold it, because a
+         * record's generated string form would otherwise put a plaintext credential into any log line,
+         * exception message or failure report. The two channels are independent, and only the second
+         * is this type's to close - the first is closed by the response contract, which declares no
+         * credential member for a serializer to reach.</p>
          */
         @Test
-        @DisplayName("the credential is accepted inbound and never written outbound, because it must "
-                + "reach the service that hashes it and nothing beyond")
-        void theCredentialTravelsInboundAndNeverOutbound() throws JsonProcessingException {
-            JsonNode payload = payloadOf(carrying("password", CREDENTIAL));
+        @DisplayName("the credential travels in both directions on the wire while the diagnostic "
+                + "rendering withholds it, which are two independent channels")
+        void theCredentialTravelsBothWaysYetIsNeverRendered() throws JsonProcessingException {
+            UserRequest carried = carrying("password", CREDENTIAL);
 
-            assertThat(payload.has("password"))
-                    .as("writing it outbound would let any surface echoing a request repeat it")
-                    .isFalse();
+            assertThat(payloadOf(carried).get("password").asText())
+                    .as("the wire form carries it, so a re-serialized body keeps what it bound")
+                    .isEqualTo(CREDENTIAL);
 
             UserRequest inbound = JsonContractSupport.declaredSettingsMapper()
                     .readValue("{\"password\":\"" + CREDENTIAL + "\"}", UserRequest.class);
 
             assertThat(inbound.password())
-                    .as("closing the inbound direction too would leave the add and update screens "
-                            + "unable to set a credential at all")
+                    .as("closing the inbound direction would leave the add and update screens unable "
+                            + "to set a credential at all")
                     .isEqualTo(CREDENTIAL);
+
+            assertThat(carried.toString())
+                    .as("the diagnostic channel withholds it, which is the only control this type "
+                            + "applies and the only one it can apply without closing a wire direction")
+                    .doesNotContain(CREDENTIAL);
         }
 
         @Test
@@ -616,24 +626,26 @@ class UserRequestCoverageTest {
         }
 
         /**
-         * The round trip is deliberately asymmetric, and the asymmetry is exactly two components.
+         * The round trip is symmetric, because no component is bound in one direction only.
          *
-         * <p>Two components are bound in one direction only, for opposite reasons, and a round trip is
-         * where both become visible at once. The credential is write-only, so serialising drops it. The
-         * displayed page number is read-only, so deserialising ignores it - the legacy program computes
-         * that number entirely from its own retained counter, so a submitted value could never have
-         * influenced a page, and accepting one would create an input the legacy never had.</p>
+         * <p>Neither of the two components that might plausibly have carried a directional binding
+         * does. The credential is written and read alike, because a write-only credential would strip
+         * the value from every body that was deserialized and re-serialized and an operation that
+         * cannot re-emit what it bound cannot be validated or retried; outbound disclosure is closed
+         * structurally instead, by the response contract declaring no credential member. The displayed
+         * page number is likewise read and written alike: the legacy program computes that number
+         * entirely from its own retained counter, so a submitted value never influenced a page, but
+         * disregarding it belongs to {@code UserManagementService}, where the counter lives, and not to
+         * a binding directive on a passive carrier.</p>
          *
-         * <p>A round trip therefore cannot return an equal instance, and asserting that it does would
-         * require reopening one of the two bindings. What is asserted instead is that the loss is
-         * precisely those two components and that everything else survives - which is a stronger
-         * statement than equality, because it names what may change and would fail if a third component
-         * silently acquired a directional binding.</p>
+         * <p>Asserting full equality across the round trip is therefore the stronger statement: it
+         * fails the moment any component silently acquires a directional binding, whereas an assertion
+         * that named permitted losses would quietly accept a new one.</p>
          */
         @Test
-        @DisplayName("a round trip loses exactly the write-only credential and the read-only page "
-                + "number, and returns every other component unchanged")
-        void aFullyPopulatedRequestRoundTripsWithoutItsDirectionalComponents()
+        @DisplayName("a round trip returns an equal instance, because no component is bound in one "
+                + "direction only")
+        void aFullyPopulatedRequestRoundTripsWithEveryComponentIntact()
                 throws JsonProcessingException {
             UserRequest request = fullyPopulated();
             ObjectMapper mapper = JsonContractSupport.declaredSettingsMapper();
@@ -642,22 +654,16 @@ class UserRequestCoverageTest {
                     mapper.writeValueAsString(request), UserRequest.class);
 
             assertThat(returned)
-                    .as("two components are bound in one direction only, so equality cannot hold")
-                    .isNotEqualTo(request);
+                    .as("no component is bound in one direction only, so equality holds and a future "
+                            + "directional binding would fail here")
+                    .isEqualTo(request);
             assertThat(returned.password())
-                    .as("the credential is write-only, so serialising dropped it")
-                    .isNull();
+                    .as("the credential is written and read alike")
+                    .isEqualTo(request.password());
             assertThat(returned.displayedPageNumber())
-                    .as("the page number is read-only, so deserialising ignored it")
-                    .isNull();
-
-            assertThat(returned)
-                    .as("everything else survives, so the loss is exactly those two")
-                    .isEqualTo(new UserRequest(request.userId(), request.searchUserId(),
-                            request.firstName(), request.lastName(), null, request.userType(),
-                            request.rowSelections(), null, request.firstUserIdOnPage(),
-                            request.lastUserIdOnPage(), request.keyAction(),
-                            request.navigationContext()));
+                    .as("the page number is written and read alike; disregarding a submitted value is "
+                            + "the service's decision, not this carrier's")
+                    .isEqualTo(request.displayedPageNumber());
             assertThat(returned.rowSelections()).containsExactlyElementsOf(request.rowSelections());
         }
 

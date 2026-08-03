@@ -4,12 +4,13 @@
 # CardDemo local validation stack. Every one of the eight AAP validation gates is designed to
 # run against this stack - no mainframe, no staging environment, no real AWS account.
 #
-#   default services      : postgres (PostgreSQL 16), localstack (Community: S3 + SQS + SNS), jaeger
+#   default services      : postgres (PostgreSQL 16), localstack (Community: S3 + SQS + SNS),
+#                           jaeger, app (the module itself, built from ./Dockerfile)
 #   `observability` profile: prometheus, grafana
 #
 # Bring-up:
-#   docker compose up -d                                # postgres + localstack + jaeger
-#   docker compose --profile observability up -d        # everything, incl. Prometheus/Grafana
+#   docker compose up -d --build                        # postgres + localstack + jaeger + app
+#   docker compose --profile observability up -d --build # everything, incl. Prometheus/Grafana
 #   docker compose down -v                              # stop and drop volumes
 #
 # ---------------------------------------------------------------------------------------------
@@ -132,6 +133,62 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # The CardDemo module itself, built from ./Dockerfile (multi-stage, Temurin 25 JRE runtime).
+  #
+  # THE SERVICE NAME IS LOAD-BEARING. `app` is the hostname config/prometheus/prometheus.yml
+  # addresses as its single scrape target, so renaming this service silently empties every
+  # Grafana panel while the whole stack still reports healthy. The container always listens on
+  # 8080 - the port the image exposes and the port the scrape target names - and only the
+  # published host port varies, so independent clones can coexist without moving the target.
+  #
+  # Every value below is a throwaway local development value and every one of them is a default
+  # that PRODUCTION DELIBERATELY DOES NOT HAVE: application-prod.yml resolves the datasource
+  # credentials, the signing secret and the field-encryption key from the environment with no
+  # fallback at all, so a missing production secret fails start-up instead of quietly binding a
+  # placeholder. Nothing here may be reused outside this stack.
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${COMPOSE_PROJECT_NAME:-carddemo}-app:local
+    container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-app
+    environment:
+      # application-local.yml binds the compose endpoints through exactly these names.
+      SPRING_PROFILES_ACTIVE: local
+      # Container-internal addressing: the service names and the ports the containers listen on,
+      # never the published host ports, which is why 5432 and 4566 are literal here.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-carddemo}
+      POSTGRES_USER: ${POSTGRES_USER:-carddemo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
+      LOCALSTACK_HOST: localstack
+      LOCALSTACK_PORT: 4566
+      AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      # Byte-identical to the localstack service above and to
+      # localstack/init/01-create-aws-resources.sh; a disagreement produces a stack that starts
+      # cleanly and then fails on the first publish.
+      CARDDEMO_S3_BUCKET: ${CARDDEMO_S3_BUCKET:-carddemo-batch-staging}
+      CARDDEMO_SQS_QUEUE: ${CARDDEMO_SQS_QUEUE:-carddemo-jobs.fifo}
+      CARDDEMO_SQS_MESSAGE_GROUP_ID: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:-carddemo-job-submission}
+      CARDDEMO_SNS_TOPIC: ${CARDDEMO_SNS_TOPIC:-carddemo-job-notifications}
+      # OTLP/HTTP into the Jaeger service, again by container-internal port.
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+      TZ: UTC
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    depends_on:
+      # Flyway applies four migrations at start-up and must not race initdb, and the AWS clients
+      # must not race the ready hook that creates the bucket, the FIFO queue and the topic.
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    restart: unless-stopped
+
   # Prometheus - scrapes /actuator/prometheus; source of the Gate 3 throughput baseline.
   prometheus:
     image: prom/prometheus:v3.5.0
@@ -147,8 +204,13 @@ services:
     volumes:
       - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    depends_on:
+      # The scrape configuration names exactly one application target, `app:8080`, and that name
+      # resolves on this project network only once the service above exists. No host-gateway alias
+      # is declared, because a second target would be permanently unreachable on every run in which
+      # the application is a container and would be reported as a down scrape rather than as a
+      # configuration error.
+      - app
     restart: unless-stopped
 
   # Grafana - per-endpoint and per-batch-step dashboards over the Prometheus data source.

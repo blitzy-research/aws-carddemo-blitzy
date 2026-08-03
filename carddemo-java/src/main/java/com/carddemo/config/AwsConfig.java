@@ -17,12 +17,14 @@
 package com.carddemo.config;
 
 import io.awspring.cloud.autoconfigure.sqs.SqsAsyncClientCustomizer;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import software.amazon.awssdk.retries.DefaultRetryStrategy;
 
 /**
- * Configures the messaging client that carries the online-to-batch job-submission bridge.
+ * Registers the settings of the online-to-batch job-submission bridge and configures the messaging
+ * client that carries it.
  *
  * <h2>Why this class exists at all</h2>
  *
@@ -77,9 +79,62 @@ import software.amazon.awssdk.retries.DefaultRetryStrategy;
  * handling are enforced by the publisher, and the append ordering is carried by the first-in-
  * first-out queue and its single message group.
  *
+ * <h2>Why this class also owns the settings type</h2>
+ *
+ * <p>{@link AwsProperties} is self-annotated only. It carries no stereotype annotation and nothing
+ * scans for it, so it becomes a bean exactly where a configuration class enables it. This class is
+ * that place, and it is the only one: two registrations of one settings type are two bean
+ * definitions of it, and the second is discovered as a context failure rather than as a duplicate.
+ * Placing the registration here keeps the binding beside the messaging configuration that the
+ * bucket, queue, message-group and topic names describe, and it mirrors how the security
+ * configuration owns its own signing settings type.
+ *
+ * <p>Nothing here reads a value out of the bound settings. The publisher resolves the queue and
+ * message-group names it needs directly from the property keys, because the messaging layer must not
+ * depend on this package. Registration exists so that the {@code carddemo.aws} tree is bound and
+ * validated once during context startup, which is what turns a missing or malformed setting into a
+ * startup failure instead of a failure on the first publish.
+ *
  * <p>The reasoning for one write being one attempt is recorded in {@code docs/decision-log.md} DL-095.
+ *
+ * <h2>The settings this class owns</h2>
+ *
+ * <p>{@link AwsProperties} is <strong>self-annotated only</strong>: it carries no stereotype and
+ * nothing scans for it, so it becomes a bean exactly where a configuration class enables it. This
+ * class is that single owner, and the enabling annotation above is the whole of the registration.
+ * One owner is deliberate rather than incidental - two registrations of one settings type are two
+ * bean definitions of it, and the second is discovered as a context failure rather than as a
+ * duplicate - which is why no other configuration class enables it and why none may.
+ *
+ * <p><strong>Registration is what makes the settings' validation a start-up gate rather than a
+ * decoration.</strong> Unregistered, the type binds nowhere, its presence constraints are never
+ * evaluated, and its refusal of a queue name that does not carry the first-in-first-out suffix is
+ * never reached - so the single easiest misconfiguration in this namespace would be discovered at
+ * the first submission, by which point an operator sees a failed report request instead of a failed
+ * deployment. Registered here, a missing bucket, queue, message group, topic or key prefix, and a
+ * well-formed queue name that is merely not a first-in-first-out name, all stop the application
+ * before it serves a request. The publisher reads the same key paths from the same environment, so
+ * the values the settings validated are necessarily the values it publishes with.
+ *
+ * <p>The publisher itself does <strong>not</strong> receive this object. The layering forbids it:
+ * a service may depend on the repository, domain, utility and exception layers, and this
+ * configuration layer is not among them, so {@code com.carddemo.service.JobSubmissionService} binds
+ * the two queue key paths it needs directly and names them through its own constants. The two sets
+ * of constants are held to each other by a test that fails the build if they ever diverge, so the
+ * arrangement is a checked invariant rather than a convention.
+ *
+ * <p><strong>What is deliberately not in this namespace.</strong> The region, the endpoint
+ * redirection and the credentials are the messaging, object-store and notification clients' own
+ * configuration, under {@code spring.cloud.aws}, because that is the namespace the integration's
+ * auto-configuration reads when it builds those clients. Declaring them a second time under this
+ * module's own prefix would create two sources of truth for one setting, and for the endpoint it
+ * would be actively dangerous: an absent endpoint override does not fail closed, it resolves the
+ * region's real public endpoint. The region is required of a production deployment, with no
+ * fallback, by {@link ProductionConfigurationValidator}, which also requires the job-submission
+ * queue - so both are start-up-validated, each in the namespace that consumes it.
  */
 @Configuration(proxyBeanMethods = false)
+@EnableConfigurationProperties(AwsProperties.class)
 public class AwsConfig {
 
     /**

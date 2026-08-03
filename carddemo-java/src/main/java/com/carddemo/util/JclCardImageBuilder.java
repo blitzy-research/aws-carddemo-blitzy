@@ -22,6 +22,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 
 /**
@@ -517,9 +518,22 @@ public final class JclCardImageBuilder {
      *
      * <p>The parsed value is discarded. This formatter exists to reject, never to convert, so an
      * accepted slot reaches its card byte for byte as the caller supplied it.
+     *
+     * <p><strong>{@link Locale#ROOT} is supplied explicitly, and it is not decoration.</strong> The
+     * single-argument factory resolves the formatting locale from ambient process state, so the
+     * formatter a running application holds would depend on the host it was started on. That is
+     * unacceptable in a fixed-column contract: the slot is ten US-ASCII bytes by construction
+     * ({@value #DATE_SLOT_WIDTH} positions, each one digit or one hyphen per
+     * {@value #DATE_SLOT_PATTERN}), and the decision this formatter makes about such a value must be
+     * the same decision on every host, in every profile and under every locale the build is exercised
+     * in - the continuous-integration definition deliberately re-runs the whole unit tier under two
+     * hostile locales for exactly this reason. Naming the invariant locale makes the acceptance
+     * decision a property of the value rather than of the environment, so no reader has to reason
+     * about which locale characteristics happen not to influence the outcome today.
      */
-    private static final DateTimeFormatter CALENDAR_DAY_FORMAT =
-            DateTimeFormatter.ofPattern("uuuu-MM-dd").withResolverStyle(ResolverStyle.STRICT);
+    private static final DateTimeFormatter CALENDAR_DAY_FORMAT = DateTimeFormatter
+            .ofPattern("uuuu-MM-dd", Locale.ROOT)
+            .withResolverStyle(ResolverStyle.STRICT);
 
     /** Not instantiable: every member of this contract is static. */
     private JclCardImageBuilder() {

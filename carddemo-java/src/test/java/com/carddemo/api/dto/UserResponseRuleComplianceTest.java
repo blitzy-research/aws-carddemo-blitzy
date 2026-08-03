@@ -291,16 +291,19 @@ class UserResponseRuleComplianceTest {
                     .filter(field -> Modifier.isStatic(field.getModifiers()))
                     .map(Field::getName).toList();
 
-            assertThat(publishedIntegers).hasSize(13);
-            assertThat(publishedIntegers).containsExactly("SELECTOR_LENGTH", "ROW_COUNT",
+            assertThat(publishedIntegers).hasSize(12);
+            assertThat(publishedIntegers).containsExactly("SELECTOR_LENGTH",
                     "USER_ID_LENGTH", "FIRST_NAME_LENGTH", "LAST_NAME_LENGTH", "USER_TYPE_LENGTH",
                     "TRANSACTION_NAME_LENGTH", "SCREEN_TITLE_LENGTH", "CURRENT_DATE_LENGTH",
                     "PROGRAM_NAME_LENGTH", "CURRENT_TIME_LENGTH", "MESSAGE_LENGTH",
                     "SCREEN_FIELD_ID_LENGTH");
-            assertThat(UserResponse.ROW_COUNT)
-                    .as("the row count is the page the list screen fills")
-                    .isEqualTo(PageMetadata.USER_LIST_PAGE_SIZE)
-                    .isEqualTo(10);
+            assertThat(publishedIntegers)
+                    .as("every published figure is the width of one screen item. The row count is "
+                            + "absent on purpose: PageMetadata already states this screen's size as "
+                            + "%d, and publishing it again here would let a client read a screen "
+                            + "dimension off a response body",
+                            PageMetadata.USER_LIST_PAGE_SIZE)
+                    .allMatch(name -> name.endsWith("_LENGTH"));
         }
     }
 

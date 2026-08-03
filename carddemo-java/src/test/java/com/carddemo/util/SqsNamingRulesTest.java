@@ -67,7 +67,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 class SqsNamingRulesTest {
 
     /** The queue property key, quoted exactly as configuration declares it. */
-    private static final String QUEUE_PROPERTY = "carddemo.aws.sqs.job-submission-queue";
+    private static final String QUEUE_PROPERTY = "carddemo.aws.sqs.job-queue";
 
     /** The message-group property key, quoted exactly as configuration declares it. */
     private static final String GROUP_PROPERTY = "carddemo.aws.sqs.message-group-id";
@@ -417,6 +417,211 @@ class SqsNamingRulesTest {
                         .as("code point %d", (int) character)
                         .isEqualTo(expected);
             }
+        }
+    }
+
+    /**
+     * The stricter grammar a production deployment's destination is held to.
+     *
+     * <p>The permissive rule above answers "is this a well-formed destination", which is the right
+     * question for a developer's machine and for the suite, where the destination legitimately
+     * addresses an emulator over plain transport. It is the wrong question for a deployment: a
+     * correctly formed destination can name any host at all, and the value under test here would then
+     * receive the eighty-column job-control cards of every batch submission.
+     *
+     * <p>Every fixture is synthetic. No real account identifier, host or credential appears below.
+     */
+    @Nested
+    @DisplayName("the production destination rule, which is about identity rather than shape")
+    class TheProductionDestinationRule {
+
+        /** The region a fixture deployment declares, and the one a destination must agree with. */
+        private static final String REGION = "eu-west-2";
+
+        /** A synthetic twelve-digit account identifier. */
+        private static final String ACCOUNT = "000000000000";
+
+        /** The canonical queue name. */
+        private static final String QUEUE = "carddemo-jobs.fifo";
+
+        /** The key every diagnostic names. */
+        private static final String KEY = "carddemo.aws.sqs.job-submission-queue";
+
+        @Test
+        @DisplayName("a bare queue name is accepted and returned unchanged, and it is the preferred "
+                + "form because a name carries no destination for anything to redirect")
+        void aBareNameIsAcceptedUnchanged() {
+            assertThat(SqsNamingRules.requireProductionQueueDestination(QUEUE, KEY, REGION))
+                    .isEqualTo(QUEUE);
+        }
+
+        @ParameterizedTest(name = "destination = {0}")
+        @ValueSource(strings = {
+            "http://sqs.eu-west-2.amazonaws.com/000000000000/carddemo-jobs.fifo",
+            "http://attacker.internal/carddemo-jobs.fifo",
+            "http://localhost:4566/000000000000/carddemo-jobs.fifo"})
+        @DisplayName("plain transport is refused whatever host it names, because a job-control card on "
+                + "an unencrypted connection is readable and rewritable in flight")
+        void plainTransportIsRefused(final String destination) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> SqsNamingRules
+                            .requireProductionQueueDestination(destination, KEY, REGION))
+                    .withMessageContaining(KEY);
+        }
+
+        @Test
+        @DisplayName("a secure queue URL on a queue-service endpoint host for this region is accepted")
+        void aGenuineUrlIsAccepted() {
+            final String url = "https://sqs." + REGION + ".amazonaws.com/" + ACCOUNT + "/" + QUEUE;
+
+            assertThat(SqsNamingRules.requireProductionQueueDestination(url, KEY, REGION))
+                    .isEqualTo(url);
+        }
+
+        @ParameterizedTest(name = "host = {0}")
+        @ValueSource(strings = {
+            "attacker.invalid",
+            "sqs.eu-west-2.amazonaws.com.attacker.invalid",
+            "attacker.invalid.sqs.eu-west-2.amazonaws.com",
+            "sqs.eu-west-2.amazonaws.com:8443",
+            "sqs.eu-west-2.amazonaws.com@attacker.invalid",
+            "sqs.us-east-1.amazonaws.com",
+            "attacker.amazonaws.com",
+            "sqs..amazonaws.com"})
+        @DisplayName("a host that is not exactly a queue-service endpoint for this region is refused, "
+                + "so a value cannot pass by containing a familiar substring")
+        void aHostThatIsNotTheEndpointIsRefused(final String host) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> SqsNamingRules.requireProductionQueueDestination(
+                            "https://" + host + "/" + ACCOUNT + "/" + QUEUE, KEY, REGION));
+        }
+
+        @Test
+        @DisplayName("the validated-cryptography endpoint is accepted, because refusing it would push "
+                + "a deployment towards the ordinary one")
+        void theFipsEndpointIsAccepted() {
+            assertThatNoException().isThrownBy(() -> SqsNamingRules.requireProductionQueueDestination(
+                    "https://sqs-fips." + REGION + ".amazonaws.com/" + ACCOUNT + "/" + QUEUE,
+                    KEY, REGION));
+        }
+
+        @Test
+        @DisplayName("the China partition host is accepted, so the rule is not silently limited to one "
+                + "partition")
+        void theChinaPartitionHostIsAccepted() {
+            assertThatNoException().isThrownBy(() -> SqsNamingRules.requireProductionQueueDestination(
+                    "https://sqs.cn-north-1.amazonaws.com.cn/" + ACCOUNT + "/" + QUEUE,
+                    KEY, "cn-north-1"));
+        }
+
+        @ParameterizedTest(name = "path = {0}")
+        @ValueSource(strings = {"/carddemo-jobs.fifo", "/000000000000", "/000000000000/x/y",
+            "/000000000000/carddemo-jobs.fifo/"})
+        @DisplayName("a path that is not exactly an account segment and a queue segment is refused")
+        void aPathThatIsNotAccountAndQueueIsRefused(final String path) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> SqsNamingRules.requireProductionQueueDestination(
+                            "https://sqs." + REGION + ".amazonaws.com" + path, KEY, REGION));
+        }
+
+        @Test
+        @DisplayName("a URL with no path at all names an endpoint rather than a queue and is refused")
+        void aUrlWithNoPathIsRefused() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> SqsNamingRules.requireProductionQueueDestination(
+                            "https://sqs." + REGION + ".amazonaws.com", KEY, REGION));
+        }
+
+        @Test
+        @DisplayName("a queue ARN naming a recognised partition, the queue service, this region and a "
+                + "twelve-digit account is accepted")
+        void aGenuineArnIsAccepted() {
+            final String arn = "arn:aws:sqs:" + REGION + ":" + ACCOUNT + ":" + QUEUE;
+
+            assertThat(SqsNamingRules.requireProductionQueueDestination(arn, KEY, REGION))
+                    .isEqualTo(arn);
+        }
+
+        @ParameterizedTest(name = "partition = {0}")
+        @ValueSource(strings = {"aws", "aws-cn", "aws-us-gov"})
+        @DisplayName("all three recognised partitions are accepted")
+        void everyRecognisedPartitionIsAccepted(final String partition) {
+            assertThatNoException().isThrownBy(() -> SqsNamingRules.requireProductionQueueDestination(
+                    "arn:" + partition + ":sqs:" + REGION + ":" + ACCOUNT + ":" + QUEUE, KEY, REGION));
+        }
+
+        @ParameterizedTest(name = "arn = {0}")
+        @ValueSource(strings = {
+            "arn:aws-fictional:sqs:eu-west-2:000000000000:carddemo-jobs.fifo",
+            "arn:aws:sns:eu-west-2:000000000000:carddemo-jobs.fifo",
+            "arn:aws:sqs:us-east-1:000000000000:carddemo-jobs.fifo",
+            "arn:aws:sqs:eu-west-2:00000000000:carddemo-jobs.fifo",
+            "arn:aws:sqs:eu-west-2:00000000000a:carddemo-jobs.fifo",
+            "arn:aws:sqs:eu-west-2:000000000000:carddemo-jobs",
+            "arn:aws:sqs:eu-west-2:000000000000"})
+        @DisplayName("an ARN whose partition, service, region, account or queue name this deployment "
+                + "cannot have meant is refused")
+        void aMistrustedArnIsRefused(final String arn) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() ->
+                            SqsNamingRules.requireProductionQueueDestination(arn, KEY, REGION));
+        }
+
+        @ParameterizedTest(name = "region = [{0}]")
+        @ValueSource(strings = {"", "   "})
+        @DisplayName("a destination cannot be checked without a region, and that is reported as the "
+                + "missing region rather than passed over as acceptable")
+        void aMissingRegionIsReported(final String blankRegion) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> SqsNamingRules.requireProductionQueueDestination(
+                            "arn:aws:sqs:" + REGION + ":" + ACCOUNT + ":" + QUEUE, KEY, blankRegion))
+                    .withMessageContaining("region");
+        }
+
+        @Test
+        @DisplayName("a null region is reported the same way, so the check can never be skipped by "
+                + "supplying nothing to compare against")
+        void aNullRegionIsReported() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> SqsNamingRules.requireProductionQueueDestination(
+                            "arn:aws:sqs:" + REGION + ":" + ACCOUNT + ":" + QUEUE, KEY, null))
+                    .withMessageContaining("region");
+        }
+
+        @Test
+        @DisplayName("the region comparison ignores case, because a region is not case-significant and "
+                + "refusing EU-WEST-2 would be a rule about spelling")
+        void theRegionComparisonIgnoresCase() {
+            assertThatNoException().isThrownBy(() -> SqsNamingRules.requireProductionQueueDestination(
+                    "arn:aws:sqs:" + REGION + ":" + ACCOUNT + ":" + QUEUE, KEY,
+                    REGION.toUpperCase(java.util.Locale.ROOT)));
+        }
+
+        @ParameterizedTest(name = "destination = {0}")
+        @ValueSource(strings = {"ftp://sqs.eu-west-2.amazonaws.com/000000000000/carddemo-jobs.fifo",
+            "//sqs.eu-west-2.amazonaws.com/000000000000/carddemo-jobs.fifo",
+            "sqs:carddemo-jobs.fifo"})
+        @DisplayName("a value that is none of the three forms is refused rather than falling through "
+                + "to the bare-name rule")
+        void anUnrecognisedFormIsRefused(final String destination) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> SqsNamingRules
+                            .requireProductionQueueDestination(destination, KEY, REGION));
+        }
+
+        @Test
+        @DisplayName("a refusal names the key and never repeats the configured value, so composing a "
+                + "destination cannot place chosen text in a diagnostic")
+        void aRefusalNamesTheKeyAndNotTheValue() {
+            final String chosenText = "chosen-log-line.invalid";
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> SqsNamingRules.requireProductionQueueDestination(
+                            "https://" + chosenText + "/" + ACCOUNT + "/" + QUEUE, KEY, REGION))
+                    .satisfies(refused -> {
+                        assertThat(refused.getMessage()).contains(KEY);
+                        assertThat(refused.getMessage()).doesNotContain(chosenText);
+                    });
         }
     }
 }

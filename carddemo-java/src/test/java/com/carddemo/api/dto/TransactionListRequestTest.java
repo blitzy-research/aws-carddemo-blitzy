@@ -42,136 +42,80 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit tests for {@link TransactionListRequest}, the inbound contract of legacy CICS transaction
+ * Unit tests for {@link TransactionListRequest}, the inbound contract of legacy transaction
  * {@code CT00}.
  *
- * <p>A pure unit test. No application context, no servlet environment, no container, no connection:
- * every subject is constructed directly, the JSON shape is exercised through a locally built mapper
- * configured to match {@code carddemo-java/src/main/resources/application.yml}, and the declarative
- * constraints are exercised through a validator obtained from
- * {@link Validation#buildDefaultValidatorFactory()} rather than from any framework bean.
+ * <p><strong>The screen presents ten rows, and the figure is established by loop bounds alone.</strong>
+ * This is the subtlest paging fact in the estate. {@code app/cbl/COTRN00C.cbl} declares no row table
+ * whatsoever for its displayed rows - its only table declaration, at line 89, is an unrelated
+ * redefinition of the communication area and has nothing to do with paging. The ten rows emerge entirely
+ * from loop bounds: the row-clearing loop is bounded at ten at line 290, the index is reset to one at
+ * line 295, and the filling walk stops once the index reaches eleven at line 297. A reader who searches
+ * that member for a row table and finds none must not conclude the figure is unfounded. Because the
+ * figure is not declared in the program it is not re-declared here either: the row count is read from
+ * the production constants and its agreement with the paging contract is asserted rather than assumed.
+ * It is screen shape - the number of lines a 24x80 operator sees - and never a tuning figure.
  *
- * <h2>Nothing here is asserted by introspection</h2>
+ * <p><strong>Backward paging fills the rows bottom upward.</strong> Forward paging fills top downward;
+ * the backward path is the inverse - the paragraph begins at line 333, the index is seeded to the last
+ * row at line 349, and the walk runs from last row to first at lines 351-357, reading in reverse at line
+ * 352. A paging abstraction that collapsed that inversion into an always-ascending read would present a
+ * backward page in the wrong sequence relative to the legacy screen, which is a visible behavioural
+ * regression rather than a refactoring. This request carries the direction as data and imposes no
+ * ordering.
  *
- * <p>Every property below is proved from observable behaviour - constructing, accessing, validating,
- * serialising and deserialising - and never by reading the type's declarations at run time. That is a
- * deliberate constraint and a stronger test: an annotation read back from a declaration proves only
- * that the annotation is present, whereas binding a body and finding the value discarded proves that
- * the contract actually behaves as the legacy program did. It also keeps the module's introspection
- * count at zero, which is what makes the hand-written fixed-width mappers elsewhere in the module
- * necessary rather than merely preferred.
+ * <p><strong>Two message-bearing rules live in {@code TransactionListService}, not in any constraint on
+ * this type.</strong> The accepted-selection rule rejects an unaccepted character with the 35-character
+ * text set at line 199, which names exactly one accepted letter in the singular - the administrative user
+ * list names two in the plural at 43 characters, and the two are neither shared nor harmonised. The
+ * filter rule rejects a non-numeric filter with the 27-character text set at line 214. Both cascades are
+ * ordered and stop at their first match, which declarative validation cannot reproduce because it reports
+ * violations in no defined order and several at once. The texts belong to the response contract and are
+ * asserted there, so they are cited here by location and measured length only.
  *
- * <h2>The screen presents ten rows, and the figure is established by loop bounds alone</h2>
- *
- * <p>This is the subtlest paging fact in the estate and the reason this comment exists. The
- * transaction-list program {@code app/cbl/COTRN00C.cbl} declares <strong>no row table whatsoever</strong>
- * for its displayed rows. Its only table declaration, at line 89, is an unrelated redefinition of the
- * communication area sized from the area's own length, and it has nothing to do with paging. The ten
- * rows emerge entirely from loop bounds: the row-clearing loop is bounded at ten at line 290, the row
- * index is reset to one at line 295, and the filling walk stops once the index reaches eleven at line
- * 297. A reader who searches this member for a row table and finds none must not conclude that the
- * figure is unfounded - it is founded on those three lines.
- *
- * <p>Because the figure is not declared in the program, it is not re-declared in this test either.
- * The row count is read from the production constants, and its agreement with the figure the paging
- * contract names for this screen is asserted rather than assumed. The figure is screen shape - the
- * number of lines a 24x80 terminal operator sees - and it is not a tuning figure of any kind. This
- * module asserts no performance target at all.
- *
- * <h2>Backward paging fills the rows bottom upward</h2>
- *
- * <p>Forward paging fills the rows top downward. The backward path is the inverse: the paragraph
- * begins at line 333 of {@code app/cbl/COTRN00C.cbl}, the row index is seeded to the last row at line
- * 349, and the walk runs from the last row up to the first in the loop at lines 351 to 357, reading in
- * reverse at line 352. A framework paging abstraction that collapsed that inversion into an
- * always-ascending read would present a backward page in the wrong sequence relative to the legacy
- * screen, which is a visible behavioural regression rather than a refactoring. This request carries
- * the direction as data and imposes no ordering, which is what the tests below hold it to.
- *
- * <h2>Where the two message-bearing rules actually live</h2>
- *
- * <p>Two rules over these inputs are enforced by {@code TransactionListService} and deliberately not
- * by any constraint on this type. The accepted-selection rule rejects an unaccepted character with
- * the text set at line 199, which is 35 characters and names exactly one accepted letter in the
- * singular; the administrative user list names two in the plural at 43 characters, and the two texts
- * are neither shared nor harmonised. The filter rule rejects a non-numeric filter with the
- * 27-character text set at line 214. Both cascades are ordered and stop at their first match, which
- * declarative validation cannot reproduce because it reports violations in no defined order and
- * reports several at once. The texts themselves belong to the response contract and are asserted
- * there, so they are cited here by location and measured length only.
- *
- * <h2>Provenance</h2>
- *
- * <p>Every width, item name, line number and count cited here was read from the read-only legacy
- * estate under {@code app/} at checkout commit {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec},
- * upstream release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No source text from
- * that estate is reproduced anywhere in this file.
+ * <p>A pure unit test: no context, servlet environment, container or connection. Every property is proved
+ * from observable behaviour - constructing, accessing, validating, serialising, deserialising - and never
+ * by reading declarations at run time, which keeps the module's introspection count at zero and is the
+ * stronger statement: an annotation read back proves only that it is present, whereas binding a body and
+ * finding the value discarded proves the contract behaves as the legacy program did. The JSON shape is
+ * exercised through a locally built mapper matching
+ * {@code carddemo-java/src/main/resources/application.yml} and the constraints through a validator from
+ * {@link Validation#buildDefaultValidatorFactory()} rather than any framework bean.
  */
 @DisplayName("TransactionListRequest :: inbound contract of legacy transaction CT00")
 class TransactionListRequestTest {
-
-    /**
-     * A filter at the full 16 characters of inbound map item {@code TRNIDIN}, carrying the leading
-     * zeros that make a fixed-width key what it is.
-     */
     private static final String FILTER_AT_FULL_WIDTH = "0000000000000042";
 
-    /** The same identifier with its leading zeros stripped: a different key, never an equal one. */
     private static final String FILTER_WITHOUT_LEADING_ZEROS = "42";
 
-    /** A filter carrying trailing spaces, which a fixed-width screen transmits and which are value. */
     private static final String FILTER_WITH_TRAILING_SPACES = "42              ";
 
-    /** An indicator at the full 8 characters of inbound map item {@code PAGENUM}. */
     private static final String INDICATOR_AT_FULL_WIDTH = "00000003";
 
-    /** The accepted selection character, in the case the legacy screen displays. */
     private static final String MARKED = "S";
 
-    /** The same character in the other case: a distinct byte that is never folded onto the above. */
     private static final String MARKED_OTHER_CASE = "s";
 
-    /** A single character the legacy rejects with a message - and which this type still accepts. */
     private static final String UNACCEPTED = "X";
 
-    /** The wire form of a row the operator did not mark, exactly as the screen transmits a blank. */
     private static final String UNMARKED = "";
 
-    /** The retained key of the first displayed row, from which a backward walk resumes. */
     private static final String FIRST_ROW_KEY = "0000000000000031";
 
-    /** The retained key of the last displayed row, from which a forward walk resumes. */
     private static final String LAST_ROW_KEY = "0000000000000041";
 
-    /** An account identifier whose leading zeros are contractual. */
     private static final String ACCOUNT_ID = "00000000011";
 
-    /** A card number, carried so the rendering assertions have something regulated to look for. */
     private static final String CARD_NUMBER = "4111111111111111";
 
-    /** A customer identifier at its declared width, likewise leading-zero significant. */
     private static final String CUSTOMER_ID = "000000011";
 
-    /** The placeholder the production type substitutes for each withheld component. */
     private static final String WITHHELD = "***REDACTED***";
 
-    /** The twelve program-function actions the estate declares, and no higher ones. */
     private static final List<String> PROGRAM_FUNCTION_ACTION_NAMES = List.of(
             "PFK01", "PFK02", "PFK03", "PFK04", "PFK05", "PFK06",
             "PFK07", "PFK08", "PFK09", "PFK10", "PFK11", "PFK12");
 
-    /**
-     * Builds a mapper configured exactly as the module configures its own.
-     *
-     * <p>Built locally rather than obtained from a context, because this is a unit test: the six
-     * settings mirrored here are the six the module's configuration declares, so the wire form
-     * exercised below is the wire form the application produces. Absent components are omitted,
-     * temporal values are never written as epoch numbers, an unknown incoming property is tolerated,
-     * an enumerated component may not be selected by a bare number, a fractional number may not bind
-     * an integral component, and a decimal is written in plain notation.
-     *
-     * @return a mapper equivalent to the module's own
-     */
     private static ObjectMapper moduleEquivalentMapper() {
         return JsonMapper.builder()
                 .defaultPropertyInclusion(JsonInclude.Value.construct(
@@ -184,12 +128,6 @@ class TransactionListRequestTest {
                 .build();
     }
 
-    /**
-     * Validates a request with a validator built from the specification's own factory.
-     *
-     * @param request the subject
-     * @return every violation the declarative constraints report
-     */
     private static Set<ConstraintViolation<TransactionListRequest>> violationsOf(
             TransactionListRequest request) {
         try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
@@ -198,13 +136,6 @@ class TransactionListRequestTest {
         }
     }
 
-    /**
-     * Returns the single property path a request violates, failing with an actionable diagnostic when
-     * the violation count is not exactly one.
-     *
-     * @param request the subject
-     * @return the string form of the one reported property path
-     */
     private static String soleViolationPathOf(TransactionListRequest request) {
         Set<ConstraintViolation<TransactionListRequest>> violations = violationsOf(request);
         assertThat(violations)
@@ -214,22 +145,16 @@ class TransactionListRequestTest {
         return violations.iterator().next().getPropertyPath().toString();
     }
 
-    /** @return the echoed cross-turn navigation state, populated at every declared width. */
     private static NavigationContext navigation() {
         return new NavigationContext("CT00", "COTRN00C", "CT01", "COTRN01C", "ADMINUSR", "A",
                 NavigationContext.ProgramContext.REENTER, CUSTOMER_ID, "MARY", "ANN", "SMITH",
                 ACCOUNT_ID, "Y", CARD_NUMBER, "COTRN0A", "COTRN00");
     }
 
-    /**
-     * @param direction the way the browse should walk
-     * @return the inbound paging choice: two retained boundary keys and a direction
-     */
     private static PageMetadata.PageCursorRequest cursor(PageMetadata.PagingDirection direction) {
         return new PageMetadata.PageCursorRequest(FIRST_ROW_KEY, LAST_ROW_KEY, direction);
     }
 
-    /** @return a sequence of unmarked entries, one per row the screen presents. */
     private static List<String> everyRowUnmarked() {
         List<String> rows = new ArrayList<>();
         for (int position = 0; position < TransactionListRequest.ROW_SELECTOR_COUNT; position++) {
@@ -238,26 +163,16 @@ class TransactionListRequestTest {
         return rows;
     }
 
-    /**
-     * @param index the zero-based position to mark
-     * @return a full-length sequence with one marked entry and every other entry unmarked
-     */
     private static List<String> rowsMarkedAt(int index) {
         List<String> rows = everyRowUnmarked();
         rows.set(index, MARKED);
         return rows;
     }
 
-    /**
-     * @param selectors the selector sequence under test
-     * @return a request carrying only that sequence, so a selector assertion cannot be confused by a
-     *     violation reported against some other component
-     */
     private static TransactionListRequest withSelectors(List<String> selectors) {
         return new TransactionListRequest(null, null, selectors, KeyAction.ENTER, null, null);
     }
 
-    /** @return a request with every component populated, the seventh displayed row marked. */
     private static TransactionListRequest populated() {
         return new TransactionListRequest(FILTER_AT_FULL_WIDTH, INDICATOR_AT_FULL_WIDTH,
                 rowsMarkedAt(6), KeyAction.PFK08, navigation(),
@@ -267,18 +182,10 @@ class TransactionListRequestTest {
     @Nested
     @DisplayName("the screen row count comes from loop bounds and is read, never re-declared")
     class ScreenRowCountProvenance {
-
         @Test
         @DisplayName("the selector count agrees with the figure the paging contract names for this "
                 + "screen, and is taken from there rather than restated")
         void selectorCountAgreesWithThePagingContract() {
-            /*
-             * Read from the production constants on purpose. The figure is not declared anywhere in
-             * app/cbl/COTRN00C.cbl - its only table declaration, at line 89, redefines the
-             * communication area and is unrelated to paging - so it exists only as the loop bounds at
-             * lines 290, 295 and 297. Restating it as a literal in this test would create a fourth,
-             * unfounded declaration of a figure that already has exactly one home per contract.
-             */
             assertThat(TransactionListRequest.ROW_SELECTOR_COUNT)
                     .as("the map declares one selector item per displayed row, so the two production"
                             + " figures must agree even though each is declared for its own purpose")
@@ -345,7 +252,6 @@ class TransactionListRequestTest {
     @Nested
     @DisplayName("the row selectors are positional, and an unmarked slot is information")
     class PositionalRowSelectors {
-
         @Test
         @DisplayName("a mark at index seven reads back at index seven, every other slot unmarked")
         void aMarkAtIndexSevenReadsBackAtIndexSeven() {
@@ -404,11 +310,6 @@ class TransactionListRequestTest {
 
             List<String> readBack = withSelectors(submitted).rowSelectors();
 
-            /*
-             * Dropping the unmarked slots would shift every later entry up and silently re-point the
-             * selection at the wrong displayed row, which is why the sequence is index-aligned rather
-             * than a set, a map keyed by row, or a compacted list of the marks alone.
-             */
             assertThat(readBack)
                     .containsExactly(UNMARKED, UNMARKED, MARKED, UNMARKED, UNMARKED, UNMARKED,
                             UNMARKED, UNMARKED, UNACCEPTED, UNMARKED)
@@ -435,13 +336,6 @@ class TransactionListRequestTest {
 
             List<String> readBack = withSelectors(submitted).rowSelectors();
 
-            /*
-             * The legacy selection construct at app/cbl/COTRN00C.cbl lines 148 to 182 walks the slots
-             * in ascending row order and stops at the first non-blank one, so a submission marking two
-             * rows resolves to the earlier row and the later mark is ignored rather than rejected.
-             * Preserving that stop-at-first-match ordering is the service's obligation; this contract
-             * neither scans, tallies nor discards, so both marks must still be here.
-             */
             assertThat(readBack.get(1)).isEqualTo(MARKED);
             assertThat(readBack.get(5)).isEqualTo(MARKED);
             assertThat(violationsOf(withSelectors(submitted)))
@@ -453,18 +347,10 @@ class TransactionListRequestTest {
     @Nested
     @DisplayName("the selection character is carried as submitted and its case is never folded")
     class SelectionCharacterIsNeverFolded {
-
         @Test
         @DisplayName("the accepted character, the same character in the other case, an unaccepted "
                 + "character and an unmarked slot all pass and all survive byte for byte")
         void everySubmittedCharacterPassesAndSurvivesUnfolded() {
-            /*
-             * The accepted-character rule is the ordered service check whose text is set at line 199 of
-             * app/cbl/COTRN00C.cbl - 35 characters, naming one accepted letter in the singular. It is
-             * message-bearing and first-match-wins, so it cannot be a declarative constraint here: a
-             * constraint would fire in no defined order, would report alongside any other violation,
-             * and could not carry that one text. Everything this type owes is to carry the byte.
-             */
             for (String submitted : List.of(MARKED, MARKED_OTHER_CASE, UNACCEPTED, UNMARKED)) {
                 TransactionListRequest request = withSelectors(List.of(submitted));
 
@@ -508,11 +394,6 @@ class TransactionListRequestTest {
             withAbsentEntry.add(MARKED);
             withAbsentEntry.add(null);
 
-            /*
-             * A fixed-width screen transmits an unanswered row as blanks, never as nothing, so an
-             * absent entry is a caller defect rather than an unmarked row. Accepting one would leave an
-             * index-aligned sequence carrying a slot that means neither "chosen" nor "not chosen".
-             */
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> withSelectors(withAbsentEntry));
         }
@@ -521,17 +402,9 @@ class TransactionListRequestTest {
     @Nested
     @DisplayName("the transaction-identifier filter is optional and unvalidated on this boundary")
     class TransactionIdentifierFilter {
-
         @Test
         @DisplayName("absent, empty, full width, short and non-numeric filters all violate nothing")
         void everyFilterShapeViolatesNothing() {
-            /*
-             * The numeric rule is the ordered service check whose 27-character text is set at line 214
-             * of app/cbl/COTRN00C.cbl. A blank filter is not an error at all: the program tests the
-             * item for blankness at line 206 and positions the browse at the low end of the key
-             * sequence instead of at a key, so rejecting blank here would refuse "list from the
-             * beginning", which is a different query rather than an invalid one.
-             */
             assertThat(violationsOf(filteredBy(null))).as("absent").isEmpty();
             assertThat(violationsOf(filteredBy(UNMARKED))).as("empty").isEmpty();
             assertThat(violationsOf(filteredBy(FILTER_AT_FULL_WIDTH))).as("full width").isEmpty();
@@ -601,7 +474,6 @@ class TransactionListRequestTest {
     @Nested
     @DisplayName("the displayed page indicator is echoed rather than accepted")
     class DisplayedPageIndicator {
-
         @Test
         @DisplayName("it is eight characters wide, which is not the card-list screen's width")
         void itIsEightCharactersWideAndNotThree() {
@@ -639,12 +511,6 @@ class TransactionListRequestTest {
         @Test
         @DisplayName("a client-supplied indicator is discarded while a bindable sibling still binds")
         void aClientSuppliedIndicatorIsDiscarded() throws JsonProcessingException {
-            /*
-             * Both sites that touch the item in app/cbl/COTRN00C.cbl - line 324 and line 373 - write
-             * to it, and the program reads it back at neither, taking the authoritative figure from the
-             * communication area it carries across turns. Marking the component non-bindable is
-             * therefore the legacy behaviour rather than a restriction added on top of it.
-             */
             TransactionListRequest bound = moduleEquivalentMapper().readValue(
                     "{\"displayedPageNumber\":\"99999999\",\"transactionIdFilter\":\""
                             + FILTER_AT_FULL_WIDTH + "\"}",
@@ -675,7 +541,6 @@ class TransactionListRequestTest {
     @Nested
     @DisplayName("the paging state is carried, never re-implemented")
     class PagingStateIsCarried {
-
         @Test
         @DisplayName("the inbound shape carries two boundary keys and a direction, and nothing else")
         void theInboundShapeCarriesTwoKeysAndADirection() throws JsonProcessingException {
@@ -705,14 +570,6 @@ class TransactionListRequestTest {
             JsonNode inboundTree = mapper.readTree(mapper.writeValueAsString(
                     cursor(PageMetadata.PagingDirection.FORWARD)));
 
-            /*
-             * The legacy browse never counts the cluster: it discovers that a further page exists by
-             * attempting one more read and observing the outcome. So the two availability answers are
-             * outcomes of walking rather than values a caller can assert, and a count of all rows or of
-             * all pages is information the original never had. The inbound shape is therefore strictly
-             * narrower, and the property counts below are what makes that structural rather than
-             * documentary.
-             */
             assertThat(inboundTree.size()).isLessThan(outboundTree.size());
             assertThat(outboundTree.has("hasMorePages")).isTrue();
             assertThat(inboundTree.has("hasMorePages"))
@@ -759,15 +616,6 @@ class TransactionListRequestTest {
         @Test
         @DisplayName("a backward submission is representable and nothing here imposes ascending order")
         void aBackwardSubmissionIsRepresentable() {
-            /*
-             * The backward paragraph begins at line 333 of app/cbl/COTRN00C.cbl, seeds the row index to
-             * the last row at line 349, and walks upward to the first row in the loop at lines 351 to
-             * 357, reading in reverse at line 352 - so rows are read in the inverse of the order they
-             * are presented in. Re-ordering them is the service's obligation. This request holds no
-             * ordering rule, no comparison rule and no re-sequencing, which is exactly what lets the
-             * service reproduce the bottom-upward fill; an abstraction that always read ascending would
-             * present a backward page in the wrong sequence relative to the legacy screen.
-             */
             List<String> asReadBackward = List.of("j", "i", "h", "g", "f", "e", "d", "c", "b", "a");
             TransactionListRequest request = new TransactionListRequest(null, null, asReadBackward,
                     KeyAction.PFK07, navigation(), cursor(PageMetadata.PagingDirection.BACKWARD));
@@ -828,7 +676,6 @@ class TransactionListRequestTest {
     @Nested
     @DisplayName("the echoed navigation state is carried, never re-implemented")
     class NavigationStateIsCarried {
-
         @Test
         @DisplayName("it survives a round trip unchanged, leading-zero identifiers included")
         void itSurvivesARoundTripUnchanged() throws JsonProcessingException {
@@ -910,7 +757,6 @@ class TransactionListRequestTest {
     @Nested
     @DisplayName("the attention key is the estate's declared vocabulary and nothing more")
     class AttentionKeyVocabulary {
-
         @Test
         @DisplayName("sixteen actions are declared, and not one of them is a catch-all")
         void sixteenActionsAreDeclaredAndNoneIsACatchAll() {
@@ -929,11 +775,6 @@ class TransactionListRequestTest {
         @Test
         @DisplayName("no action is declared for the higher function keys")
         void noActionIsDeclaredForTheHigherFunctionKeys() {
-            /*
-             * The estate folds the higher function keys onto the lower twelve, so they are not distinct
-             * actions. That fold belongs to the utility layer and is neither performed here nor named
-             * here; this enumeration simply has no constant for them.
-             */
             List<String> functionKeyNames = new ArrayList<>();
             for (KeyAction action : KeyAction.values()) {
                 if (action.isProgramFunctionKey()) {
@@ -1020,7 +861,6 @@ class TransactionListRequestTest {
     @Nested
     @DisplayName("declarative validation measures widths and decides nothing else")
     class DeclarativeValidationMeasuresWidthsOnly {
-
         @Test
         @DisplayName("a wholly absent submission reports nothing, so no presence rule is declared")
         void aWhollyAbsentSubmissionReportsNothing() {
@@ -1108,16 +948,10 @@ class TransactionListRequestTest {
     @Nested
     @DisplayName("absence is tolerated, the value is immutable, and the wire form omits what is absent")
     class AbsenceToleranceImmutabilityAndWireShape {
-
         @Test
         @DisplayName("the selector sequence is exposed immutably, so a caller cannot alter a submission "
                 + "after it has been accepted")
         void theSelectorSequenceIsExposedImmutably() {
-            /*
-             * The type is a record, so no setter can exist and immutability of the scalar components is
-             * a property of the declaration rather than something to demonstrate. The sequence is the
-             * one component that could leak mutability, so it is the one exercised here.
-             */
             List<String> exposed = populated().rowSelectors();
 
             assertThatExceptionOfType(UnsupportedOperationException.class)
@@ -1218,12 +1052,6 @@ class TransactionListRequestTest {
         void noScreenFurnitureOrMonetaryValueRidesOnTheRequest() throws JsonProcessingException {
             String json = moduleEquivalentMapper().writeValueAsString(populated());
 
-            /*
-             * The screen-header families and the message item at line 372 of app/cpy-bms/COTRN00.CPY
-             * are written outbound by the program and never read inbound, and the four row-value
-             * families - identifier, date, description and amount - are what the program renders into
-             * the page. All of them belong to the response contract, so none may appear here.
-             */
             assertThat(json).doesNotContain("errorMessage", "transactionName", "screenTitle",
                     "currentDate", "currentTime", "programName", "transactionAmount");
         }
@@ -1232,7 +1060,6 @@ class TransactionListRequestTest {
     @Nested
     @DisplayName("value semantics and the diagnostic rendering")
     class ValueSemanticsAndRendering {
-
         @Test
         @DisplayName("two identical submissions are equal and agree on their hash code")
         void twoIdenticalSubmissionsAreEqual() {

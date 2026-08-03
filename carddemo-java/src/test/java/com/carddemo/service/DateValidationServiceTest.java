@@ -44,378 +44,197 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 /**
- * Verifies {@code DateValidationService} against the two legacy artefacts it translates.
+ * Verifies {@code DateValidationService} against the two legacy artefacts it translates: the
+ * callable date-validation subprogram and the procedural editing copybook whose cascade it
+ * reproduces.
  *
- * <p>The service carries <strong>two entirely separate entry points</strong> and the tests are
- * organised to keep them separate, because conflating them is the easiest way to assert something the
- * legacy never did:
- *
- * <ul>
- *   <li>the <em>copybook cascade</em>, the {@code EDIT-DATE-CCYYMMDD} range run through to its own
- *       exit label in {@code [app/cpy/CSUTLDPY.cpy]}, an
- *       <strong>eleven-paragraph fall-through range</strong>
- *       whose head paragraph validates nothing at all, so the behaviour lives entirely in the five
- *       stages it falls through; and</li>
- *   <li>the <em>callable subprogram</em>, {@code CALL 'CSUTLDTC'}, whose procedure division runs from
- *       {@code [app/cbl/CSUTLDTC.cbl:L88]} to {@code [app/cbl/CSUTLDTC.cbl:L102]} and whose ten-clause
- *       feedback evaluation runs from {@code [app/cbl/CSUTLDTC.cbl:L128]} to
- *       {@code [app/cbl/CSUTLDTC.cbl:L149]}.</li>
- * </ul>
- *
- * <p><strong>Every oracle below is read from the legacy source, never from the Java.</strong> The
- * message literals carry the source's own irregular spacing - three suffixes open with
- * {@code " : "}, two with {@code ": "}, four with {@code ":"} alone, one with no colon at all, and
- * one closes with a trailing space - and that irregularity is asserted rather than tidied, because it
- * is displayed on the account-update screen.
- *
- * <p>Three properties of the cascade are the ones a careless translation loses, so each has its own
- * nested class:
- *
- * <ol>
- *   <li><strong>A stage failing does not abandon the range.</strong> The year stage's early exit lands
- *       on the month stage, which is why a blank year and a bad month are both reported on one pass.
- *       Tests that assert on more than one flag at a time exist precisely to pin this.</li>
- *   <li><strong>The accumulated message is first-wins.</strong> Each stage writes its suffix only
- *       while the message is still blank, so later stages set flags silently.</li>
- *   <li><strong>The leap-year test selects a divisor before dividing.</strong> Four hundred when the
- *       year within the century is zero, four otherwise,
- *       {@code [app/cpy/CSUTLDPY.cpy:L245]}-{@code [app/cpy/CSUTLDPY.cpy:L249]}. The year 1900 is the
- *       witness that this is not decorative: {@code 1900 % 4 == 0}, so a single-divisor translation
- *       would accept a 29 February 1900 that the legacy rejects.</li>
- * </ol>
- *
- * <p><strong>Every width asserted below is a byte width.</strong> The eight-character cascade input
- * field, the two ten-character linkage parameters and the eighty-character result area are all
- * fixed-width character declarations, and such a field reserves its declared byte count. Width
- * assertions therefore measure {@code getBytes(StandardCharsets.US_ASCII).length} rather than a
- * {@code String} character count, and no fixed-width comparison anywhere below is trimmed: a trailing
- * space that the layout reserves is part of the value, so trimming it would assert a contract the
- * legacy does not have.
- *
- * <p><strong>Deliberately not covered here.</strong> The five-paragraph range
- * {@code 1260-EDIT-US-PHONE-NUM} run through to its own exit label, invoked from two sites in
- * {@code app/cbl/COACTUPC.cbl}, is <em>not</em> a member of either range this service translates and
- * the service exposes no phone-number entry point. It belongs to the account-update translation and is
- * covered there; duplicating it here would assert a member this class does not own.
+ * <p>Two contracts carry the parity risk. The cascade's stage order - year, then month, then day,
+ * then their combination, then the language-environment check - is the contract, because the legacy
+ * range performs the stages in that order and each stage exits early; a suite that only checked the
+ * final verdict would pass with the stages reordered. And the subprogram's result block is a fixed
+ * eighty characters whose severity and message number are read by offset, so the slices are asserted
+ * as bytes rather than as parsed values.
  */
 @DisplayName("DateValidationService: the copybook cascade and the callable subprogram")
 final class DateValidationServiceTest {
-
-    // The thirteen cascade message suffixes, reproduced from app/cpy/CSUTLDPY.cpy byte for byte.
-    // These are duplicated here deliberately: a test that imported the production constants would
-    // assert only that the code equals itself.
-
-    /** {@code [app/cpy/CSUTLDPY.cpy:L37]}. Opens with a spaced colon. */
     private static final String ORACLE_YEAR_NOT_SUPPLIED = " : Year must be supplied.";
 
-    /** {@code [app/cpy/CSUTLDPY.cpy:L54]}. The one suffix of the thirteen that carries no colon. */
     private static final String ORACLE_YEAR_NOT_FOUR_DIGITS = " must be 4 digit number.";
 
-    /** {@code [app/cpy/CSUTLDPY.cpy:L79]}. */
     private static final String ORACLE_CENTURY_NOT_VALID = " : Century is not valid.";
 
-    /** {@code [app/cpy/CSUTLDPY.cpy:L101]}. */
     private static final String ORACLE_MONTH_NOT_SUPPLIED = " : Month must be supplied.";
 
-    /** {@code [app/cpy/CSUTLDPY.cpy:L119]} and, identically, {@code [app/cpy/CSUTLDPY.cpy:L136]}. */
     private static final String ORACLE_MONTH_OUT_OF_RANGE =
             ": Month must be a number between 1 and 12.";
 
-    /** {@code [app/cpy/CSUTLDPY.cpy:L161]}. */
     private static final String ORACLE_DAY_NOT_SUPPLIED = " : Day must be supplied.";
 
-    /**
-     * {@code [app/cpy/CSUTLDPY.cpy:L180]} and {@code [app/cpy/CSUTLDPY.cpy:L195]}. Lower-case "day"
-     * where the month peer capitalises, and no space after the colon; both are the source's.
-     */
     private static final String ORACLE_DAY_OUT_OF_RANGE = ":day must be a number between 1 and 31.";
 
-    /** {@code [app/cpy/CSUTLDPY.cpy:L221]}. */
     private static final String ORACLE_CANNOT_HAVE_31_DAYS = ":Cannot have 31 days in this month.";
 
-    /** {@code [app/cpy/CSUTLDPY.cpy:L236]}. */
     private static final String ORACLE_CANNOT_HAVE_30_DAYS = ":Cannot have 30 days in this month.";
 
-    /**
-     * {@code [app/cpy/CSUTLDPY.cpy:L266]}. <strong>Two sentences run together with no space after the
-     * first period</strong>, exactly as the source literal has them.
-     */
     private static final String ORACLE_NOT_A_LEAP_YEAR =
             ":Not a leap year.Cannot have 29 days in this month.";
 
-    /** {@code [app/cpy/CSUTLDPY.cpy:L363]}. The trailing space is in the source literal. */
     private static final String ORACLE_DATE_IN_FUTURE = ":cannot be in the future ";
 
-    /** The all-spaces state of {@code WS-RETURN-MSG}, {@code [app/cbl/COACTUPC.cbl:L479]}. */
     private static final String ORACLE_NO_MESSAGE = "";
 
-    // The ten outcome texts of the evaluation at [app/cbl/CSUTLDTC.cbl:L128] to [L149], each padded to
-    // the fifteen-character receiving field WS-RESULT at [app/cbl/CSUTLDTC.cbl:L49].
-
-    /** {@code [app/cbl/CSUTLDTC.cbl:L130]}, padded from thirteen characters to fifteen. */
     private static final String ORACLE_TEXT_DATE_IS_VALID = "Date is valid  ";
 
-    /** {@code [app/cbl/CSUTLDTC.cbl:L132]}, padded from twelve characters to fifteen. */
     private static final String ORACLE_TEXT_INSUFFICIENT = "Insufficient   ";
 
-    /** {@code [app/cbl/CSUTLDTC.cbl:L134]}, already fifteen characters. */
     private static final String ORACLE_TEXT_DATEVALUE_ERROR = "Datevalue error";
 
-    /** {@code [app/cbl/CSUTLDTC.cbl:L136]}, written out to the full width in the source. */
     private static final String ORACLE_TEXT_INVALID_ERA = "Invalid Era    ";
 
-    /** {@code [app/cbl/CSUTLDTC.cbl:L138]}. */
     private static final String ORACLE_TEXT_UNSUPPORTED_RANGE = "Unsupp. Range  ";
 
-    /** {@code [app/cbl/CSUTLDTC.cbl:L140]}. */
     private static final String ORACLE_TEXT_INVALID_MONTH = "Invalid month  ";
 
-    /** {@code [app/cbl/CSUTLDTC.cbl:L142]}. */
     private static final String ORACLE_TEXT_BAD_PICTURE_STRING = "Bad Pic String ";
 
-    /** {@code [app/cbl/CSUTLDTC.cbl:L144]}, already fifteen characters. */
     private static final String ORACLE_TEXT_NON_NUMERIC_DATA = "Nonnumeric data";
 
-    /** {@code [app/cbl/CSUTLDTC.cbl:L146]}. */
     private static final String ORACLE_TEXT_YEAR_IN_ERA_ZERO = "YearInEra is 0 ";
 
-    /** The {@code WHEN OTHER} text at {@code [app/cbl/CSUTLDTC.cbl:L148]}, already fifteen. */
     private static final String ORACLE_TEXT_DATE_IS_INVALID = "Date is invalid";
 
-    // Widths and codes, every one read from a record layout rather than assumed.
-
-    /** Width of {@code LS-RESULT}, {@code [app/cbl/CSUTLDTC.cbl]}. */
     private static final int ORACLE_RESULT_BLOCK_WIDTH = 80;
 
-    /** Width of {@code CSUTLDTC-RESULT-MSG}, {@code [app/cbl/CORPT00C.cbl]}. */
     private static final int ORACLE_MESSAGE_SEGMENT_WIDTH = 61;
 
-    /** Width of {@code WS-SEVERITY} and of {@code WS-MSG-NO}, {@code [app/cbl/CSUTLDTC.cbl]}. */
     private static final int ORACLE_CODE_WIDTH = 4;
 
-    /** Width of {@code WS-RESULT}, {@code [app/cbl/CSUTLDTC.cbl]}. */
     private static final int ORACLE_RESULT_TEXT_WIDTH = 15;
 
-    /** Width of {@code LS-DATE} and of {@code LS-DATE-FORMAT}, {@code [app/cbl/CSUTLDTC.cbl]}. */
     private static final int ORACLE_LINKAGE_TEXT_WIDTH = 10;
 
-    /** Width of {@code WS-EDIT-DATE-CCYYMMDD}, {@code [app/cpy/CSUTLDWY.cpy]}. */
     private static final int ORACLE_CCYYMMDD_WIDTH = 8;
 
-    /** The three-character group {@code WS-EDIT-DATE-FLGS}, {@code [app/cpy/CSUTLDWY.cpy]}. */
     private static final int ORACLE_FLAG_GROUP_WIDTH = 3;
 
-    /** The severity the callers accept outright, {@code [app/cbl/CORPT00C.cbl:L396]}. */
     private static final String ORACLE_ACCEPTED_SEVERITY = "0000";
 
-    /** The four-character severity every failure token carries: decimal three, zero filled. */
     private static final String ORACLE_FAILURE_SEVERITY = "0003";
 
-    /**
-     * The message number both callers tolerate despite a non-zero severity,
-     * {@code [app/cbl/CORPT00C.cbl:L406]}. Decoded from {@code 0x09D1} in the feedback token of
-     * {@code 88 FC-UNSUPP-RANGE} at {@code [app/cbl/CSUTLDTC.cbl:L66]}.
-     */
     private static final String ORACLE_TOLERATED_MESSAGE_NUMBER = "2513";
 
-    /** The message number of the success token: zero, zero filled to four characters. */
     private static final String ORACLE_ZERO_MESSAGE_NUMBER = "0000";
 
-    // Calendar constants, each a condition-name value from app/cpy/CSUTLDWY.cpy.
-
-    /** {@code 88 THIS-CENTURY VALUE 20}, {@code [app/cpy/CSUTLDWY.cpy:L9]}. */
     private static final int ORACLE_THIS_CENTURY = 20;
 
-    /** {@code 88 LAST-CENTURY VALUE 19}, {@code [app/cpy/CSUTLDWY.cpy:L10]}. */
     private static final int ORACLE_LAST_CENTURY = 19;
 
-    /**
-     * The seven months enumerated by {@code 88 WS-31-DAY-MONTH},
-     * {@code [app/cpy/CSUTLDWY.cpy:L21]}-{@code [app/cpy/CSUTLDWY.cpy:L23]}. Written out as the
-     * condition name writes them rather than derived from a calendar library.
-     */
     private static final Set<Integer> ORACLE_THIRTY_ONE_DAY_MONTHS = Set.of(1, 3, 5, 7, 8, 10, 12);
 
-    /** {@code 88 WS-FEBRUARY VALUE 2}, {@code [app/cpy/CSUTLDWY.cpy:L24]}. */
     private static final int ORACLE_FEBRUARY = 2;
 
-    /**
-     * The first day the Lilian date services {@code CEEDAYS} covers. The Lilian day count begins on
-     * 15 October 1582, so this is the boundary the unsupported-range condition reports.
-     */
     private static final LocalDate ORACLE_LILIAN_RANGE_START = LocalDate.of(1582, 10, 15);
 
-    // Representative inputs. Each is named for the branch it selects, so a failure names the branch.
-
-    /** A wholly unremarkable date: every stage passes and no message is claimed. */
     private static final String VALID_DATE = "20220101";
 
-    /** 31 December: the upper bound of a 31-day month. */
     private static final String VALID_LAST_DAY_OF_YEAR = "20221231";
 
-    /** A leap day in a year divisible by four but not by one hundred: the ordinary-divisor branch. */
     private static final String LEAP_DAY_ORDINARY = "20240229";
 
-    /** A leap day in a common year: the ordinary-divisor branch, rejecting. */
     private static final String LEAP_DAY_COMMON_YEAR = "20230229";
 
-    /**
-     * A leap day in a century year that <em>is</em> a leap year: year within century zero selects the
-     * four-hundred divisor and {@code 2000 % 400 == 0} accepts.
-     */
     private static final String LEAP_DAY_CENTURY_ACCEPTED = "20000229";
 
-    /**
-     * A leap day in a century year that is <strong>not</strong> a leap year. This is the witness for
-     * the divisor selection: {@code 1900 % 4 == 0} would accept it, {@code 1900 % 400 == 300} rejects
-     * it, and the legacy rejects it.
-     */
     private static final String LEAP_DAY_CENTURY_REJECTED = "19000229";
 
-    /** Eight spaces: the {@code SPACES} half of the blankness test. */
     private static final String ALL_SPACES_DATE = "        ";
 
-    /** Eight null characters: the {@code LOW-VALUES} half of the blankness test. */
     private static final String ALL_LOW_VALUES_DATE = "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000";
 
-    /** Month thirteen: outside {@code 88 WS-VALID-MONTH VALUES 1 THROUGH 12}. */
     private static final String MONTH_ABOVE_RANGE_DATE = "20221301";
 
-    /** Month zero: below the same range. */
     private static final String MONTH_BELOW_RANGE_DATE = "20220001";
 
-    /** A 31st in April, a 30-day month. */
     private static final String THIRTY_FIRST_OF_SHORT_MONTH_DATE = "20220431";
 
-    /** A 30th of February. */
     private static final String THIRTIETH_OF_FEBRUARY_DATE = "20220230";
 
-    /** Century eighteen: neither of the two the source accepts. */
     private static final String INVALID_CENTURY_DATE = "18220101";
 
-    /** A non-digit inside the year slice. */
     private static final String NON_NUMERIC_YEAR_DATE = "2X220101";
 
-    /** A blank month slice inside an otherwise populated image. */
     private static final String BLANK_MONTH_DATE = "2022  01";
 
-    /** A blank day slice inside an otherwise populated image. */
     private static final String BLANK_DAY_DATE = "202201  ";
 
-    /** Day zero: below {@code 88 WS-VALID-DAY VALUES 1 THROUGH 31}. */
     private static final String DAY_BELOW_RANGE_DATE = "20220100";
 
-    /** Day thirty-two: above the same range. */
     private static final String DAY_ABOVE_RANGE_DATE = "20220132";
 
-    /** A non-digit inside the day slice. */
     private static final String NON_NUMERIC_DAY_DATE = "202201XX";
 
-    /** The hyphenated mask, {@code WS-DATE-FORMAT VALUE 'YYYY-MM-DD'}, {@code [app/cbl/CORPT00C.cbl:L72]}. */
     private static final String HYPHENATED_DATE = "2022-01-01";
 
-    // Inputs and oracles used by the dispatch, exemption and byte-width proofs below. Each is written
-    // out as a literal, because an oracle computed by the code under test asserts only that the code
-    // agrees with itself.
-
-    /** Ten spaces: the whole hyphenated slot supplied blank, so the picture gets no digits at all. */
     private static final String HYPHENATED_ALL_SPACES = "          ";
 
-    /** A non-digit in a month position the hyphenated picture requires to be numeric. */
     private static final String HYPHENATED_NON_NUMERIC_MONTH = "2022-1X-01";
 
-    /** Year zero: accepted by proleptic parsing, refused by the date service, so tested before parsing. */
     private static final String HYPHENATED_YEAR_ZERO = "0000-01-01";
 
-    /** Month thirteen in the hyphenated mask. */
     private static final String HYPHENATED_MONTH_ABOVE_RANGE = "2022-13-01";
 
-    /** A 30th of February: well formed, not a calendar date, so strict resolution must refuse it. */
     private static final String HYPHENATED_THIRTIETH_OF_FEBRUARY = "2022-02-30";
 
-    /** A 31st of April: well formed, not a calendar date. */
     private static final String HYPHENATED_THIRTY_FIRST_OF_SHORT_MONTH = "2022-04-31";
 
-    /** A 29th of February in a common year: well formed, not a calendar date. */
     private static final String HYPHENATED_LEAP_DAY_COMMON_YEAR = "2023-02-29";
 
-    /** A 29th of February in a leap year: a real calendar date that must be accepted. */
     private static final String HYPHENATED_LEAP_DAY = "2024-02-29";
 
-    /** The first day the Lilian day count covers, rendered in the hyphenated mask. */
     private static final String HYPHENATED_LILIAN_FIRST_DAY = "1582-10-15";
 
-    /** The day before the Lilian count begins: resolvable, but outside the supported range. */
     private static final String HYPHENATED_BEFORE_LILIAN = "1582-10-14";
 
-    /** Year zero <em>and</em> month thirteen: two detectable conditions in one value. */
     private static final String HYPHENATED_YEAR_ZERO_AND_BAD_MONTH = "0000-13-01";
 
-    /** A non-digit <em>and</em> month thirteen: two detectable conditions in one value. */
     private static final String HYPHENATED_NON_NUMERIC_AND_BAD_MONTH = "2X22-13-01";
 
-    /** The compact mask value the copybook places in the format field, {@code [app/cpy/CSUTLDPY.cpy:L291]}. */
     private static final String COMPACT_MASK_VALUE = "YYYYMMDD  ";
 
-    /** The hyphenated mask value both callers hold in their format work field. */
     private static final String HYPHENATED_MASK_VALUE = "YYYY-MM-DD";
 
-    /** A mask the estate never transmits, so the picture string cannot be used. */
     private static final String UNSUPPORTED_MASK_VALUE = "DD/MM/YYYY";
 
-    /** A month bad in the month stage and a day bad in the day stage, in one image. */
     private static final String BAD_MONTH_AND_BAD_DAY_DATE = "20221332";
 
-    /** A century bad in the year stage and a month bad in the month stage, in one image. */
     private static final String BAD_CENTURY_AND_BAD_MONTH_DATE = "18221301";
 
-    /** All three field slices bad at once: bad century, month thirteen, day thirty-two. */
     private static final String BAD_YEAR_MONTH_AND_DAY_DATE = "18221332";
 
-    /** A ten-character image whose rightmost two characters the eight-character move must discard. */
     private static final String OVERLONG_DATE = "2022010199";
 
-    /** Four characters only: the year slice fills, the month and day slices arrive blank. */
     private static final String SHORT_DATE = "2022";
 
-    /** The empty sender, which a fixed-width move turns into an all-spaces field. */
     private static final String EMPTY_DATE = "";
 
-    /**
-     * The three-character image the head paragraph alone leaves behind,
-     * {@code [app/cpy/CSUTLDPY.cpy:L19]} writing the group value at {@code [app/cpy/CSUTLDWY.cpy:L45]}.
-     * It is also the value the Language-Environment guard tests against and never matches.
-     */
     private static final String ORACLE_HEAD_PARAGRAPH_FLAG_GROUP = "000";
 
-    /**
-     * The three-character image of an all-valid group: the {@code LOW-VALUES} the group-level condition
-     * name at {@code [app/cpy/CSUTLDWY.cpy:L44]} compares against.
-     */
     private static final String ORACLE_ALL_VALID_FLAG_GROUP = "\u0000\u0000\u0000";
 
-    /** Offset of the severity code in the eighty-byte block: it is the leading field. */
     private static final int ORACLE_SEVERITY_OFFSET = 0;
 
-    /** Offset of the message number: four bytes of severity plus the eleven-byte label. */
     private static final int ORACLE_MESSAGE_NUMBER_OFFSET = 15;
 
-    /** The eleven-byte label between severity and message number, {@code [app/cbl/CSUTLDTC.cbl:L45]}. */
     private static final String ORACLE_MESSAGE_CODE_LABEL = "Mesg Code: ";
 
-    /** The nine-byte label preceding the tested date, {@code [app/cbl/CSUTLDTC.cbl:L51]}. */
     private static final String ORACLE_TESTED_DATE_LABEL = "TstDate: ";
 
-    /** The ten-byte label preceding the mask, {@code [app/cbl/CSUTLDTC.cbl:L54]}, which carries no padding. */
     private static final String ORACLE_MASK_USED_LABEL = "Mask used:";
 
-    /** A message an earlier field on the same screen has already claimed. */
     private static final String CARRIED_IN_MESSAGE = "Account Filter Number must be a non zero";
 
-    /** A current date used for the date-of-birth comparison. */
     private static final LocalDate CURRENT_DATE = LocalDate.of(2022, 7, 6);
 
-    /** The service under test. Stateless, so a fresh instance per test costs nothing. */
     private DateValidationService service;
 
     @BeforeEach
@@ -423,54 +242,24 @@ final class DateValidationServiceTest {
         service = new DateValidationService();
     }
 
-    /**
-     * Renders a flag-group image with its null characters made visible, for failure messages only.
-     *
-     * @param image the three-character group image
-     * @return the same image with each null character shown as a period
-     */
     private static String readableFlags(final String image) {
         return image.replace('\u0000', '.');
     }
 
-    /**
-     * Measures a value the way a fixed-width character field measures it: in bytes.
-     *
-     * <p>Declared here rather than reached for through the production class, so that a width assertion
-     * cannot silently inherit whatever the code under test happens to believe a width is. Nothing is
-     * trimmed and no platform default charset is consulted.
-     *
-     * @param value the value to measure
-     * @return the number of bytes the value occupies in the single-byte character set of the legacy
-     *         fields
-     */
     private static int encodedBytes(final String value) {
         return value.getBytes(StandardCharsets.US_ASCII).length;
     }
 
-    /**
-     * Cuts a byte range out of a rendered fixed-width block, the way a caller's group overlay cuts it.
-     *
-     * <p>The overlay both callers declare is a byte overlay onto an eighty-byte area, so the slice is
-     * taken from the encoded image at a byte offset rather than from the character sequence at a
-     * character index.
-     *
-     * @param block  the rendered block
-     * @param offset the byte offset the overlay begins at
-     * @param width  the byte width the overlay declares
-     * @return the slice, with every reserved space retained
-     */
     private static String byteSlice(final String block, final int offset, final int width) {
         return new String(block.getBytes(StandardCharsets.US_ASCII), offset, width,
                 StandardCharsets.US_ASCII);
     }
 
-    // ENTRY POINT TWO: the callable subprogram, CALL 'CSUTLDTC'.
-
+    // ENTRY POINT TWO: the callable subprogram the estate invokes from four sites, whose source member
+    // is app/cbl/CSUTLDTC.cbl and whose parameter contract is cited at app/cbl/CORPT00C.cbl L129-L135.
     @Nested
     @DisplayName("the callable subprogram: ten feedback outcomes selected in source order")
     final class SubprogramFeedbackSelection {
-
         @Test
         @DisplayName("a good date selects the success token, whose severity and message number are zero")
         void aGoodDateSelectsTheSuccessToken() {
@@ -607,7 +396,6 @@ final class DateValidationServiceTest {
     @Nested
     @DisplayName("the callable subprogram: a raw mask is resolved, never guessed at")
     final class SubprogramMaskResolution {
-
         @Test
         @DisplayName("the two masks the estate holds in work fields resolve to their pictures")
         void theTwoRealMasksResolve() {
@@ -673,7 +461,6 @@ final class DateValidationServiceTest {
     @Nested
     @DisplayName("the two-level acceptance test all four call sites apply")
     final class TwoLevelAcceptanceTest {
-
         @Test
         @DisplayName("level one: the severity code 0000 is accepted outright")
         void severityZeroIsAcceptedOutright() {
@@ -748,7 +535,6 @@ final class DateValidationServiceTest {
     @Nested
     @DisplayName("the 80-character result block: thirteen items whose widths sum to eighty")
     final class ResultBlockLayout {
-
         @Test
         @DisplayName("the rendered block is exactly eighty characters for every outcome")
         void theRenderedBlockIsAlwaysEighty() {
@@ -874,7 +660,6 @@ final class DateValidationServiceTest {
     @Nested
     @DisplayName("the feedback enumeration: ten outcomes with decoded severity and message numbers")
     final class FeedbackEnumerationContract {
-
         @Test
         @DisplayName("exactly ten outcomes exist: nine declared tokens plus the WHEN OTHER tail")
         void exactlyTenOutcomesExist() {
@@ -948,12 +733,9 @@ final class DateValidationServiceTest {
         }
     }
 
-    // ENTRY POINT ONE: the eleven-paragraph copybook cascade, stage by stage in source order.
-
     @Nested
     @DisplayName("cascade stage one, EDIT-YEAR-CCYY: supplied, then four digits, then a known century")
     final class CascadeYearStage {
-
         @Test
         @DisplayName("a blank year is reported as blank, not as invalid: the two states are distinct")
         void aBlankYearIsReportedAsBlank() {
@@ -1048,7 +830,6 @@ final class DateValidationServiceTest {
     @Nested
     @DisplayName("cascade stage two, EDIT-MONTH: supplied, then in range, then numeric")
     final class CascadeMonthStage {
-
         @Test
         @DisplayName("a blank month is reported as blank with its own message")
         void aBlankMonthIsReportedAsBlank() {
@@ -1119,7 +900,6 @@ final class DateValidationServiceTest {
     @Nested
     @DisplayName("cascade stage three, EDIT-DAY: supplied, then numeric, then in range")
     final class CascadeDayStage {
-
         @Test
         @DisplayName("a blank day is reported as blank with its own message")
         void aBlankDayIsReportedAsBlank() {
@@ -1179,7 +959,6 @@ final class DateValidationServiceTest {
     @Nested
     @DisplayName("cascade stage four, EDIT-DAY-MONTH-YEAR: the only stage that judges the combination")
     final class CascadeCombinationStage {
-
         @Test
         @DisplayName("a 31st in a short month clears both the day and the month flag")
         void aThirtyFirstInAShortMonthClearsBothFlags() {
@@ -1328,7 +1107,6 @@ final class DateValidationServiceTest {
     @Nested
     @DisplayName("cascade stage five and its exit: reached only while the flag group reads low values")
     final class CascadeLanguageEnvironmentStage {
-
         @Test
         @DisplayName("a date that clears all three field stages comes back wholly valid")
         void aDateThatClearsEveryStageComesBackValid() {
@@ -1381,7 +1159,6 @@ final class DateValidationServiceTest {
     @Nested
     @DisplayName("the accumulated message is first-wins across the whole range")
     final class MessageAccumulation {
-
         @Test
         @DisplayName("a message already claimed by an earlier field is never overwritten")
         void anAlreadyClaimedMessageIsNeverOverwritten() {
@@ -1462,7 +1239,6 @@ final class DateValidationServiceTest {
     @Nested
     @DisplayName("the fixed-width move into WS-EDIT-DATE-CCYYMMDD pads right and truncates right")
     final class FixedWidthMoveSemantics {
-
         @Test
         @DisplayName("a short value is space padded on the right, so its tail slices read as blank")
         void aShortValueIsSpacePaddedOnTheRight() {
@@ -1514,7 +1290,6 @@ final class DateValidationServiceTest {
     @Nested
     @DisplayName("EDIT-DATE-OF-BIRTH: a reasonableness check that sits outside the main cascade")
     final class DateOfBirthRange {
-
         @Test
         @DisplayName("a date strictly in the past is accepted and claims no message")
         void aDateStrictlyInThePastIsAccepted() {
@@ -1610,7 +1385,6 @@ final class DateValidationServiceTest {
     @Nested
     @DisplayName("the three-character flag group WS-EDIT-DATE-FLGS and its condition-name images")
     final class FlagGroupContract {
-
         @Test
         @DisplayName("the three states carry the images their condition names declare")
         void theThreeStatesCarryTheirDeclaredImages() {
@@ -1702,37 +1476,10 @@ final class DateValidationServiceTest {
         }
     }
 
-    // THE DECISIVE EVIDENCE: the eleven-paragraph range really is an ordered cascade.
-
-    /**
-     * Establishes that the behaviour of the range lives in the paragraphs the invocation falls
-     * through and not in its head.
-     *
-     * <p>The head paragraph {@code EDIT-DATE-CCYYMMDD} at {@code [app/cpy/CSUTLDPY.cpy:L18]} has a body
-     * of exactly one statement, at {@code [app/cpy/CSUTLDPY.cpy:L19]}: it writes the all-invalid value
-     * into the three-byte flag group and returns. It compares nothing, so a translation that mapped the
-     * head paragraph alone would produce, for <em>every</em> input in the table below, an outcome with no
-     * input error, the flag group {@code 000} and an empty message.
-     *
-     * <p>Each row therefore pins three independent things at once - the input-error contribution, the
-     * exact three-flag triple, and the exact message suffix - so a head-only translation fails on all
-     * three counts rather than being caught by luck. Every value in the table is well formed as far as
-     * the head paragraph is concerned and is refused only by an inner stage.
-     */
     @Nested
     @DisplayName("the THRU range is a genuine ordered cascade: if any of these inner-stage values were "
             + "accepted, the cascade was not translated and the head paragraph alone was")
     final class CascadeIsGenuinelyACascade {
-
-        /**
-         * The inner-stage rejections, one row per stage that can refuse a head-clean value.
-         *
-         * <p>Every expected value is a literal read from {@code app/cpy/CSUTLDPY.cpy}, never a value
-         * obtained by asking the service what it thinks.
-         *
-         * @return rows of candidate image, the stage that refuses it, and the expected year, month and
-         *         day flags followed by the expected message suffix
-         */
         static Stream<Arguments> innerStageRejections() {
             return Stream.of(
                     arguments(INVALID_CENTURY_DATE, "year stage, century neither 19 nor 20",
@@ -1818,11 +1565,6 @@ final class DateValidationServiceTest {
                     () -> assertThat(leapYearRefusal.returnMessage()).isNotEqualTo(ORACLE_NO_MESSAGE));
         }
 
-        /**
-         * The control group: values that clear every stage and therefore reach the end of the range.
-         *
-         * @return candidate images that the whole cascade accepts
-         */
         static Stream<Arguments> valuesEveryStageAccepts() {
             return Stream.of(arguments(VALID_DATE, "an unremarkable first of January"),
                     arguments(VALID_LAST_DAY_OF_YEAR, "the 31st of a 31-day month"),
@@ -1866,24 +1608,10 @@ final class DateValidationServiceTest {
         }
     }
 
-    /**
-     * Proves that each stage keeps its own early exit, in the source's order.
-     *
-     * <p>Two properties are separable and both are asserted. First, a stage that fails does <em>not</em>
-     * abandon the range: its jump lands on its own {@code -EXIT} paragraph, which is only the exit of
-     * that stage, so the following stages still run and still set their flags. Second, the accumulated
-     * message is first-wins, guarded by the message-off condition at {@code [app/cbl/COACTUPC.cbl:L480]},
-     * so the <em>earliest</em> failing stage owns the text while later stages contribute flags silently.
-     *
-     * <p>Together these give the observable proof that an early failure stops the later stages from
-     * reporting: the service holds no collaborator to verify against, so the reported message is the
-     * evidence, and it is the earlier stage's in every doubly-bad case below.
-     */
     @Nested
     @DisplayName("stage ordering and early exit: the earliest failing stage owns the message while the "
             + "later stages still set their own flags")
     final class CascadeStageOrderingAndEarlyExit {
-
         @Test
         @DisplayName("a bad month and a bad day together report the month stage, because the month stage "
                 + "runs first and claims the message")
@@ -1962,32 +1690,10 @@ final class DateValidationServiceTest {
         }
     }
 
-    // The one construct that could not be carried across: the Language Environment date service becomes
-    // strict java.time resolution. Asserted by outcome, never by inspecting a formatter.
-
-    /**
-     * Proves that resolution refuses to normalise.
-     *
-     * <p>The legacy converts a date through the Lilian day services, which reject a value that is not a
-     * real calendar date. The Java substitution is only behaviour preserving under
-     * {@code ResolverStyle.STRICT}: the default resolution would roll a 31st in a 30-day month back to
-     * the 30th and would pull a 29 February in a common year back to the 28th, and both of those are
-     * acceptances the legacy never makes.
-     *
-     * <p>Every expectation below is the <em>outcome</em>, stated as a literal. None of them is obtained
-     * by parsing the same value with the same library the way the service does, because that would
-     * assert only that two identical parses agree.
-     */
     @Nested
     @DisplayName("strict resolution: a value that is not a real calendar date is refused, never rolled "
             + "forward and never adjusted backwards")
     final class StrictCalendarResolution {
-
-        /**
-         * Values that are well formed digit by digit and are still not calendar dates.
-         *
-         * @return the value, and the acceptance a normalising resolver would wrongly have produced
-         */
         static Stream<Arguments> valuesNoNormalisingResolverMayAccept() {
             return Stream.of(
                     arguments(HYPHENATED_THIRTY_FIRST_OF_SHORT_MONTH,
@@ -2099,32 +1805,10 @@ final class DateValidationServiceTest {
         }
     }
 
-    // The two-level acceptance test, driven from a table so that a collapsed boolean cannot survive.
-
-    /**
-     * Proves the escape hatch that every one of the four genuine call sites applies.
-     *
-     * <p>All four sites - {@code [app/cbl/CORPT00C.cbl:L392]}, {@code [app/cbl/CORPT00C.cbl:L412]},
-     * {@code [app/cbl/COTRN02C.cbl:L393]} and {@code [app/cbl/COTRN02C.cbl:L413]} - test the severity
-     * code first and, only when it is not the accepted value, test the message number against
-     * {@code 2513}. A non-zero severity carrying that message number is therefore accepted <em>silently</em>.
-     *
-     * <p>This is the single most likely place for a downstream service to collapse the two-field result
-     * into one boolean and start rejecting input the legacy accepts, so the table below drives the
-     * decision from the two code fields alone. The rows pair codes that no single classifier outcome
-     * would produce together on purpose: that is what proves the decision reads the two fields
-     * independently rather than deriving one from the other or from the outcome constant.
-     */
     @Nested
     @DisplayName("the tolerated message number is an escape hatch, not decoration: severity and message "
             + "number are two separate levels and neither collapses into the other")
     final class ToleratedMessageNumberExemption {
-
-        /**
-         * The acceptance table, expressed purely in the two four-character code fields.
-         *
-         * @return the severity code, the message number, whether the callers would proceed, and why
-         */
         static Stream<Arguments> acceptanceDecisions() {
             return Stream.of(
                     arguments("0000", "0000", true, "the accepted severity, decided at the first level"),
@@ -2208,41 +1892,10 @@ final class DateValidationServiceTest {
         }
     }
 
-    // The ten-clause outcome selection: clause order is the contract.
-
-    /**
-     * Proves the ten-clause selection at {@code [app/cbl/CSUTLDTC.cbl:L128]} through
-     * {@code [app/cbl/CSUTLDTC.cbl:L149]} in both of its aspects.
-     *
-     * <p><strong>Order.</strong> The source evaluates the clauses top down and stops at the first match,
-     * so a value that satisfies two conditions must report the earlier one. The rows below that pair two
-     * conditions in one value are the ones that pin this; reordering the classification would flip them.
-     *
-     * <p><strong>Coverage.</strong> Eight of the ten clauses are reachable by supplying an input. The
-     * remaining two are reachable in the legacy only through a feedback token the substituted parser
-     * cannot produce, and inventing an input for them would be inventing behaviour:
-     * <ul>
-     *   <li>the era clause needs an era field, and neither of the two masks this estate transmits carries
-     *       one - a fact asserted below rather than asserted about;</li>
-     *   <li>the {@code WHEN OTHER} clause fires precisely when none of the nine declared tokens matched,
-     *       and the substituted parser classifies every failure it can detect into one of the nine, so
-     *       the clause is the defensive tail of the chain.</li>
-     * </ul>
-     * Both are therefore covered through their outcome contract - the decoded severity and message
-     * number that make them behave correctly if they ever were selected - with the reason they are
-     * unreachable stated rather than papered over.
-     */
     @Nested
     @DisplayName("the ten-clause outcome selection: first match wins and every clause reachable by input "
             + "is reached")
     final class TenClauseDispatchOrdering {
-
-        /**
-         * One row per clause that an input can select, with the severity, message number and outcome text
-         * the source declares for it.
-         *
-         * @return the candidate, the mask, and the four expected outcome components
-         */
         static Stream<Arguments> clausesReachableByInput() {
             return Stream.of(
                     arguments(HYPHENATED_DATE, DateFormat.YYYY_MM_DD, DateFeedback.DATE_IS_VALID,
@@ -2316,16 +1969,6 @@ final class DateValidationServiceTest {
                             .isFalse());
         }
 
-        /**
-         * Values that satisfy two detectable conditions at once.
-         *
-         * <p>The winning message number is carried as an explicit literal rather than read back off the
-         * expected outcome constant, so the row states the whole answer and does not borrow any part of
-         * it from the code under test.
-         *
-         * @return the candidate, the outcome the earlier test must win with, its message number, the
-         *         outcome a reordered classification would have produced instead, and why
-         */
         static Stream<Arguments> valuesSatisfyingTwoConditions() {
             return Stream.of(
                     arguments(HYPHENATED_YEAR_ZERO_AND_BAD_MONTH, DateFeedback.YEAR_IN_ERA_ZERO, "2521",
@@ -2427,7 +2070,6 @@ final class DateValidationServiceTest {
     @DisplayName("the result block measured in ENCODED BYTES, which is the only width a fixed-width "
             + "linkage area understands")
     final class EncodedByteWidthContract {
-
         @Test
         @DisplayName("the rendered block is exactly eighty encoded bytes for every one of the ten "
                 + "outcomes, not merely eighty characters")
@@ -2640,7 +2282,6 @@ final class DateValidationServiceTest {
     @DisplayName("the format-mask parameter: two declared masks, an exact ten-byte match, and no "
             + "silent fallback")
     final class DateFormatParameterContract {
-
         @Test
         @DisplayName("exactly two masks are declared, which is the whole vocabulary the subprogram accepts")
         void exactlyTwoMasksAreDeclared() {
@@ -2723,11 +2364,6 @@ final class DateValidationServiceTest {
                     () -> assertThat(result.maskUsed()).isEqualTo(HYPHENATED_MASK_VALUE));
         }
 
-        /**
-         * Masks that no declared value can match once the ten-byte linkage move has been applied.
-         *
-         * @return unrecognised mask images
-         */
         static Stream<Arguments> unrecognisedMasks() {
             return Stream.of(
                     arguments(UNSUPPORTED_MASK_VALUE),
@@ -2820,7 +2456,6 @@ final class DateValidationServiceTest {
     @DisplayName("the flag-group guard that gates the fifth stage: it reproduces the pessimistic constant "
             + "the head paragraph writes, so the stage opens only when all three field stages have cleared")
     final class LanguageEnvironmentStageGuard {
-
         @Test
         @DisplayName("the head paragraph writes the pessimistic three-character constant, so nothing is "
                 + "presumed valid before a stage has said so")
@@ -2862,19 +2497,6 @@ final class DateValidationServiceTest {
                             .isNotEqualTo(ORACLE_ALL_VALID_FLAG_GROUP));
         }
 
-        /**
-         * An independent day-count oracle written straight from the copybook's own rules, so that the
-         * sweep below never asks the code under test what the answer is.
-         *
-         * <p>The sweep is restricted to two years whose century is inside the accepted pair and whose
-         * leap status follows the plain four-year rule, which keeps the century-boundary subtlety out of
-         * this oracle; the two century witnesses are asserted separately.
-         *
-         * @param year  the four-digit year
-         * @param month the month slot, which may be outside one to twelve
-         * @param day   the day slot, which may be outside one to thirty-one
-         * @return whether the copybook's rules admit the combination
-         */
         private static boolean admittedByIndependentOracle(final int year, final int month,
                                                            final int day) {
             final int century = year / 100;
@@ -2969,12 +2591,6 @@ final class DateValidationServiceTest {
     @DisplayName("the birth-date range sits outside the main cascade, so it is a supplement to the "
             + "cascade and never a substitute for it")
     final class DateOfBirthEntryPointIsSeparate {
-
-        /**
-         * Values the cascade rejects at an inner stage and which are not resolvable calendar dates.
-         *
-         * @return candidate images
-         */
         static Stream<Arguments> innerStageFailuresThatAreNotCalendarDates() {
             return Stream.of(
                     arguments(MONTH_BELOW_RANGE_DATE),
@@ -3070,7 +2686,6 @@ final class DateValidationServiceTest {
     @DisplayName("every message is contract data reproduced byte for byte, with no trimming and no "
             + "tidying of the source's own punctuation")
     final class MessageTextIsContractData {
-
         @Test
         @DisplayName("the leap-year message runs two sentences together with NO space after its first "
                 + "period, and that is asserted on the byte that follows the period")
@@ -3091,11 +2706,6 @@ final class DateValidationServiceTest {
                             .isEqualTo(encodedBytes(ORACLE_NOT_A_LEAP_YEAR)));
         }
 
-        /**
-         * Each candidate paired with the exact message the copybook writes for it.
-         *
-         * @return the candidate and its verbatim message
-         */
         static Stream<Arguments> messagesTheCascadeCanWrite() {
             return Stream.of(
                     arguments(ALL_SPACES_DATE, ORACLE_YEAR_NOT_SUPPLIED),
@@ -3185,7 +2795,6 @@ final class DateValidationServiceTest {
     @DisplayName("absent, blank and malformed input: every one produces the documented verdict and none "
             + "escapes as an unchecked runtime failure")
     final class MalformedAndAbsentInput {
-
         @ParameterizedTest(name = "[{0}] is handled rather than thrown")
         @ValueSource(strings = {"", " ", "  ", "        ", "2022", "202201", "2022010199", "2X220101",
             "202201XX", "20221332", "ABCDEFGH", "-1234567", "20 20101", "0000-01-01", "        99"})

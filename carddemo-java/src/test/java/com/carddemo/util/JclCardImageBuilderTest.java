@@ -23,10 +23,16 @@ import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -35,413 +41,191 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * Verifies {@link JclCardImageBuilder}, which emits the seventeen fixed eighty-byte job-submission
  * card images that trigger the transaction-report batch job.
  *
- * <p>This is an <strong>external interface contract</strong> test, not an internal helper test. The
- * card images are transmitted verbatim, one card per message, and are then consumed by a job
- * scheduler, so every byte of every card is contractual. Seventeen cards of eighty bytes give a
- * concatenated image of exactly 1360 bytes, and a single wrong byte anywhere breaks the trigger. That
- * is why this class is the batch-trigger half of the interface-contract acceptance gate.
+ * <p>Three properties are contractual and all three are asserted on encoded bytes rather than
+ * characters: the count and order of the cards, the eighty-byte width with right padding by the
+ * ASCII space and by nothing else, and the presence of the terminating sentinel card, which the
+ * legacy loop transmits before it stops rather than discarding. Each card is compared against its
+ * own hand-written image, so a substitution that lands in the wrong column fails here rather than at
+ * the queue.
  *
- * <p><strong>The oracle is independent by construction.</strong> Every expected value is hand written
- * from the legacy card table and the declared component widths of the legacy record layout. No
- * expectation is produced by calling a constant or a method of the class under test, none is a
- * snapshot of the builder's own output, and no test compares the builder against itself. The helpers
- * below assemble expectations from a hand-written content literal plus a hand-written declared byte
- * width and assert that the literal really is that width, so a mistyped literal fails loudly instead
- * of quietly agreeing with a mistyped padding count. Where the published constants of the class under
- * test are themselves asserted, the hand-written literal is always the expected value and the
- * published constant always the actual, which pins the published contract rather than borrowing from
- * it.
- *
- * <p><strong>What this class proves.</strong> Exactly seventeen cards, in the order the legacy card
- * table declares them, each exactly eighty encoded bytes and each matching a hand-written image byte
- * for byte. Four ten-byte substitution slots carrying only two values - the start date on cards 11 and
- * 15, the end date on cards 12 and 15 - with the two occurrences of each value byte identical. The
- * terminating sentinel card present as the seventeenth and last, because the legacy submission loop
- * writes it rather than merely holding it. The one-thousand-entry bound of the legacy oversized
- * redefine honoured as an asserted constant while only seventeen cards are ever produced. The
- * concatenated image exactly 1360 bytes of plain concatenation, with no separator and no line
- * terminator. And slot values validated for encoded byte width only, with width failures rejected
- * rather than silently truncated, per decisions D-06 and D-08.
- *
- * <p>The eighty-byte card width is also what makes the downstream queue's fixed record size
- * satisfiable, but the queue attributes themselves - fixed unblocked eighty-byte records, append
- * disposition, output only, opened at initialisation, errors ignored - belong to the job submission
- * service and are deliberately absent from this test. There is no queue client, no messaging
- * dependency and no process invocation here.
+ * <p>The four ten-character date slots are the only variable part of the stream; the assertions
+ * confirm that substituting them moves nothing else in the eighty-column frame.
  */
 @DisplayName("JclCardImageBuilder :: seventeen eighty-byte job-submission card images")
 class JclCardImageBuilderTest {
-
-    // ORACLE DIMENSIONS
-    // Hand written from the legacy record layout. These are the expected values that the
-    // published constants of the class under test are checked against, never the other
-    // way round.
-
-    /** Declared width of one card, from the eighty-byte write buffer of the legacy program. */
     private static final int ORACLE_CARD_WIDTH = 80;
 
-    /** Number of cards the legacy card table declares. */
     private static final int ORACLE_CARD_COUNT = 17;
 
-    /** Declared width of each of the four date substitution slots. */
     private static final int ORACLE_DATE_SLOT_WIDTH = 10;
 
-    /**
-     * The one-thousand-entry bound of the legacy oversized redefine. It is asserted as a published
-     * constant and is never used to allocate, pad or iterate anything in this test.
-     */
     private static final int ORACLE_MAX_CARD_BOUND = 1000;
 
-    /** Total width of the concatenated image, hand written rather than multiplied out. */
     private static final int ORACLE_TOTAL_IMAGE_WIDTH = 1360;
 
-    /**
-     * Width of the date-parameter record that occupies the leading bytes of card 15, being the
-     * ten-byte start slot, the one-byte separator and the ten-byte end slot. The report line
-     * formatter's date-parameter record builder must agree with these same bytes; that agreement is
-     * documented rather than coded, so nothing from the report formatter is imported or called here.
-     */
     private static final int ORACLE_DATE_PARAMETER_RECORD_WIDTH = 21;
 
-    // ORACLE BYTE VALUES
-    // Named numerically so that no character escape sequence for a line terminator or a
-    // tab ever appears in this source file. The cards are fixed-width records, not text
-    // lines, and nothing in the contract may contain a terminator.
-
-    /** The ASCII space, the only padding byte any card may use. */
     private static final byte ORACLE_SPACE_BYTE = 0x20;
 
-    /** The ASCII apostrophe that closes the character constants on cards 11 and 12. */
     private static final byte ORACLE_APOSTROPHE_BYTE = 0x27;
 
-    /** The ASCII comma that continues card 1 onto card 2. */
     private static final byte ORACLE_COMMA_BYTE = 0x2C;
 
-    /** The ASCII digit zero, which is the message-class value on card 1. */
     private static final byte ORACLE_DIGIT_ZERO_BYTE = 0x30;
 
-    /** The ASCII capital letter O, which the message-class value must never be. */
     private static final byte ORACLE_LETTER_CAPITAL_O_BYTE = 0x4F;
 
-    /** The zero byte, which must never be used as padding and must appear nowhere in the image. */
     private static final byte ORACLE_NULL_BYTE = 0x00;
 
-    /** The ASCII horizontal tab, which must appear nowhere in the image. */
     private static final byte ORACLE_TAB_BYTE = 0x09;
 
-    /** The ASCII line feed, which must appear nowhere in the image. */
     private static final byte ORACLE_LINE_FEED_BYTE = 0x0A;
 
-    /** The ASCII carriage return, which must appear nowhere in the image. */
     private static final byte ORACLE_CARRIAGE_RETURN_BYTE = 0x0D;
 
-    /**
-     * The ASCII question mark, which US-ASCII substitutes for a character it cannot represent.
-     *
-     * <p>Named so the slot validation test can demonstrate that a lossy substitution keeps the
-     * encoded width at ten and would therefore slip past a width-only guard undetected.
-     */
     private static final byte ORACLE_REPLACEMENT_BYTE = 0x3F;
 
-    /** Sentinel returned by the byte search helper when a byte is absent. */
     private static final int BYTE_NOT_FOUND = -1;
 
-    // SLOT VALUES USED BY THE TESTS
-    // Each is exactly ten characters. The legacy screen used a ten-character year, month
-    // and day shape, and the builder validates that width and nothing else: it does not
-    // parse a date, does not reformat one and does not check calendar validity, so no
-    // date or time API is involved anywhere in this test.
-
-    /** Primary start-date slot value, ten characters. */
     private static final String START_DATE = "2022-01-01";
 
-    /** Primary end-date slot value, ten characters. */
     private static final String END_DATE = "2022-07-06";
 
-    /** Second, deliberately different start-date slot value, ten characters. */
     private static final String OTHER_START_DATE = "2019-11-30";
 
-    /** Second, deliberately different end-date slot value, ten characters. */
     private static final String OTHER_END_DATE = "2020-02-29";
 
-    /** A slot value one byte short of the declared width. */
     private static final String NINE_BYTE_DATE = "2022-01-0";
 
-    /** A slot value one byte over the declared width. */
     private static final String ELEVEN_BYTE_DATE = "2022-01-011";
 
-    /** A zero-length slot value. */
     private static final String EMPTY_DATE = "";
 
-    /**
-     * A ten-character slot value whose final character is not representable as a single byte in the
-     * encoding the card frame is defined in. Written as an escape so this source file stays pure
-     * ASCII while still exercising the frame-integrity guard.
-     */
     private static final String NON_SINGLE_BYTE_DATE = "2022-01-0\u00e9";
 
-    /**
-     * The hand-written date-slot shape, taken from the {@code WS-DATE-FORMAT} literal declared at
-     * {@code [app/cbl/CORPT00C.cbl:L72]}. Four digits, a hyphen, two digits, a hyphen, two digits.
-     */
     private static final String ORACLE_DATE_SLOT_FORMAT = "YYYY-MM-DD";
 
-    /**
-     * A ten-byte, single-byte US-ASCII slot value carrying an apostrophe where a date digit belongs.
-     * Cards 11 and 12 wrap the slot inside a sort character constant closed by an apostrophe, so
-     * this value closes that constant early and turns the card's remainder into further sort
-     * specification. Both the width check and the encodability check admit it, which is exactly why
-     * a shape check is required.
-     */
     private static final String APOSTROPHE_INJECTION_SLOT = "2026-01-'X";
 
-    /**
-     * The one-based position of the apostrophe within {@link #APOSTROPHE_INJECTION_SLOT}. The shape
-     * walk reports the first offending position it reaches, and the apostrophe precedes the trailing
-     * letter, so this is the position the diagnostic must name.
-     */
     private static final int APOSTROPHE_INJECTION_POSITION = 9;
 
-    /** The one-based positions of the eight numeric characters of a date slot. */
     private static final int[] NUMERIC_SLOT_POSITIONS = {1, 2, 3, 4, 6, 7, 9, 10};
 
-    /**
-     * The one-based positions of the two hyphens of a date slot. They correspond to the two
-     * {@code FILLER} constants of the legacy date group at {@code [app/cbl/CORPT00C.cbl:L62]} and
-     * {@code [app/cbl/CORPT00C.cbl:L64]}.
-     */
     private static final int[] SEPARATOR_SLOT_POSITIONS = {5, 8};
 
-    /** The one-based position of the first hyphen, used where a single case suffices. */
     private static final int FIRST_SEPARATOR_SLOT_POSITION = 5;
 
-    /** The one-based position of the last numeric character, used where a single case suffices. */
     private static final int LAST_NUMERIC_SLOT_POSITION = 10;
 
-    /** The hand-written lowest digit a numeric slot position may hold. */
     private static final char ORACLE_LOWEST_DIGIT_CHARACTER = '0';
 
-    /** The hand-written highest digit a numeric slot position may hold. */
     private static final char ORACLE_HIGHEST_DIGIT_CHARACTER = '9';
 
-    /** The hand-written hyphen a separator slot position must hold. */
     private static final char ORACLE_HYPHEN_CHARACTER = '-';
 
-    /** The highest character value representable as a single US-ASCII byte. */
     private static final char HIGHEST_US_ASCII_CHARACTER = 0x7F;
 
-    /** The US-ASCII escape control character, swept as one of the record-corrupting bytes. */
     private static final char ESCAPE_CHARACTER = 0x1B;
 
-    /** The US-ASCII delete character, swept as one of the record-corrupting bytes. */
     private static final char DELETE_CHARACTER = 0x7F;
 
-    // ORACLE CARD CONTENT
-    // Fourteen cards are fixed literals and three are composed. Each fixed literal is
-    // paired with its hand-written content width so that the literal and the padding
-    // count cannot both be wrong in a way that still totals eighty.
-
-    /** Card 1, the job card. The message class is the digit zero and the trailing comma is content. */
     private static final String CARD_01_CONTENT = "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,";
 
-    /** Hand-written content width of card 1. */
     private static final int CARD_01_CONTENT_WIDTH = 48;
 
-    /** Card 2, the notify card continued from card 1. The system-user symbol is spelled correctly. */
     private static final String CARD_02_CONTENT = "// NOTIFY=&SYSUID";
 
-    /** Hand-written content width of card 2. */
     private static final int CARD_02_CONTENT_WIDTH = 17;
 
-    /** Cards 3, 5 and 7, the comment cards. All three carry the same literal. */
     private static final String COMMENT_CARD_CONTENT = "//*";
 
-    /** Hand-written content width of the comment cards. */
     private static final int COMMENT_CARD_CONTENT_WIDTH = 3;
 
-    /** Card 4, the procedure-library card. */
     private static final String CARD_04_CONTENT = "//JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')";
 
-    /** Hand-written content width of card 4. */
     private static final int CARD_04_CONTENT_WIDTH = 46;
 
-    /** Card 6, the step card invoking the cataloged report procedure. */
     private static final String CARD_06_CONTENT = "//STEP10 EXEC PROC=TRANREPT";
 
-    /** Hand-written content width of card 6. */
     private static final int CARD_06_CONTENT_WIDTH = 27;
 
-    /**
-     * Card 8, the in-stream override of the sort step's symbol-names input.
-     *
-     * <p>Source anomaly, recorded because it touches this card's step qualifier and must not be
-     * mistaken for a defect here: the report job member of the legacy estate declares the same sort
-     * step name twice. Distinct step names are generated in the batch tier, which is where that
-     * anomaly is resolved. This card's qualifier is emitted exactly as the legacy card table
-     * declares it, so the card image itself is unaffected and nothing is corrected in this file.
-     */
     private static final String CARD_08_CONTENT = "//STEP05R.SYMNAMES DD *";
 
-    /** Hand-written content width of card 8. */
     private static final int CARD_08_CONTENT_WIDTH = 23;
 
-    /** Card 9, the card-number sort symbol: sixteen bytes at offset 263, zoned decimal. */
     private static final String CARD_09_CONTENT = "TRAN-CARD-NUM,263,16,ZD";
 
-    /** Hand-written content width of card 9. */
     private static final int CARD_09_CONTENT_WIDTH = 23;
 
-    /** Card 10, the processing-date sort symbol: ten bytes at offset 305, character. */
     private static final String CARD_10_CONTENT = "TRAN-PROC-DT,305,10,CH";
 
-    /** Hand-written content width of card 10. */
     private static final int CARD_10_CONTENT_WIDTH = 22;
 
-    /** Cards 13 and 16, the in-stream data terminators. */
     private static final String TERMINATOR_CARD_CONTENT = "/*";
 
-    /** Hand-written content width of the terminator cards. */
     private static final int TERMINATOR_CARD_CONTENT_WIDTH = 2;
 
-    /** Card 14, the in-stream override of the report step's date-parameter input. */
     private static final String CARD_14_CONTENT = "//STEP10R.DATEPARM DD *";
 
-    /** Hand-written content width of card 14. */
     private static final int CARD_14_CONTENT_WIDTH = 23;
 
-    /** Card 17, the terminating sentinel, which the legacy submission loop transmits. */
     private static final String CARD_17_CONTENT = "/*EOF";
 
-    /** Hand-written content width of card 17. */
     private static final int CARD_17_CONTENT_WIDTH = 5;
 
-    // Composed card 11: eighteen-byte lead, ten-byte start slot, fifty-two-byte trailer
-    // whose first byte is the closing apostrophe and whose remaining fifty-one bytes are
-    // spaces. 18 + 10 + 52 = 80.
-
-    /** The eighteen-byte leading literal of card 11. */
     private static final String CARD_11_LEAD = "PARM-START-DATE,C'";
 
-    /** Hand-written width of the card 11 leading literal. */
     private static final int CARD_11_LEAD_WIDTH = 18;
 
-    /** Hand-written width of the card 11 trailing field. */
     private static final int CARD_11_TRAILER_WIDTH = 52;
 
-    /** Hand-written count of spaces that follow the closing apostrophe on card 11. */
     private static final int CARD_11_TRAILER_SPACE_COUNT = 51;
 
-    // Composed card 12: sixteen-byte lead, ten-byte end slot, fifty-four-byte trailer
-    // whose first byte is the closing apostrophe and whose remaining fifty-three bytes
-    // are spaces. 16 + 10 + 54 = 80.
-
-    /** The sixteen-byte leading literal of card 12. */
     private static final String CARD_12_LEAD = "PARM-END-DATE,C'";
 
-    /** Hand-written width of the card 12 leading literal. */
     private static final int CARD_12_LEAD_WIDTH = 16;
 
-    /** Hand-written width of the card 12 trailing field. */
     private static final int CARD_12_TRAILER_WIDTH = 54;
 
-    /** Hand-written count of spaces that follow the closing apostrophe on card 12. */
     private static final int CARD_12_TRAILER_SPACE_COUNT = 53;
 
-    // Composed card 15: ten-byte start slot, a separator declared as a bare single-byte
-    // field, ten-byte end slot, then fifty-nine spaces. 10 + 1 + 10 + 59 = 80. Card 15
-    // is the only card with no leading literal at all.
-
-    /** Hand-written width of the card 15 separator, which is exactly one byte. */
     private static final int CARD_15_SEPARATOR_WIDTH = 1;
 
-    /** Hand-written count of trailing spaces on card 15. */
     private static final int CARD_15_TRAILER_SPACE_COUNT = 59;
 
-    // ORACLE OFFSETS
-    // Zero-based, half-open byte ranges inside the eighty-byte frame, computed by hand
-    // from the component widths above.
-
-    /** Offset of the message-class value byte on card 1. */
     private static final int CARD_01_MESSAGE_CLASS_VALUE_OFFSET = 46;
 
-    /** Offset of the continuation comma that ends the content of card 1. */
     private static final int CARD_01_CONTINUATION_COMMA_OFFSET = 47;
 
-    /** Offset of the system-user symbol on card 2. */
     private static final int CARD_02_SYSTEM_USER_SYMBOL_OFFSET = 10;
 
-    /** Offset at which the start-date slot begins on card 11. */
     private static final int CARD_11_SLOT_OFFSET = 18;
 
-    /** Offset of the apostrophe that closes the card 11 character constant. */
     private static final int CARD_11_CLOSING_APOSTROPHE_OFFSET = 28;
 
-    /** Offset at which the end-date slot begins on card 12. */
     private static final int CARD_12_SLOT_OFFSET = 16;
 
-    /** Offset of the apostrophe that closes the card 12 character constant. */
     private static final int CARD_12_CLOSING_APOSTROPHE_OFFSET = 26;
 
-    /** Offset at which the start-date slot begins on card 15. */
     private static final int CARD_15_START_SLOT_OFFSET = 0;
 
-    /** Offset of the single-byte separator on card 15. */
     private static final int CARD_15_SEPARATOR_OFFSET = 10;
 
-    /** Offset at which the end-date slot begins on card 15. */
     private static final int CARD_15_END_SLOT_OFFSET = 11;
 
-    // ORACLE HELPERS
-    // Test local only. None of these consults the class under test. Every width is taken
-    // as an encoded byte count in the single-byte encoding the card frame is defined in,
-    // never as a character count, so a multi-byte character could not slip past a width
-    // check. Nothing here trims, strips, normalises, reflows or reformats anything:
-    // trailing spaces are contractual content.
-
-    /**
-     * Measures a value in encoded bytes. Every width assertion in this class routes through here.
-     *
-     * @param value the value to measure
-     * @return the encoded byte length of the value
-     */
     private static int usAsciiLength(final String value) {
         return value.getBytes(StandardCharsets.US_ASCII).length;
     }
 
-    /**
-     * Encodes a value to the bytes that would travel on the wire.
-     *
-     * @param value the value to encode
-     * @return the encoded bytes of the value
-     */
     private static byte[] usAsciiBytes(final String value) {
         return value.getBytes(StandardCharsets.US_ASCII);
     }
 
-    /**
-     * Extracts a half-open byte range from an encoded value, so a slot can be compared as the bytes
-     * it really occupies rather than as a substring of characters.
-     *
-     * @param value         the value to slice
-     * @param fromInclusive the first byte offset to take
-     * @param toExclusive   the byte offset to stop before
-     * @return the extracted bytes
-     */
     private static byte[] usAsciiSlice(final String value, final int fromInclusive,
             final int toExclusive) {
         return Arrays.copyOfRange(usAsciiBytes(value), fromInclusive, toExclusive);
     }
 
-    /**
-     * Finds the first offset at which a byte occurs, or the not-found sentinel.
-     *
-     * <p>Used instead of a character search so that the absence of a line feed, a carriage return
-     * or a tab can be asserted numerically, without any escape sequence appearing in this source.
-     *
-     * @param bytes  the bytes to search
-     * @param wanted the byte to look for
-     * @return the first offset of the byte, or {@link #BYTE_NOT_FOUND} if it is absent
-     */
     private static int indexOfByte(final byte[] bytes, final byte wanted) {
         for (int offset = 0; offset < bytes.length; offset++) {
             if (bytes[offset] == wanted) {
@@ -451,39 +235,14 @@ class JclCardImageBuilderTest {
         return BYTE_NOT_FOUND;
     }
 
-    /**
-     * Produces a run of ASCII spaces of a hand-written length.
-     *
-     * @param count how many spaces, taken from a hand-written padding count
-     * @return the run of spaces
-     */
     private static String oracleSpaces(final int count) {
         return " ".repeat(count);
     }
 
-    /**
-     * Reads one card by its one-based number, so a test reads in the same numbering the legacy card
-     * table uses and an off-by-one cannot hide behind a zero-based index.
-     *
-     * @param cards            the produced card sequence
-     * @param oneBasedCardNumber the card number between one and seventeen
-     * @return the requested card image
-     */
     private static String card(final List<String> cards, final int oneBasedCardNumber) {
         return cards.get(oneBasedCardNumber - 1);
     }
 
-    /**
-     * Produces a ten-byte slot value that is the valid start date with a single character replaced
-     * at one one-based position, so a shape assertion isolates exactly one position at a time.
-     *
-     * <p>The replacement never changes the length, which is what keeps the width check and the
-     * encodability check out of the way and leaves the shape check as the only property under test.
-     *
-     * @param oneBasedPosition the slot position to replace, between one and ten
-     * @param replacement      the character to place there
-     * @return the ten-character slot value carrying {@code replacement} at that position
-     */
     private static String slotWithCharacterAt(final int oneBasedPosition, final char replacement) {
         final char[] slot = START_DATE.toCharArray();
         slot[oneBasedPosition - 1] = replacement;
@@ -494,19 +253,6 @@ class JclCardImageBuilderTest {
         return candidate;
     }
 
-    /**
-     * Assembles the expected image of a fixed-literal card from a hand-written content literal and
-     * its hand-written declared content width.
-     *
-     * <p>The declared width is passed in rather than measured so that the literal is checked against
-     * an independently written number. If the literal were mistyped, its measured width would no
-     * longer match the declared width and this helper would fail, instead of silently padding to
-     * eighty bytes around the wrong content.
-     *
-     * @param content              the hand-written card content, before padding
-     * @param declaredContentWidth the hand-written width that content is expected to occupy
-     * @return the expected eighty-byte card image
-     */
     private static String oracleFixedCard(final String content, final int declaredContentWidth) {
         assertThat(usAsciiLength(content))
                 .as("hand-written oracle content width for card content: " + content)
@@ -520,14 +266,6 @@ class JclCardImageBuilderTest {
         return cardImage;
     }
 
-    /**
-     * Assembles the expected image of card 11 from its declared component widths: an eighteen-byte
-     * lead, the ten-byte start-date slot, then a fifty-two-byte trailer whose first byte is the
-     * closing apostrophe and whose remaining fifty-one bytes are spaces.
-     *
-     * @param startDate the ten-byte start-date slot value
-     * @return the expected eighty-byte card 11 image
-     */
     private static String oracleStartDateSortSymbolCard(final String startDate) {
         assertThat(usAsciiLength(CARD_11_LEAD)).as("oracle card 11 lead width")
                 .isEqualTo(CARD_11_LEAD_WIDTH);
@@ -544,14 +282,6 @@ class JclCardImageBuilderTest {
         return cardImage;
     }
 
-    /**
-     * Assembles the expected image of card 12 from its declared component widths: a sixteen-byte
-     * lead, the ten-byte end-date slot, then a fifty-four-byte trailer whose first byte is the
-     * closing apostrophe and whose remaining fifty-three bytes are spaces.
-     *
-     * @param endDate the ten-byte end-date slot value
-     * @return the expected eighty-byte card 12 image
-     */
     private static String oracleEndDateSortSymbolCard(final String endDate) {
         assertThat(usAsciiLength(CARD_12_LEAD)).as("oracle card 12 lead width")
                 .isEqualTo(CARD_12_LEAD_WIDTH);
@@ -568,15 +298,6 @@ class JclCardImageBuilderTest {
         return cardImage;
     }
 
-    /**
-     * Assembles the expected image of card 15 from its declared component widths: the ten-byte
-     * start-date slot, a separator of exactly one space, the ten-byte end-date slot, then
-     * fifty-nine spaces.
-     *
-     * @param startDate the ten-byte start-date slot value
-     * @param endDate   the ten-byte end-date slot value
-     * @return the expected eighty-byte card 15 image
-     */
     private static String oracleDateParameterCard(final String startDate, final String endDate) {
         assertThat(usAsciiLength(startDate)).as("oracle card 15 start slot width")
                 .isEqualTo(ORACLE_DATE_SLOT_WIDTH);
@@ -591,14 +312,6 @@ class JclCardImageBuilderTest {
         return cardImage;
     }
 
-    /**
-     * Assembles the complete expected seventeen-card sequence, in the order the legacy card table
-     * declares it, entirely from hand-written literals and hand-written widths.
-     *
-     * @param startDate the ten-byte start-date slot value
-     * @param endDate   the ten-byte end-date slot value
-     * @return the expected sequence of seventeen eighty-byte card images
-     */
     private static List<String> oracleCards(final String startDate, final String endDate) {
         return List.of(
                 oracleFixedCard(CARD_01_CONTENT, CARD_01_CONTENT_WIDTH),
@@ -620,14 +333,6 @@ class JclCardImageBuilderTest {
                 oracleFixedCard(CARD_17_CONTENT, CARD_17_CONTENT_WIDTH));
     }
 
-    /**
-     * Joins an expected card sequence into the expected concatenated image with no separator, no
-     * line terminator and no trailing newline, because the cards are fixed-width records rather
-     * than text lines.
-     *
-     * @param cards the expected card sequence
-     * @return the expected concatenated image
-     */
     private static String oracleConcatenatedImage(final List<String> cards) {
         final StringBuilder joined = new StringBuilder();
         for (final String cardImage : cards) {
@@ -636,12 +341,9 @@ class JclCardImageBuilderTest {
         return joined.toString();
     }
 
-    // TESTS
-
     @Nested
     @DisplayName("the seventeen-card sequence")
     class CardSequenceContract {
-
         @Test
         @DisplayName("returns exactly seventeen cards")
         void returnsExactlySeventeenCards() {
@@ -743,7 +445,6 @@ class JclCardImageBuilderTest {
     @Nested
     @DisplayName("the published contract constants")
     class PublishedConstantsContract {
-
         @Test
         @DisplayName("publishes a card width of eighty")
         void publishesACardWidthOfEighty() {
@@ -819,7 +520,6 @@ class JclCardImageBuilderTest {
     @Nested
     @DisplayName("the fourteen fixed literal cards")
     class FixedLiteralCardDetails {
-
         @Test
         @DisplayName("card 1 carries the digit zero as its message class, not the capital letter")
         void cardOneMessageClassIsTheDigitZero() {
@@ -856,16 +556,12 @@ class JclCardImageBuilderTest {
             final List<String> cards = JclCardImageBuilder.build(START_DATE, END_DATE);
             final String cardTwo = card(cards, 2);
 
-            // The correctly spelled six-letter symbol, at its exact offset.
             assertThat(usAsciiSlice(cardTwo, CARD_02_SYSTEM_USER_SYMBOL_OFFSET,
                     CARD_02_CONTENT_WIDTH))
                     .as("system-user symbol on card 2").isEqualTo(usAsciiBytes("&SYSUID"));
             assertThat(cardTwo).as("card 2 carries the correctly spelled system-user symbol")
                     .contains("&SYSUID");
 
-            // A sibling member of the estate carries a transposed, five-letter spelling of the same
-            // symbol. Its absence is asserted here, but the token is assembled from two fragments so
-            // that the typo never appears as a literal anywhere in this source file.
             final String transposedSymbol = "&SY" + "UID";
             assertThat(cardTwo).as("card 2 must not import the sibling member's transposed spelling")
                     .doesNotContain(transposedSymbol);
@@ -877,7 +573,6 @@ class JclCardImageBuilderTest {
             final List<String> cards = JclCardImageBuilder.build(START_DATE, END_DATE);
             final String cardNine = card(cards, 9);
 
-            // Token layout of the sort-symbol card: name, comma, offset, comma, length, comma, type.
             final int symbolNameEnd = 13;
             final int recordOffsetStart = 14;
             final int recordOffsetEnd = 17;
@@ -951,7 +646,6 @@ class JclCardImageBuilderTest {
     @Nested
     @DisplayName("the three composed cards and their declared component widths")
     class ComposedCardArithmetic {
-
         @Test
         @DisplayName("card 11 is an eighteen-byte lead, a ten-byte slot and a fifty-two-byte trailer, 18 + 10 + 52 = 80")
         void cardElevenComposesEighteenPlusTenPlusFiftyTwo() {
@@ -1045,8 +739,6 @@ class JclCardImageBuilderTest {
             assertThat(cardFifteenBytes[CARD_15_SEPARATOR_OFFSET])
                     .as("the card 15 separator byte").isEqualTo(ORACLE_SPACE_BYTE);
 
-            // One byte, not two: the byte immediately after the separator is the first byte of the
-            // end-date slot, so a second separator byte would have displaced it.
             assertThat(cardFifteenBytes[CARD_15_END_SLOT_OFFSET])
                     .as("first byte of the end-date slot, immediately after the single separator")
                     .isEqualTo(usAsciiBytes(END_DATE)[0]);
@@ -1062,9 +754,6 @@ class JclCardImageBuilderTest {
                     .as("declared width of the date-parameter record")
                     .isEqualTo(ORACLE_DATE_PARAMETER_RECORD_WIDTH);
 
-            // Hand written from the same component widths the report line formatter's date-parameter
-            // record builder is required to use. The agreement between the two is documented rather
-            // than coded: nothing from the report formatter is imported, referenced or called here.
             final byte[] expectedRecord =
                     usAsciiBytes(START_DATE + oracleSpaces(CARD_15_SEPARATOR_WIDTH) + END_DATE);
 
@@ -1081,7 +770,6 @@ class JclCardImageBuilderTest {
     @Nested
     @DisplayName("four substitution slots carrying two values")
     class FourSubstitutionSlotsCarryTwoValues {
-
         @Test
         @DisplayName("four ten-byte substitution slots carry only two values: the start date fills the card 11 and card 15 slots, the end date fills the card 12 and card 15 slots, and the two occurrences of each value are byte identical")
         void theTwoOccurrencesOfEachDateAreByteIdentical() {
@@ -1168,20 +856,9 @@ class JclCardImageBuilderTest {
     @Nested
     @DisplayName("the terminating sentinel card")
     class TerminatingSentinelCard {
-
         @Test
         @DisplayName("the sentinel is transmitted rather than merely held: the legacy loop writes the card after setting its terminator, so all seventeen cards reach the queue")
         void theSentinelIsTransmittedRatherThanMerelyHeld() {
-            // The legacy emission loop moves the card into the transmit buffer, then raises its
-            // terminator flag once the card matches the sentinel, and only then performs the write.
-            // The write therefore happens in the same iteration that recognised the sentinel, so the
-            // sentinel is transmitted and the count is seventeen rather than sixteen.
-            //
-            //
-            // Source anomaly, recorded for auditability and deliberately not reproduced: the legacy
-            // submission paragraph's own name carries a transposed spelling, carried as row 6 of the
-            // source anomaly register. The Java member is named correctly, so the misspelling appears
-            // nowhere in this file's code.
             final List<String> cards = JclCardImageBuilder.build(START_DATE, END_DATE);
 
             assertThat(cards).as("seventeen cards reach the queue, sentinel included")
@@ -1227,7 +904,6 @@ class JclCardImageBuilderTest {
     @Nested
     @DisplayName("there is no report-name substitution slot")
     class NoReportNameSubstitutionSlot {
-
         @Test
         @DisplayName("the job card on card 1 is a fixed literal: the legacy report-name work field is screen only and is never substituted into any card")
         void theJobCardIsInvariantAcrossDifferentDatePairs() {
@@ -1235,9 +911,6 @@ class JclCardImageBuilderTest {
             final List<String> secondPair =
                     JclCardImageBuilder.build(OTHER_START_DATE, OTHER_END_DATE);
 
-            // Card 1 is byte identical for both date pairs, and it equals the hand-written literal.
-            // There is deliberately no third builder parameter for a report name, so nobody should
-            // add one: the report name only ever composed a screen message in the legacy program.
             assertThat(usAsciiBytes(card(secondPair, 1)))
                     .as("card 1 is invariant across two different date pairs")
                     .isEqualTo(usAsciiBytes(card(firstPair, 1)));
@@ -1263,7 +936,6 @@ class JclCardImageBuilderTest {
     @Nested
     @DisplayName("the oversized redefine of the legacy card table")
     class OversizedRedefineAnomaly {
-
         @Test
         @DisplayName("the legacy card table is redefined as one thousand eighty-byte entries over a 1360-byte group, an oversized-redefine anomaly honoured as an asserted constant and never allocated")
         void theOneThousandEntryBoundIsAssertedButNeverAllocated() {
@@ -1298,7 +970,6 @@ class JclCardImageBuilderTest {
     @Nested
     @DisplayName("the concatenated job-submission image")
     class ConcatenatedImageContract {
-
         @Test
         @DisplayName("is exactly 1360 encoded bytes, being seventeen cards of eighty bytes")
         void isExactlyOneThousandThreeHundredAndSixtyEncodedBytes() {
@@ -1380,12 +1051,6 @@ class JclCardImageBuilderTest {
     @Nested
     @DisplayName("the returned card sequence is unmodifiable")
     class UnmodifiableResult {
-
-        // The class under test publishes its seventeen card literals as individual immutable string
-        // constants rather than as a collection, so there is no exposed literal collection view whose
-        // unmodifiability could be asserted. The one collection the contract exposes is the card
-        // sequence returned below, and every mutation of it is rejected.
-
         @Test
         @DisplayName("rejects add")
         void rejectsAdd() {
@@ -1437,15 +1102,9 @@ class JclCardImageBuilderTest {
     @Nested
     @DisplayName("date slot width validation")
     class DateSlotWidthValidation {
-
         @Test
         @DisplayName("rejecting a malformed slot is a deliberate divergence: the legacy move padded or truncated silently, and the Java target rejects instead so no malformed card is ever emitted")
         void rejectionIsADeliberateDivergenceFromTheLegacyMove() {
-            // The legacy program moved a screen field into a ten-byte slot, and a move into a field of
-            // a different size pads or truncates with no diagnostic, so a malformed value would have
-            // produced a silently corrupt card and a broken eighty-column frame. Decisions D-06 and
-            // D-08 record the rejection that replaces that silence, and decision D-11 records the
-            // exception type; neither is decided here.
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> JclCardImageBuilder.build(NINE_BYTE_DATE, END_DATE));
             assertThatExceptionOfType(IllegalArgumentException.class)
@@ -1539,13 +1198,6 @@ class JclCardImageBuilderTest {
         @Test
         @DisplayName("rejects a ten-character slot whose bytes are not single-byte encodable, because the eighty-column frame would shift")
         void rejectsASlotThatIsNotSingleByteEncodable() {
-            // This is the one place a character count is asserted, and it is asserted only to
-            // establish why a width check cannot carry this case on its own. The value is ten
-            // characters long and it also encodes to ten bytes, because US-ASCII substitutes a
-            // replacement byte for a character it cannot represent rather than refusing or
-            // expanding. A width-only guard would therefore wave this value straight through and
-            // the card would silently carry a corrupted byte where a date digit belongs, which is
-            // why the builder additionally requires that every character be representable.
             assertThat(NON_SINGLE_BYTE_DATE.length())
                     .as("character count of the non-single-byte slot value")
                     .isEqualTo(ORACLE_DATE_SLOT_WIDTH);
@@ -1586,10 +1238,6 @@ class JclCardImageBuilderTest {
         @Test
         @DisplayName("the width guard reports first and reports only width, so a wrong-width value is never diagnosed positionally and a right-width value is never diagnosed as a width failure")
         void theWidthGuardReportsFirstAndReportsOnlyWidth() {
-            // Width is the only property that can be checked before the value is examined position by
-            // position, so it is checked first and its diagnostic stands alone. A ten-byte value moves
-            // on to the positional allowlist and then to the calendar guard, each of which names
-            // itself. Keeping the three diagnostics disjoint is what makes any one of them actionable.
             final String tenByteNonCalendarValue = "9999-99-99";
             assertThat(usAsciiLength(tenByteNonCalendarValue))
                     .as("width of the non-calendar slot value").isEqualTo(ORACLE_DATE_SLOT_WIDTH);
@@ -1608,20 +1256,9 @@ class JclCardImageBuilderTest {
         }
     }
 
-    /**
-     * Reports whether a ten-character value names a day that actually exists.
-     *
-     * <p>Deliberately computed here from the platform calendar rather than read back from the class
-     * under test, so the expectation stays independent of the implementation it checks. The
-     * era-independent year pattern under strict resolution is used because the conventional pattern is
-     * year-of-era and would demand an era field the slot does not carry.
-     *
-     * @param slotValue a ten-character value already known to satisfy the positional allowlist
-     * @return {@code true} when the value names a real calendar day
-     */
     private static boolean namesARealDay(final String slotValue) {
         try {
-            LocalDate.parse(slotValue, DateTimeFormatter.ofPattern("uuuu-MM-dd")
+            LocalDate.parse(slotValue, DateTimeFormatter.ofPattern("uuuu-MM-dd", Locale.ROOT)
                     .withResolverStyle(ResolverStyle.STRICT));
             return true;
         } catch (DateTimeParseException notARealDay) {
@@ -1632,16 +1269,9 @@ class JclCardImageBuilderTest {
     @Nested
     @DisplayName("date slot shape validation: the frame includes the slot's own structure")
     class DateSlotShapeValidation {
-
         @Test
         @DisplayName("an apostrophe inside a slot is rejected, because it would close the sort character constant early and turn the rest of card 11 into further specification")
         void anApostropheInsideAStartSlotIsRejected() {
-            // The whole reason a right-width slot still needs a shape check. Card 11 wraps the slot
-            // in a character constant opened by the leading literal and closed by the apostrophe in
-            // the trailing field. An apostrophe inside the slot closes that constant eight bytes
-            // early, and the bytes after it are then read by the sort step as further specification
-            // rather than as the tail of a date. The value below is exactly ten single-byte
-            // US-ASCII characters, so neither the width check nor the encodability check sees it.
             assertThat(usAsciiLength(APOSTROPHE_INJECTION_SLOT))
                     .as("width of the apostrophe-carrying slot value")
                     .isEqualTo(ORACLE_DATE_SLOT_WIDTH);
@@ -1731,16 +1361,6 @@ class JclCardImageBuilderTest {
         @Test
         @DisplayName("at each of the eight numeric positions only a digit passes the allowlist, and every other US-ASCII character is rejected positionally rather than by the calendar guard behind it")
         void atEachNumericPositionOnlyADigitIsAccepted() {
-            // An exhaustive sweep rather than a sample, so no admitted character can hide. Sweeping
-            // every single-byte US-ASCII value at every numeric position also makes the enumeration
-            // of individual dangerous bytes above redundant as proof and useful only as
-            // documentation of why each one matters.
-            //
-            // Substituting a digit does not always leave a real day - a nine in the first month
-            // position gives a ninety-first month - so the digit branch splits on whether the
-            // resulting value names one. Either way the allowlist has admitted it: a digit is refused
-            // only by the calendar guard, never positionally, and that distinction is asserted rather
-            // than assumed. Refusal for a non-digit is always positional.
             for (final int position : NUMERIC_SLOT_POSITIONS) {
                 for (char candidate = 0; candidate <= HIGHEST_US_ASCII_CHARACTER; candidate++) {
                     final String slot = slotWithCharacterAt(position, candidate);
@@ -1791,11 +1411,11 @@ class JclCardImageBuilderTest {
         @DisplayName("the hyphen positions are fixed: a slot that moves them, or uses a different separator, is rejected even at the right width")
         void theHyphenPositionsAreFixed() {
             final List<String> misshapedSlots = List.of(
-                    "20-22-0101",  // hyphens moved one position left
-                    "2022/01/01",  // a different separator entirely
-                    "2022.01.01",  // a dotted separator
-                    "20220101  ",  // no separators, space padded
-                    "  20220101"); // no separators, space led
+                    "20-22-0101",
+                    "2022/01/01",
+                    "2022.01.01",
+                    "20220101  ",
+                    "  20220101");
 
             for (final String misshaped : misshapedSlots) {
                 assertThat(usAsciiLength(misshaped)).as("width of misshaped slot " + misshaped)
@@ -1810,9 +1430,6 @@ class JclCardImageBuilderTest {
         @Test
         @DisplayName("the diagnostic names the slot, the required shape and the offending one-based position, and never echoes the rejected value")
         void theDiagnosticNamesThePositionAndNeverEchoesTheRejectedValue() {
-            // A rejected slot is attacker-supplied text by assumption, so it must not travel onward
-            // inside a message that a caller may log or surface. The diagnostic therefore carries
-            // the position and the required shape and nothing of the value itself.
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> JclCardImageBuilder.build(APOSTROPHE_INJECTION_SLOT, END_DATE))
                     .withMessageContaining("PARM-START-DATE")
@@ -1831,10 +1448,6 @@ class JclCardImageBuilderTest {
         @Test
         @DisplayName("the shape check runs after the width and encodability checks, so their own diagnostics are unchanged")
         void theShapeCheckRunsAfterTheWidthAndEncodabilityChecks() {
-            // A value can fail more than one property at once. Ordering the checks from the coarsest
-            // to the finest keeps each failure reported against its narrowest cause, so a nine-byte
-            // misshaped value is still a width failure and a non-single-byte value is still an
-            // encodability failure.
             final String shortAndMisshaped = "2022/01/0";
             assertThat(usAsciiLength(shortAndMisshaped)).as("width of the short misshaped value")
                     .isEqualTo(ORACLE_DATE_SLOT_WIDTH - 1);
@@ -1852,17 +1465,11 @@ class JclCardImageBuilderTest {
         @Test
         @DisplayName("the positional allowlist is structural and admits an impossible calendar date, which the calendar guard behind it then refuses - so the two guards are separate and both are needed")
         void theStructuralAllowlistAdmitsWhatTheCalendarGuardThenRefuses() {
-            // Each value below satisfies every positional rule and would pass a width-and-shape guard
-            // untouched. Each would then be embedded in the sort include-condition on cards 11 and 12
-            // and in the report parameter on card 15, producing a job whose date window names no real
-            // interval, so a second guard refuses it. That the diagnostic names the calendar and not a
-            // position is what proves the allowlist admitted it and the calendar guard is what caught
-            // it: the two are separate checks and neither subsumes the other.
             final List<String> structurallyValidNonDates = List.of(
-                    "9999-99-99",  // no such month and no such day
-                    "0000-00-00",  // all zeroes
-                    "2019-02-30",  // a day that month never has
-                    "2019-13-01"); // a thirteenth month
+                    "9999-99-99",
+                    "0000-00-00",
+                    "2019-02-30",
+                    "2019-13-01");
 
             for (final String nonDate : structurallyValidNonDates) {
                 assertThat(namesARealDay(nonDate))
@@ -1880,10 +1487,6 @@ class JclCardImageBuilderTest {
         @Test
         @DisplayName("the calendar guard rejects but never converts: an accepted slot reaches its card byte for byte, including a genuine leap day a lenient resolver would have moved")
         void theCalendarGuardRejectsButNeverConverts() {
-            // 2020-02-29 is a real day and must survive untouched; 2019-02-29 is not, and a lenient
-            // resolver would have quietly turned it into 2019-02-28 and emitted a card the caller never
-            // asked for. Strict resolution refuses instead, and the accepted value is placed on the
-            // card as the caller's own bytes rather than as a reformatted parse result.
             assertThat(namesARealDay(OTHER_END_DATE)).as("the leap day is real").isTrue();
             assertThat(JclCardImageBuilder.build(OTHER_START_DATE, OTHER_END_DATE))
                     .as("card sequence for a genuine leap day")
@@ -1929,6 +1532,185 @@ class JclCardImageBuilderTest {
             assertThat(usAsciiLength(JclCardImageBuilder.DATE_SLOT_FORMAT))
                     .as("width of the published date slot format")
                     .isEqualTo(ORACLE_DATE_SLOT_WIDTH);
+        }
+    }
+
+
+    /**
+     * Evaluates a supplier with the JVM's default locale temporarily replaced.
+     *
+     * <p>The build pins {@code -Duser.language=en -Duser.country=US} for the ordinary unit run, so a
+     * locale defect in this contract cannot be observed by any test that does not do this. The
+     * previous default is restored in a {@code finally} block, and the format category is restored
+     * explicitly because {@link Locale#setDefault(Locale)} overwrites both categories.
+     *
+     * <p>The setting being replaced belongs to the process rather than to the test, so the enclosing
+     * class declares exclusive access through {@link ResourceLock}, naming both the global resource
+     * and the locale. The global one is what actually confers the guarantee: a lock on the locale
+     * alone excludes only tests that claim the locale themselves, and every byte-parity assertion in
+     * this class claims nothing while depending on the pinned default.
+     *
+     * @param <T>    the type the body produces
+     * @param locale the locale to install for the duration of the call
+     * @param body   the value to compute under that locale
+     * @return whatever {@code body} produced
+     */
+    private static <T> T underLocale(final Locale locale, final Supplier<T> body) {
+        final Locale previousDefault = Locale.getDefault();
+        final Locale previousFormat = Locale.getDefault(Locale.Category.FORMAT);
+        try {
+            Locale.setDefault(locale);
+            return body.get();
+        } finally {
+            Locale.setDefault(previousDefault);
+            Locale.setDefault(Locale.Category.FORMAT, previousFormat);
+        }
+    }
+
+    /*
+     * ========================================================================================
+     * Locale invariance.
+     * ========================================================================================
+     */
+
+    @Nested
+    @DisplayName("locale invariance - the ambient default locale cannot change a card byte or a slot verdict")
+    // Every test below replaces the JVM-wide default locale for the duration of one call. That is
+    // process state rather than test state, so the isolation is declared here instead of being left to
+    // whatever execution settings happen to be in force.
+    //
+    // Both locks are needed and the wider one is load bearing. A lock on the locale alone excludes
+    // only tests that themselves claim the locale, and every other assertion in this class depends on
+    // the pinned default while claiming nothing - so a narrow lock would leave them free to run
+    // alongside the replacement and read an Arabic-Indic digit out of a card slot. The narrow lock is
+    // kept beside it because it names the specific resource being written, so a future test that
+    // declares a read lock on the locale interlocks correctly rather than relying on the global one
+    // still being here.
+    @ResourceLock(Resources.GLOBAL)
+    @ResourceLock(Resources.LOCALE)
+    class LocaleInvariance {
+
+        /**
+         * The two locales the continuous-integration definition re-runs the whole unit tier under,
+         * followed by two that additionally carry a non-Latin default numbering system.
+         *
+         * <p>The first two are the configured gate. The second two are the stronger cases: a locale
+         * whose numbering system is Arabic-Indic or Thai is the one under which a formatter that
+         * resolved its decimal style from ambient state would read or write digits this eighty-column
+         * frame cannot carry, so including them proves the invariance rather than merely sampling it.
+         */
+        @ParameterizedTest(name = "locale = {0}")
+        @ValueSource(strings = {"tr-TR", "ar-EG", "ar-EG-u-nu-arab", "th-TH-u-nu-thai"})
+        @DisplayName("the four date slots stay ten US-ASCII bytes and every card stays eighty US-ASCII bytes")
+        void theSlotsAndCardsAreUnchangedUnderAHostileDefaultLocale(final String languageTag) {
+            final Locale hostile = Locale.forLanguageTag(languageTag);
+
+            final List<String> cards =
+                    underLocale(hostile, () -> JclCardImageBuilder.build(START_DATE, END_DATE));
+
+            assertThat(cards).as("produced card count under " + languageTag)
+                    .hasSize(ORACLE_CARD_COUNT);
+            for (int cardNumber = 1; cardNumber <= ORACLE_CARD_COUNT; cardNumber++) {
+                assertThat(usAsciiLength(card(cards, cardNumber)))
+                        .as("encoded width of card " + cardNumber + " under " + languageTag)
+                        .isEqualTo(ORACLE_CARD_WIDTH);
+            }
+
+            final byte[] startOnCardEleven = usAsciiSlice(card(cards, 11), CARD_11_SLOT_OFFSET,
+                    CARD_11_CLOSING_APOSTROPHE_OFFSET);
+            final byte[] endOnCardTwelve = usAsciiSlice(card(cards, 12), CARD_12_SLOT_OFFSET,
+                    CARD_12_CLOSING_APOSTROPHE_OFFSET);
+            final byte[] startOnCardFifteen = usAsciiSlice(card(cards, 15),
+                    CARD_15_START_SLOT_OFFSET, CARD_15_SEPARATOR_OFFSET);
+            final byte[] endOnCardFifteen = usAsciiSlice(card(cards, 15), CARD_15_END_SLOT_OFFSET,
+                    CARD_15_END_SLOT_OFFSET + ORACLE_DATE_SLOT_WIDTH);
+
+            for (final byte[] slot : List.of(startOnCardEleven, endOnCardTwelve, startOnCardFifteen,
+                    endOnCardFifteen)) {
+                assertThat(slot.length).as("encoded slot width under " + languageTag)
+                        .isEqualTo(ORACLE_DATE_SLOT_WIDTH);
+            }
+
+            assertThat(startOnCardEleven).as("card 11 start-date slot under " + languageTag)
+                    .isEqualTo(usAsciiBytes(START_DATE));
+            assertThat(endOnCardTwelve).as("card 12 end-date slot under " + languageTag)
+                    .isEqualTo(usAsciiBytes(END_DATE));
+            assertThat(startOnCardFifteen).as("card 15 start-date slot under " + languageTag)
+                    .isEqualTo(usAsciiBytes(START_DATE));
+            assertThat(endOnCardFifteen).as("card 15 end-date slot under " + languageTag)
+                    .isEqualTo(usAsciiBytes(END_DATE));
+        }
+
+        @ParameterizedTest(name = "locale = {0}")
+        @ValueSource(strings = {"tr-TR", "ar-EG", "ar-EG-u-nu-arab", "th-TH-u-nu-thai"})
+        @DisplayName("the whole seventeen-card sequence is byte identical to the sequence built under the pinned default")
+        void theWholeSequenceIsByteIdenticalUnderAHostileDefaultLocale(final String languageTag) {
+            final Locale hostile = Locale.forLanguageTag(languageTag);
+
+            final List<String> underHostileLocale =
+                    underLocale(hostile, () -> JclCardImageBuilder.build(START_DATE, END_DATE));
+
+            assertThat(underHostileLocale)
+                    .as("the card sequence must not depend on the host's locale")
+                    .containsExactlyElementsOf(oracleCards(START_DATE, END_DATE));
+            assertThat(underLocale(hostile,
+                    () -> JclCardImageBuilder.buildConcatenatedImage(START_DATE, END_DATE)))
+                    .as("the concatenated image must not depend on the host's locale")
+                    .isEqualTo(oracleConcatenatedImage(oracleCards(START_DATE, END_DATE)));
+        }
+
+        @ParameterizedTest(name = "locale = {0}")
+        @ValueSource(strings = {"tr-TR", "ar-EG", "ar-EG-u-nu-arab", "th-TH-u-nu-thai"})
+        @DisplayName("the calendar verdict is a property of the value rather than of the environment: a real day is still accepted and an impossible one still refused")
+        void theCalendarVerdictIsUnchangedUnderAHostileDefaultLocale(final String languageTag) {
+            final Locale hostile = Locale.forLanguageTag(languageTag);
+            final String realLeapDay = "2020-02-29";
+            final String impossibleLeapDay = "2023-02-29";
+
+            assertThat(namesARealDay(realLeapDay))
+                    .as("the oracle must agree that the accepted value is a real day").isTrue();
+            assertThat(namesARealDay(impossibleLeapDay))
+                    .as("the oracle must agree that the refused value is not a real day").isFalse();
+
+            assertThat(underLocale(hostile,
+                    () -> JclCardImageBuilder.build(realLeapDay, realLeapDay)))
+                    .as("a real day must still be accepted under " + languageTag)
+                    .containsExactlyElementsOf(oracleCards(realLeapDay, realLeapDay));
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> underLocale(hostile,
+                            () -> JclCardImageBuilder.build(impossibleLeapDay, END_DATE)))
+                    .as("an impossible day must still be refused under " + languageTag)
+                    .withMessageContaining("PARM-START-DATE")
+                    .withMessageContaining("day that exists");
+        }
+
+        @ParameterizedTest(name = "locale = {0}")
+        @ValueSource(strings = {"tr-TR", "ar-EG", "ar-EG-u-nu-arab", "th-TH-u-nu-thai"})
+        @DisplayName("a slot carrying that locale's own digits is refused, because the frame admits ASCII digits and nothing else")
+        void aSlotCarryingLocaleSpecificDigitsIsRefused(final String languageTag) {
+            final Locale hostile = Locale.forLanguageTag(languageTag);
+            // The same instant rendered with whatever digits the locale's numbering system uses. Under
+            // the two Latin-digit locales this is the ordinary ASCII rendering and is accepted; under
+            // the two that carry their own numbering system it is not, and must be refused rather than
+            // silently written into a slot whose width is counted in bytes.
+            final String localisedDigits = underLocale(hostile,
+                    () -> DateTimeFormatter.ofPattern("uuuu-MM-dd", hostile)
+                            .format(LocalDate.of(2022, 1, 1)));
+
+            if (localisedDigits.equals(START_DATE)) {
+                assertThat(underLocale(hostile,
+                        () -> JclCardImageBuilder.build(localisedDigits, END_DATE)))
+                        .as("an ASCII rendering must still be accepted under " + languageTag)
+                        .containsExactlyElementsOf(oracleCards(START_DATE, END_DATE));
+                return;
+            }
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> underLocale(hostile,
+                            () -> JclCardImageBuilder.build(localisedDigits, END_DATE)))
+                    .as("a non-ASCII digit must never reach an eighty-column card")
+                    .withMessageContaining("PARM-START-DATE");
         }
     }
 

@@ -89,8 +89,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <h2>Nothing here is withheld from the diagnostic rendering</h2>
  *
- * <p>Three period markers, a report name, six date parts, a confirmation character and four header
- * values identify
+ * <p>One reporting period, six date parts, a confirmation character and four header values identify
  * nobody, so the generated record rendering stands. A test below proves it is still the generated one,
  * and the compensating assertion is that a nested {@link NavigationContext} withholds its own
  * identifying values.
@@ -109,13 +108,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("ReportResponse :: report-request response contract of legacy transaction CR00")
 class ReportResponseCoverageTest {
 
-    /** The twenty-four components in declaration order. */
+    /** The twenty-one components in declaration order. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
-            "monthlySelection", "yearlySelection", "customSelection", "reportName",
+            "reportPeriod",
             "startMonth", "startDay", "startYear", "endMonth", "endDay", "endYear",
             "confirm", "transactionName", "title01", "currentDate", "programName", "title02",
             "currentTime", "errorMessage", "submissionAccepted", "message", "generalError",
             "focusScreenFieldId", "nextRoute", "navigationContext");
+
+    /**
+     * The three per-position selector properties and the separate report-name property the collapse
+     * removed. Asserted absent, because the three screen positions are mutually exclusive and the name
+     * is the period's own carried value rather than a component of its own.
+     */
+    private static final List<String> REMOVED_COMPONENTS = List.of(
+            "monthlySelection", "yearlySelection", "customSelection", "reportName");
 
     /**
      * The eight published field identities, in the order the constants are declared.
@@ -158,10 +165,7 @@ class ReportResponseCoverageTest {
      */
     private static ReportResponse carrying(String component, String value) {
         return new ReportResponse(
-                "monthlySelection".equals(component) ? value : null,
-                "yearlySelection".equals(component) ? value : null,
-                "customSelection".equals(component) ? value : null,
-                "reportName".equals(component) ? value : null,
+                null,
                 "startMonth".equals(component) ? value : null,
                 "startDay".equals(component) ? value : null,
                 "startYear".equals(component) ? value : null,
@@ -192,10 +196,7 @@ class ReportResponseCoverageTest {
      */
     private static ReportResponse accepted(ReportPeriod period) {
         return new ReportResponse(
-                period == ReportPeriod.MONTHLY ? "S" : null,
-                period == ReportPeriod.YEARLY ? "S" : null,
-                period == ReportPeriod.CUSTOM ? "S" : null,
-                reportNameOf(period),
+                period,
                 "01", "31", "2022", "12", "28", "2022", "Y", "CR00",
                 "AWS Mainframe Modernization             ", "08/02/26", "CORPT00C",
                 "CardDemo                                ", "14:35:07", null, true,
@@ -205,35 +206,18 @@ class ReportResponseCoverageTest {
     }
 
     /**
-     * Reads the published report name for the supplied period.
+     * Reads the report name for the supplied period.
      *
-     * <p>The three names are published as constants on the response rather than derived from the
-     * enumeration, because the name is screen text the composed acceptance message carries. That the
-     * two agree is asserted rather than assumed.
+     * <p>The name is the period's own carried value rather than a constant of this response, because it
+     * is derived screen text that the composed acceptance message embeds rather than a value a client
+     * may submit or the response may publish separately. Restating it here would create a second source
+     * of truth for one contractual string.
      *
      * @param period the selected report period
-     * @return the published report name for that period
+     * @return the report name for that period
      */
     private static String reportNameOf(ReportPeriod period) {
-        return switch (period) {
-            case MONTHLY -> ReportResponse.REPORT_NAME_MONTHLY;
-            case YEARLY -> ReportResponse.REPORT_NAME_YEARLY;
-            case CUSTOM -> ReportResponse.REPORT_NAME_CUSTOM;
-        };
-    }
-
-    /**
-     * Reads the marker component that carries the operator's mark for the supplied period.
-     *
-     * @param period the selected report period
-     * @return the property name of the marker for that period
-     */
-    private static String markerOf(ReportPeriod period) {
-        return switch (period) {
-            case MONTHLY -> "monthlySelection";
-            case YEARLY -> "yearlySelection";
-            case CUSTOM -> "customSelection";
-        };
+        return period.getValue();
     }
 
     /**
@@ -302,20 +286,21 @@ class ReportResponseCoverageTest {
         }
 
         @Test
-        @DisplayName("the three markers and the report name are text, and the two indicators are "
-                + "primitives rather than derived values")
+        @DisplayName("the period is the enumeration itself, the report name is not a component at all, "
+                + "and the two indicators are primitives rather than derived values")
         void theOutcomeComponentsAreTyped() {
-            assertThat(componentType("monthlySelection")).isEqualTo(String.class);
-            assertThat(componentType("yearlySelection")).isEqualTo(String.class);
-            assertThat(componentType("customSelection")).isEqualTo(String.class);
-            assertThat(componentType("reportName"))
-                    .as("the report name is the screen text the acceptance message carries, and the "
-                            + "three published names agree with the domain enumeration's values")
-                    .isEqualTo(String.class);
-            assertThat(List.of(ReportResponse.REPORT_NAME_MONTHLY, ReportResponse.REPORT_NAME_YEARLY,
-                            ReportResponse.REPORT_NAME_CUSTOM))
-                    .containsExactly(ReportPeriod.MONTHLY.getValue(),
-                            ReportPeriod.YEARLY.getValue(), ReportPeriod.CUSTOM.getValue());
+            assertThat(componentType("reportPeriod"))
+                    .as("the three mutually exclusive screen positions collapse into one enumerated "
+                            + "component, never three characters")
+                    .isEqualTo(ReportPeriod.class);
+            assertThat(EXPECTED_COMPONENTS)
+                    .as("the report name is the period's own carried value, so it publishes no "
+                            + "component of its own and cannot drift from the period")
+                    .doesNotContainAnyElementsOf(REMOVED_COMPONENTS);
+            assertThat(List.of(ReportPeriod.MONTHLY.getValue(), ReportPeriod.YEARLY.getValue(),
+                            ReportPeriod.CUSTOM.getValue()))
+                    .as("bare mixed-case, unpadded despite the ten-character work item")
+                    .containsExactly("Monthly", "Yearly", "Custom");
             assertThat(componentType("submissionAccepted")).isEqualTo(boolean.class);
             assertThat(componentType("generalError")).isEqualTo(boolean.class);
             assertThat(componentType("navigationContext")).isEqualTo(NavigationContext.class);
@@ -826,7 +811,7 @@ class ReportResponseCoverageTest {
                 + "the screen has nothing to report")
         void anEntirelyEmptyResponseReportsNoViolation() {
             assertThat(validator.validate(
-                            new ReportResponse(null, null, null, null, null, null, null, null,
+                            new ReportResponse(null, null, null, null, null,
                                     null, null, null, null, null, null, null, null, null, null,
                                     false, null, false, null, null, null)))
                     .isEmpty();
@@ -866,35 +851,38 @@ class ReportResponseCoverageTest {
                     .isFalse();
         }
 
-        @ParameterizedTest(name = "{0} crosses as a mark in its own position")
+        @ParameterizedTest(name = "{0} crosses under the one collapsed name")
         @EnumSource(ReportPeriod.class)
-        @DisplayName("each period crosses the wire as a mark in its own marker position, with the "
-                + "report name carrying the screen text separately")
-        void eachPeriodCrossesAsAMarkInItsOwnPosition(ReportPeriod period)
+        @DisplayName("each period crosses the wire under the one collapsed name carrying the bare "
+                + "mixed-case report name the composed message embeds")
+        void eachPeriodCrossesUnderTheCollapsedName(ReportPeriod period)
                 throws JsonProcessingException {
             JsonNode payload = payloadOf(accepted(period));
 
-            assertThat(payload.get(markerOf(period)).asText())
-                    .as("the marked position is the screen character, echoed as the operator typed it")
-                    .isEqualTo("S");
-            assertThat(payload.get("reportName").asText())
-                    .as("the report name is the screen text the composed message carries, and the "
-                            + "two are deliberately separate components")
-                    .isEqualTo(reportNameOf(period));
-            assertThat(payload.has("period"))
-                    .as("no collapsed period token is published")
-                    .isFalse();
+            assertThat(payload.get("reportPeriod").asText())
+                    .as("the wire form of a closed vocabulary is its member identifier")
+                    .isEqualTo(period.name());
+            assertThat(payload.get("message").asText())
+                    .as("the composed acceptance text embeds the derived report name, which is the "
+                            + "period's carried value rather than its identifier")
+                    .startsWith(reportNameOf(period))
+                    .doesNotStartWith(period.name());
+            assertThat(REMOVED_COMPONENTS)
+                    .as("no per-position marker and no separate report name is published")
+                    .allSatisfy(member -> assertThat(payload.has(member)).isFalse());
         }
 
         @Test
-        @DisplayName("an unselected period is three omissions rather than a default, so \"no report "
+        @DisplayName("an unselected period is one omission rather than a default, so \"no report "
                 + "type selected\" is expressible")
         void anUnselectedPeriodIsOmitted() throws JsonProcessingException {
             JsonNode payload = payloadOf(carrying("errorMessage",
                     ReportResponse.MSG_SELECT_REPORT_TYPE));
 
-            assertThat(List.of("monthlySelection", "yearlySelection", "customSelection", "reportName"))
+            assertThat(payload.has("reportPeriod"))
                     .as("substituting a default would print a report the operator never asked for")
+                    .isFalse();
+            assertThat(REMOVED_COMPONENTS)
                     .allSatisfy(member -> assertThat(payload.has(member)).isFalse());
             assertThat(payload.get("errorMessage").asText())
                     .isEqualTo(ReportResponse.MSG_SELECT_REPORT_TYPE);
@@ -905,7 +893,7 @@ class ReportResponseCoverageTest {
                 + "state to omit")
         void bothBooleanIndicatorsAreAlwaysWritten() throws JsonProcessingException {
             JsonNode payload = payloadOf(
-                    new ReportResponse(null, null, null, null, null, null, null, null, null, null,
+                    new ReportResponse(null, null, null, null, null, null, null,
                             null, null, null, null, null, null, null, null, false, null, false, null,
                             null, null));
 
@@ -947,8 +935,7 @@ class ReportResponseCoverageTest {
                     mapper.writeValueAsString(response), ReportResponse.class);
 
             assertThat(returned).isEqualTo(response);
-            assertThat(returned.customSelection()).isEqualTo("S");
-            assertThat(returned.reportName()).isEqualTo(ReportResponse.REPORT_NAME_CUSTOM);
+            assertThat(returned.reportPeriod()).isSameAs(ReportPeriod.CUSTOM);
             assertThat(returned.navigationContext())
                     .isEqualTo(JsonContractSupport.populatedNavigation());
         }
@@ -957,12 +944,13 @@ class ReportResponseCoverageTest {
         @DisplayName("an unknown member is ignored rather than rejected, so a client may echo the "
                 + "response back without being refused")
         void anUnknownMemberIsIgnored() throws JsonProcessingException {
-            String payload = "{\"monthlySelection\":\"S\",\"rows\":[],\"jobName\":\"whatever\"}";
+            String payload = "{\"reportPeriod\":\"MONTHLY\",\"monthlySelection\":\"S\","
+                    + "\"rows\":[],\"jobName\":\"whatever\"}";
 
             ReportResponse returned = JsonContractSupport.declaredSettingsMapper()
                     .readValue(payload, ReportResponse.class);
 
-            assertThat(returned.monthlySelection()).isEqualTo("S");
+            assertThat(returned.reportPeriod()).isSameAs(ReportPeriod.MONTHLY);
         }
     }
 
@@ -971,19 +959,18 @@ class ReportResponseCoverageTest {
     class DiagnosticRendering {
 
         @Test
-        @DisplayName("the rendering is the one the record contract generates, because three period "
-                + "selectors, six date parts and a confirmation character identify nobody")
+        @DisplayName("the rendering is the one the record contract generates, because one reporting "
+                + "period, six date parts and a confirmation character identify nobody")
         void theRenderingIsTheGeneratedOne() {
             String rendered = accepted(ReportPeriod.MONTHLY).toString();
 
             assertThat(rendered)
                     .startsWith("ReportResponse[")
-                    .as("the period is carried as three independent single-character selectors "
-                            + "rather than as one enumerated value, so the rendering names each")
-                    .contains("monthlySelection=S")
-                    .contains("yearlySelection=null")
-                    .contains("customSelection=null")
-                    .contains("reportName=" + ReportResponse.REPORT_NAME_MONTHLY)
+                    .as("the three mutually exclusive positions collapse into one enumerated value, "
+                            + "so the rendering names that value once")
+                    .contains("reportPeriod=MONTHLY")
+                    .doesNotContain("monthlySelection", "yearlySelection", "customSelection",
+                            "reportName=")
                     .contains("startMonth=01")
                     .contains("submissionAccepted=true");
             for (String component : EXPECTED_COMPONENTS) {
@@ -1039,10 +1026,10 @@ class ReportResponseCoverageTest {
         @DisplayName("the acceptance indicator participates in equality, so an accepted and a "
                 + "pending submission carrying the same text are distinguishable")
         void theAcceptanceIndicatorParticipatesInEquality() {
-            ReportResponse acceptedFlag = new ReportResponse(null, null, null, null, null, null, null,
+            ReportResponse acceptedFlag = new ReportResponse(null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, true, "same",
                     false, null, null, null);
-            ReportResponse pendingFlag = new ReportResponse(null, null, null, null, null, null, null,
+            ReportResponse pendingFlag = new ReportResponse(null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, false, "same",
                     false, null, null, null);
 

@@ -667,18 +667,23 @@ class TransactionListResponseTest {
      * shape of the screen &mdash; how many lines an operator sees &mdash; and the module asserts no
      * numeric performance or capacity target of any kind.</p>
      *
-     * <p>The figure is read from {@link PageMetadata#TRANSACTION_LIST_PAGE_SIZE} throughout, so this
-     * file restates no screen shape of its own.</p>
+     * <p>The figure is read from {@link PageMetadata#TRANSACTION_LIST_PAGE_SIZE} throughout, so
+     * neither this file nor the response body it exercises restates a screen shape of its own.</p>
      */
     @Nested
     @DisplayName("the screen row count is ten, established from loop bounds with no row table")
     class ScreenRowCount {
 
         @Test
-        @DisplayName("agrees with the count the paging contract publishes for this screen")
-        void agreesWithThePagingContract() {
-            assertThat(TransactionListResponse.ROW_COUNT)
-                    .isEqualTo(PageMetadata.TRANSACTION_LIST_PAGE_SIZE);
+        @DisplayName("is published by the paging contract alone, this response body declaring no "
+                + "count of its own")
+        void isPublishedByThePagingContractAlone() {
+            assertThat(PageMetadata.TRANSACTION_LIST_PAGE_SIZE)
+                    .as("the screen depth is stated once for the whole module; a count published on "
+                            + "this response body would be a competing source of truth for the same "
+                            + "measurement, and a reference to one on TransactionListResponse would "
+                            + "fail to compile rather than fail here")
+                    .isEqualTo(10);
         }
 
         @Test
@@ -700,15 +705,21 @@ class TransactionListResponseTest {
         }
 
         @Test
-        @DisplayName("refuses one row more than the screen has lines, rather than discarding it")
-        void refusesOneRowMoreThanTheScreenHasLines() {
+        @DisplayName("carries one row more than the screen has lines rather than discarding or "
+                + "refusing it, leaving the fit to the service that assembled the page")
+        void carriesOneRowMoreThanTheScreenHasLines() {
             List<TransactionListResponse.TransactionRow> overfull =
                     rows(PageMetadata.TRANSACTION_LIST_PAGE_SIZE + 1);
 
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> response(overfull, TransactionListResponse.MESSAGE_AT_TOP))
-                    .withMessageContaining(String.valueOf(PageMetadata.TRANSACTION_LIST_PAGE_SIZE))
-                    .withMessageContaining(String.valueOf(PageMetadata.TRANSACTION_LIST_PAGE_SIZE + 1));
+            TransactionListResponse subject =
+                    response(overfull, TransactionListResponse.MESSAGE_AT_TOP);
+
+            assertThat(subject.rows())
+                    .as("discarding a row the browse returned would hide the defect, and refusing it "
+                            + "would require this body to publish the depth it refused against - a "
+                            + "measurement the paging contract already states once for the module")
+                    .hasSize(PageMetadata.TRANSACTION_LIST_PAGE_SIZE + 1)
+                    .containsExactlyElementsOf(overfull);
         }
 
         @Test

@@ -22,6 +22,7 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -79,25 +80,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 class AccountUpdateResponseRuleComplianceTest {
 
     /** The number of components the response declares. */
-    private static final int DECLARED_COMPONENT_COUNT = 57;
-
-    /**
-     * The number of components that correspond to a screen field.
-     *
-     * <p>Every component up to this index is a map field in screen order. The one that follows is not:
-     * it is the sealed description of the account as it stood when the screen was sent, which the client
-     * echoes back on the confirming turn.
-     */
-    private static final int SCREEN_FIELD_COMPONENT_COUNT = 56;
-
-    /**
-     * A sealed description of the account as it stood when the screen was sent.
-     *
-     * <p>Opaque here on purpose: minting and verifying it belongs to the service, and this contract only
-     * has to carry it out and back unchanged.
-     */
-    private static final String CONCURRENCY_TOKEN =
-            "v1.YWNjdDowMDAwMDAwMDAxMQ==.Y3VzdDowMDAwMDAwMTE=.c2lnbmF0dXJl";
+    private static final int DECLARED_COMPONENT_COUNT = 56;
 
     /**
      * A mapper configured exactly as {@code application.yml} configures the application's own.
@@ -148,7 +131,7 @@ class AccountUpdateResponseRuleComplianceTest {
                 "212", "555", "0100", "DL-987654321", "212",
                 "555", "0101", "EFT0000001", "Y", AccountUpdateResponse.MSG_LOOKS_GOOD_SO_FAR,
                 null, false, "ACSTTUS", "account-update", NavigationContext.empty(),
-                fieldErrors, CONCURRENCY_TOKEN);
+                fieldErrors);
     }
 
     /**
@@ -157,10 +140,6 @@ class AccountUpdateResponseRuleComplianceTest {
      * <p>Declared once so that a single positional constructor call over fifty-seven components has to
      * be right, rather than a dozen near-identical walls of nulls any one of which could drift a
      * component out of line without the compiler noticing - most components are the same nullable type.
-     *
-     * <p>The concurrency token is left absent throughout. It is not a screen field, so no assertion
-     * about a screen field's width, rendering or absence has anything to say about it, and the tests
-     * that are about the token populate it through {@link #aFullyPopulatedResponse} instead.
      *
      * @param accountId          the account identifier, or {@code null}
      * @param ficoScore          the credit score, or {@code null}
@@ -194,7 +173,7 @@ class AccountUpdateResponseRuleComplianceTest {
                 null, null, null, null, null,
                 null, null, null, null, infoMessage,
                 errorMessage, error, focusScreenFieldId, nextRoute, navigationContext,
-                fieldErrors, null);
+                fieldErrors);
     }
 
     /**
@@ -338,7 +317,7 @@ class AccountUpdateResponseRuleComplianceTest {
                     null, null, null, null, null,
                     null, null, null, null, null,
                     null, false, null, null, null,
-                    null, null);
+                    null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(overBound))
@@ -759,22 +738,21 @@ class AccountUpdateResponseRuleComplianceTest {
     class TheDeclaredShapeAndValidationBounds {
 
         /**
-         * Fifty-six components are screen fields in screen order; the fifty-seventh is not.
+         * Fifty-one carried map families plus five control components, and nothing beyond them.
          *
-         * <p>The concurrency token is the sealed counterpart of the program work area
-         * {@code app/cbl/COACTUPC.cbl} carries across the pseudo-conversational turn, and it replaces the
-         * before-and-after image comparison the legacy program performs before it writes. It is declared
-         * last, after the whole screen and after the error block, precisely because it is not part of
-         * either: nothing on the mapset renders it and no operator types it.
+         * <p>The five control components trail the screen, after both message slots, because none of
+         * them is a map field: the explicit error indicator, the focus hint, the declarative route, the
+         * echoed conversation state and the per-field error collection. The collection is declared last,
+         * and there is no fifty-seventh component after it.
          *
-         * <p>Its position is asserted rather than assumed. Inserting it anywhere among the screen fields
-         * would silently reorder a fifty-seven-argument positional constructor whose arguments are nearly
-         * all the same nullable type, which is the one drift the compiler cannot catch.
+         * <p>The order is asserted rather than assumed. Inserting anything among the screen fields would
+         * silently reorder a fifty-six-argument positional constructor whose arguments are nearly all
+         * the same nullable type, which is the one drift the compiler cannot catch.
          */
         @Test
-        @DisplayName("the response declares fifty-seven components - fifty-six screen fields in screen "
-                + "order, then the concurrency token, which is not a screen field")
-        void theResponseDeclaresFiftySevenComponents() {
+        @DisplayName("the response declares fifty-six components - the screen in screen order, then the "
+                + "five control components, and nothing after them")
+        void theResponseDeclaresFiftySixComponents() {
             final List<String> declared =
                     Arrays.stream(AccountUpdateResponse.class.getRecordComponents())
                             .map(RecordComponent::getName).toList();
@@ -783,37 +761,46 @@ class AccountUpdateResponseRuleComplianceTest {
             assertThat(declared.subList(0, 12)).containsExactly("transactionName", "title01",
                     "currentDate", "programName", "title02", "currentTime", "accountId",
                     "accountStatus", "openYear", "openMonth", "openDay", "creditLimit");
-            assertThat(declared.subList(50, SCREEN_FIELD_COMPONENT_COUNT)).containsExactly(
+            assertThat(declared.subList(50, DECLARED_COMPONENT_COUNT)).containsExactly(
                     "errorMessage", "error", "focusScreenFieldId", "nextRoute", "navigationContext",
                     "fieldErrors");
-            assertThat(declared).last().isEqualTo("concurrencyToken");
+            assertThat(declared).last().isEqualTo("fieldErrors");
         }
 
         /**
-         * The token is carried out and back unchanged, and it declares no width.
+         * No component stands for an optimistic-lock, version or entity-tag value.
          *
-         * <p>It is opaque and unbounded by design: a bound would be a statement about the service's
-         * minting format, which no screen field constrains and which this contract has no business
-         * asserting. Its absence is likewise not a binding failure - a missing token is a conflict for
-         * the service to report on the confirming turn, not something the framework should reject at the
-         * edge.
+         * <p>The legacy detected a concurrent change by comparing the record image it had carried across
+         * the pseudo-conversational turn against the records it re-read before writing. That mechanism
+         * does not cross this boundary in any form. Optimistic locking is a persistence concern carried
+         * by the entity's own version attribute, the comparison belongs to the update service, and a
+         * detected conflict reaches a client as one of the summary texts plus the field errors - never
+         * as a value the client is expected to hold and hand back.
+         *
+         * <p>The whole declared component set is screened rather than a handful of spellings, because a
+         * differently named component is precisely how a token of this kind reappears.
          */
         @Test
-        @DisplayName("the concurrency token round-trips unchanged, declares no width, and may be absent")
-        void theConcurrencyTokenRoundTripsAndDeclaresNoWidth() throws NoSuchMethodException {
-            assertThat(aFullyPopulatedResponse(null).concurrencyToken())
-                    .isEqualTo(CONCURRENCY_TOKEN);
-            assertThat(AccountUpdateResponse.class.getDeclaredMethod("concurrencyToken")
-                    .getAnnotation(Size.class))
-                    .as("an opaque server-minted value carries no screen width")
-                    .isNull();
+        @DisplayName("no component stands for an optimistic-lock, version or entity-tag value")
+        void noComponentStandsForAnOptimisticLockValue() {
+            final List<String> declared =
+                    Arrays.stream(AccountUpdateResponse.class.getRecordComponents())
+                            .map(RecordComponent::getName).toList();
 
-            try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
-                assertThat(factory.getValidator().validate(aSparseResponse(null, null, null, null,
-                        null, null, false, null, null, null, null)))
-                        .as("an absent token is not a binding failure")
-                        .isEmpty();
-            }
+            assertThat(declared).doesNotContain("concurrencyToken", "version", "rowVersion",
+                    "recordVersion", "lockVersion", "etag", "eTag", "optimisticLock", "revision",
+                    "oldImage", "beforeImage", "recordImage", "snapshot");
+            assertThat(declared)
+                    .as("no component name may suggest a carried lock, version or record image")
+                    .allSatisfy(name -> {
+                        final String lowered = name.toLowerCase(Locale.ROOT);
+                        assertThat(lowered).doesNotContain("concurrency").doesNotContain("version")
+                                .doesNotContain("etag").doesNotContain("revision")
+                                .doesNotContain("token").doesNotContain("lock")
+                                .doesNotContain("stamp").doesNotContain("image")
+                                .doesNotContain("snapshot").doesNotContain("digest")
+                                .doesNotContain("seal");
+                    });
         }
 
         @Test

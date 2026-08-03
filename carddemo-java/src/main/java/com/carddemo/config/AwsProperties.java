@@ -16,9 +16,13 @@
  */
 package com.carddemo.config;
 
+import com.carddemo.util.SqsNamingRules;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.Optional;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
@@ -55,9 +59,9 @@ import org.springframework.validation.annotation.Validated;
  *       nothing.</li>
  * </ul>
  *
- * <p>The object-store settings have no single legacy resource behind them. They replace the sequential
- * output datasets and generation-data-group bases the batch jobs wrote to, which is why one bucket
- * carries several key prefixes: one per output family, so no family can overwrite another.
+ * <p>The object-store setting has no single legacy resource behind it. One bucket replaces the whole set
+ * of sequential output datasets and generation-data-group bases the batch jobs wrote to, and the key an
+ * object is written under is composed by the job that writes it rather than configured here.
  *
  * <h2>Every value here is a cross-file contract</h2>
  *
@@ -70,30 +74,55 @@ import org.springframework.validation.annotation.Validated;
  * suffix, which {@link Sqs} refuses to bind without, and the group id must be a single stable value,
  * which is what preserves the append order acceptance drains a real queue to verify.
  *
- * <p>The queue keeps the legacy resource name plus that suffix and is deliberately not namespaced
- * after this module; an earlier namespaced value disagreed with the resource the environment
- * provisions, and the reasoning for reverting it is recorded in {@code docs/decision-log.md} DL-092.
- * The bucket and the topic replace a dataset family and a screen message respectively, have no legacy
- * resource name to carry, and are namespaced.
+ * <p>All four names are namespaced after this module, the queue included: it is
+ * {@code carddemo-jobs.fifo}, which is the name the migration plan states and requires byte-identically,
+ * and an intermediate revision that carried the bare legacy resource name instead was withdrawn. The
+ * legacy name is not lost by that - it survives in the operator-visible failure message, which is the
+ * text acceptance compares character for character, and nothing composes one of the two from the other.
+ * The reasoning is recorded in {@code docs/decision-log.md} DL-092.
  *
- * <h2>What is deliberately not bound here</h2>
+ * <h2>The region and the endpoint redirection are bound here; the credentials are not</h2>
  *
- * <p><strong>The region, the endpoint redirection and the credentials are not in this namespace.</strong>
- * They belong to the cloud integration's own properties, under {@code spring.cloud.aws}, so that the
- * object-store, queue and notification clients are configured through one mechanism rather than two.
- * The region is supplied by {@code AWS_REGION} and is required of a production deployment by
- * {@link ProductionConfigurationValidator}; the endpoint override exists only in the profiles that aim
- * the clients at an emulator, and production declares none; the credentials are resolved by the
- * software development kit's own provider chain, from {@code AWS_ACCESS_KEY_ID} and
- * {@code AWS_SECRET_ACCESS_KEY} among other sources. <strong>No credential is bound, read or logged
- * by this type</strong>, and none may be added to it.
+ * <p><strong>{@link #region()} and {@link #endpointOverride()} belong to this namespace</strong>, and
+ * they are the two settings that decide <em>where</em> the four resource names are resolved. The region
+ * is supplied by {@code AWS_REGION}, defaulted in the shared baseline to the region the emulator and the
+ * container composition use, stated by a production deployment with <strong>no fallback</strong>, and
+ * required of that deployment by {@link ProductionConfigurationValidator}. The endpoint override is
+ * declared only by the profiles that aim the clients at an emulator; a production deployment declares
+ * none, which is why it is the one component here that is optional and the one that must tolerate an
+ * absent or blank value rather than refuse it.
+ * A production deployment declares no override at all, and {@link ProductionConfigurationValidator}
+ * <strong>refuses one</strong> under that profile: a well-formed redirection is still a redirection,
+ * and only the deployment knows whether the destination is its own. The credentials are resolved by
+ * the software development kit's own provider chain and <strong>no credential is bound, read or logged
+ * by this type</strong>, nor may one be added to it.
  *
- * <p>Declaring any of the three here as well would be worse than redundant, and specifically worse
- * for the endpoint. An absent endpoint override does not fail closed: a client with no override
- * resolves the region's real public endpoint. A settings component that was empty in every profile
- * would invite a consumer to ask it whether to redirect a client, be told no, and address a real
- * account - which is exactly the class of silent, expensive misconfiguration the surrounding
- * configuration is arranged to prevent.
+ * <p>The cloud integration's own properties, under {@code spring.cloud.aws}, are what the framework
+ * builds its object-store, queue and notification clients from, and each profile derives them from the
+ * two components above rather than restating the values: the production overlay reads its region
+ * straight from {@link #REGION_PROPERTY}, and the emulator-facing overlays declare the same endpoint
+ * expression this namespace declares. One fact is therefore stated once per profile, which is what stops
+ * the two namespaces from drifting into disagreement - and a disagreement between them is not a start-up
+ * error but a stack that starts cleanly and addresses the wrong account.
+ *
+ * <p><strong>The credentials are not here and may never be.</strong> They are resolved by the software
+ * development kit's own provider chain, from {@code AWS_ACCESS_KEY_ID} and
+ * {@code AWS_SECRET_ACCESS_KEY} among other sources. <strong>No credential is bound, read or logged by
+ * this type</strong>, and none may be added to it.
+ *
+ * <p>An absent endpoint override does not fail closed: a client with no override resolves the region's
+ * real public endpoint. That is exactly why {@link #hasEndpointOverride()} and
+ * {@link #endpointOverrideUri()} exist rather than a bare accessor - a consumer asks this type whether a
+ * redirection was configured and receives an answer it cannot misread, instead of testing a string for
+ * emptiness at each of the three client builders and getting one of them wrong.
+ *
+ * <p><strong>Not declaring the endpoint is not the same as forbidding it, and an earlier revision
+ * treated the two as equivalent.</strong> Production's safety rested on the observation that its own
+ * profile document declares no endpoint key. A document cannot see the environment, and an override
+ * supplied there - a variable, a command-line property, a co-activated overlay - binds just as well
+ * for a key no document mentions. So the endpoint keys are now <em>refused</em> under production by
+ * {@link ProductionConfigurationValidator} rather than merely omitted, and the same guard holds the
+ * queue destination below to a rule about this deployment rather than only about its shape.
  *
  * <p>Two queue facts were removed from configuration for a related reason and must not return as
  * components here: the eighty-character record width and the tolerate-a-failed-publish behaviour.
@@ -105,9 +134,16 @@ import org.springframework.validation.annotation.Validated;
  *
  * <p>It is self-annotated only. It carries no {@code @Component} and no {@code @Configuration}, and
  * nothing scans for it, so it becomes a bean exactly where a configuration class enables it through
- * {@code @EnableConfigurationProperties}. One owner is deliberate: two registrations of one settings
- * type are two bean definitions of it, and the second is discovered as a context failure rather than
- * as a duplicate.
+ * {@code @EnableConfigurationProperties}. <strong>{@link AwsConfig} is that single owner</strong>, and
+ * it is the only class in the module that may enable this type. One owner is deliberate: two
+ * registrations of one settings type are two bean definitions of it, and the second is discovered as a
+ * context failure rather than as a duplicate.
+ *
+ * <p>The registration is what makes everything below load bearing. Unregistered, this type binds
+ * nowhere, the constraints are never evaluated and the suffix check is never reached, so a missing
+ * resource name would be discovered at the first publish rather than at start-up. Registered, an
+ * absent or blank required value and a queue name that is not a first-in-first-out name each stop the
+ * application before it serves a request.
  *
  * <p>Constructor binding needs no annotation. A record has one canonical constructor, so the binder
  * uses it; the type-level annotation that used to say so is deprecated on this framework line, and a
@@ -121,11 +157,21 @@ import org.springframework.validation.annotation.Validated;
  * constraint on a nested component is reached, and {@link NotNull}, so an entirely absent group is
  * reported by name instead of as a null dereference somewhere downstream.
  *
- * <p>The compact constructor of {@link Sqs} expresses the one condition no annotation can state - that
- * a first-in-first-out queue name must carry the suffix the queue service demands - and it
- * deliberately tolerates an absent or blank value so that absence is still reported by
- * {@link NotBlank} rather than as a malformed name. The two mechanisms never overlap: presence is the
- * validator's, and the suffix is the constructor's.
+ * <p>Two compact constructors express the conditions no annotation can state. {@link Sqs} requires that
+ * a first-in-first-out queue name carry the suffix the queue service demands, and this type requires
+ * that a <em>configured</em> endpoint override be a usable absolute address. Both deliberately tolerate
+ * an absent or blank value: for the queue that leaves absence to be reported by {@link NotBlank} rather
+ * than as a malformed name, and for the endpoint override absence is not a fault at all. The mechanisms
+ * never overlap, so there is never a question of which one fires: presence is the validator's, and shape
+ * is the constructor's.
+ *
+ * <p>There is a <strong>third</strong> mechanism and it is deliberately not here. Well-formedness
+ * cannot distinguish a correctly formed destination that names the wrong recipient from one that names
+ * the right one, and only a deployment knows which is which. So the question "may <em>this</em>
+ * deployment send job cards there" is asked by {@link ProductionConfigurationValidator} under the
+ * production profile, where the region and the rest of the deployment's identity are available to
+ * compare against. This type stays profile-agnostic, because the emulator destinations the local and
+ * test profiles legitimately use would fail the production rule and must not fail here.
  *
  * <h2>Two further properties of this type, both deliberate</h2>
  *
@@ -137,25 +183,45 @@ import org.springframework.validation.annotation.Validated;
  * time-out, no attempt count, no backoff interval, no pool size and no queue depth, in a component or
  * in a comment. The legacy estate documents no such figure and this module asserts none.
  *
- * <p>One note for a reader comparing this type against an earlier draft of its specification. That
- * draft expected a {@code region} component and an {@code endpoint-override} component under this
- * prefix, and expected the bucket and queue keys to be named {@code batch-staging-bucket} and
- * {@code job-queue}. The shipped configuration declares neither of the first two and names the other
- * two {@code bucket} and {@code job-submission-queue}; those documents publish the key paths this type
- * binds against, in the property-contract block at the head of the local overlay, and they are the
- * authority. The components below match that published contract one for one, which is also what keeps
- * this type in step with the publisher and the production guard, both of which already name
- * {@link Sqs#JOB_SUBMISSION_QUEUE_PROPERTY} literally.
+ * <h2>The six bound key paths, and why they are asserted rather than inferred</h2>
  *
- * @param s3  object-store settings: the bucket used to stage batch input and output, and the key
- *            prefix each output family is written under
- * @param sqs queue settings for the job-submission bridge: the first-in-first-out queue cards are
- *            published to, and the single message group that preserves their order
- * @param sns notification settings: the topic job-completion and operational messages fan out to
+ * <p><strong>The six bound key paths are the migration plan's, and they are not negotiable against the
+ * shipped documents.</strong> They are {@link #REGION_PROPERTY}, {@link #ENDPOINT_OVERRIDE_PROPERTY},
+ * {@link S3#BATCH_STAGING_BUCKET_PROPERTY}, {@link Sqs#JOB_QUEUE_PROPERTY},
+ * {@link Sqs#MESSAGE_GROUP_ID_PROPERTY} and {@link Sns#JOB_NOTIFICATION_TOPIC_PROPERTY}. An earlier
+ * revision of this type bound a different set - it omitted the region and the endpoint override, named
+ * the bucket key {@code s3.bucket} and the queue key {@code sqs.job-submission-queue}, and added six
+ * {@code s3.prefix.*} keys of its own - and reconciled the profile documents to that set, so every
+ * binding test passed while the artefact bound a contract the plan does not state. The lesson is
+ * recorded rather than merely fixed: <strong>a document that agrees with this type proves nothing about
+ * either, because one agent can edit both.</strong> The plan is the authority for the key paths, the
+ * documents follow it, and the withdrawn names are asserted absent so a third round trip fails a test
+ * instead of passing review. The six unplanned prefix keys are gone with the rest: nothing bound them,
+ * no output family reads one, and a key that reads as configuration while nothing consumes it advertises
+ * an adjustability that does not exist.
+ *
+ * @param region           the region every client resolves its endpoints in, and the region the queue,
+ *                         bucket and topic are provisioned in
+ * @param endpointOverride an address that redirects every client away from the real service and at an
+ *                         emulator, or {@code null} or blank when no redirection applies - which is the
+ *                         normal state of a production deployment
+ * @param s3               object-store settings: the bucket used to stage batch input and output
+ * @param sqs              queue settings for the job-submission bridge: the first-in-first-out queue
+ *                         cards are published to, and the single message group that preserves their
+ *                         order
+ * @param sns              notification settings: the topic job-completion and operational messages fan
+ *                         out to
  */
 @ConfigurationProperties(prefix = AwsProperties.PREFIX)
 @Validated
 public record AwsProperties(
+        @NotBlank(message = "A region must be configured; " + AwsProperties.REGION_PROPERTY
+                + " is defaulted in the shared baseline and has no default in production, where the"
+                + " deployment supplies it")
+        String region,
+
+        String endpointOverride,
+
         @NotNull(message = "Object-store settings must be configured under " + AwsProperties.PREFIX + ".s3")
         @Valid
         S3 s3,
@@ -175,93 +241,143 @@ public record AwsProperties(
      * groups name in their own constants, the messages that report a missing group, and any test
      * asserting the bound contract all refer to one authority rather than repeating the literal.</p>
      *
-     * <p>It names the <em>configuration</em> prefix. It is unrelated to {@link S3.KeyPrefixes}, which
-     * names the object-store key prefixes; the two senses of the word meet only in this class and
-     * nowhere else.</p>
+     * <p>It names the <em>configuration</em> prefix, and nothing else. It is not an object-store key
+     * prefix and composes no object key; the two senses of the word are kept apart deliberately, and this
+     * namespace now carries only the first of them.</p>
      */
     public static final String PREFIX = "carddemo.aws";
+
+    /**
+     * Key path {@link #region()} binds from.
+     *
+     * <p>Published because more than this type names it: the production overlay derives the cloud
+     * integration's own region setting from this key rather than restating the value, and the production
+     * guard requires the key of a deployment.</p>
+     */
+    public static final String REGION_PROPERTY = PREFIX + ".region";
+
+    /**
+     * Key path {@link #endpointOverride()} binds from.
+     *
+     * <p>Published so that a diagnostic naming the offending entry, and a test asserting which profiles
+     * declare it, both state the key from one place.</p>
+     */
+    public static final String ENDPOINT_OVERRIDE_PROPERTY = PREFIX + ".endpoint-override";
+
+    /**
+     * Refuses a configured endpoint override that no client could address.
+     *
+     * <p>This is the endpoint's counterpart to the queue's suffix check, and it exists for the same
+     * reason: an override is applied to a client builder, so a value that is not a usable absolute
+     * address fails at the first request rather than at start-up, and the operator sees a failed
+     * submission instead of a failed deployment. A value is usable here when it carries a scheme and a
+     * host - {@code http://localhost:4566} does, a bare host or a path does not.</p>
+     *
+     * <p><strong>An absent or blank value is deliberately accepted</strong>, because absence is this
+     * component's normal production state and not a fault. That is also why no presence constraint is
+     * declared on it: a constraint would refuse the very configuration a production deployment ships.</p>
+     *
+     * <p>The diagnostic names the property key and what the key requires, and does not repeat the
+     * configured value, per {@code docs/decision-log.md} DL-041.</p>
+     *
+     * @throws IllegalArgumentException if a non-blank endpoint override is not an absolute address
+     *                                  carrying a scheme and a host
+     */
+    public AwsProperties {
+        if (endpointOverride != null && !endpointOverride.isBlank()
+                && parsedEndpointOverride(endpointOverride) == null) {
+            throw new IllegalArgumentException("property " + ENDPOINT_OVERRIDE_PROPERTY
+                    + " must be an absolute address carrying a scheme and a host, such as an emulator's"
+                    + " edge endpoint, or must be left unset so that each client resolves the region's"
+                    + " own endpoint, but the configured value is neither");
+        }
+    }
+
+    /**
+     * Reports whether a redirection away from the real service was configured.
+     *
+     * <p>Consumers ask this rather than testing {@link #endpointOverride()} for emptiness, so that the
+     * decision is taken once here instead of once per client builder - three chances to get it wrong,
+     * where getting it wrong means one client silently addressing a real account.</p>
+     *
+     * @return {@code true} when a non-blank endpoint override is configured
+     */
+    public boolean hasEndpointOverride() {
+        return this.endpointOverride != null && !this.endpointOverride.isBlank();
+    }
+
+    /**
+     * Returns the configured endpoint override as an address, or nothing when none is configured.
+     *
+     * <p>The value is parsed rather than handed over as text because that is the form a client builder
+     * takes, and because parsing it here means the compact constructor has already refused anything
+     * unusable: an empty result therefore means "no redirection was configured", never "a redirection was
+     * configured and could not be understood".</p>
+     *
+     * @return the endpoint override, or an empty optional when the deployment configured none
+     */
+    public Optional<URI> endpointOverrideUri() {
+        return hasEndpointOverride()
+                ? Optional.ofNullable(parsedEndpointOverride(this.endpointOverride))
+                : Optional.empty();
+    }
+
+    /**
+     * Parses a configured endpoint override, returning {@code null} when it is not a usable address.
+     *
+     * <p>Used by the compact constructor to refuse an unusable value and by {@link #endpointOverrideUri()}
+     * to produce the parsed form, so that one definition of "usable" serves both and they cannot
+     * disagree.</p>
+     *
+     * @param configured the configured text, which the caller has established is non-blank
+     * @return the parsed address, or {@code null} when the text is not an absolute address carrying a
+     *         scheme and a host
+     */
+    private static URI parsedEndpointOverride(final String configured) {
+        final URI parsed;
+        try {
+            parsed = new URI(configured.strip());
+        } catch (final URISyntaxException malformed) {
+            return null;
+        }
+        return parsed.isAbsolute() && parsed.getHost() != null && !parsed.getHost().isEmpty()
+                ? parsed
+                : null;
+    }
 
     /**
      * Object-store settings for batch file staging.
      *
      * <p>These replace the sequential output datasets and generation-data-group bases the legacy batch
-     * jobs wrote to. One bucket holds every family, and each family is separated by its own key
-     * prefix, so the bucket name and the prefixes together carry what a set of dataset names carried
-     * before.</p>
+     * jobs wrote to. One bucket holds every staged object, and the key each object is written under is
+     * composed by the job that writes it, because a key names one object of one run while this namespace
+     * carries only what a deployment may decide.</p>
      *
-     * @param bucket name of the bucket batch input and output are staged in. Supplied by
-     *               {@code CARDDEMO_S3_BUCKET}, defaulted in the shared baseline to the name the
-     *               container composition and the emulator bootstrap script provision, and required
-     *               here so that an explicitly blank value stops start-up rather than producing
-     *               requests against no bucket
-     * @param prefix the key prefix each output family is written under. The component is named for the
-     *               configuration key it binds - {@code prefix} - while its type is named for what it
-     *               holds
+     * <p>An earlier revision declared six {@code s3.prefix.*} keys here, one per output family. They are
+     * withdrawn on the principle the withdrawn queue keys were withdrawn on, recorded in
+     * {@code docs/decision-log.md} DL-094: nothing bound them, no writer read one, and configuration that
+     * nothing consumes advertises an adjustability that does not exist. The plan states one object-store
+     * key for this module and this is it.</p>
+     *
+     * @param batchStagingBucket name of the bucket batch input and output are staged in. Supplied by
+     *                           {@code CARDDEMO_S3_BUCKET}, defaulted in the shared baseline to the name
+     *                           the container composition and the emulator bootstrap script provision,
+     *                           and required here so that an explicitly blank value stops start-up rather
+     *                           than producing requests against no bucket
      */
     public record S3(
-            @NotBlank(message = "An object-store bucket must be configured; " + S3.BUCKET_PROPERTY
+            @NotBlank(message = "An object-store bucket must be configured; "
+                    + S3.BATCH_STAGING_BUCKET_PROPERTY
                     + " is defaulted in the shared baseline and must not be blanked")
-            String bucket,
-
-            @NotNull(message = "Object-store key prefixes must be configured under "
-                    + S3.KEY_PREFIX_PROPERTY_GROUP)
-            @Valid
-            KeyPrefixes prefix) {
-
-        /** Key path {@link #bucket()} binds from, published so a message or a test names it once. */
-        public static final String BUCKET_PROPERTY = PREFIX + ".s3.bucket";
-
-        /** Key path prefixing the group {@link #prefix()} binds from. */
-        public static final String KEY_PREFIX_PROPERTY_GROUP = PREFIX + ".s3.prefix";
+            String batchStagingBucket) {
 
         /**
-         * One object-store key prefix per output family.
+         * Key path {@link #batchStagingBucket()} binds from.
          *
-         * <p>Each family is a legacy dataset family: the inbound file a job reads, the two statement
-         * renderings, the report, the rejected records and the retained backup. They are separate
-         * prefixes rather than one, because two families sharing a prefix would let one overwrite the
-         * other, and every one of them is required to be non-blank for the same reason - a blank
-         * prefix collapses its family onto the bucket root, where it collides with every other family
-         * that was blanked.</p>
-         *
-         * <p>The whole group is declared once, in the shared baseline, and inherited unchanged by each
-         * profile. A profile that restated part of it would silently drop the families it omitted.</p>
-         *
-         * @param inbound        prefix for batch input staged for a job to read
-         * @param statements     prefix for the fixed-width statement rendering
-         * @param statementsHtml prefix for the markup statement rendering, bound from the hyphenated
-         *                       key {@code statements-html}
-         * @param reports        prefix for the fixed-width transaction report
-         * @param rejects        prefix for records a posting run refused
-         * @param backups        prefix for retained copies, which replace the generation-data-group
-         *                       generations the legacy backup job wrote
+         * <p>Published so a constraint message, a diagnostic and a test all name it once. The hyphenated
+         * key reaches the camel-cased component through the binder's own relaxed matching.</p>
          */
-        public record KeyPrefixes(
-                @NotBlank(message = "An object-store key prefix must be configured for inbound batch"
-                        + " input; a blank prefix writes to the bucket root, where families collide")
-                String inbound,
-
-                @NotBlank(message = "An object-store key prefix must be configured for statements; a"
-                        + " blank prefix writes to the bucket root, where families collide")
-                String statements,
-
-                @NotBlank(message = "An object-store key prefix must be configured for markup"
-                        + " statements; a blank prefix writes to the bucket root, where families"
-                        + " collide")
-                String statementsHtml,
-
-                @NotBlank(message = "An object-store key prefix must be configured for reports; a"
-                        + " blank prefix writes to the bucket root, where families collide")
-                String reports,
-
-                @NotBlank(message = "An object-store key prefix must be configured for rejected"
-                        + " records; a blank prefix writes to the bucket root, where families collide")
-                String rejects,
-
-                @NotBlank(message = "An object-store key prefix must be configured for backups; a"
-                        + " blank prefix writes to the bucket root, where families collide")
-                String backups) {
-        }
+        public static final String BATCH_STAGING_BUCKET_PROPERTY = PREFIX + ".s3.batch-staging-bucket";
     }
 
     /**
@@ -272,40 +388,38 @@ public record AwsProperties(
      * than for tidiness: a submission that reaches no queue is a job that never runs, and a submission
      * whose cards arrive out of order is a job stream that will not parse.</p>
      *
-     * @param jobSubmissionQueue name, queue locator or resource identifier of the first-in-first-out
-     *                           queue cards are published to. Supplied by {@code CARDDEMO_SQS_QUEUE};
-     *                           the shared baseline defaults it to the resource the container
-     *                           composition and the emulator bootstrap script provision, and a
-     *                           production deployment supplies it with <strong>no fallback</strong>, so
-     *                           a deployment that omits it is refused rather than pointed at a
-     *                           placeholder. It must carry {@link #FIFO_QUEUE_NAME_SUFFIX}
-     * @param messageGroupId     the single message group every published card carries. It is one stable
-     *                           value, not one per message and not one per submission, because a
-     *                           first-in-first-out queue preserves order only within a group and the
-     *                           legacy queue appended. Supplied by
-     *                           {@code CARDDEMO_SQS_MESSAGE_GROUP_ID}. It is an attribute of a message
-     *                           rather than a resource, which is why it is configured wherever the
-     *                           publisher is configured and is absent from the provisioning script,
-     *                           where it would provision nothing
+     * @param jobQueue       name, queue locator or resource identifier of the first-in-first-out queue
+     *                       cards are published to. Supplied by {@code CARDDEMO_SQS_QUEUE}; the shared
+     *                       baseline defaults it to the resource the container composition and the
+     *                       emulator bootstrap script provision, and a production deployment supplies it
+     *                       with <strong>no fallback</strong>, so a deployment that omits it is refused
+     *                       rather than pointed at a placeholder. It must carry
+     *                       {@link #FIFO_QUEUE_NAME_SUFFIX}
+     * @param messageGroupId the single message group every published card carries. It is one stable
+     *                       value, not one per message and not one per submission, because a
+     *                       first-in-first-out queue preserves order only within a group and the legacy
+     *                       queue appended. Supplied by {@code CARDDEMO_SQS_MESSAGE_GROUP_ID}. It is an
+     *                       attribute of a message rather than a resource, which is why it is configured
+     *                       wherever the publisher is configured and is absent from the provisioning
+     *                       script, where it would provision nothing
      */
     public record Sqs(
-            @NotBlank(message = "A job-submission queue must be configured; "
-                    + Sqs.JOB_SUBMISSION_QUEUE_PROPERTY
+            @NotBlank(message = "A job-submission queue must be configured; " + Sqs.JOB_QUEUE_PROPERTY
                     + " has no default in production and must be supplied by the deployment")
-            String jobSubmissionQueue,
+            String jobQueue,
 
             @NotBlank(message = "A message group must be configured; " + Sqs.MESSAGE_GROUP_ID_PROPERTY
                     + " is what preserves the order job-submission cards were appended in")
             String messageGroupId) {
 
         /**
-         * Key path {@link #jobSubmissionQueue()} binds from.
+         * Key path {@link #jobQueue()} binds from.
          *
          * <p>The literal is the published contract, and it is spoken by more than this type: the
          * publisher injects the same key and the production guard requires it of a deployment. Naming
          * it once here keeps the three from drifting apart silently.</p>
          */
-        public static final String JOB_SUBMISSION_QUEUE_PROPERTY = PREFIX + ".sqs.job-submission-queue";
+        public static final String JOB_QUEUE_PROPERTY = PREFIX + ".sqs.job-queue";
 
         /** Key path {@link #messageGroupId()} binds from. */
         public static final String MESSAGE_GROUP_ID_PROPERTY = PREFIX + ".sqs.message-group-id";
@@ -321,36 +435,48 @@ public record AwsProperties(
         public static final String FIFO_QUEUE_NAME_SUFFIX = ".fifo";
 
         /**
-         * Refuses a queue name that does not carry the first-in-first-out suffix.
+         * Refuses a queue destination that is not a well-formed one of the three recognised forms.
          *
-         * <p>The suffix is the one condition on these settings that a constraint annotation cannot
-         * state. Enforcing it here converts the single easiest misconfiguration in this namespace into
-         * a start-up failure: without it, a well-formed name that is merely wrong reaches the publisher
-         * and is reported at the first submission, by which point the operator sees a failed report
-         * request rather than a failed deployment.</p>
+         * <p>Well-formedness is the one class of condition on these settings that a constraint
+         * annotation cannot state. Enforcing it here converts the easiest misconfigurations in this
+         * namespace into start-up failures: without it, a value that is merely wrong reaches the
+         * publisher and is reported at the first submission, by which point the operator sees a failed
+         * report request rather than a failed deployment.</p>
          *
-         * <p>An absent or blank name is deliberately allowed through. It is a <em>missing</em> value
-         * rather than a malformed one, and reporting it is {@link NotBlank}'s job; testing it here as
-         * well would replace a message that names the missing key with one that describes a suffix the
+         * <p><strong>The check is delegated rather than written here, and that is the point.</strong>
+         * An earlier revision tested one condition inline - that the value ends in the
+         * first-in-first-out suffix - and nothing else. That test is satisfied by values that are not
+         * queue destinations at all, because the suffix can sit at the end of any string: a URL whose
+         * last path segment happens to end in it, an ARN with the wrong number of segments, a name
+         * carrying characters the queue service refuses. Each of those bound cleanly and failed at the
+         * first publish. {@link SqsNamingRules#requireQueueDestination(String, String)} is the module's
+         * one statement of the destination grammar, shared with the publisher and with the emulator
+         * bootstrap's own contract, so binding delegates to it and the three cannot drift apart.</p>
+         *
+         * <p>What this constructor deliberately does <em>not</em> decide is whether the destination is
+         * one this deployment may send to. That is a question about the deployment rather than about the
+         * value, the local and test profiles legitimately name an emulator, and it is asked under the
+         * production profile by {@link ProductionConfigurationValidator}.</p>
+         *
+         * <p>An absent or blank destination is deliberately allowed through. It is a <em>missing</em>
+         * value rather than a malformed one, and reporting it is {@link NotBlank}'s job; testing it here
+         * as well would replace a message that names the missing key with one describing a form the
          * operator never supplied a value for.</p>
          *
-         * <p>The diagnostic names the property key and the suffix expected of it and does not repeat
-         * the configured value, per {@code docs/decision-log.md} DL-041. The key is the actionable
-         * fact - it points at the entry to correct, where the operator can already read the value - and
-         * the suffix is this type's own statement of what it requires rather than an echo of what it
-         * was given.</p>
+         * <p>Every diagnostic names the property key and the rule it broke and does not repeat the
+         * configured value, per {@code docs/decision-log.md} DL-041. The key is the actionable fact - it
+         * points at the entry to correct, where the operator can already read the value - and the rule
+         * is this module's own statement of what it requires rather than an echo of what it was
+         * given.</p>
          *
-         * @throws IllegalArgumentException if a non-blank queue name does not end with
+         * @throws IllegalArgumentException if a non-blank destination is not a recognisable queue name,
+         *                                  queue URL or queue ARN, or carries a queue name that breaks
+         *                                  the queue-name rule - which includes not ending with
          *                                  {@link #FIFO_QUEUE_NAME_SUFFIX}
          */
         public Sqs {
-            if (jobSubmissionQueue != null && !jobSubmissionQueue.isBlank()
-                    && !jobSubmissionQueue.endsWith(FIFO_QUEUE_NAME_SUFFIX)) {
-                throw new IllegalArgumentException("property " + JOB_SUBMISSION_QUEUE_PROPERTY
-                        + " must name a first-in-first-out queue, whose name ends with '"
-                        + FIFO_QUEUE_NAME_SUFFIX + "', because job-submission cards must keep the"
-                        + " order they were appended in, but the configured value does not carry that"
-                        + " suffix");
+            if (jobQueue != null && !jobQueue.isBlank()) {
+                SqsNamingRules.requireQueueDestination(jobQueue, JOB_QUEUE_PROPERTY);
             }
         }
     }

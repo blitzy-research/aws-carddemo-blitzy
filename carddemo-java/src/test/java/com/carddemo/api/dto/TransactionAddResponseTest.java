@@ -44,224 +44,95 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 /**
- * Unit tests for {@link TransactionAddResponse}, the response body of legacy CICS transaction
- * {@code CT02}, whose behaviour lives in {@code app/cbl/COTRN02C.cbl} (783 lines, 18 paragraphs) and
- * whose field contract lives in the generated symbolic map {@code app/cpy-bms/COTRN02.CPY}.
+ * Unit tests for the transaction-add response contract of legacy transaction {@code CT02}.
  *
- * <p>A pure unit test. No application context, no servlet environment, no container, no database and
- * no mocking: the type under test is a record, so every assertion below constructs one directly. The
- * serialized-form assertions use a locally built mapper configured from
- * {@code src/main/resources/application.yml} rather than an injected one, so no context has to start
- * for the wire shape to be checked.
- *
- * <p><strong>Every name used here was read out of the production sources.</strong> The twenty-seven
- * component names and their accessors come from {@link TransactionAddResponse}; the two per-field
- * states come from {@link ErrorResponse.FieldState}; the first-entry and re-entry states come from
- * {@link NavigationContext.ProgramContext}; and the three ten-character channel labels come from
- * {@link TransactionSourceType}. Nothing is inferred from a naming pattern.
- *
- * <p><strong>Nothing here inspects the type at run time.</strong> Where a claim is about a static
- * type - that the amount is an exact decimal, that a date is opaque text, that the channel label is
- * a raw string rather than an enumerated value - the claim is proved by assigning the accessor's
- * result to a local variable of that declared type, so the compiler enforces it and the assertion
- * cannot drift away from the contract. No run-time type inspection, no component enumeration and no
- * field or annotation lookup appears anywhere in this file: a check performed that way would pass
- * against a contract the compiler had never agreed to. Immutability is likewise demonstrated by
- * construction: state is supplied, operated on and then re-read.
- *
- * <h2>What this file pins</h2>
- *
- * <p><strong>The fourteen measured message texts.</strong> Each is transcribed from the screen text
- * the program emits at the cited line of {@code app/cbl/COTRN02C.cbl} and is checked at its measured
- * length, byte for byte, untrimmed and un-case-folded. The transcriptions are held independently of
- * the production constants and then compared against them, so a drift on either side fails.
- *
- * <p><strong>The composed success text and its two consecutive spaces.</strong> The success arm
- * clears the screen, marks the message line as favourable and then joins three literals around the
- * new identifier. The first literal ends with a space and the second begins with one, so the joined
- * text carries two adjacent spaces after the first full stop. That is the exact byte sequence the
- * terminal displayed and it is contract, not defect. The expectation is built here by concatenating
- * the four pieces in order; no production formatter, mapper or codec is used as an oracle, and no
- * whitespace is collapsed, trimmed or re-spaced anywhere.
- *
- * <p><strong>The success-is-not-an-error asymmetry.</strong> The success arm marks the message line
- * favourably while every failure arm marks it adversely, so a populated message does not imply a
- * failure. The general-error indicator is therefore its own explicit component, and the tests prove
- * it is not derived from the message's presence, emptiness or length, nor from the presence of
- * per-field errors.
- *
- * <h2>Widths that must never be unified</h2>
- *
- * <p>The description is sixty characters on this map, against twenty-six on the transaction-list map
- * and one hundred in the persisted record at {@code app/cpy/CVTRA05Y.cpy} line 9; the merchant name
- * is thirty against fifty; the merchant city twenty-five against fifty; the two dates ten characters
- * against twenty-six-character stamps. The summary message is seventy-eight characters here, where
- * only the two card maps use eighty. Each divergence is asserted at this map's own width.
- *
- * <p>Provenance for every citation: repository checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Recorded here as documentation only; no
- * identifier is embedded as a constant, and no line of legacy source is reproduced - only widths,
- * counts, line citations and the operator-visible contract texts, which are interface contract
- * rather than source text.
+ * <p>The fourteen operator-facing texts are measured legacy literals, so each is asserted byte for
+ * byte and against the seventy-eight-character summary width of this screen's map. Three details are
+ * preserved deliberately and would each be "corrected" by a well-meaning edit: the capitalised
+ * negation in the emptiness texts, the lower-case word and spaced separator in the date-validity
+ * texts, and the display shape inside the amount text, which is carried as text rather than as a
+ * format pattern. The response carries one summary text and never a collection of them, however many
+ * field errors accompany it.
  */
 @DisplayName("TransactionAddResponse :: response contract of legacy transaction CT02")
 class TransactionAddResponseTest {
-
-    // -------------------------------------------------------------------------------------------
-    // Values at the exact measured widths of app/cpy-bms/COTRN02.CPY. Each is the width of the
-    // output item at the cited line, which mirrors the input item field for field.
-    // -------------------------------------------------------------------------------------------
-
-    /**
-     * Sixteen characters, the generated key produced as the highest existing key plus one.
-     *
-     * <p>Deliberately chosen so that no other fixture's digits appear inside it. A key whose tail
-     * happened to repeat the merchant identifier would make the withholding assertion below report a
-     * disclosure that had not occurred, and the assertion is more valuable kept strict than loosened.
-     */
     private static final String TRANSACTION_ID = "0000000000000315";
 
-    /** The very first key the system can ever issue: sixteen characters, fifteen leading zeros. */
     private static final String FIRST_EVER_TRANSACTION_ID = "0000000000000001";
 
-    /** Eleven characters - ACTIDINO at COTRN02.CPY:188. Leading zeros are part of the value. */
     private static final String ACCOUNT_ID = "00000000001";
 
-    /** Sixteen characters - CARDNINO at COTRN02.CPY:194. */
     private static final String CARD_NUMBER = "4111111111111111";
 
-    /** Two characters - TTYPCDO at COTRN02.CPY:200. */
     private static final String TYPE_CODE = "01";
 
-    /** Four characters - TCATCDO at COTRN02.CPY:206. Never the single digit two. */
     private static final String CATEGORY_CODE = "0002";
 
-    /** Ten characters - TRNSRCO at COTRN02.CPY:212. Raw and space padded. */
     private static final String SOURCE_POS_TERMINAL = "POS TERM  ";
 
-    /** Sixty characters - TDESCO at COTRN02.CPY:218. This map's width, not the record's hundred. */
     private static final String DESCRIPTION_AT_FULL_WIDTH =
             "GROCERIES AT STORE 42 WITH TRAILING FILLER TO SIXTY CHARS   ";
 
-    /** Ten characters - TORIGDTO at COTRN02.CPY:230. Opaque text, never a date type. */
     private static final String ORIGINATION_DATE = "2022-06-10";
 
-    /** Ten characters - TPROCDTO at COTRN02.CPY:236. Opaque text. */
     private static final String PROCESSING_DATE = "2022-06-11";
 
-    /** Ten spaces: a legitimate value for either date field that must survive unchanged. */
     private static final String ALL_SPACE_DATE = "          ";
 
-    /** Nine characters - MIDO at COTRN02.CPY:242. Leading zeros are part of the value. */
     private static final String MERCHANT_ID = "000000042";
 
-    /** Thirty characters - MNAMEO at COTRN02.CPY:248. This map's width, not the record's fifty. */
     private static final String MERCHANT_NAME_AT_FULL_WIDTH = "SMITH HARDWARE AND SUPPLY CO. ";
 
-    /** Twenty-five characters - MCITYO at COTRN02.CPY:254. This map's width, not fifty. */
     private static final String MERCHANT_CITY_AT_FULL_WIDTH = "SEATTLE WASHINGTON       ";
 
-    /** Ten characters - MZIPO at COTRN02.CPY:260. */
     private static final String MERCHANT_ZIP = "98101-0042";
 
-    /** One character - CONFIRMO at COTRN02.CPY:266. Lower case, and it stays lower case. */
     private static final String CONFIRMATION_LOWER_CASE = "y";
 
-    /** Four characters - TRNNAMEO at COTRN02.CPY:152. An identifier despite the item's name. */
     private static final String TRANSACTION_NAME = "CT02";
 
-    /** Forty characters - TITLE01O at COTRN02.CPY:158, carried space padded to its full width. */
     private static final String TITLE_LINE_ONE = "AWS Mainframe Modernization             ";
 
-    /** Eight characters - CURDATEO at COTRN02.CPY:164. Opaque text in the header's own shape. */
     private static final String CURRENT_DATE = "06/10/22";
 
-    /** Eight characters - PGMNAMEO at COTRN02.CPY:170. */
     private static final String PROGRAM_NAME = "COTRN02C";
 
-    /** Forty characters - TITLE02O at COTRN02.CPY:176. */
     private static final String TITLE_LINE_TWO = "CardDemo                                ";
 
-    /** Eight characters - CURTIMEO at COTRN02.CPY:182. Opaque text; never a time type. */
     private static final String CURRENT_TIME = "19:27:53";
 
-    /** Seven characters, the widest of the field identifiers this map declares. */
     private static final String FOCUS_FIELD_ID = "ACTIDIN";
 
-    /** The route is a REST path carried as opaque data, with no legacy fixed width. */
     private static final String NEXT_ROUTE = "/api/transactions";
 
-    /** Scale two, negative: the seeded data holds operator-originated returns as well as sales. */
     private static final BigDecimal AMOUNT_NEGATIVE = new BigDecimal("-123.45");
 
-    /** Scale two, positive. */
     private static final BigDecimal AMOUNT_POSITIVE = new BigDecimal("123.45");
 
-    /** Scale two, zero: distinct from an absent amount and it stays at scale two. */
     private static final BigDecimal AMOUNT_ZERO = new BigDecimal("0.00");
 
-    /** The widest value the record field can hold: nine integer digits and two decimals. */
     private static final BigDecimal AMOUNT_WIDEST = new BigDecimal("999999999.99");
 
-    /** The fixed stand-in the diagnostic rendering writes over each withheld component. */
     private static final String REDACTED = "***REDACTED***";
 
-    /**
-     * The two adjacent spaces the composed success text carries after its first full stop. Held as
-     * its own constant so the assertion that looks for them cannot be misread as a typographic slip.
-     */
     private static final String TWO_CONSECUTIVE_SPACES = "  ";
 
-    /**
-     * The whole composed success text for the first key the system can ever issue, written out as a
-     * single literal. This is the independent oracle: it is not assembled by any production type,
-     * and it is not derived from the fragment constants either, so a change to any fragment fails
-     * here rather than silently agreeing with itself.
-     */
     private static final String FIRST_EVER_SUCCESS_TEXT =
             "Transaction added successfully.  Your Tran ID is 0000000000000001.";
 
-    /**
-     * The same text with its two adjacent spaces collapsed into one. Never a valid value: it exists
-     * only so a test can assert the carried text is not this.
-     */
     private static final String WHITESPACE_COLLAPSED_SUCCESS_TEXT =
             "Transaction added successfully. Your Tran ID is 0000000000000001.";
 
-    // -------------------------------------------------------------------------------------------
-    // Fixtures
-    // -------------------------------------------------------------------------------------------
-
-    /**
-     * One of the fourteen operator-visible texts the program emits, transcribed independently of the
-     * production constant it is then compared against.
-     *
-     * @param sourceLine         the line of {@code app/cbl/COTRN02C.cbl} that emits the text
-     * @param measuredLength     the measured character length of the text
-     * @param transcribedText    the text as transcribed from that line
-     * @param productionConstant the constant {@link TransactionAddResponse} publishes for it
-     */
     private record MessageLiteral(int sourceLine,
                                   int measuredLength,
                                   String transcribedText,
                                   String productionConstant) {
-
         @Override
         public String toString() {
             return "COTRN02C line " + sourceLine + ", " + measuredLength + " characters";
         }
     }
 
-    /**
-     * The fourteen measured texts, each paired with the constant the response publishes for it.
-     *
-     * <p>The transcriptions are literals here rather than references to the production constants, so
-     * the comparison between the two columns is a genuine cross-check: a drift in either the
-     * transcription or the constant fails, where a single shared source would agree with itself.
-     *
-     * @return the fourteen texts in the order their emitting lines appear in the program
-     */
     private static Stream<MessageLiteral> measuredMessageLiterals() {
         return Stream.of(
                 new MessageLiteral(184, 40, "Invalid value. Valid values are (Y/N)...",
@@ -294,29 +165,21 @@ class TransactionAddResponseTest {
                         TransactionAddResponse.MESSAGE_CARD_NUMBER_NOT_FOUND));
     }
 
-    /** The three ten-character channel labels, each carried raw and space padded. */
     private static Stream<TransactionSourceType> channelLabels() {
         return Stream.of(TransactionSourceType.POS_TERM, TransactionSourceType.OPERATOR,
                 TransactionSourceType.SYSTEM);
     }
 
-    /** The re-entry navigation state: the only state in which field decoration applies. */
     private static NavigationContext reEntryNavigation() {
         return new NavigationContext(TRANSACTION_NAME, PROGRAM_NAME, TRANSACTION_NAME, PROGRAM_NAME,
                 "USER0001", "U", NavigationContext.ProgramContext.REENTER, "000000042", "MARY",
                 "ANN", "SMITH", ACCOUNT_ID, "Y", CARD_NUMBER, "COTRN2A", "COTRN02");
     }
 
-    /** The first-entry navigation state, which suppresses field decoration. */
     private static NavigationContext firstEntryNavigation() {
         return reEntryNavigation().withFirstEntry();
     }
 
-    /**
-     * A response carrying every echoed value at its exact measured width.
-     *
-     * @return a fully populated response reporting no failure
-     */
     private static TransactionAddResponse fullyPopulated() {
         return new TransactionAddResponse(TRANSACTION_ID, ACCOUNT_ID, CARD_NUMBER, TYPE_CODE,
                 CATEGORY_CODE, SOURCE_POS_TERMINAL, DESCRIPTION_AT_FULL_WIDTH, AMOUNT_NEGATIVE,
@@ -327,38 +190,18 @@ class TransactionAddResponseTest {
                 FOCUS_FIELD_ID, NEXT_ROUTE, reEntryNavigation());
     }
 
-    /**
-     * A response carrying one summary text and one general-error polarity, with everything else
-     * absent - the shape of every arm of the write-outcome branch.
-     *
-     * @param message      the single summary text, or {@code null} when there is none
-     * @param generalError whether the response reports a failure of the request as a whole
-     * @return the response
-     */
     private static TransactionAddResponse withMessage(String message, boolean generalError) {
         return new TransactionAddResponse(null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, message,
                 generalError, List.of(), null, null, null);
     }
 
-    /**
-     * A response carrying one amount and nothing else, for the decimal-shape assertions.
-     *
-     * @param amount the amount, or {@code null}
-     * @return the response
-     */
     private static TransactionAddResponse withAmount(BigDecimal amount) {
         return new TransactionAddResponse(null, null, null, null, null, null, null, amount, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, false,
                 List.of(), null, null, null);
     }
 
-    /**
-     * A response carrying one field-error collection and nothing else.
-     *
-     * @param fieldErrors the per-field errors, or {@code null} to exercise the normalisation
-     * @return the response
-     */
     private static TransactionAddResponse withFieldErrors(List<ErrorResponse.FieldError>
             fieldErrors) {
         return new TransactionAddResponse(null, null, null, null, null, null, null, null, null,
@@ -366,32 +209,16 @@ class TransactionAddResponseTest {
                 fieldErrors, null, null, null);
     }
 
-    /**
-     * A response carrying one navigation state and nothing else.
-     *
-     * @param navigationContext the echoed navigation state, or {@code null}
-     * @return the response
-     */
     private static TransactionAddResponse withNavigation(NavigationContext navigationContext) {
         return new TransactionAddResponse(null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, false,
                 List.of(), null, null, navigationContext);
     }
 
-    /** A response with every reference component absent, for the validation-policy assertions. */
     private static TransactionAddResponse allAbsent() {
         return withMessage(null, false);
     }
 
-    /**
-     * Builds a mapper configured exactly as the module configures its own, reading the six settings
-     * from {@code src/main/resources/application.yml} lines 101 to 119.
-     *
-     * <p>Local rather than injected on purpose: this is a unit test, so no application context
-     * starts, and a mapper built here cannot pick up an incidental customisation from one.
-     *
-     * @return a mapper whose wire behaviour matches the running module's
-     */
     private static ObjectMapper moduleEquivalentMapper() {
         return JsonMapper.builder()
                 .defaultPropertyInclusion(JsonInclude.Value.construct(JsonInclude.Include.NON_NULL,
@@ -404,12 +231,6 @@ class TransactionAddResponseTest {
                 .build();
     }
 
-    /**
-     * Validates a response with the platform's own default validator, not a framework-managed one.
-     *
-     * @param response the response to validate
-     * @return every constraint violation the declared annotations produce
-     */
     private static Set<ConstraintViolation<TransactionAddResponse>> violationsOf(
             TransactionAddResponse response) {
         try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
@@ -418,25 +239,11 @@ class TransactionAddResponseTest {
         }
     }
 
-    /**
-     * Writes a response and reads it back through the module-equivalent mapper.
-     *
-     * @param response the response to round trip
-     * @return the response as the wire produced and then reproduced it
-     * @throws JsonProcessingException if the mapper rejects the payload, which is itself a failure
-     */
     private static TransactionAddResponse jsonRoundTrip(TransactionAddResponse response)
             throws JsonProcessingException {
         ObjectMapper mapper = moduleEquivalentMapper();
         return mapper.readValue(mapper.writeValueAsString(response), TransactionAddResponse.class);
     }
-
-    // ===========================================================================================
-    // THE FOURTEEN MEASURED MESSAGE TEXTS
-    //
-    // Each is an external interface contract: operators read them and downstream tooling matches
-    // on them, so the punctuation, the capitalisation and the trailing dots are all load bearing.
-    // ===========================================================================================
 
     @ParameterizedTest(name = "[{index}] {0}")
     @MethodSource("measuredMessageLiterals")
@@ -540,10 +347,6 @@ class TransactionAddResponseTest {
                 .isNull();
     }
 
-    // ===========================================================================================
-    // EXACTLY ONE SUMMARY TEXT - the legacy cascade is ordered and stops at the first failure
-    // ===========================================================================================
-
     @Test
     @DisplayName("carries one summary text and not a collection of them")
     void carriesOneSummaryTextAndNotACollectionOfThem() {
@@ -589,17 +392,6 @@ class TransactionAddResponseTest {
                 .isEqualTo("Card Number NOT found...")
                 .hasSize(24);
     }
-
-    // ===========================================================================================
-    // THE COMPOSED SUCCESS TEXT AND ITS TWO CONSECUTIVE SPACES
-    //
-    // The success arm of app/cbl/COTRN02C.cbl clears the fourteen echoed fields, marks the message
-    // line favourably and then joins four pieces: the prefix at line 728, the identifier label at
-    // line 730, the new identifier at line 731 and the closing full stop at line 732. Because the
-    // prefix ends with a space and the label begins with one, the joined text carries two adjacent
-    // spaces after the first full stop. Every expectation below is built by concatenating those
-    // pieces here; no production formatter, codec, mapper or builder is used as an oracle.
-    // ===========================================================================================
 
     @Test
     @DisplayName("the success prefix carries exactly one trailing space after its full stop")
@@ -783,15 +575,6 @@ class TransactionAddResponseTest {
                 .hasSize(49);
     }
 
-    // ===========================================================================================
-    // THE SUCCESS-IS-NOT-AN-ERROR ASYMMETRY
-    //
-    // The success arm marks the message line favourably; every failure arm marks it adversely. The
-    // terminal attribute that expressed that difference is not modelled here in any form - the
-    // distinction is realised solely as an explicit indicator, which is why a populated message
-    // says nothing about success or failure on its own.
-    // ===========================================================================================
-
     @Test
     @DisplayName("the composed success text coexists with an indicator of false")
     void theComposedSuccessTextCoexistsWithAnIndicatorOfFalse() {
@@ -918,14 +701,6 @@ class TransactionAddResponseTest {
                 .contains("\"generalError\":false");
     }
 
-    // ===========================================================================================
-    // PER-FIELD ERRORS: THE TWO-STATE CONTRACT
-    //
-    // The parameterised validation macro at app/cpy/CSSETATY.cpy distinguishes a field left blank
-    // from a field filled in wrongly, and its guard also requires the screen to have been
-    // re-submitted, so a first submission decorates nothing at all.
-    // ===========================================================================================
-
     @Test
     @DisplayName("the two states are distinguishable and are not two values of one flag")
     void theTwoStatesAreDistinguishableAndNotBooleanBased() {
@@ -1022,10 +797,6 @@ class TransactionAddResponseTest {
                 .hasSize(7);
     }
 
-    // ===========================================================================================
-    // THE FIELD-ERROR COLLECTION IS IMMUTABLE AND NULL TOLERANT
-    // ===========================================================================================
-
     @Test
     @DisplayName("an absent collection becomes an empty immutable one, never null and never a throw")
     void anAbsentCollectionBecomesAnEmptyImmutableOne() {
@@ -1111,15 +882,6 @@ class TransactionAddResponseTest {
         assertThat(bound.fieldErrors().get(0).message())
                 .isEqualTo("Merchant City can NOT be empty...");
     }
-
-    // ===========================================================================================
-    // THE AMOUNT IS AN EXACT DECIMAL AT THE RECORD'S OWN SCALE
-    //
-    // TRAN-AMT at app/cpy/CVTRA05Y.cpy line 10 is a signed zoned quantity with nine integer digits
-    // and two decimals. The estate declares no rounding anywhere, so the single place a surplus
-    // digit may be discarded is the utility layer's codec - never here. This type refuses a
-    // misshapen value instead of repairing one, which is what keeps that place single.
-    // ===========================================================================================
 
     @Test
     @DisplayName("the amount is an exact decimal, never a floating-point value")
@@ -1227,14 +989,6 @@ class TransactionAddResponseTest {
         assertThat(moduleEquivalentMapper().writeValueAsString(withAmount(null)))
                 .doesNotContain("\"amount\"");
     }
-
-    // ===========================================================================================
-    // THE ECHOED VALUES KEEP THEIR EXACT MEASURED WIDTHS
-    //
-    // Widths are those of the output items of app/cpy-bms/COTRN02.CPY, which mirror the input items
-    // field for field. Four of them deliberately differ from the same logical field elsewhere in
-    // the estate, and those divergences are contract rather than defect.
-    // ===========================================================================================
 
     @Test
     @DisplayName("every echoed value round trips at its exact measured width")
@@ -1352,10 +1106,6 @@ class TransactionAddResponseTest {
         assertThat(violationsOf(response)).isEmpty();
     }
 
-    // ===========================================================================================
-    // CODED VALUES ARE TEXT, SO LEADING ZEROS SURVIVE
-    // ===========================================================================================
-
     @Test
     @DisplayName("every coded value keeps its leading zeros and never becomes a bare digit")
     void everyCodedValueKeepsItsLeadingZeros() {
@@ -1421,10 +1171,6 @@ class TransactionAddResponseTest {
                 .isNull();
     }
 
-    // ===========================================================================================
-    // THE TWO TEN-CHARACTER DATES ARE OPAQUE TEXT
-    // ===========================================================================================
-
     @Test
     @DisplayName("both dates are opaque text carried at ten characters")
     void bothDatesAreOpaqueTextAtTenCharacters() {
@@ -1480,10 +1226,6 @@ class TransactionAddResponseTest {
                 .isEmpty();
     }
 
-    // ===========================================================================================
-    // THE CHANNEL LABEL IS A RAW PADDED VALUE, NOT AN ENUMERATED ONE
-    // ===========================================================================================
-
     @ParameterizedTest(name = "[{index}] {0}")
     @MethodSource("channelLabels")
     @DisplayName("each ten-character channel label round trips raw and untrimmed")
@@ -1526,10 +1268,6 @@ class TransactionAddResponseTest {
         assertThat(moduleEquivalentMapper().writeValueAsString(fullyPopulated()))
                 .contains("\"source\":\"POS TERM  \"");
     }
-
-    // ===========================================================================================
-    // THE NAVIGATION STATE IS CARRIED, NOT RE-IMPLEMENTED
-    // ===========================================================================================
 
     @Test
     @DisplayName("the navigation state is carried whole and unchanged")
@@ -1588,15 +1326,6 @@ class TransactionAddResponseTest {
                 .as("no decoration applies before a screen has been re-submitted")
                 .isEmpty();
     }
-
-    // ===========================================================================================
-    // VALIDATION POLICY: A MAXIMUM LENGTH IS ESSENTIALLY THE ONLY CONSTRAINT
-    //
-    // The legacy cascade is ordered, message bearing and first-error-wins, which unordered
-    // constraint validation cannot express. Reproducing it declaratively would change which single
-    // text an operator sees, so nothing here is mandatory, pattern matched, digit checked or range
-    // bounded. A maximum length measures and never alters, so spaces and blanks survive it.
-    // ===========================================================================================
 
     @Test
     @DisplayName("a wholly absent response produces no constraint violation at all")
@@ -1692,10 +1421,6 @@ class TransactionAddResponseTest {
                 .isEmpty();
     }
 
-    // ===========================================================================================
-    // THE ROUTE OUTCOME IS DECLARATIVE DATA
-    // ===========================================================================================
-
     @Test
     @DisplayName("the next route is carried as opaque data and nothing here dispatches on it")
     void theNextRouteIsCarriedAsOpaqueData() throws JsonProcessingException {
@@ -1714,21 +1439,11 @@ class TransactionAddResponseTest {
                 .doesNotContain("\"nextRoute\"");
     }
 
-    /**
-     * A response carrying one route and nothing else.
-     *
-     * @param nextRoute the route the client should call next, or {@code null}
-     * @return the response
-     */
     private static TransactionAddResponse response(String nextRoute) {
         return new TransactionAddResponse(null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, false,
                 List.of(), null, nextRoute, null);
     }
-
-    // ===========================================================================================
-    // WIRE CONTRACT
-    // ===========================================================================================
 
     @Test
     @DisplayName("absent components are omitted from the payload rather than written as null")
@@ -1838,10 +1553,6 @@ class TransactionAddResponseTest {
                 .contains("\"cardNumber\":\"4111111111111111\"")
                 .doesNotContain("****");
     }
-
-    // ===========================================================================================
-    // IMMUTABILITY, EQUALITY AND THE DIAGNOSTIC RENDERING
-    // ===========================================================================================
 
     @Test
     @DisplayName("an instance is immutable, demonstrated by constructing and then re-reading it")

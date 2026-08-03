@@ -260,7 +260,7 @@ class JobSubmissionServiceBaselineTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new JobSubmissionService(sqsOperations, queueName,
                             MESSAGE_GROUP_ID))
-                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue")
+                    .withMessageContaining("carddemo.aws.sqs.job-queue")
                     .withMessageContaining("has no default");
         }
 
@@ -270,7 +270,7 @@ class JobSubmissionServiceBaselineTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() ->
                             new JobSubmissionService(sqsOperations, null, MESSAGE_GROUP_ID))
-                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue");
+                    .withMessageContaining("carddemo.aws.sqs.job-queue");
         }
 
         @Test
@@ -651,23 +651,37 @@ class JobSubmissionServiceBaselineTest {
         }
 
         @Test
-        @DisplayName("derives the submission identifier from both dates and a per-submission nonce, free of whitespace, so a genuine re-submission is appended rather than deduplicated away")
-        void derivesTheSubmissionIdentifierFromBothDatesAndANonce() {
-            // The queue this bridge replaces had append disposition, so submitting the same report
-            // request twice wrote the cards twice. A content-derived identifier would have the queue
-            // discard the second submission while the caller saw success, so the identity carries a
-            // per-submission nonce. The reporting period is retained as a readable prefix, which is
-            // what keeps a queue-side identifier traceable to the request that produced it, and the
-            // one-based card ordinal remains the suffix.
+        @DisplayName("derives the submission identifier from both dates and nothing else, free of whitespace, so replaying one request reproduces its identifiers exactly")
+        void derivesTheSubmissionIdentifierFromBothDatesAndNothingElse() {
+            // The bridge's contract composes the identifier from the submission's own identity plus
+            // the card ordinal, and forbids a random value in the identity's place because a random
+            // identity defeats idempotency. The identity is therefore the two date slots joined, and
+            // the one-based card ordinal remains the suffix. A submission that is genuinely a second
+            // unit of work rather than a replay says so through the identity-bearing entry point.
             acceptEveryCard();
 
             service.submitTransactionReportJob(START_DATE, END_DATE);
 
             assertThat(published.get(0).messageDeduplicationId)
-                    .startsWith(START_DATE + "_" + END_DATE + "_")
-                    .endsWith("-1")
-                    .doesNotContainAnyWhitespaces()
-                    .isNotEqualTo(START_DATE + "_" + END_DATE + "-1");
+                    .isEqualTo(START_DATE + "_" + END_DATE + "-1")
+                    .doesNotContainAnyWhitespaces();
+        }
+
+        @Test
+        @DisplayName("replaying one request reproduces every identifier, which is what the deduplication identifier exists to give")
+        void replayingOneRequestReproducesEveryIdentifier() {
+            acceptEveryCard();
+
+            service.submitTransactionReportJob(START_DATE, END_DATE);
+            final List<String> firstPass = published.stream()
+                    .map(publish -> publish.messageDeduplicationId)
+                    .toList();
+            published.clear();
+            service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            assertThat(published.stream().map(publish -> publish.messageDeduplicationId).toList())
+                    .as("the replay reproduces the first pass card for card")
+                    .containsExactlyElementsOf(firstPass);
         }
 
         @Test

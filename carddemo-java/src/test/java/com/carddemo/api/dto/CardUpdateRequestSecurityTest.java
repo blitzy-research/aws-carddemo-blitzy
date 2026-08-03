@@ -87,10 +87,10 @@ import com.carddemo.domain.enums.KeyAction;
 @DisplayName("CardUpdateRequest - the CCUP inbound contract")
 class CardUpdateRequestSecurityTest {
 
-    /** The ten components in declaration order. A change here is a change to the REST contract. */
+    /** The nine components in declaration order. A change here is a change to the REST contract. */
     private static final List<String> COMPONENTS_IN_ORDER = List.of(
             "accountId", "cardNumber", "embossedName", "activeStatus", "expiryMonth", "expiryYear",
-            "expiryDay", "keyAction", "navigationContext", "concurrencyToken");
+            "expiryDay", "keyAction", "navigationContext");
 
     /**
      * The measured map widths of the six bounded components, read from
@@ -103,9 +103,8 @@ class CardUpdateRequestSecurityTest {
     private static final List<String> BOUNDED_COMPONENTS = List.of(
             "accountId", "cardNumber", "embossedName", "activeStatus", "expiryMonth", "expiryYear");
 
-    /** The components that must carry no constraint annotation of any kind. */
-    private static final Set<String> UNCONSTRAINED_COMPONENTS =
-            Set.of("expiryDay", "concurrencyToken");
+    /** The component that must carry no annotation of any kind - the hidden protected carry-through. */
+    private static final Set<String> UNCONSTRAINED_COMPONENTS = Set.of("expiryDay");
 
     /** A primary account number at full width. A documentation value no issuer routes. */
     private static final String CARD_NUMBER = "4111111111111111";
@@ -118,9 +117,6 @@ class CardUpdateRequestSecurityTest {
 
     /** The hidden protected carry-through day value. */
     private static final String EXPIRY_DAY = "31";
-
-    /** A stand-in for a sealed proof. Deliberately not a realistic envelope: this type never reads it. */
-    private static final String SEALED_TOKEN = "CCUP1-sealed-proof-stand-in";
 
     /** The fixed stand-in the rendering must emit in place of every component. */
     private static final String REDACTION_PLACEHOLDER_TEXT = "***REDACTED***";
@@ -143,7 +139,7 @@ class CardUpdateRequestSecurityTest {
     /** A realistic confirming submission, with every component populated. */
     private static CardUpdateRequest populated() {
         return new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME, "Y", "12", "2027",
-                EXPIRY_DAY, KeyAction.PFK05, NavigationContext.empty().withReEntry(), SEALED_TOKEN);
+                EXPIRY_DAY, KeyAction.PFK05, NavigationContext.empty().withReEntry());
     }
 
     private static Set<ConstraintViolation<CardUpdateRequest>> violationsOf(
@@ -156,23 +152,24 @@ class CardUpdateRequestSecurityTest {
 
     @Nested
     @DisplayName("The component set is the map plus conversation state plus one proof")
-    class TheComponentSetIsTheMapPlusStatePlusOneProof {
+    class TheComponentSetIsTheMapPlusState {
 
         @Test
-        @DisplayName("ten components are declared in order, with the proof last")
-        void tenComponentsAreDeclaredInOrderWithTheProofLast() {
+        @DisplayName("nine components are declared in order - the seven map values and the two control "
+                + "components - with the echoed navigation state last")
+        void nineComponentsAreDeclaredInOrder() {
             List<String> declared = Arrays.stream(CardUpdateRequest.class.getRecordComponents())
                     .map(RecordComponent::getName)
                     .toList();
 
-            assertThat(declared).containsExactlyElementsOf(COMPONENTS_IN_ORDER).hasSize(10);
-            assertThat(declared).endsWith("concurrencyToken");
+            assertThat(declared).containsExactlyElementsOf(COMPONENTS_IN_ORDER).hasSize(9);
+            assertThat(declared).endsWith("navigationContext");
         }
 
         @Test
-        @DisplayName("no readable concurrency value is declared - no version, entity tag, timestamp or "
-                + "fetched-image snapshot - because each is a value a client could assert for itself")
-        void noReadableConcurrencyValueIsDeclared() {
+        @DisplayName("no concurrency value is declared - no version, entity tag, timestamp, sealed "
+                + "proof or fetched-image snapshot - because locking belongs to the entity and service")
+        void noConcurrencyValueIsDeclared() {
             List<String> lowerCased = Arrays.stream(CardUpdateRequest.class.getRecordComponents())
                     .map(component -> component.getName().toLowerCase(Locale.ROOT))
                     .toList();
@@ -234,7 +231,6 @@ class CardUpdateRequestSecurityTest {
             assertThat(request.keyAction()).isEqualTo(KeyAction.PFK05);
             assertThat(request.navigationContext().programContext())
                     .isEqualTo(NavigationContext.ProgramContext.REENTER);
-            assertThat(request.concurrencyToken()).isEqualTo(SEALED_TOKEN);
         }
     }
 
@@ -256,23 +252,16 @@ class CardUpdateRequestSecurityTest {
                         .as("component %s width", name)
                         .isEqualTo(BOUNDED_WIDTHS.get(index));
                 assertThat(size.min()).as("component %s must declare no minimum", name).isZero();
-                // The account identifier carries one further rule and one only: it must be absent on
-                // the confirming turn, because the owning account is read back from the sealed proof
-                // rather than from the body. An assertion of absence measures nothing and alters
-                // nothing, so it does not weaken the "bounds only" property this test exists to hold.
-                List<String> declared = Arrays.stream(field.getAnnotations())
+                // Every bounded component carries the width bound and nothing else. The account
+                // identifier is no exception: which turn may supply it is an applicability rule
+                // belonging to CardUpdateService, and expressing it here would require a validation
+                // group naming an operation, which this transport type deliberately does not declare.
+                assertThat(Arrays.stream(field.getAnnotations())
                         .map(annotation -> annotation.annotationType().getSimpleName())
                         .sorted()
-                        .toList();
-                if ("accountId".equals(name)) {
-                    assertThat(declared)
-                            .as("component %s carries the width bound and the absence rule", name)
-                            .containsExactly("Null", "Size");
-                } else {
-                    assertThat(declared)
-                            .as("component %s must carry the width bound and nothing else", name)
-                            .containsExactly("Size");
-                }
+                        .toList())
+                        .as("component %s must carry the width bound and nothing else", name)
+                        .containsExactly("Size");
             }
         }
 
@@ -294,38 +283,30 @@ class CardUpdateRequestSecurityTest {
                         .doesNotContain("jakarta.validation.constraints");
             }
 
-            // The day carries exactly one annotation, and it is a serialisation binding rather than a
-            // rule: the component is published and never accepted, so a caller cannot restate the day
-            // the card carries. The proof carries none at all.
-            assertThat(Arrays.stream(CardUpdateRequest.class.getDeclaredField("expiryDay")
-                            .getAnnotations())
-                    .map(annotation -> annotation.annotationType().getSimpleName())
-                    .toList())
-                    .containsExactly("JsonProperty");
-            assertThat(CardUpdateRequest.class.getDeclaredField("concurrencyToken").getAnnotations())
+            // The day carries no annotation whatsoever - neither a rule nor a serialisation binding.
+            // It is a hidden protected carry-through, so a width rule would reject a round trip the
+            // legacy completes, and a directional binding would be this transport type deciding a
+            // service question. CardUpdateService assembles the stored expiry date from the day it
+            // captured at COCRDUPC line 1366, which is what actually keeps the wire out of the record.
+            assertThat(CardUpdateRequest.class.getDeclaredField("expiryDay").getAnnotations())
+                    .as("no annotation of any kind may attach to the hidden carry-through")
                     .isEmpty();
         }
 
         @Test
-        @DisplayName("an absent proof is not a violation, because its absence is a conflict the service "
-                + "reports rather than a binding failure the framework rejects")
-        void anAbsentProofIsNotAViolation() {
-            CardUpdateRequest withoutProof = new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER,
-                    EMBOSSED_NAME, "Y", "12", "2027", EXPIRY_DAY, null, null, null);
-
-            assertThat(violationsOf(withoutProof)).isEmpty();
-            assertThat(withoutProof.concurrencyToken()).isNull();
-        }
-
-        @Test
-        @DisplayName("a proof far longer than any screen field draws no violation and is carried whole")
-        void anArbitrarilyLongProofIsCarriedWhole() {
-            String longProof = "E".repeat(4096);
-            CardUpdateRequest request = new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME,
-                    "Y", "12", "2027", EXPIRY_DAY, null, null, longProof);
-
-            assertThat(violationsOf(request)).isEmpty();
-            assertThat(request.concurrencyToken()).isEqualTo(longProof).hasSize(4096);
+        @DisplayName("no concurrency, version, entity-tag or row-version component is declared, so "
+                + "there is nothing for a client to hold, assert or replay")
+        void noConcurrencyOrVersionComponentIsDeclared() {
+            assertThat(Arrays.stream(CardUpdateRequest.class.getRecordComponents())
+                    .map(RecordComponent::getName)
+                    .toList())
+                    .as("the legacy before-and-after image comparison is reproduced by the version "
+                            + "column on the card entity, an entity and service concern; a conflict "
+                            + "reaches the client only as the operator text at COCRDUPC line 208")
+                    .noneSatisfy(name -> assertThat(name.toLowerCase(Locale.ROOT))
+                            .containsAnyOf("concurrency", "version", "etag", "rowversion",
+                                    "revision", "token", "lock", "stamp", "image", "snapshot"))
+                    .hasSize(9);
         }
 
         @Test
@@ -333,7 +314,7 @@ class CardUpdateRequestSecurityTest {
                 + "can never have typed it")
         void anOverLongExpiryDayDrawsNoViolation() {
             CardUpdateRequest request = new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME,
-                    "Y", "12", "2027", "3131313131", null, null, SEALED_TOKEN);
+                    "Y", "12", "2027", "3131313131", null, null);
 
             assertThat(violationsOf(request)).isEmpty();
             assertThat(request.expiryDay()).isEqualTo("3131313131");
@@ -344,7 +325,7 @@ class CardUpdateRequestSecurityTest {
                 + "left exactly as it was supplied")
         void anOverWideBoundedComponentIsReportedWithoutBeingAltered() {
             CardUpdateRequest request = new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME,
-                    "YN", "12", "2027", EXPIRY_DAY, null, null, SEALED_TOKEN);
+                    "YN", "12", "2027", EXPIRY_DAY, null, null);
 
             Set<ConstraintViolation<CardUpdateRequest>> violations = violationsOf(request);
 
@@ -358,7 +339,7 @@ class CardUpdateRequestSecurityTest {
                 + "submission is a real state the legacy screen accepts")
         void aWhollyAbsentSubmissionDrawsNoViolation() {
             CardUpdateRequest empty = new CardUpdateRequest(null, null, null, null, null, null, null,
-                    null, null, null);
+                    null, null);
 
             assertThat(violationsOf(empty)).isEmpty();
         }
@@ -369,12 +350,12 @@ class CardUpdateRequestSecurityTest {
                 + "because blank is a state the legacy screen prompts against rather than refuses")
         void aBlankValueIsTransportedRatherThanRejected(String blank) {
             CardUpdateRequest request = new CardUpdateRequest(blank, blank, blank, blank, blank,
-                    blank, blank, null, null, blank);
+                    blank, blank, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
             assertThat(request.accountId()).isEqualTo(blank);
             assertThat(request.activeStatus()).isEqualTo(blank);
-            assertThat(request.concurrencyToken()).isEqualTo(blank);
+            assertThat(request.expiryDay()).isEqualTo(blank);
         }
 
         @Test
@@ -382,8 +363,7 @@ class CardUpdateRequestSecurityTest {
                 + "because that is exactly the shape a blank legacy screen transmits")
         void aSpaceFilledSubmissionAtEachDeclaredWidthDrawsNoViolation() {
             CardUpdateRequest spaceFilled = new CardUpdateRequest(" ".repeat(11), " ".repeat(16),
-                    " ".repeat(50), " ", " ".repeat(2), " ".repeat(4), " ".repeat(2), null, null,
-                    " ".repeat(64));
+                    " ".repeat(50), " ", " ".repeat(2), " ".repeat(4), " ".repeat(2), null, null);
 
             assertThat(violationsOf(spaceFilled)).isEmpty();
             assertThat(spaceFilled.accountId()).hasSize(11).isBlank();
@@ -397,7 +377,7 @@ class CardUpdateRequestSecurityTest {
                 + "bound measures blanks exactly as it measures anything else")
         void aBlankWiderThanTheDeclaredWidthIsStillReported() {
             CardUpdateRequest tooManySpaces = new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER,
-                    EMBOSSED_NAME, "  ", "12", "2027", EXPIRY_DAY, null, null, SEALED_TOKEN);
+                    EMBOSSED_NAME, "  ", "12", "2027", EXPIRY_DAY, null, null);
 
             Set<ConstraintViolation<CardUpdateRequest>> violations = violationsOf(tooManySpaces);
 
@@ -431,7 +411,7 @@ class CardUpdateRequestSecurityTest {
                     null, NavigationContext.ProgramContext.REENTER, null, null, null, null, null,
                     null, null, null, null);
             CardUpdateRequest request = new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME,
-                    "Y", "12", "2027", EXPIRY_DAY, null, overWidth, SEALED_TOKEN);
+                    "Y", "12", "2027", EXPIRY_DAY, null, overWidth);
 
             Set<ConstraintViolation<CardUpdateRequest>> violations = violationsOf(request);
 
@@ -445,7 +425,7 @@ class CardUpdateRequestSecurityTest {
         @DisplayName("an absent navigation state is not a violation, because a first entry carries none")
         void anAbsentNavigationStateIsNotAViolation() {
             CardUpdateRequest request = new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME,
-                    "Y", "12", "2027", EXPIRY_DAY, null, null, SEALED_TOKEN);
+                    "Y", "12", "2027", EXPIRY_DAY, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
             assertThat(request.navigationContext()).isNull();
@@ -472,7 +452,7 @@ class CardUpdateRequestSecurityTest {
             assertThat(rendered)
                     .isEqualTo("CardUpdateRequest[" + REDACTION_PLACEHOLDER_TEXT + "]");
             assertThat(rendered).doesNotContain(CARD_NUMBER, ACCOUNT_ID, EMBOSSED_NAME, EXPIRY_DAY,
-                    SEALED_TOKEN, "2027", "12", "Y");
+                    "2027", "12", "Y");
         }
 
         @Test
@@ -491,7 +471,7 @@ class CardUpdateRequestSecurityTest {
                 + "submission cannot throw")
         void theRenderingIsSafeWhenEveryComponentIsAbsent() {
             CardUpdateRequest empty = new CardUpdateRequest(null, null, null, null, null, null, null,
-                    null, null, null);
+                    null, null);
 
             assertThat(empty.toString())
                     .isEqualTo("CardUpdateRequest[" + REDACTION_PLACEHOLDER_TEXT + "]");
@@ -510,22 +490,26 @@ class CardUpdateRequestSecurityTest {
             assertThat(payload.get("accountId").asText()).isEqualTo(ACCOUNT_ID);
             assertThat(payload.get("embossedName").asText()).isEqualTo(EMBOSSED_NAME);
             assertThat(payload.get("expiryDay").asText()).isEqualTo(EXPIRY_DAY);
-            assertThat(payload.get("concurrencyToken").asText()).isEqualTo(SEALED_TOKEN);
+            assertThat(payload.has("concurrencyToken"))
+                    .as("no concurrency value crosses the boundary in either direction")
+                    .isFalse();
             assertThat(payload.toString()).doesNotContain(REDACTION_PLACEHOLDER_TEXT);
         }
 
         @Test
-        @DisplayName("equality compares every component by value, so a differing proof yields a "
-                + "differing request and nothing is redacted out of the comparison")
+        @DisplayName("equality compares every component by value, so nothing is redacted out of the "
+                + "comparison")
         void equalityComparesEveryComponentByValue() {
             CardUpdateRequest first = populated();
             CardUpdateRequest same = populated();
-            CardUpdateRequest differentProof = new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER,
-                    EMBOSSED_NAME, "Y", "12", "2027", EXPIRY_DAY, KeyAction.PFK05,
-                    NavigationContext.empty().withReEntry(), SEALED_TOKEN + "-other");
+            CardUpdateRequest differingInOneComponent = new CardUpdateRequest(ACCOUNT_ID,
+                    CARD_NUMBER, EMBOSSED_NAME, "N", "12", "2027", EXPIRY_DAY, KeyAction.PFK05,
+                    NavigationContext.empty().withReEntry());
 
             assertThat(first).isEqualTo(same).hasSameHashCodeAs(same);
-            assertThat(first).isNotEqualTo(differentProof);
+            assertThat(first)
+                    .as("no component is excluded from the comparison")
+                    .isNotEqualTo(differingInOneComponent);
         }
     }
 
@@ -540,7 +524,7 @@ class CardUpdateRequestSecurityTest {
                 throws JsonProcessingException {
             String spaced = " MARY ANN  ";
             CardUpdateRequest request = new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER, spaced, "Y",
-                    "12", "2027", EXPIRY_DAY, null, null, SEALED_TOKEN);
+                    "12", "2027", EXPIRY_DAY, null, null);
 
             assertThat(request.embossedName()).isEqualTo(spaced).hasSize(11);
 
@@ -550,10 +534,10 @@ class CardUpdateRequestSecurityTest {
 
             assertThat(revived.embossedName()).isEqualTo(spaced);
             assertThat(revived.expiryDay())
-                    .as("the publish-only day does not travel inbound, which is the binding rather "
-                            + "than a transformation of the value")
-                    .isNull();
-            assertThat(revived).isEqualTo(withoutTheEchoedDay(request));
+                    .as("the hidden carry-through travels both ways untransformed, like every other "
+                            + "component on this passive carrier")
+                    .isEqualTo(EXPIRY_DAY);
+            assertThat(revived).isEqualTo(request);
         }
 
         @Test
@@ -561,7 +545,7 @@ class CardUpdateRequestSecurityTest {
                 + "fold and a case-only edit must stay visible to it")
         void letterCaseIsNeverFoldedHere() {
             CardUpdateRequest lowerCased = new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER, "mary ann",
-                    "y", "12", "2027", EXPIRY_DAY, null, null, SEALED_TOKEN);
+                    "y", "12", "2027", EXPIRY_DAY, null, null);
 
             assertThat(lowerCased.embossedName()).isEqualTo("mary ann");
             assertThat(lowerCased.activeStatus()).isEqualTo("y");
@@ -571,8 +555,7 @@ class CardUpdateRequestSecurityTest {
         @DisplayName("a leading zero is never collapsed, so an identifier stays the identifier it was")
         void aLeadingZeroIsNeverCollapsed() {
             CardUpdateRequest request = new CardUpdateRequest("00000000001",
-                    "0000000000000001", EMBOSSED_NAME, "Y", "01", "2027", "01", null, null,
-                    SEALED_TOKEN);
+                    "0000000000000001", EMBOSSED_NAME, "Y", "01", "2027", "01", null, null);
 
             assertThat(request.accountId()).isEqualTo("00000000001");
             assertThat(request.cardNumber()).isEqualTo("0000000000000001");
@@ -609,34 +592,17 @@ class CardUpdateRequestSecurityTest {
             CardUpdateRequest twice = mapper.readValue(mapper.writeValueAsString(once),
                     CardUpdateRequest.class);
 
-            // The expiry day is published and never accepted, so a document naming it binds nothing.
-            // That is the point of the binding rather than a loss: the day the card carries is the one
-            // the sealed proof returns, so a caller cannot restate it and cannot alter it either.
-            assertThat(once.expiryDay()).isNull();
-            assertThat(twice.expiryDay()).isNull();
-            assertThat(once).isEqualTo(withoutTheEchoedDay(original));
-            assertThat(twice).isEqualTo(withoutTheEchoedDay(original));
+            // No component is bound in one direction, so both trips are identities. The hidden
+            // carry-through is carried like the rest: what keeps the wire out of the stored expiry
+            // date is that CardUpdateService assembles it from the day it captured at COCRDUPC line
+            // 1366, never from a request body.
+            assertThat(once.expiryDay()).isEqualTo(EXPIRY_DAY);
+            assertThat(twice.expiryDay()).isEqualTo(EXPIRY_DAY);
+            assertThat(once).isEqualTo(original);
+            assertThat(twice).isEqualTo(original);
             assertThat(mapper.writeValueAsString(twice))
-                    .as("every component a caller may supply survives both trips byte for byte")
-                    .isEqualTo(mapper.writeValueAsString(withoutTheEchoedDay(original)));
-        }
-
-        /**
-         * Returns the same request with the publish-only expiry day cleared.
-         *
-         * <p>Needed because the day is a dark echo: it is rendered onto the screen and returned by the
-         * concurrency proof, and it is deliberately not bindable from a request document. A round-trip
-         * comparison therefore has to compare against the request as the wire can express it, not
-         * against a request carrying a component the wire cannot carry inbound.</p>
-         *
-         * @param request the request to strip
-         * @return the same request with {@code expiryDay} absent
-         */
-        private static CardUpdateRequest withoutTheEchoedDay(CardUpdateRequest request) {
-            return new CardUpdateRequest(request.accountId(), request.cardNumber(),
-                    request.embossedName(), request.activeStatus(), request.expiryMonth(),
-                    request.expiryYear(), null, request.keyAction(), request.navigationContext(),
-                    request.concurrencyToken());
+                    .as("every component survives both trips byte for byte")
+                    .isEqualTo(mapper.writeValueAsString(original));
         }
     }
 }

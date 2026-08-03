@@ -574,17 +574,15 @@ class JobSubmissionServiceParityTest {
 
         @Test
         @DisplayName("resubmitting the same reporting period reproduces the same seventeen card payloads "
-                + "byte for byte, and deliberately does not reproduce the deduplication identifiers, "
-                + "because the queue this bridge replaces appended a genuine re-submission")
-        void resubmittingTheSamePeriodReproducesTheSameCardsButNotTheSameIdentifiers() {
-            // The cards are the contract and they are a pure function of the two date slots: nothing
-            // random and nothing time-derived takes part in composing one, and that is asserted below on
-            // the payloads themselves. The deduplication identifier is a different matter. The legacy
-            // transient-data queue had append disposition, so writing the same report request twice
-            // wrote the cards twice; a content-derived identifier would instead have the queue silently
-            // discard the second submission while the caller saw success. A per-submission nonce is what
-            // keeps a legitimate repeat legitimate, and it is applied per submission rather than per
-            // card, so a double publish of one card within one submission is still caught.
+                + "byte for byte and the same seventeen deduplication identifiers, because the identity "
+                + "is a pure function of the request and a random one would defeat idempotency")
+        void resubmittingTheSamePeriodReproducesTheSameCardsAndTheSameIdentifiers() {
+            // Both halves of the submission are a pure function of the two date slots: nothing random
+            // and nothing time-derived takes part in composing a card, and nothing does in deriving the
+            // identity either. That is what makes a replay safe - a caller repeating an interrupted
+            // submission reissues the identifiers the first pass used, so the cards that already landed
+            // are collapsed and the ones that never did are added. A submission that is genuinely a
+            // second unit of work says so through the identity-bearing entry point instead.
             final RecordingSqsOperations first = RecordingSqsOperations.acceptingEverything();
             final RecordingSqsOperations second = RecordingSqsOperations.acceptingEverything();
 
@@ -592,22 +590,26 @@ class JobSubmissionServiceParityTest {
             serviceOver(second).submitTransactionReportJob(START_DATE, END_DATE);
 
             final List<String> firstPayloads = new ArrayList<>();
+            final List<String> firstIdentifiers = new ArrayList<>();
             for (final PublishAttempt attempt : first.published()) {
                 firstPayloads.add(payloadOf(attempt));
+                firstIdentifiers.add(attempt.deduplicationId());
             }
             final List<String> secondPayloads = new ArrayList<>();
+            final List<String> secondIdentifiers = new ArrayList<>();
             for (final PublishAttempt attempt : second.published()) {
                 secondPayloads.add(payloadOf(attempt));
+                secondIdentifiers.add(attempt.deduplicationId());
             }
 
             assertThat(secondPayloads)
                     .as("the card stream is a pure function of the two date slots")
                     .containsExactlyElementsOf(firstPayloads);
+            assertThat(secondIdentifiers)
+                    .as("a replay reproduces the identifiers card for card")
+                    .containsExactlyElementsOf(firstIdentifiers);
             assertThat(second.published().get(0).deduplicationId())
-                    .as("a genuine re-submission is appended rather than deduplicated away")
-                    .isNotEqualTo(first.published().get(0).deduplicationId());
-            assertThat(second.published().get(0).deduplicationId())
-                    .as("the identity still carries the reporting period as a readable prefix")
+                    .as("the identity carries the reporting period as a readable prefix")
                     .startsWith(START_DATE);
         }
 
@@ -1222,7 +1224,7 @@ class JobSubmissionServiceParityTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new JobSubmissionService(queue, "JOBS", MESSAGE_GROUP_ID))
                     .withMessageContaining(".fifo")
-                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue");
+                    .withMessageContaining("carddemo.aws.sqs.job-queue");
         }
 
         @ParameterizedTest(name = "[{index}] a queue name of [{0}] is refused")
@@ -1233,7 +1235,7 @@ class JobSubmissionServiceParityTest {
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new JobSubmissionService(queue, queueName, MESSAGE_GROUP_ID))
-                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue")
+                    .withMessageContaining("carddemo.aws.sqs.job-queue")
                     .withMessageContaining("no default");
         }
 
@@ -1245,7 +1247,7 @@ class JobSubmissionServiceParityTest {
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new JobSubmissionService(queue, null, MESSAGE_GROUP_ID))
-                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue");
+                    .withMessageContaining("carddemo.aws.sqs.job-queue");
         }
 
         @ParameterizedTest(name = "[{index}] a message group of [{0}] is refused")

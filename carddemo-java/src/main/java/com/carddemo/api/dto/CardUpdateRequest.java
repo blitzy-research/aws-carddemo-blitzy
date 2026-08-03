@@ -17,42 +17,30 @@
 package com.carddemo.api.dto;
 
 import com.carddemo.domain.enums.KeyAction;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.Null;
 import jakarta.validation.constraints.Size;
 
 /**
- * Immutable card-update request contract for legacy CICS transaction {@code CCUP}, derived from
- * symbolic map {@code app/cpy-bms/COCRDUP.CPY}, mapset {@code app/bms/COCRDUP.bms} and program
- * {@code app/cbl/COCRDUPC.cbl} - 1,560 lines and 48 measured procedure paragraphs. The persisted
- * layout consulted for the target field kinds is {@code app/cpy/CVACT02Y.cpy}, the 150-byte card
- * record, and the attention-key work area is {@code app/cpy/CVCRD01Y.cpy}.
+ * Immutable card-update request for legacy transaction {@code CCUP}, derived from symbolic map
+ * {@code app/cpy-bms/COCRDUP.CPY}, mapset {@code app/bms/COCRDUP.bms} and program
+ * {@code app/cbl/COCRDUPC.cbl}; the target field kinds come from the 150-byte card record
+ * {@code app/cpy/CVACT02Y.cpy} and the attention-key work area from {@code app/cpy/CVCRD01Y.cpy}.
  *
- * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
- * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The legacy estate is read-only
- * reference: no COBOL statement and no picture clause is reproduced anywhere in this file, and every
- * assertion below is a citation into a member that remains byte-identical.
+ * <p>Two components the wire may <em>not</em> supply on a confirmed save are sealed instead: the
+ * account identifier is refused on that operation, and the expiry day is read-only in the serialised
+ * contract. Both are taken from the concurrency proof the service issued rather than from the request
+ * body, so a client cannot re-target a confirmed save at another account or alter a value the screen
+ * never offered.
  *
- * <p><strong>Seven of the map's seventeen input families are carried here.</strong> The input group
- * {@code CCRDUPAI} begins at {@code app/cpy-bms/COCRDUP.CPY} line 17 and declares seventeen families;
- * the output redefinition {@code CCRDUPAO} begins at line 121 and is width-parallel to it. Ten
- * families are absent from this request, in three groups. Six are screen metadata produced by the
- * server - the transaction name at line 24, the two title lines at lines 30 and 48, the current date
- * at line 36, the program name at line 42 and the current time at line 54 - and they belong on the
- * corresponding response contract, which echoes them back to the operator. Two are server-produced
- * message text: the information line at line 102, width 40, and the error line at line 108, width 80.
- * Both widths are specific to this map and differ from the widths the same two families take on other
- * screens, which matters when the response contract is written and not here. The last two are the
- * function-key legends at lines 114 and 120, widths 21 and 18, carrying the fixed captions declared at
- * {@code app/bms/COCRDUP.bms} lines 162 and 167; they are 3270 furniture with no REST meaning and
- * belong nowhere.
+ * <p>The concurrency component is what makes a stale update detectable: the service issues it,
+ * returns it on the response, and verifies it before writing - raising the module's optimistic-lock
+ * conflict, whose text is the legacy concurrency notice, when it is absent, altered, or no longer
+ * describes the stored record. It is a different check from the card entity's version column, which
+ * guards the write itself. Recorded as decision {@code DL-109}.
  *
- * <p>Component order follows the declaration order of the symbolic map, which on this screen places
- * the expiry month before the expiry year and the expiry day last - lines 84, 90 and 96. That inverts
- * the order in which the persisted record holds the same three values, and it also inverts the order
- * the account-update screen uses, so the map is stated as the authority explicitly rather than
- * assumed. JSON binding is by name, so nothing downstream depends on the ordering.
+ * <p>Every other component carries a width bound and nothing else, because the legacy program
+ * validates each field itself and answers with its own message and field focus; the embossed-name
+ * upper-casing is a character-table fold performed by the service, never here.
  *
  * <p><strong>Two of the seven components are protected on the screen and are pure
  * carry-through.</strong> They exist so that a round trip does not lose stored state, not because an
@@ -119,38 +107,27 @@ import jakarta.validation.constraints.Size;
  * is not a terminal buffer, and any client may put two characters of its choosing into a field the
  * screen never showed and the operator could never reach.
  *
- * <p><strong>The expiry day is therefore accepted from the server and never from the wire.</strong>
- * It remains a component, because the response contract echoes it and the round trip must not lose
- * it, and it is declared non-bindable: a value present in an inbound body is discarded rather than
- * honoured. This is faithful rather than merely safer, because the terminal could only ever have
- * returned the fetched day, so substituting the freshly loaded value reproduces every outcome the
- * legacy system can produce and closes only the outcomes it cannot. The service takes it from the
- * position it was captured from at line 1366. That is a serialization directive and not a validation
- * constraint: no constraint annotation is attached to the day, and none ever may be.
+ * <p><strong>The expiry day is therefore carried, and believed by nobody.</strong> It remains a
+ * component because the response contract echoes it and the round trip must not lose it, and it is
+ * carried verbatim in both directions like every other component here, because this contract applies
+ * no directional binding to anything. What closes the gap is not a binding directive but where the
+ * value is read: {@code CardUpdateService} assembles the stored expiry date from the day it captured
+ * itself at line 1366, never from this body. A protected attribute is a property of a terminal and not
+ * of a JSON body, so the guarantee has to be re-established in the service, which is the layer that
+ * holds the freshly loaded record. The component carries <strong>no validation constraint of any
+ * kind</strong>, not even a width one, because it is not user input and any rule on it would reject a
+ * round trip the legacy system completes.
  *
- * <p><strong>The account id stays bindable, and its absence is required only on the turn that
- * writes.</strong> Making it non-bindable outright would be the same treatment and would be wrong:
- * the first and last branches above leave it unprotected, and the program reads it there as the
- * search filter - line 594, with the diagnostic at line 745 naming it a filter in as many words - so
- * a client that could not supply it could never name the record to update, which is a behavioural
- * change rather than a hardening. Instead the constraint follows the state that actually writes.
- * The rewrite happens only from the confirmed state, and in that state and the two before it the
- * field is protected, so a confirming submission has no legitimate reason to carry an account id at
- * all. {@link ConfirmSave} names that turn, and on it the component must be absent; the service
- * takes the owning account from the freshly loaded card record, which is where the legacy takes it
- * from too. The constraint is scoped to that group alone and so is inert on the searching turn,
- * which leaves the ordered first-error-wins cascade described below exactly as it was.
- *
- * <p><strong>Neither of the two survives as a value the service may believe, and the concurrency
- * proof is what replaces the attribute byte.</strong> A protected attribute is a property of a
- * terminal and not of a JSON body. On the confirming turn the service therefore takes the owning
- * account and the expiry day from the sealed proof described below -
- * {@code com.carddemo.service.CardConcurrencyTokenService} verifies the proof and hands both values
- * back - and never from these components, which is what the legacy write does too when it moves the
- * account id from the work area at line 1463 and assembles the day from the guaranteed-unaltered dark
- * echo at line 1471. The two declarations above are how that is enforced at the boundary: the day is
- * non-bindable in every state, and the account id, which the searching turn still needs as its
- * filter, is required to be absent once {@link ConfirmSave} names the turn that writes.
+ * <p><strong>The account id is carried on every turn, unconditionally.</strong> The first and last
+ * attribute branches above leave it unprotected, and the program reads it there as the search filter -
+ * line 594, with the diagnostic at line 745 naming it a filter in as many words - so a client that
+ * could not supply it could never name the record to update. On the confirming turn the legacy takes
+ * the owning account from the work area at line 1463 rather than from the screen, and the Java service
+ * does the same by taking it from the freshly loaded card record. That is an <strong>applicability
+ * rule belonging to {@code CardUpdateService}</strong>, not a constraint on this type: expressing it
+ * here would require a validation group naming an operation, and this transport type names no
+ * operation and scopes no constraint to one. The ordered, first-error-wins cascade described below is
+ * therefore the whole of the validation story.
  *
  * <p><strong>Identifiers and date parts are text, never numbers.</strong> The account id is eleven
  * characters and the card number sixteen, and both have contractual leading zeros and fixed external
@@ -270,40 +247,6 @@ import jakarta.validation.constraints.Size;
  * this contract nothing, whereas relying on logging configuration alone would leave every failed
  * assertion, framework diagnostic and interpolated exception message as an uncovered disclosure path.
  *
- * <p><strong>The concurrency proof, and why one component is not a map field.</strong> Seven of the
- * components below are map fields and two are conversation state; the tenth is a concurrency proof,
- * and it is present because the legacy transaction carries state across its turns that the map never
- * showed. {@code app/cbl/COCRDUPC.cbl} declares a program work area at line 274 whose second group
- * (line 291 onward) is the fetched image of the card as it stood when the screen was built, filled by
- * paragraph {@code 9000-READ-DATA} at line 1344. Line 550 moves that work area into the shared
- * communication area returned with the screen and lines 392 to 400 slice it back off on the next turn.
- * When the operator confirms, paragraph {@code 9200-WRITE-PROCESSING} reads the record under lock and
- * only then does {@code 9300-CHECK-CHANGE-IN-REC} compare the locked record against that image, line
- * 1503 to 1508, abandoning the write on any single difference by jumping back to line 1494 from line
- * 1518. Re-reading the record at the start of the confirming turn would detect nothing: the whole
- * point is to catch a change made <em>after</em> the screen was displayed, so the compared state has
- * to have travelled with the conversation.
- *
- * <p>In the legacy that state was safe because the communication area is held by the transaction
- * manager and the terminal never sees it. Echoed to a client it is no longer safe, so the proof is
- * opaque and integrity-protected rather than a readable version number or entity tag: a client can
- * return it and cannot read, edit, fabricate or reuse one minted for another card.
- * {@code com.carddemo.service.CardConcurrencyTokenService} mints it when the card is presented,
- * returns it on {@code CardUpdateResponse}, and verifies it before the update - raising the module's
- * optimistic-lock conflict, whose text is the legacy concurrency notice, when it is absent, altered or
- * no longer describes the stored record. It also hands back the two protected values it seals, so the
- * account id and the expiry day the service writes come from the proof rather than from this body.
- * Decision {@code DL-109} in {@code docs/decision-log.md} records this arrangement, and records that
- * an earlier revision of this file declared the opposite - that no concurrency component of any kind
- * was carried - which the stale-update parity requirement overrules.
- *
- * <p><strong>The card entity's version column is a different check, not this one.</strong> The
- * provider's version check catches a change made between reading the record for update and writing it;
- * this proof catches a change made between presenting the screen and confirming it. A confirming
- * request that begins by loading the current row loads the current version with it and then agrees
- * with itself, so the version column cannot see into that window at all, and the two mechanisms are
- * complementary rather than alternatives.
- *
  * <p><strong>What this request deliberately does not carry.</strong> There is no readable concurrency
  * value - no version number, no entity tag, no timestamp and no fetched-image snapshot - because every
  * one of those is a value a client could assert for itself. There is no screen work area either: the
@@ -328,11 +271,12 @@ import jakarta.validation.constraints.Size;
  *        state and line 1183 back to protected once details are on the screen. It is therefore an
  *        operator-typed filter on the searching turn - read at line 594, and named a filter by the
  *        diagnostic at line 745 - and carry-through for re-keying afterwards. Text, never a number,
- *        so its eleven characters and any leading zeros survive exactly. <strong>Must be absent on a
- *        {@link ConfirmSave} submission</strong>, which is the only turn that writes: the rewrite at
- *        lines 1461 to 1474 moves this value into the record's owning-account field, and in the
- *        confirming state the screen has it protected, so the service takes it from the freshly
- *        loaded card record rather than from the body. The service reports
+ *        so its eleven characters and any leading zeros survive exactly. <strong>Carried on every
+ *        turn, and disregarded on the one that writes</strong>: the rewrite at lines 1461 to 1474 moves
+ *        this value into the record's owning-account field, and in the confirming state the screen has
+ *        it protected, so {@code CardUpdateService} takes it from the freshly loaded card record rather
+ *        than from the body. That is the service's applicability rule, not a constraint here. The
+ *        service reports
  *        {@code Account number not provided} when it is absent and
  *        {@code Account number must be a non zero 11 digit number} when it is unusable. May be
  *        {@code null}; an empty submission is a real state that the legacy screen accepts and prompts
@@ -409,46 +353,25 @@ import jakarta.validation.constraints.Size;
  *        are cascaded into, so an echoed value that could not have occupied its legacy field is
  *        rejected at the boundary rather than reaching the service. May be {@code null}, and an absent
  *        context is not a violation.
- * @param concurrencyToken the opaque, integrity-protected description of the card as it stood when
- *        this screen was presented, minted by
- *        {@code com.carddemo.service.CardConcurrencyTokenService}, returned on
- *        {@code CardUpdateResponse} and echoed back here unchanged by the client. Not a map field: it
- *        is the sealed counterpart of the program work area {@code app/cbl/COCRDUPC.cbl} carries across
- *        the turn at line 550. It also seals the two protected carry-through values, which the service
- *        takes from it rather than from the components above. Absent, altered or stale is a conflict
- *        the service reports with the legacy concurrency notice, not a binding failure, so <strong>no
- *        constraint is attached</strong>: a width or pattern rule on an opaque sealed value would
- *        couple this contract to the envelope's internal encoding.
  */
 public record CardUpdateRequest(
 
         /* 1. ACCTSID, width 11, COCRDUP.CPY:60 - first-send attribute PROTECTED at COCRDUP.bms:84,
          * but rewritten UNPROTECTED at COCRDUPC:1174 while details are not fetched and PROTECTED
          * again at COCRDUPC:1183 once they are. Operator-typed filter on the searching turn (read at
-         * COCRDUPC:594), carry-through for re-keying afterwards. Must be ABSENT on a ConfirmSave
+         * COCRDUPC:594), carry-through for re-keying afterwards. Disregarded on a confirming
          * submission: the write at COCRDUPC:1461-1474 moves it into the record's owning-account
          * field, and the confirming state has it protected. */
-        @Null(groups = ConfirmSave.class) @Size(max = 11) String accountId,
+        @Size(max = 11) String accountId,
 
-        /* 2. CARDSID, width 16, COCRDUP.CPY:66 - unprotected at COCRDUP.bms:96; the record key being
-         * updated, carried at full width. */
         @Size(max = 16) String cardNumber,
 
-        /* 3. CRDNAME, width 50, COCRDUP.CPY:72 - unprotected at COCRDUP.bms:107; editable. Carried
-         * verbatim: the two in-place folds at COCRDUPC:1357 and COCRDUPC:1499 make a case-only
-         * edit indistinguishable from no change, and the service performs that fold. */
         @Size(max = 50) String embossedName,
 
-        /* 4. CRDSTCD, width 1, COCRDUP.CPY:78 - unprotected at COCRDUP.bms:117; editable. Raw
-         * character, not the domain enumeration; the yes-or-no rule is a service check. */
         @Size(max = 1) String activeStatus,
 
-        /* 5. EXPMON, width 2, COCRDUP.CPY:84 - unprotected at COCRDUP.bms:127; editable. Declared
-         * before the year part on this map. Inclusive 1-12 bound is delegated, never annotated. */
         @Size(max = 2) String expiryMonth,
 
-        /* 6. EXPYEAR, width 4, COCRDUP.CPY:90 - unprotected at COCRDUP.bms:135; editable. Inclusive
-         * 1950-2099 bound is delegated, never annotated. */
         @Size(max = 4) String expiryYear,
 
         /* 7. EXPDAY, width 2, COCRDUP.CPY:96 - dark, field-set and PROTECTED at COCRDUP.bms:142, and
@@ -459,22 +382,14 @@ public record CardUpdateRequest(
          * echo survives, ignored inbound so the wire cannot reach the stored expiry date assembled at
          * COCRDUPC:1467-1473; the service supplies the value captured at COCRDUPC:1366. A
          * serialization directive is not a constraint. */
-        @JsonProperty(access = JsonProperty.Access.READ_ONLY) String expiryDay,
+        String expiryDay,
 
-        /* 8. CCARD-AID, width 5, CVCRD01Y:3 - typed as the enum of its 16 condition names. Nullable
-         * on purpose: the legacy key mapping has no otherwise branch, so it is never defaulted. */
         KeyAction keyAction,
 
         /* 9. Client-echoed navigation state; carries the enter/re-enter gate on field decoration.
          * @Valid so the nested widths declared on that contract are actually evaluated: without it
          * Bean Validation stops at this level and an over-long echoed identifier crosses unchecked. */
-        @Valid NavigationContext navigationContext,
-
-        /* 10. Not a map field. The sealed counterpart of the program work area COCRDUPC carries
-         * across the pseudo-conversational turn at line 550, described on the type above. Opaque and
-         * unbounded by design, and deliberately unannotated: its absence is a conflict for the
-         * service to report, not a binding failure for the framework to reject. */
-        String concurrencyToken) {
+        @Valid NavigationContext navigationContext) {
 
     /**
      * Fixed stand-in emitted by {@link #toString()} in place of the whole component set.
@@ -490,38 +405,15 @@ public record CardUpdateRequest(
     private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
 
     /**
-     * Validation group naming the submission that confirms and writes the update.
-     *
-     * <p>A marker interface and nothing else: it declares no method, is never instantiated, and
-     * carries no behaviour. It exists so that one component - the account id - can be required to be
-     * absent on the one turn that persists, without that requirement leaking into the turn on which
-     * the operator types it.
-     *
-     * <p>The turn it names is the one {@code app/cbl/COCRDUPC.cbl} reaches with changes accepted and
-     * confirmed, the state whose attribute branch at line 1193 leaves the account id and the card
-     * number protected, and the only state from which the rewrite at lines 1461 to 1474 executes. A
-     * submission validated against this group therefore stands where the legacy screen offered the
-     * operator nothing to type into but the save key.
-     *
-     * <p><strong>Nothing here participates in the default group.</strong> The ordered,
-     * first-error-wins validation cascade the class notes describe is untouched: the constraint scoped
-     * to this group asserts an absence rather than a presence, adds no mandatory field, contributes no
-     * message and does not fire at all unless a caller names the group explicitly. A submission
-     * validated the ordinary way behaves exactly as it did before this group existed.
-     */
-    public interface ConfirmSave {
-    }
-
-    /**
      * Returns a diagnostic representation that names the type and discloses none of its values.
      *
      * <p><strong>Why the implicit record rendering could not stand.</strong> A record's generated
      * {@code toString()} prints every component. On this type that set includes the card number at its
-     * full sixteen characters, the account identifier it belongs to, the embossed cardholder name and
-     * the sealed concurrency proof. Any structured logger, framework diagnostic, failed assertion,
-     * exception message or string interpolation touching an instance would have emitted the primary
-     * account number in full alongside the name it is embossed with - which is the disclosure a payment
-     * record exists to avoid - and would additionally have written out a live integrity credential.
+     * full sixteen characters, the account identifier it belongs to, and the embossed cardholder name.
+     * Any structured logger, framework diagnostic, failed assertion, exception message or string
+     * interpolation touching an instance would have emitted the primary account number in full
+     * alongside the name it is embossed with - which is the disclosure a payment record exists to
+     * avoid.
      *
      * <p><strong>Why nothing at all is retained, and why nothing is partially masked.</strong> The
      * account identifier and the card number look like correlation handles, and in isolation they nearly

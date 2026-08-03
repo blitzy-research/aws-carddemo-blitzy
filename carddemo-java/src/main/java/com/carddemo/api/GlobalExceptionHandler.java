@@ -23,6 +23,7 @@ import com.carddemo.exception.JobSubmissionException;
 import com.carddemo.exception.OptimisticLockConflictException;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
+import com.carddemo.util.FailureDiagnostics;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.Path;
@@ -407,14 +408,21 @@ public final class GlobalExceptionHandler {
      * its text outward, so an abend arriving under any other code is treated as internal rather than
      * assumed safe. Recorded as DL-084.
      *
+     * <p>The abend's own message is logged because this module composed it: it is the reproduced legacy
+     * diagnostic, naming the operation, the resource and the raw file status and nothing a caller
+     * supplied. What is <em>not</em> logged is the abend object, whose cause chain carries messages
+     * this module did not author; the chain travels as sanitised type names instead. See
+     * {@link FailureDiagnostics}.
+     *
      * @param exception the abend, never {@code null} when invoked by the framework
      * @return a {@code 500} response whose body holds the operator-facing text and nothing else
      */
     @ExceptionHandler(AbendException.class)
     public ResponseEntity<ErrorResponse> handleAbend(AbendException exception) {
-        LOG.error("Abend reached the REST boundary: abendCode={} culprit={} reason={} message={}",
+        LOG.error("Abend reached the REST boundary: abendCode={} culprit={} reason={} message={}"
+                        + " failureChain={}",
                 exception.code(), exception.culprit(), exception.reason(), exception.getMessage(),
-                exception);
+                FailureDiagnostics.failureChainOf(exception));
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(new ErrorResponse(operatorTextOf(exception)));
     }
@@ -450,9 +458,18 @@ public final class GlobalExceptionHandler {
      * routine sent.
      *
      * <p>The raw two-byte status is neither reconstructed, reformatted nor exposed here. The layer
-     * that performed the operation logged it before raising the failure, and this handler adds
-     * only the boundary record, passing the failure itself to the logger so that the context
-     * already composed by the carrier is preserved without this class re-deriving any part of it.
+     * that performed the operation logged it before raising the failure, and this handler adds only
+     * the boundary record.
+     *
+     * <p><strong>The failure object itself is not handed to the logger.</strong> An earlier revision
+     * passed it, on the reasoning that the context already composed by the carrier should be preserved
+     * rather than re-derived. It is preserved - the carrier already logged it, at the site that holds
+     * the raw status - and passing the object here would add nothing to that record while publishing
+     * the one part of it this module did not author: the message of the failure and of every cause
+     * beneath it. Beneath a file-operation failure is a data-access failure and beneath that a driver
+     * failure, whose message carries the connection string it could not open and the values it
+     * rejected. What this record adds instead is the sanitised failure chain, which is the part that
+     * says where to look, composed entirely of type names. See {@link FailureDiagnostics}.
      *
      * @param exception the file operation failure, never {@code null} when invoked by the
      *                  framework
@@ -461,7 +478,10 @@ public final class GlobalExceptionHandler {
      */
     @ExceptionHandler(FileStatusException.class)
     public ResponseEntity<ErrorResponse> handleFileStatus(FileStatusException exception) {
-        LOG.error("Unhandled file operation failure reached the REST boundary", exception);
+        LOG.error("Unhandled file operation failure reached the REST boundary: failureChain={}"
+                        + " rootFailureType={}",
+                FailureDiagnostics.failureChainOf(exception),
+                FailureDiagnostics.rootFailureTypeOf(exception));
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(new ErrorResponse(AbendException.DEFAULT_MESSAGE));
     }
@@ -594,9 +614,10 @@ public final class GlobalExceptionHandler {
     @ExceptionHandler(JobSubmissionException.class)
     public ResponseEntity<ErrorResponse> handleJobSubmission(JobSubmissionException exception) {
         LOG.error("RESP:{} REAS:{} job submission card was not written to queue={}"
-                        + " failedCardOrdinal={}; the request completes and no job was submitted",
+                        + " failedCardOrdinal={} failureChain={}; the request completes and no job was"
+                        + " submitted",
                 exception.responseCode(), exception.reasonCode(), exception.queueName(),
-                exception.failedCardOrdinal(), exception);
+                exception.failedCardOrdinal(), FailureDiagnostics.failureChainOf(exception));
         return ResponseEntity.status(HttpStatus.OK)
                 .body(new ErrorResponse(JobSubmissionException.DEFAULT_MESSAGE));
     }
@@ -827,7 +848,8 @@ public final class GlobalExceptionHandler {
     @ExceptionHandler(AuthenticationException.class)
     public ResponseEntity<ErrorResponse> handleAuthenticationFailure(
             AuthenticationException exception) {
-        LOG.warn("Authentication was required and not established at the REST boundary", exception);
+        LOG.warn("Authentication was required and not established at the REST boundary:"
+                + " failureChain={}", FailureDiagnostics.failureChainOf(exception));
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                 .body(new ErrorResponse(AUTHENTICATION_REQUIRED_MESSAGE));
     }
@@ -845,7 +867,8 @@ public final class GlobalExceptionHandler {
      */
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<ErrorResponse> handleAccessDenied(AccessDeniedException exception) {
-        LOG.warn("An established principal was refused at the REST boundary", exception);
+        LOG.warn("An established principal was refused at the REST boundary: failureChain={}",
+                FailureDiagnostics.failureChainOf(exception));
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .body(new ErrorResponse(ACCESS_DENIED_MESSAGE));
     }
@@ -874,12 +897,14 @@ public final class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleUnexpectedFailure(Exception exception) {
         if (exception instanceof org.springframework.web.ErrorResponse declaredStatusFailure) {
             HttpStatusCode status = declaredStatusFailure.getStatusCode();
-            LOG.debug("Framework request fault reached the REST boundary: status={}",
-                    status.value(), exception);
+            LOG.debug("Framework request fault reached the REST boundary: status={} failureChain={}",
+                    status.value(), FailureDiagnostics.failureChainOf(exception));
             return ResponseEntity.status(status)
                     .body(new ErrorResponse(neutralSummaryFor(status)));
         }
-        LOG.error("Unhandled failure reached the REST boundary", exception);
+        LOG.error("Unhandled failure reached the REST boundary: failureChain={} rootFailureType={}",
+                FailureDiagnostics.failureChainOf(exception),
+                FailureDiagnostics.rootFailureTypeOf(exception));
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(new ErrorResponse(AbendException.DEFAULT_MESSAGE));
     }

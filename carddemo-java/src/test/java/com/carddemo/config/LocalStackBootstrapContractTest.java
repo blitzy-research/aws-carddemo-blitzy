@@ -684,8 +684,8 @@ final class LocalStackBootstrapContractTest {
             final String overlay = read("src/test/resources/application-test.yml");
 
             assertThat(overlay)
-                    .contains("bucket: " + BUCKET)
-                    .contains("job-submission-queue: " + QUEUE)
+                    .contains("batch-staging-bucket: " + BUCKET)
+                    .contains("job-queue: " + QUEUE)
                     .contains("message-group-id: " + MESSAGE_GROUP)
                     .contains("job-notification-topic: " + TOPIC);
             assertThat(overlay)
@@ -705,10 +705,10 @@ final class LocalStackBootstrapContractTest {
             // compared as a whole map, so a failure names every divergence at once rather than the
             // first.
             final Map<String, String> expectedBindings = new LinkedHashMap<>();
-            expectedBindings.put("bucket:",
-                    "bucket: ${CARDDEMO_S3_BUCKET:" + BUCKET + "}");
-            expectedBindings.put("job-submission-queue:",
-                    "job-submission-queue: ${CARDDEMO_SQS_QUEUE:" + QUEUE + "}");
+            expectedBindings.put("batch-staging-bucket:",
+                    "batch-staging-bucket: ${CARDDEMO_S3_BUCKET:" + BUCKET + "}");
+            expectedBindings.put("job-queue:",
+                    "job-queue: ${CARDDEMO_SQS_QUEUE:" + QUEUE + "}");
             expectedBindings.put("message-group-id:",
                     "message-group-id: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:" + MESSAGE_GROUP + "}");
             expectedBindings.put("job-notification-topic:",
@@ -740,17 +740,17 @@ final class LocalStackBootstrapContractTest {
             // topic wrong fails visibly rather than silently.
             final String overlay = "src/main/resources/application-prod.yml";
 
-            assertThat(bindingLine(overlay, "bucket:"))
-                    .isEqualTo("bucket: ${CARDDEMO_S3_BUCKET:" + BUCKET + "}");
+            assertThat(bindingLine(overlay, "batch-staging-bucket:"))
+                    .isEqualTo("batch-staging-bucket: ${CARDDEMO_S3_BUCKET:" + BUCKET + "}");
             assertThat(bindingLine(overlay, "message-group-id:"))
                     .isEqualTo("message-group-id: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:"
                             + MESSAGE_GROUP + "}");
             assertThat(bindingLine(overlay, "job-notification-topic:"))
                     .isEqualTo("job-notification-topic: ${CARDDEMO_SNS_TOPIC:" + TOPIC + "}");
 
-            assertThat(bindingLine(overlay, "job-submission-queue:"))
+            assertThat(bindingLine(overlay, "job-queue:"))
                     .as("production must require the queue to be supplied explicitly")
-                    .isEqualTo("job-submission-queue: ${CARDDEMO_SQS_QUEUE}")
+                    .isEqualTo("job-queue: ${CARDDEMO_SQS_QUEUE}")
                     .as("and must carry no fallback of any kind, canonical or otherwise")
                     .doesNotContain(":" + QUEUE)
                     .doesNotContain(":-");
@@ -974,10 +974,16 @@ final class LocalStackBootstrapContractTest {
                     .doesNotContain("LOCALSTACK")
                     .doesNotContain("localhost:4566")
                     .doesNotContain(":4566");
-            assertThat(bindingLine("src/main/resources/application-prod.yml", "static:"))
-                    .as("production must require the region to be supplied explicitly")
-                    .isEqualTo("static: ${AWS_REGION}")
+            assertThat(bindingLine("src/main/resources/application-prod.yml", "region: "))
+                    .as("production must require the region to be supplied explicitly, at the key the"
+                            + " settings type binds and the start-up guard watches")
+                    .isEqualTo("region: ${AWS_REGION}")
                     .doesNotContain(":" + REGION);
+            assertThat(bindingLine("src/main/resources/application-prod.yml", "static:"))
+                    .as("and the AWS integration's own region setting must DERIVE from that key rather"
+                            + " than restate the variable, so one environment variable is read in one"
+                            + " place and the two namespaces cannot name different regions")
+                    .isEqualTo("static: ${carddemo.aws.region}");
         }
 
         @Test
@@ -1014,17 +1020,26 @@ final class LocalStackBootstrapContractTest {
                     .as("the stack definition must pass the same region into the container")
                     .contains("AWS_DEFAULT_REGION: ${AWS_REGION:-" + REGION + "}");
 
+            assertThat(bindingLine("src/main/resources/application.yml", "region: "))
+                    .as("the shared baseline is the one place the region is stated for every profile"
+                            + " but production, and it must default to the canonical value")
+                    .isEqualTo("region: ${AWS_REGION:" + REGION + "}");
+            assertThat(bindingLine("src/test/resources/application-test.yml", "region: "))
+                    .as("the suite overlay states the region as a plain value, needing no environment")
+                    .isEqualTo("region: " + REGION);
+
+            // Every overlay's AWS-integration region derives from that one statement rather than
+            // restating the variable. A restatement is what let an earlier revision hold two
+            // independently editable copies of one fact.
             for (final String overlay : List.of(
                     "src/main/resources/application.yml",
                     "src/main/resources/application-local.yml",
-                    "src/main/resources/application-test.yml")) {
+                    "src/main/resources/application-test.yml",
+                    "src/test/resources/application-test.yml")) {
                 assertThat(bindingLine(overlay, "static:"))
-                        .as("%s must bind the canonical region", overlay)
-                        .isEqualTo("static: ${AWS_REGION:" + REGION + "}");
+                        .as("%s must derive the client region from carddemo.aws.region", overlay)
+                        .isEqualTo("static: ${carddemo.aws.region}");
             }
-            assertThat(bindingLine("src/test/resources/application-test.yml", "static:"))
-                    .as("the test overlay binds the region as a plain value, needing no environment")
-                    .isEqualTo("static: " + REGION);
         }
     }
 

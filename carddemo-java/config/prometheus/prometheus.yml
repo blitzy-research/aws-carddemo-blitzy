@@ -52,10 +52,45 @@
 #
 #   Consequently this file declares no rule files and no notification
 #   pipeline, and it states no service level of any kind. It samples, and
-#   nothing more. It also carries no credential: the metrics endpoint is
-#   deliberately reachable inside the local validation stack, and were a
-#   scrape ever refused, the fix would belong in the application's security
-#   configuration and never here.
+#   nothing more.
+#
+# SCOPE - THIS IS THE LOCAL VALIDATION STACK'S COLLECTOR AND NOTHING ELSE
+#   This file is mounted by the `prometheus` service of the sibling
+#   docker-compose.yml, addresses Compose service names, speaks plaintext,
+#   and presents NO credential. Every one of those properties is correct for
+#   a collector running on the same machine as the application under the
+#   `local` profile, and every one of them makes this file unfit to be
+#   pointed at a deployment running the `prod` profile.
+#
+#   IT IS NOT CREDENTIAL-FREE BECAUSE CREDENTIALS ARE UNNECESSARY. It is
+#   credential-free because the `local` profile deliberately opens the scrape
+#   endpoint to an anonymous caller, by setting
+#   carddemo.security.anonymous-metrics-scrape, and that key is closed in the
+#   shared baseline and restated closed in application-prod.yml. Under those
+#   profiles com.carddemo.config.SecurityConfig adds no anonymous permit and
+#   the path falls through to the rule that authenticates everything beneath
+#   the management base path, so a scrape presenting nothing is answered 401.
+#
+#   WHY, since a metrics endpoint can look like harmless diagnostics: the
+#   exposition carries per-endpoint request counts and latency distributions,
+#   per-batch-step record counts, data-source pool saturation, and JVM heap,
+#   thread and garbage-collection internals. Together those let an
+#   unauthenticated network client profile transaction volume, infer business
+#   activity from the batch counts, and time an attack against a deployment it
+#   holds no credential for. The health probe stays anonymous everywhere
+#   because its body is a status word; this is the shape of the workload.
+#
+#   WHAT A PRODUCTION COLLECTOR MUST DO INSTEAD, stated here because this is
+#   where a reader looks for it: address the deployment over HTTPS with
+#   `scheme: https` and a `tls_config` that verifies the server certificate,
+#   and present a scoped read-only bearer token per scrape - Prometheus reads
+#   one from a file with `authorization: {type: Bearer, credentials_file: ...}`
+#   so the credential is never written into a configuration file. The endpoint
+#   stays PUBLISHED under `prod`, so a collector that does this collects
+#   exactly what the job below collects. Provisioning that deployment's
+#   network, certificates and credential store is outside this module's
+#   delivery scope, which is why this file carries the requirement rather than
+#   an inert second job block that no stack would ever run.
 # ===========================================================================
 
 global:
@@ -70,12 +105,22 @@ scrape_configs:
   # The CardDemo application - Spring Boot Actuator / Micrometer exposition.
   #
   # job_name is load-bearing. Prometheus stamps it onto every series it
-  # collects, as the `job` label, which makes job="carddemo-app" the only
-  # guaranteed non-empty selector available to the provisioned Grafana
-  # dashboard: the Micrometer common-tag key is pinned nowhere in the module,
-  # so a panel filtering on anything else may resolve to nothing. Renaming
+  # collects, as the `job` label, and job="carddemo-app" is what every panel
+  # of config/grafana/dashboards/carddemo-overview.json filters on. Renaming
   # this string empties every dashboard panel while the stack still reports
   # healthy - change the dashboard in lockstep, or do not change it.
+  #
+  # The application does also carry a Micrometer common tag: application.yml
+  # pins management.metrics.tags.application to spring.application.name, so
+  # every meter arrives tagged application="carddemo". The two labels are not
+  # interchangeable and neither replaces the other. The meter tag identifies
+  # WHICH SERVICE produced a series and travels with it through any collector;
+  # the `job` label identifies WHICH SCRAPE produced it and is added here, so
+  # it is the one that describes scrape topology - the selector to reach for
+  # when a panel must name a target rather than a service. That distinction
+  # is why the dashboard filters on `job`: the panels chart this stack's own
+  # single target, and a second deployment of the same service would carry an
+  # identical application tag while needing a job of its own.
   # -------------------------------------------------------------------------
   - job_name: carddemo-app
     # The Actuator management base path is deliberately left at its default
@@ -83,28 +128,44 @@ scrape_configs:
     # exposed in the shared defaults and stays exposed in the narrowed
     # production surface; were it ever dropped, the scrape would answer 404
     # and the performance gate would have no data whatsoever.
+    #
+    # This job carries no `authorization` and no `scheme: https` because it
+    # scrapes the `local` profile, which opens the endpoint anonymously over
+    # plaintext on this machine. Pointing this same job at a `prod` deployment
+    # would be answered 401, and adding a credential here to make that work
+    # would put one in a committed file - see the SCOPE note in the header for
+    # what a production collector does instead.
     metrics_path: /actuator/prometheus
     static_configs:
-      # Both endpoints belong to this one job, so every collected series
-      # carries job="carddemo-app" whichever of them happens to be live.
+      # ONE target, and it is the compose service name of the application
+      # container reached over the project network. The compose stack in this
+      # module publishes exactly that service, so the target resolves without
+      # any host-gateway fallback, and the reason there is only one entry is
+      # arithmetic rather than tidiness.
       #
-      #   app:8080                    - the compose service name, reached
-      #                                 over the project network when the
-      #                                 application runs as a container
-      #                                 beside this stack.
-      #   host.docker.internal:8080   - the host gateway, mapped onto the
-      #                                 Prometheus service by the compose
-      #                                 stack, reached when the application
-      #                                 runs directly on the host.
+      # An earlier revision listed a second entry here, host.docker.internal
+      # at the same port, so that a host-run application would be collected by
+      # the same job. Both entries belonged to job="carddemo-app", which is the
+      # label every dashboard panel and every performance-gate query aggregates
+      # by - so whenever both happened to answer, each series existed twice and
+      # every rate and every memory reading was doubled. In the ordinary case
+      # only one answered, which is worse in a quieter way: the job carried a
+      # permanently DOWN target, so `up` was never 1 for it and a reader could
+      # not tell a misconfigured scrape from a stopped application. The
+      # performance gate ESTABLISHES this module's first baseline from a single
+      # run, and a baseline that may or may not be doubled is not a baseline.
+      #
+      # If host-mode collection is ever wanted, it belongs to a job of its own,
+      # with its own name and its own evidence queries, never mixed into this
+      # one.
       #
       # Never the loopback address: inside this container it resolves to
       # Prometheus itself, so the scrape would succeed at the transport level
       # and yield nothing useful - a silent failure that surfaces only as an
-      # empty performance-gate write-up. Both entries are quoted so that YAML
-      # reads them as scalars rather than as single-key mappings.
+      # empty performance-gate write-up. The entry is quoted so that YAML reads
+      # it as a scalar rather than as a single-key mapping.
       - targets:
           - "app:8080"
-          - "host.docker.internal:8080"
 
   # -------------------------------------------------------------------------
   # Prometheus scraping itself, so collection health is visible alongside the

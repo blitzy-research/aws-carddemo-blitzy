@@ -58,15 +58,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * rather than being rejected by a parser before the cascade ever runs. The six components are therefore
  * asserted to be separate and separately bounded.
  *
- * <p><strong>A selector triple, not one enumerated period.</strong> The screen offers three
- * independent one-character selector positions - {@code MONTHLYI} at symbolic-map line 60,
- * {@code YEARLYI} at line 66 and {@code CUSTOMI} at line 72 - and the request carries all three rather
- * than one enumerated period. Two facts make the triple load-bearing. An operator can mark more than
- * one position, so a single value could not represent every submission the screen accepts; and
- * {@code CORPT00C} tests the three positions in the fixed order monthly, yearly, custom at line 213
- * and stops at the first it finds marked, so first-match-wins is a service rule that needs all three
- * inbound values to apply. The derived report name is not on this contract at all: the program writes
- * it at lines 214, 240 and 433 from the selection it just resolved, so it belongs to the response.
+ * <p><strong>One enumerated period, not a selector triple.</strong> The screen offers three
+ * one-character selector positions - {@code MONTHLYI} at symbolic-map line 60, {@code YEARLYI} at
+ * line 66 and {@code CUSTOMI} at line 72 - but they are mutually exclusive: {@code CORPT00C} tests
+ * them in the fixed order monthly, yearly, custom at line 213 and acts on exactly one, falling to its
+ * catch-all at line 438 when none is marked. Because the screen can only ever mean one period, the
+ * request carries one enumerated component rather than three characters. That makes a multiply-marked
+ * state unrepresentable at the boundary instead of leaving every consumer to re-derive which position
+ * won, and it relocates nothing: with one value on the wire there is no tie left for the fixed order
+ * to break. The vocabulary deliberately holds no member for the unmarked state, so absence stays
+ * absence and the catch-all message stays the service's to report. The derived report name is not on
+ * this contract either: the program writes it at lines 214, 240 and 433 from the period it just
+ * resolved, and it is the period's own carried value rather than a component of its own.
  *
  * <p><strong>The confirmation flag is one character wide and is not a boolean.</strong> The legacy
  * program gates submission on a single-character confirmation field at
@@ -78,11 +81,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("ReportRequest - the CR00 report request contract")
 class ReportRequestRuleComplianceTest {
 
-    /** The one character a marked selector position carries, the full width of the legacy field. */
+    /** The one character a marked selector position carried on the legacy screen. */
     private static final String MARKED = "Y";
 
-    /** The three published selector properties, in the order the legacy evaluation tests them. */
-    private static final List<String> SELECTOR_PROPERTIES =
+    /** The single published property the three collapsed selector positions became. */
+    private static final String PERIOD_PROPERTY = "reportPeriod";
+
+    /** The three selector properties the collapse removed, asserted absent from the contract. */
+    private static final List<String> REMOVED_SELECTOR_PROPERTIES =
             List.of("monthlySelection", "yearlySelection", "customSelection");
 
     /**
@@ -118,51 +124,19 @@ class ReportRequestRuleComplianceTest {
      * @return the populated request
      */
     private static ReportRequest aCustomPeriodRequest() {
-        return new ReportRequest(null, null, MARKED, "01", "01", "2022", "12", "31", "2022", "Y",
+        return new ReportRequest(ReportPeriod.CUSTOM, "01", "01", "2022", "12", "31", "2022", "Y",
                 KeyAction.ENTER, NavigationContext.empty());
     }
 
     /**
-     * Builds a request with exactly one selector position marked and nothing else supplied.
+     * Builds a request carrying exactly one period and nothing else supplied.
      *
-     * @param position the position to mark
-     * @return a request carrying only that marker and the attention key
+     * @param period the period the operator chose
+     * @return a request carrying only that period and the attention key
      */
-    private static ReportRequest markedAt(final ReportPeriod position) {
+    private static ReportRequest choosing(final ReportPeriod period) {
         return new ReportRequest(
-                position == ReportPeriod.MONTHLY ? MARKED : null,
-                position == ReportPeriod.YEARLY ? MARKED : null,
-                position == ReportPeriod.CUSTOM ? MARKED : null,
-                null, null, null, null, null, null, null, KeyAction.ENTER, null);
-    }
-
-    /**
-     * Reads the marker carried in the position that corresponds to a period.
-     *
-     * @param request the request to read
-     * @param position the position to read
-     * @return the marker in that position, or {@code null} when it is unmarked
-     */
-    private static String markerAt(final ReportRequest request, final ReportPeriod position) {
-        return switch (position) {
-            case MONTHLY -> request.monthlySelection();
-            case YEARLY -> request.yearlySelection();
-            case CUSTOM -> request.customSelection();
-        };
-    }
-
-    /**
-     * Names the payload property that carries the marker for a period.
-     *
-     * @param position the position to name
-     * @return the published property name
-     */
-    private static String propertyFor(final ReportPeriod position) {
-        return switch (position) {
-            case MONTHLY -> "monthlySelection";
-            case YEARLY -> "yearlySelection";
-            case CUSTOM -> "customSelection";
-        };
+                period, null, null, null, null, null, null, null, KeyAction.ENTER, null);
     }
 
     /**
@@ -187,29 +161,30 @@ class ReportRequestRuleComplianceTest {
     class TheDeclaredShape {
 
         @Test
-        @DisplayName("the request declares twelve components, the selector triple, two date triples, "
+        @DisplayName("the request declares ten components, the collapsed period, two date triples, "
                 + "the confirmation flag and two control components")
-        void theRequestDeclaresTwelveComponents() {
+        void theRequestDeclaresTenComponents() {
             final List<String> declared = Arrays.stream(ReportRequest.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
-            assertThat(declared).containsExactly("monthlySelection", "yearlySelection",
-                    "customSelection", "startMonth", "startDay", "startYear", "endMonth", "endDay",
-                    "endYear", "confirm", "keyAction", "navigationContext");
-            assertThat(declared).hasSize(12);
-            assertThat(declared.subList(0, 3))
-                    .as("the three positions lead the contract in the order the legacy tests them")
-                    .isEqualTo(SELECTOR_PROPERTIES);
+            assertThat(declared).containsExactly(PERIOD_PROPERTY, "startMonth", "startDay",
+                    "startYear", "endMonth", "endDay", "endYear", "confirm", "keyAction",
+                    "navigationContext");
+            assertThat(declared).hasSize(10);
+            assertThat(declared.get(0))
+                    .as("the collapsed period leads the contract, where the three positions used to")
+                    .isEqualTo(PERIOD_PROPERTY);
         }
 
         @Test
-        @DisplayName("no enumerated period and no derived report name is carried inbound, because the "
-                + "program derives the name from the selection rather than receiving it")
-        void noEnumeratedPeriodOrDerivedNameIsCarried() {
+        @DisplayName("no per-position selector and no derived report name is carried inbound, because "
+                + "the positions are mutually exclusive and the program derives the name itself")
+        void noPerPositionSelectorOrDerivedNameIsCarried() {
             final List<String> declared = Arrays.stream(ReportRequest.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
-            assertThat(declared).doesNotContain("reportPeriod", "period", "reportName");
+            assertThat(declared).doesNotContainAnyElementsOf(REMOVED_SELECTOR_PROPERTIES);
+            assertThat(declared).doesNotContain("reportName", "selection", "selector");
         }
 
         @Test
@@ -246,9 +221,7 @@ class ReportRequestRuleComplianceTest {
         void everyComponentRoundTripsThroughItsAccessor() {
             final ReportRequest request = aCustomPeriodRequest();
 
-            assertThat(request.monthlySelection()).isNull();
-            assertThat(request.yearlySelection()).isNull();
-            assertThat(request.customSelection()).isEqualTo(MARKED);
+            assertThat(request.reportPeriod()).isSameAs(ReportPeriod.CUSTOM);
             assertThat(request.startMonth()).isEqualTo("01");
             assertThat(request.startDay()).isEqualTo("01");
             assertThat(request.startYear()).isEqualTo("2022");
@@ -264,63 +237,74 @@ class ReportRequestRuleComplianceTest {
     // =============================================================================================
 
     @Nested
-    @DisplayName("the three selector positions")
-    class TheThreeSelectorPositions {
+    @DisplayName("the collapsed reporting period")
+    class TheCollapsedReportingPeriod {
 
         @Test
-        @DisplayName("the screen offers exactly three positions, one for each report type the legacy "
-                + "screen names, and each is bounded at a single character")
-        void theScreenOffersExactlyThreePositions() throws NoSuchMethodException {
-            assertThat(SELECTOR_PROPERTIES).hasSize(3)
-                    .hasSameSizeAs(ReportPeriod.values());
-            for (final String property : SELECTOR_PROPERTIES) {
-                assertThat(declaredMaximumLength(property))
-                        .as("%s holds one character", property).isOne();
-            }
+        @DisplayName("the period is one enumerated component carrying exactly the three report types "
+                + "the legacy screen names, with no screen width and no member for the unmarked state")
+        void thePeriodIsOneEnumeratedComponent() throws NoSuchMethodException {
+            assertThat(ReportRequest.class.getDeclaredMethod(PERIOD_PROPERTY).getReturnType())
+                    .isEqualTo(ReportPeriod.class);
+            assertThat(ReportRequest.class.getDeclaredMethod(PERIOD_PROPERTY)
+                    .getAnnotation(Size.class))
+                    .as("a member of a closed vocabulary has no screen width to measure")
+                    .isNull();
+            assertThat(ReportPeriod.values()).hasSize(3);
+            assertThat(Arrays.stream(ReportPeriod.values()).map(Enum::name).toList())
+                    .containsExactly("MONTHLY", "YEARLY", "CUSTOM")
+                    .doesNotContain("NONE", "UNKNOWN", "OTHER", "INVALID", "DEFAULT");
         }
 
         @ParameterizedTest(name = "{0}")
         @EnumSource(ReportPeriod.class)
-        @DisplayName("every position can be marked on its own, and marking one leaves the other two "
-                + "absent on the wire")
-        void everyPositionCanBeMarkedOnItsOwn(final ReportPeriod position)
+        @DisplayName("every period can be chosen on its own, and crosses the wire under the one "
+                + "collapsed name carrying its bare mixed-case value")
+        void everyPeriodCanBeChosenOnItsOwn(final ReportPeriod period)
                 throws JsonProcessingException {
-            final ReportRequest request = markedAt(position);
+            final ReportRequest request = choosing(period);
             final JsonNode payload = payloadOf(request);
 
-            assertThat(markerAt(request, position)).isEqualTo(MARKED);
-            assertThat(SELECTOR_PROPERTIES).allSatisfy(property ->
+            assertThat(request.reportPeriod()).isSameAs(period);
+            assertThat(payload.get(PERIOD_PROPERTY).asText())
+                    .as("the wire form of a closed vocabulary is its member identifier")
+                    .isEqualTo(period.name());
+            assertThat(period.getValue())
+                    .as("the report name the program writes is the carried value, never the identifier")
+                    .isNotEqualTo(period.name());
+            assertThat(REMOVED_SELECTOR_PROPERTIES).allSatisfy(property ->
                     assertThat(payload.has(property))
-                            .as("%s is %s", property,
-                                    property.equals(propertyFor(position)) ? "marked" : "unmarked")
-                            .isEqualTo(property.equals(propertyFor(position))));
+                            .as("%s no longer exists on the contract", property)
+                            .isFalse());
         }
 
         @Test
-        @DisplayName("more than one position can be marked at once, which is a submission a single "
-                + "enumerated period could not have represented")
-        void moreThanOnePositionCanBeMarkedAtOnce() {
-            final ReportRequest request = new ReportRequest(MARKED, MARKED, MARKED, null, null, null,
-                    null, null, null, null, KeyAction.ENTER, null);
+        @DisplayName("a multiply-marked screen state has no representation on this contract, which is "
+                + "the point of the collapse: the wrong state cannot be built at all")
+        void aMultiplyMarkedStateHasNoRepresentation() {
+            final ReportRequest request = choosing(ReportPeriod.MONTHLY);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(request))
-                        .as("the contract carries the submission; resolving it is the service's job")
+                        .as("one chosen period is always a valid submission at the boundary")
                         .isEmpty();
             }
-            assertThat(List.of(request.monthlySelection(), request.yearlySelection(),
-                    request.customSelection())).containsExactly(MARKED, MARKED, MARKED);
+            assertThat(Arrays.stream(ReportRequest.class.getRecordComponents())
+                    .map(RecordComponent::getName).toList())
+                    .as("there is no second period component to combine with the first")
+                    .doesNotContainAnyElementsOf(REMOVED_SELECTOR_PROPERTIES);
+            assertThat(request.reportPeriod())
+                    .as("the single component holds one period and cannot hold two")
+                    .isSameAs(ReportPeriod.MONTHLY);
         }
 
         @Test
         @DisplayName("a monthly or yearly request carries no dates, because the legacy program derives "
-                + "the window itself for those two selections")
+                + "the window itself for those two periods")
         void aMonthlyOrYearlyRequestCarriesNoDates() {
-            for (final ReportPeriod position : List.of(ReportPeriod.MONTHLY, ReportPeriod.YEARLY)) {
+            for (final ReportPeriod period : List.of(ReportPeriod.MONTHLY, ReportPeriod.YEARLY)) {
                 final ReportRequest request = new ReportRequest(
-                        position == ReportPeriod.MONTHLY ? MARKED : null,
-                        position == ReportPeriod.YEARLY ? MARKED : null,
-                        null, null, null, null, null, null, null, "Y", KeyAction.ENTER,
+                        period, null, null, null, null, null, null, "Y", KeyAction.ENTER,
                         NavigationContext.empty());
 
                 assertThat(request.startMonth()).isNull();
@@ -330,18 +314,20 @@ class ReportRequestRuleComplianceTest {
         }
 
         @Test
-        @DisplayName("an unmarked screen carries all three positions as absent, which is the state a "
-                + "first entry to the screen arrives in and the state the catch-all clause answers")
-        void anUnmarkedScreenCarriesAllThreePositionsAsAbsent() throws JsonProcessingException {
+        @DisplayName("an unmarked screen carries the period as absent, which is the state a first "
+                + "entry to the screen arrives in and the state the catch-all clause answers")
+        void anUnmarkedScreenCarriesThePeriodAsAbsent() throws JsonProcessingException {
             final ReportRequest request = new ReportRequest(null, null, null, null, null, null, null,
-                    null, null, null, null, null);
+                    null, null, null);
             final JsonNode payload = payloadOf(request);
 
-            assertThat(List.of(request.monthlySelection() == null,
-                    request.yearlySelection() == null, request.customSelection() == null))
-                    .containsExactly(true, true, true);
-            assertThat(SELECTOR_PROPERTIES).allSatisfy(property ->
-                    assertThat(payload.has(property)).isFalse());
+            assertThat(request.reportPeriod()).isNull();
+            assertThat(payload.has(PERIOD_PROPERTY))
+                    .as("absence is written as an omission, never as a synthesised member")
+                    .isFalse();
+            assertThat(ReportPeriod.fromValue(MARKED))
+                    .as("the legacy screen character is not itself a period value")
+                    .isEmpty();
         }
 
         @Test
@@ -367,9 +353,6 @@ class ReportRequestRuleComplianceTest {
 
         @ParameterizedTest(name = "{0} bounded at {1}")
         @CsvSource({
-            "monthlySelection, 1",
-            "yearlySelection, 1",
-            "customSelection, 1",
             "startMonth, 2",
             "startDay, 2",
             "startYear, 4",
@@ -410,7 +393,7 @@ class ReportRequestRuleComplianceTest {
                 + "nothing about presence and the cascade that requires a date runs in the service")
         void anEmptyRequestPassesValidation() {
             final ReportRequest empty = new ReportRequest(null, null, null, null, null, null, null,
-                    null, null, null, null, null);
+                    null, null, null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(empty)).isEmpty();
@@ -422,14 +405,14 @@ class ReportRequestRuleComplianceTest {
         @DisplayName("a three-character month or day is reported against that component alone")
         void aThreeCharacterMonthOrDayIsReported(final String componentName) {
             final ReportRequest overBound = switch (componentName) {
-                case "startMonth" -> new ReportRequest(null, null, null, "013", null, null, null,
-                        null, null, null, null, null);
-                case "startDay" -> new ReportRequest(null, null, null, null, "001", null, null, null,
-                        null, null, null, null);
-                case "endMonth" -> new ReportRequest(null, null, null, null, null, null, "013", null,
-                        null, null, null, null);
-                default -> new ReportRequest(null, null, null, null, null, null, null, "001", null,
+                case "startMonth" -> new ReportRequest(null, "013", null, null, null, null, null,
                         null, null, null);
+                case "startDay" -> new ReportRequest(null, null, "001", null, null, null, null,
+                        null, null, null);
+                case "endMonth" -> new ReportRequest(null, null, null, null, "013", null, null,
+                        null, null, null);
+                default -> new ReportRequest(null, null, null, null, null, "001", null, null, null,
+                        null);
             };
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
@@ -443,7 +426,7 @@ class ReportRequestRuleComplianceTest {
         @DisplayName("a five-digit year is reported, so a caller cannot smuggle a wider year past the "
                 + "four-character screen field")
         void aFiveDigitYearIsReported() {
-            final ReportRequest overBound = new ReportRequest(null, null, MARKED, "01", "01",
+            final ReportRequest overBound = new ReportRequest(ReportPeriod.CUSTOM, "01", "01",
                     "20222", "12", "31", "20222", "Y", KeyAction.ENTER, NavigationContext.empty());
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
@@ -457,7 +440,7 @@ class ReportRequestRuleComplianceTest {
         @DisplayName("a two-character confirmation flag is reported, because the legacy field holds one")
         void aTwoCharacterConfirmationFlagIsReported() {
             final ReportRequest overBound = new ReportRequest(null, null, null, null, null, null,
-                    null, null, null, "YY", null, null);
+                    null, "YY", null, null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(overBound))
@@ -470,7 +453,7 @@ class ReportRequestRuleComplianceTest {
         @DisplayName("a single-character value at each bound is accepted, so a legitimate one-digit "
                 + "month is not rejected for being short")
         void aValueShorterThanItsBoundIsAccepted() {
-            final ReportRequest shortValues = new ReportRequest(null, null, MARKED, "1", "1", "22",
+            final ReportRequest shortValues = new ReportRequest(ReportPeriod.CUSTOM, "1", "1", "22",
                     "9", "9", "22", "Y", KeyAction.ENTER, NavigationContext.empty());
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
@@ -496,7 +479,7 @@ class ReportRequestRuleComplianceTest {
         @DisplayName("a start date and an end date swapped produce a different request, because the "
                 + "window's direction is part of its identity")
         void aSwappedWindowProducesADifferentRequest() {
-            final ReportRequest reversed = new ReportRequest(null, null, MARKED, "12", "31", "2022",
+            final ReportRequest reversed = new ReportRequest(ReportPeriod.CUSTOM, "12", "31", "2022",
                     "01", "01", "2022", "Y", KeyAction.ENTER, NavigationContext.empty());
 
             assertThat(aCustomPeriodRequest()).isNotEqualTo(reversed);
@@ -505,12 +488,10 @@ class ReportRequestRuleComplianceTest {
         @Test
         @DisplayName("an absent component is omitted from the payload")
         void anAbsentComponentIsOmittedFromThePayload() throws JsonProcessingException {
-            final JsonNode payload = payloadOf(new ReportRequest(MARKED, null, null, null, null,
+            final JsonNode payload = payloadOf(new ReportRequest(ReportPeriod.MONTHLY, null, null,
                     null, null, null, null, "Y", KeyAction.ENTER, null));
 
-            assertThat(payload.get("monthlySelection").asText()).isEqualTo(MARKED);
-            assertThat(payload.has("yearlySelection")).isFalse();
-            assertThat(payload.has("customSelection")).isFalse();
+            assertThat(payload.get(PERIOD_PROPERTY).asText()).isEqualTo("MONTHLY");
             assertThat(payload.get("confirm").asText()).isEqualTo("Y");
             assertThat(payload.has("startMonth")).isFalse();
             assertThat(payload.has("endYear")).isFalse();
@@ -542,24 +523,30 @@ class ReportRequestRuleComplianceTest {
         }
 
         @Test
-        @DisplayName("a payload marking a selector position binds, and one naming an enumerated period "
-                + "binds nothing at all, which pins where the translation belongs")
-        void aPayloadMarkingASelectorPositionBinds() throws JsonProcessingException {
+        @DisplayName("a payload naming a period binds it, a payload marking an old selector position "
+                + "binds nothing, and the vocabulary itself refuses an upper-case value")
+        void aPayloadNamingAPeriodBinds() throws JsonProcessingException {
             final ObjectMapper mapper = moduleEquivalentMapper();
 
-            assertThat(mapper.readValue("{\"customSelection\":\"Y\"}", ReportRequest.class)
-                    .customSelection()).isEqualTo(MARKED);
+            assertThat(mapper.readValue("{\"reportPeriod\":\"CUSTOM\"}", ReportRequest.class)
+                    .reportPeriod())
+                    .as("the member name is what the wire form uses for an enumeration")
+                    .isSameAs(ReportPeriod.CUSTOM);
 
-            final ReportRequest fromEnumeratedPeriod =
-                    mapper.readValue("{\"reportPeriod\":\"CUSTOM\"}", ReportRequest.class);
-            assertThat(List.of(fromEnumeratedPeriod.monthlySelection() == null,
-                    fromEnumeratedPeriod.yearlySelection() == null,
-                    fromEnumeratedPeriod.customSelection() == null))
-                    .as("an enumerated period is not a submission this contract understands")
-                    .containsExactly(true, true, true);
+            final ReportRequest fromRemovedSelector =
+                    mapper.readValue("{\"customSelection\":\"" + MARKED + "\"}",
+                            ReportRequest.class);
+            assertThat(fromRemovedSelector.reportPeriod())
+                    .as("a per-position marker is no longer a submission this contract understands, "
+                            + "and it is tolerated as an unknown property rather than refused")
+                    .isNull();
 
-            assertThat(ReportPeriod.fromValue("Custom")).contains(ReportPeriod.CUSTOM);
-            assertThat(ReportPeriod.fromValue("CUSTOM")).isEmpty();
+            assertThat(ReportPeriod.fromValue("Custom"))
+                    .as("the carried value is the bare mixed-case report name")
+                    .contains(ReportPeriod.CUSTOM);
+            assertThat(ReportPeriod.fromValue("CUSTOM"))
+                    .as("value lookup never folds case, so the member name is not a carried value")
+                    .isEmpty();
         }
     }
 }

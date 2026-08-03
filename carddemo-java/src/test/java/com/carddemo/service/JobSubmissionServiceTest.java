@@ -64,58 +64,41 @@ import static org.mockito.Mockito.when;
 /**
  * Unit tests for {@link JobSubmissionService}, the estate's only online-to-batch bridge.
  *
- * <p>The whole mainframe estate contains exactly one transient-data-queue write, in the
- * transaction-report request program (transaction {@code CR00}). Two regions of that member are the
- * authority for every assertion here, and both were read directly rather than inferred. In the
- * card-emitting loop a loop-control flag is cleared, the guard tests the one-based card index against
- * the declared array bound together with the end-of-stream and write-error flags, the current card is
- * moved into the eighty-character record, the end-of-stream test is made, and the write is then
- * performed <strong>unconditionally</strong>. In the queue-write paragraph the eighty-character
- * record is written capturing a response and a reason code; a normal response continues, and any
+ * <p>The whole estate contains exactly one transient-data-queue write, in the transaction-report
+ * request program (transaction {@code CR00}), and two regions of that member are the authority for
+ * every assertion here. In the card-emitting loop the guard tests the one-based card index against the
+ * declared array bound together with the end-of-stream and write-error flags, the current card is moved
+ * into the eighty-character record, the end-of-stream test is made, and the write is then performed
+ * <strong>unconditionally</strong>. In the queue-write paragraph a normal response continues while any
  * other response writes both codes to the diagnostic channel, raises the write-error flag, places a
- * fixed failure literal in the screen message field and re-sends the screen. It never abends and
- * never aborts the transaction.</p>
- *
- * <p>The paragraph name is misspelled in the source. That misspelling is a source anomaly carried in
- * the anomaly register rather than corrected, and it is deliberately not reproduced in any Java
- * identifier: the paragraph is misspelled, the method is not.</p>
+ * fixed failure literal in the screen message field and re-sends the screen; it never abends and never
+ * aborts the transaction. The legacy paragraph name is misspelled - a registered source anomaly carried
+ * rather than corrected, and deliberately not reproduced in any Java identifier.
  *
  * <p>Four attributes of the destination queue are contractual rather than incidental, and each is
- * asserted below. Its records are fixed and eighty bytes wide, so one card is one message and every
- * body is exactly eighty encoded bytes, space padded and never trimmed. Its records are unblocked, so
- * cards are published one at a time rather than concatenated into a single payload. Its writes
- * append, so order is significant and every card of one submission travels in a single
- * first-in-first-out message group. And its error option is to ignore, so a publish failure is
- * logged, the remaining cards are not sent, and control returns normally with nothing rethrown.</p>
+ * asserted below. Records are fixed and eighty bytes wide, so one card is one message and every body is
+ * exactly eighty encoded bytes, space padded and never trimmed. Records are unblocked, so cards are
+ * published one at a time rather than concatenated. Writes append, so order is significant and every
+ * card of one submission travels in a single first-in-first-out message group. And the error option is
+ * to ignore, so a publish failure is logged, the remaining cards are not sent, and control returns
+ * normally with nothing rethrown.
  *
- * <p>The interface-contract gate for this bridge is discharged by draining a real emulated
- * first-in-first-out queue and asserting the full ordered sequence of seventeen eighty-byte messages
- * against what actually arrived. That obligation belongs to the sibling integration and end-to-end
- * test tree and must not be attempted here. This is a surefire unit test: it starts no container,
- * reaches no cloud service, opens no socket, binds no port and touches no database. It mocks the
- * messaging operations template and asserts the interactions, which is what makes it fast, hermetic
- * and safe to run on any developer machine.</p>
- *
- * <p>Every expected card image below is hand written in this file from the seventeen eighty-byte card
+ * <p>Every expected card image is hand written in this file from the seventeen eighty-byte card
  * declarations of that member, with each pad width spelled out as an explicit repeat count so a
  * reviewer can check the eighty-column arithmetic without leaving the file. The card builder is never
- * called to produce an expectation: delegating to it would make these tests pass against any builder,
- * including a broken one, so the two artefacts are held apart on purpose and a drift in either is a
- * failure. The only use made of the builder's published constants is a cross-check that they still
- * agree with the hand-written legacy figures.</p>
+ * called to produce an expectation - delegating to it would make these tests pass against a broken
+ * builder - so the two artefacts are held apart on purpose and a drift in either is a failure; the
+ * builder's published constants are used only for a cross-check that they still agree with the
+ * hand-written legacy figures.
+ *
+ * <p>Draining a real emulated first-in-first-out queue and asserting the arrived sequence is the
+ * interface-contract gate for this bridge, and it belongs to the integration and end-to-end tree, not
+ * here. This is a surefire unit test: no container, no cloud service, no socket, no port, no database.
+ * It mocks the messaging operations template and asserts the interactions.
  */
 @ExtendWith(MockitoExtension.class)
 @DisplayName("JobSubmissionService: the estate's only online-to-batch bridge, onto a FIFO queue")
 class JobSubmissionServiceTest {
-
-    // Configuration the bean is constructed with: both arrive from configuration in production and
-    // neither is a literal in the service, so both are fixed here instead.
-
-    /**
-     * The canonical destination queue. The first-in-first-out suffix is mandatory - the queue service
-     * refuses such a queue whose name lacks it - and ordering is contractual because the legacy queue
-     * appends on every write.
-     */
     private static final String QUEUE_NAME = "carddemo-jobs.fifo";
 
     private static final String MESSAGE_GROUP_ID = "carddemo-job-submission";
@@ -129,10 +112,6 @@ class JobSubmissionServiceTest {
     private static final String OTHER_END_DATE = "2020-02-29";
 
     private static final String CALLER_SUBMISSION_ID = "REPORT-REQUEST-0000000001";
-
-    // The independent oracle, hand written from the legacy card declarations. Padding is written as an
-    // explicit repeat count so the eighty-column arithmetic is visible: content width plus pad width is
-    // eighty on every line, and a self-check test below proves it.
 
     private static final String ORACLE_JOB_CARD =
             "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0," + " ".repeat(32);
@@ -158,11 +137,6 @@ class JobSubmissionServiceTest {
 
     private static final String ORACLE_DATEPARM_DD_CARD = "//STEP10R.DATEPARM DD *" + " ".repeat(57);
 
-    /**
-     * The end-of-stream sentinel, which <strong>is transmitted</strong>: the legacy loop sets its
-     * termination flag and only then performs the write, so the sentinel is the seventeenth message
-     * rather than a marker held back in storage.
-     */
     private static final String ORACLE_SENTINEL_CARD = "/*EOF" + " ".repeat(75);
 
     private static final String ORACLE_SENTINEL_CONTENT = "/*EOF";
@@ -179,6 +153,11 @@ class JobSubmissionServiceTest {
 
     private static final String ORACLE_PARAMETER_SLOT_SUFFIX = " ".repeat(59);
 
+    /**
+     * Cards in one submission. Hand-written from the legacy card declarations, deliberately not read from
+     * the builder: the builder's own figure is cross-checked against this one, so a drift in either
+     * direction fails.
+     */
     private static final int ORACLE_CARD_COUNT = 17;
 
     private static final int ORACLE_CARD_WIDTH = 80;
@@ -199,18 +178,12 @@ class JobSubmissionServiceTest {
 
     private static final int ORACLE_PARAMETER_END_SLOT_OFFSET = 11;
 
-    /** The declared bound of the legacy card table, carried as a defensive guard. */
     private static final int ORACLE_REDEFINE_CARD_BOUND = 1000;
 
     private static final int ORACLE_TOTAL_IMAGE_WIDTH = 1360;
 
-    /**
-     * The hand-written operator-facing failure literal, with exactly three separate full stops rather
-     * than one ellipsis character, no trailing space and no further punctuation.
-     */
     private static final String ORACLE_FAILURE_TEXT = "Unable to Write TDQ (JOBS)...";
 
-    /** The hand-written legacy queue name, from the CICS resource definition. */
     private static final String ORACLE_QUEUE_IDENTITY = "JOBS";
 
     private static final int ORACLE_DEDUPLICATION_ID_MAX_LENGTH = 128;
@@ -223,86 +196,32 @@ class JobSubmissionServiceTest {
 
     private static final String CAUSE_TEXT = "the queue service refused the card";
 
-    /**
-     * A marker a forged or leaked log record would carry.
-     *
-     * <p>Asserting on a marker rather than on the control characters around it is what makes a leak
-     * visible rather than inferred: if this string reaches a diagnostic then the queue client's own
-     * text was echoed, whatever became of the terminators it was wrapped in.
-     */
     private static final String HOSTILE_MARKER = "QAMARKLEAKEDSECRET";
 
-    /**
-     * A publish-failure description of the kind a misconfigured or verbose queue client really
-     * produces: it names a credential, echoes it, and carries the line terminators that would let a
-     * log reader split one record into several.
-     *
-     * <p>None of this is hypothetical. A client that reports a signing failure by quoting the request
-     * it signed, or an endpoint failure by quoting the URL it was given, puts deployment-supplied text
-     * into an exception message; this class only has to assume that such a message can reach the
-     * catch block, which it plainly can.
-     */
     private static final String HOSTILE_CAUSE_TEXT = "refused: accessKey=AKIAQAEXAMPLEKEY secret="
             + HOSTILE_MARKER + "\r\nFORGED AUDIT ENTRY: administrator granted\n\tat some.frame.Deeper";
 
-    /** A carriage return: the byte a log reader treats as ending a record. */
     private static final char CARRIAGE_RETURN = 13;
 
-    /** A line feed: the other byte a log reader treats as ending a record. */
     private static final char LINE_FEED = 10;
 
-    /** A tab: whitespace that is not a line terminator, kept separable from the two that are. */
     private static final char TAB = 9;
 
-    /**
-     * The hand-written bound on a derived diagnostic code, stated here independently of the service.
-     *
-     * <p>The legacy response and reason codes were fixed-width display fields, so a bound is the
-     * faithful shape and an unbounded code is not. The number is written out rather than read from the
-     * service so that a change to the service's bound is a change this class notices.
-     */
     private static final int ORACLE_MAX_DIAGNOSTIC_CODE_LENGTH = 64;
 
-    /** The hand-written bound on the number of failure types the recorded chain names. */
     private static final int ORACLE_MAX_FAILURE_CHAIN_DEPTH = 6;
 
-    /**
-     * The shape a derived diagnostic code must have: one unbroken token of ASCII letters, digits and
-     * the two connectors, bounded in length.
-     *
-     * <p>Asserting the shape of the whole value rather than the absence of one hostile string is what
-     * makes the guarantee hold for descriptions this class never thought of. No space, no control
-     * byte and no punctuation can satisfy this pattern, so a value that matches it cannot split a log
-     * record or be mistaken for the next field.
-     */
     private static final String ORACLE_DIAGNOSTIC_CODE =
             "[A-Za-z0-9$_]{1," + ORACLE_MAX_DIAGNOSTIC_CODE_LENGTH + "}";
 
-    /**
-     * The shape the recorded failure chain must have: codes joined by the separator, optionally cut
-     * short by the truncation marker.
-     */
     private static final String ORACLE_FAILURE_CHAIN = ORACLE_DIAGNOSTIC_CODE
             + "(<-" + ORACLE_DIAGNOSTIC_CODE + ")*(<-\\.\\.\\.)?";
 
-    /** The empty string, used where a blank configured value is under test. */
     private static final String EMPTY_TEXT = "";
 
-    // Harness: the messaging operations template is mocked; nothing else is.
-
-    /**
-     * The mocked messaging operations template. Publishing is the only thing the service may do with it:
-     * the queue is output-only, so any receive would surface as an unverified interaction and fail the
-     * {@code verifyNoMoreInteractions} check every publishing test makes.
-     */
     @Mock
     private SqsOperations sqsOperations;
 
-    /**
-     * Captures the fluent configurer the service hands to the template. Replaying each captured
-     * configurer onto a recording options object is the only way to see the body, the message group and
-     * the deduplication identifier, all three of which are part of the preserved contract.
-     */
     @Captor
     private ArgumentCaptor<Consumer<SqsSendOptions<String>>> sendConfigurerCaptor;
 
@@ -318,8 +237,6 @@ class JobSubmissionServiceTest {
     void constructServiceAndAttachLogRecorder() {
         this.service = new JobSubmissionService(this.sqsOperations, QUEUE_NAME, MESSAGE_GROUP_ID);
 
-        // The failure diagnostic is an asserted behaviour, so capture must not depend on whatever level
-        // the ambient logging configuration sets. The level is pinned here and restored in teardown.
         this.serviceLogger = (Logger) LoggerFactory.getLogger(JobSubmissionService.class);
         this.originalLevel = this.serviceLogger.getLevel();
         this.logRecorder = new ListAppender<>();
@@ -336,12 +253,6 @@ class JobSubmissionServiceTest {
         this.serviceLogger.setLevel(this.originalLevel);
     }
 
-    // Oracle assembly, hand written; the card builder is never consulted.
-
-    /**
-     * Assembles the expected seventeen-card job image for one reporting period, entirely from the
-     * hand-written literals above, in the legacy card group's own order.
-     */
     private static List<String> oracleJobImage(final String startDate, final String endDate) {
         return List.of(
                 ORACLE_JOB_CARD,
@@ -363,64 +274,36 @@ class JobSubmissionServiceTest {
                 ORACLE_SENTINEL_CARD);
     }
 
-    /** Card 11: eighteen-character prefix, ten-character slot, fifty-two-character suffix. */
     private static String oracleStartSlotCard(final String startDate) {
         return ORACLE_START_SLOT_PREFIX + startDate + ORACLE_START_SLOT_SUFFIX;
     }
 
-    /** Card 12: sixteen-character prefix, ten-character slot, fifty-four-character suffix. */
     private static String oracleEndSlotCard(final String endDate) {
         return ORACLE_END_SLOT_PREFIX + endDate + ORACLE_END_SLOT_SUFFIX;
     }
 
-    /** Card 15: ten-character slot, one-character separator, ten-character slot, fifty-nine pad. */
     private static String oracleParameterSlotCard(final String startDate, final String endDate) {
         return startDate + ORACLE_PARAMETER_SLOT_SEPARATOR + endDate + ORACLE_PARAMETER_SLOT_SUFFIX;
     }
 
-    /**
-     * A typed matcher for the fluent send configurer, written out so the generic argument stays explicit
-     * at every stubbing site: the build promotes warnings to errors, and an inline wildcard matcher on a
-     * generic messaging interface is the classic way to earn an unchecked warning here.
-     */
     private static <T> Consumer<SqsSendOptions<T>> anySendConfigurer() {
         return any();
     }
 
-    /**
-     * A plausible accepted-publish outcome. The service reads the message identifier from it for its
-     * per-card diagnostic, so the stub must return a real result rather than a null.
-     */
     private static SendResult<String> acceptedPublish() {
         return new SendResult<>(UUID.randomUUID(), QUEUE_NAME,
                 new GenericMessage<>("accepted"), Map.of());
     }
 
-    /** Stubs the queue to accept every card it is offered. */
     private void queueAcceptsEveryCard() {
         when(this.sqsOperations.send(JobSubmissionServiceTest.<String>anySendConfigurer()))
                 .thenReturn(acceptedPublish());
     }
 
-    /**
-     * Stubs the queue to accept cards until the given one-based ordinal and then to refuse that card and
-     * every later one, which is how a queue that has become unreachable behaves.
-     */
     private void queueRefusesFromCard(final int failingOrdinal) {
         queueRefusesFromCard(failingOrdinal, () -> new IllegalStateException(CAUSE_TEXT));
     }
 
-    /**
-     * Stubs the queue to accept cards until the given one-based ordinal and then to refuse that card
-     * and every later one with a failure the caller supplies.
-     *
-     * <p>The failure is produced by a supplier rather than passed as an instance so that each refusal
-     * raises its own object. Rethrowing one instance would let a single stack trace accumulate frames
-     * across attempts, which is an artefact of the double rather than a property of the service.
-     *
-     * @param failingOrdinal the one-based ordinal of the first card to be refused
-     * @param refusal        produces the failure each refused publish raises
-     */
     private void queueRefusesFromCard(final int failingOrdinal,
             final Supplier<RuntimeException> refusal) {
         final AtomicInteger attempts = new AtomicInteger();
@@ -433,10 +316,6 @@ class JobSubmissionServiceTest {
                 });
     }
 
-    /**
-     * Verifies that exactly the expected number of publishes was attempted, that nothing else was asked
-     * of the messaging template, and replays each captured configurer to recover what was sent.
-     */
     private List<RecordedPublish> capturedPublishes(final int expectedAttempts) {
         verify(this.sqsOperations, times(expectedAttempts))
                 .send(this.sendConfigurerCaptor.capture());
@@ -452,13 +331,11 @@ class JobSubmissionServiceTest {
         return List.copyOf(recorded);
     }
 
-    /** Asserts that the messaging template was never asked to publish anything. */
     private void assertNothingWasPublished() {
         verify(this.sqsOperations, never()).send(JobSubmissionServiceTest.<String>anySendConfigurer());
         verifyNoMoreInteractions(this.sqsOperations);
     }
 
-    /** The bodies of the recorded publishes, in publish order. */
     private static List<String> payloadsOf(final List<RecordedPublish> recorded) {
         final List<String> payloads = new ArrayList<>(recorded.size());
         for (final RecordedPublish publish : recorded) {
@@ -467,7 +344,6 @@ class JobSubmissionServiceTest {
         return List.copyOf(payloads);
     }
 
-    /** The deduplication identifiers of the recorded publishes, in publish order. */
     private static List<String> deduplicationIdsOf(final List<RecordedPublish> recorded) {
         final List<String> identifiers = new ArrayList<>(recorded.size());
         for (final RecordedPublish publish : recorded) {
@@ -476,16 +352,10 @@ class JobSubmissionServiceTest {
         return List.copyOf(identifiers);
     }
 
-    /**
-     * The encoded width of a fixed-width value, measured on single-byte encoded bytes rather than on the
-     * character count, because the record width is a byte contract and a character count would silently
-     * accept a value that does not fit the record.
-     */
     private static int encodedWidth(final String value) {
         return value.getBytes(StandardCharsets.US_ASCII).length;
     }
 
-    /** The single diagnostic the service records at error level, asserted to be the only one. */
     private ILoggingEvent onlyErrorDiagnostic() {
         final List<ILoggingEvent> errors = this.logRecorder.list.stream()
                 .filter(event -> event.getLevel() == Level.ERROR)
@@ -494,18 +364,6 @@ class JobSubmissionServiceTest {
         return errors.getFirst();
     }
 
-    /**
-     * Reads the whole value the diagnostic records under one label.
-     *
-     * <p>The value is taken up to the next space, which is exactly how a log reader parses these
-     * space-separated fields. Reading the whole value is deliberate: a {@code contains} assertion can
-     * be satisfied by a value that carries the expected text <em>and</em> more, so a claim about a
-     * value's shape has to be made against the whole of it.
-     *
-     * @param label    the field label, including its equals sign
-     * @param recorded the formatted diagnostic
-     * @return the value recorded under the label, possibly empty, never {@code null}
-     */
     private static String codeFollowing(final String label, final String recorded) {
         final int labelAt = recorded.indexOf(label);
         assertThat(labelAt).as("the diagnostic must carry the label %s: %s", label, recorded)
@@ -515,17 +373,6 @@ class JobSubmissionServiceTest {
         return valueTo < 0 ? recorded.substring(valueFrom) : recorded.substring(valueFrom, valueTo);
     }
 
-    /**
-     * Builds a publish failure whose cause chain closes on itself.
-     *
-     * <p>Java forbids a throwable being its own direct cause but permits a longer cycle, so a pair
-     * that cause each other is constructible - and is producible in the wild by a client that wraps a
-     * retained failure in itself, or by a deserialised exception graph. A naive walk over such a chain
-     * does not return, so the service's depth bound is what makes its chain rendering total, and this
-     * factory is what exercises that.
-     *
-     * @return the outer failure of a two-element cause cycle
-     */
     private static RuntimeException cyclicRefusal() {
         final IllegalStateException outer = new IllegalStateException(HOSTILE_CAUSE_TEXT);
         final IllegalArgumentException inner = new IllegalArgumentException(HOSTILE_CAUSE_TEXT);
@@ -537,7 +384,6 @@ class JobSubmissionServiceTest {
     @Nested
     @DisplayName("the hand-written oracle is itself eighty columns wide, seventeen cards deep")
     class OracleSelfCheck {
-
         @Test
         @DisplayName("every hand-written expected card is exactly eighty encoded bytes, so the oracle cannot be the thing that is wrong")
         void everyOracleCardIsExactlyEightyEncodedBytes() {
@@ -589,7 +435,6 @@ class JobSubmissionServiceTest {
     @Nested
     @DisplayName("configuration arrives from properties and is validated when the bean is built")
     class ConstructionContract {
-
         @Test
         @DisplayName("a destination that is not a first-in-first-out queue is refused at construction, because append ordering cannot be honoured without one")
         void aNonFifoDestinationIsRefused() {
@@ -597,7 +442,7 @@ class JobSubmissionServiceTest {
                     .isThrownBy(() -> new JobSubmissionService(
                             JobSubmissionServiceTest.this.sqsOperations, "JOBS",
                             MESSAGE_GROUP_ID))
-                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue")
+                    .withMessageContaining("carddemo.aws.sqs.job-queue")
                     .withMessageContaining(".fifo");
         }
 
@@ -609,7 +454,7 @@ class JobSubmissionServiceTest {
                     .isThrownBy(() -> new JobSubmissionService(
                             JobSubmissionServiceTest.this.sqsOperations, blankQueueName,
                             MESSAGE_GROUP_ID))
-                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue")
+                    .withMessageContaining("carddemo.aws.sqs.job-queue")
                     .withMessageContaining("no default");
         }
 
@@ -619,7 +464,7 @@ class JobSubmissionServiceTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new JobSubmissionService(
                             JobSubmissionServiceTest.this.sqsOperations, null, MESSAGE_GROUP_ID))
-                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue")
+                    .withMessageContaining("carddemo.aws.sqs.job-queue")
                     .withMessageContaining("no default");
         }
 
@@ -685,7 +530,6 @@ class JobSubmissionServiceTest {
     @Nested
     @DisplayName("a complete submission is seventeen ordered eighty-byte messages, one card per message")
     class SeventeenOrderedMessagesContract {
-
         @Test
         @DisplayName("exactly seventeen publishes are made and nothing else is asked of the messaging template")
         void exactlySeventeenPublishesAreMade() {
@@ -704,8 +548,6 @@ class JobSubmissionServiceTest {
 
             JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
 
-            // Ordered equality, not set membership: the queue is defined append-on-write, so the
-            // sequence itself is the contract.
             assertThat(payloadsOf(capturedPublishes(ORACLE_CARD_COUNT)))
                     .as("published bodies in publish order")
                     .containsExactlyElementsOf(oracleJobImage(START_DATE, END_DATE));
@@ -821,7 +663,6 @@ class JobSubmissionServiceTest {
     @Nested
     @DisplayName("the four ten-character date slots sit at their verified offsets inside an eighty-column frame")
     class DateSubstitutionSlotContract {
-
         @Test
         @DisplayName("the first sort-symbol slot carries the start date at offset eighteen, with an eighteen-character prefix and a fifty-two-character suffix that are byte-identical to the frame")
         void theFirstSortSymbolSlotCarriesTheStartDate() {
@@ -967,7 +808,6 @@ class JobSubmissionServiceTest {
     @Nested
     @DisplayName("the end-of-stream sentinel is transmitted, because the legacy raises its termination flag before the unconditional write")
     class SentinelCardContract {
-
         @Test
         @DisplayName("the seventeenth and final message body is the sentinel card, at eighty bytes and space padded, because the flag is set before the write rather than after")
         void theFinalMessageBodyIsTheSentinelCard() {
@@ -1009,8 +849,6 @@ class JobSubmissionServiceTest {
 
             JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
 
-            // times(17) followed by verifyNoMoreInteractions is what makes an eighteenth publish a
-            // failure rather than something the assertions would tolerate.
             assertThat(capturedPublishes(ORACLE_CARD_COUNT)).as("publish attempts")
                     .hasSize(ORACLE_CARD_COUNT);
         }
@@ -1100,7 +938,6 @@ class JobSubmissionServiceTest {
     @Nested
     @DisplayName("first-in-first-out arguments: one message group for the whole submission, one deduplication identifier per card")
     class FifoOrderingContract {
-
         @Test
         @DisplayName("all seventeen messages carry the same message group identifier, which is what preserves the append order the queue definition specifies")
         void allSeventeenMessagesShareOneMessageGroup() {
@@ -1169,8 +1006,12 @@ class JobSubmissionServiceTest {
         }
 
         @Test
-        @DisplayName("two submissions of the same reporting period get entirely different identifiers, because the queue appends on write and the legacy re-wrote every card on every pass")
-        void twoSubmissionsOfTheSamePeriodGetDifferentIdentifiers() {
+        @DisplayName("replaying the same request reproduces the identifiers exactly, because a random identity would defeat the idempotency the deduplication identifier exists to give")
+        void replayingTheSameRequestReproducesTheIdentifiers() {
+            // The derived identity is a pure function of the request. A caller that repeats an
+            // interrupted submission therefore reissues the identifiers the first pass used, so the
+            // queue collapses the cards that already landed and the stream is completed rather than
+            // doubled behind itself. A per-call nonce would make every replay look like new work.
             queueAcceptsEveryCard();
 
             JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
@@ -1178,14 +1019,74 @@ class JobSubmissionServiceTest {
 
             final List<String> identifiers =
                     deduplicationIdsOf(capturedPublishes(ORACLE_CARD_COUNT * 2));
-            final List<String> firstAttempt = identifiers.subList(0, ORACLE_CARD_COUNT);
-            final List<String> secondAttempt =
+            final List<String> firstPass = identifiers.subList(0, ORACLE_CARD_COUNT);
+            final List<String> replay =
                     identifiers.subList(ORACLE_CARD_COUNT, identifiers.size());
 
-            assertThat(identifiers).as("identifiers across two attempts at one period")
+            assertThat(replay).as("the replay reproduces the first pass card for card")
+                    .containsExactlyElementsOf(firstPass);
+        }
+
+        @Test
+        @DisplayName("a different reporting period derives a different identity, so distinct requests never collapse into one another")
+        void aDifferentPeriodDerivesADifferentIdentity() {
+            queueAcceptsEveryCard();
+
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+            JobSubmissionServiceTest.this.service
+                    .submitTransactionReportJob(OTHER_START_DATE, OTHER_END_DATE);
+
+            final List<String> identifiers =
+                    deduplicationIdsOf(capturedPublishes(ORACLE_CARD_COUNT * 2));
+            final List<String> firstPeriod = identifiers.subList(0, ORACLE_CARD_COUNT);
+            final List<String> secondPeriod =
+                    identifiers.subList(ORACLE_CARD_COUNT, identifiers.size());
+
+            assertThat(secondPeriod).as("the second period shares no identifier with the first")
+                    .doesNotContainAnyElementsOf(firstPeriod);
+            assertThat(identifiers).as("identifiers across two distinct periods")
                     .doesNotHaveDuplicates();
-            assertThat(secondAttempt).as("the second attempt shares no identifier with the first")
-                    .doesNotContainAnyElementsOf(firstAttempt);
+        }
+
+        @Test
+        @DisplayName("a second submission of one period is distinguished by a caller-supplied identity, not by anything this class mints, so the append behaviour stays a caller decision")
+        void aSecondSubmissionOfOnePeriodIsDistinguishedByTheCaller() {
+            // The legacy queue appended unconditionally, so an operator who wanted the same period
+            // again got a second job. That remains reachable - but it is expressed by the caller
+            // naming the two submissions apart, which is a visible act, rather than by this class
+            // answering "always new" on the caller's behalf.
+            queueAcceptsEveryCard();
+
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+            JobSubmissionServiceTest.this.service
+                    .submitTransactionReportJob(CALLER_SUBMISSION_ID, START_DATE, END_DATE);
+
+            final List<String> identifiers =
+                    deduplicationIdsOf(capturedPublishes(ORACLE_CARD_COUNT * 2));
+
+            assertThat(identifiers).as("identifiers across a derived and a named submission")
+                    .doesNotHaveDuplicates();
+            assertThat(identifiers.subList(ORACLE_CARD_COUNT, identifiers.size()))
+                    .as("the named submission carries the caller's identity")
+                    .allSatisfy(identifier -> assertThat(identifier)
+                            .startsWith(CALLER_SUBMISSION_ID + ORACLE_ORDINAL_SEPARATOR));
+        }
+
+        @Test
+        @DisplayName("the derived identity reads back to the reporting period it submits, so a diagnostic naming an identity names the period too")
+        void theDerivedIdentityReadsBackToTheReportingPeriod() {
+            queueAcceptsEveryCard();
+
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            final String first = deduplicationIdsOf(capturedPublishes(ORACLE_CARD_COUNT)).getFirst();
+            final String identity = first.substring(0,
+                    first.lastIndexOf(ORACLE_ORDINAL_SEPARATOR));
+
+            assertThat(identity).as("the derived identity")
+                    .contains(START_DATE)
+                    .contains(END_DATE)
+                    .doesNotContainAnyWhitespaces();
         }
 
         @Test
@@ -1228,7 +1129,6 @@ class JobSubmissionServiceTest {
     @Nested
     @DisplayName("a refused publish is non-fatal: it is logged, it stops the remaining cards, and control returns normally")
     class NonFatalFailureContract {
-
         @Test
         @DisplayName("a refused card mid-stream lets the submission return normally: no exception escapes, in line with the queue's ignore-on-error attribute")
         void aRefusedCardLetsTheSubmissionReturnNormally() {
@@ -1262,9 +1162,6 @@ class JobSubmissionServiceTest {
             JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
 
             final List<RecordedPublish> attempts = capturedPublishes(MID_STREAM_FAILING_ORDINAL);
-            // A card's identity is its ordinal, not its text: the legacy stream carries three
-            // byte-identical comment cards, so duplicate bodies are correct and only duplicate
-            // ordinals would betray a re-send of the card the queue had already refused.
             assertThat(deduplicationIdsOf(attempts)).as("card identities offered to the queue")
                     .hasSize(MID_STREAM_FAILING_ORDINAL).doesNotHaveDuplicates();
             assertThat(payloadsOf(attempts)).as("bodies offered to the queue")
@@ -1317,10 +1214,6 @@ class JobSubmissionServiceTest {
 
             JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
 
-            // The refusal used here carries a description and no cause, so the reason code is empty:
-            // there is nothing beneath the response code to qualify it, and nothing may be invented
-            // from the description. Both labels are still written, because the legacy paragraph
-            // displays both codes whether or not either carries a value.
             assertThat(onlyErrorDiagnostic().getFormattedMessage()).as("the recorded diagnostic")
                     .contains("ordinal=" + MID_STREAM_FAILING_ORDINAL)
                     .contains("queue=" + QUEUE_NAME)
@@ -1334,11 +1227,6 @@ class JobSubmissionServiceTest {
         @Test
         @DisplayName("the reason code names the type of the deepest cause, which is the qualification the response code needs and the one a client's exception chain actually carries")
         void theReasonCodeNamesTheDeepestCauseType() {
-            // The legacy reason code qualified the response code - it said why, beneath the what -
-            // and a messaging client expresses that qualification as a cause chain rather than as a
-            // second numeric field. A send failure rooted in a socket timeout is a different
-            // operational condition from one rooted in a missing queue, and this is the field that
-            // distinguishes them without either failure's description being repeated.
             queueRefusesFromCard(MID_STREAM_FAILING_ORDINAL, () -> new IllegalStateException(
                     CAUSE_TEXT, new UnsupportedOperationException(CAUSE_TEXT,
                             new SocketTimeoutException(CAUSE_TEXT))));
@@ -1357,11 +1245,6 @@ class JobSubmissionServiceTest {
         @Test
         @DisplayName("the failure type is constructed rather than thrown, and it is the codes that are logged - never the raw failure, whose stack trace would carry every description in its chain")
         void theFailureTypeIsConstructedRatherThanThrownAndTheRawFailureIsNotLogged() {
-            // Two obligations are asserted together because they are one decision. The failure must
-            // not be thrown, or the caller's request would abort where the legacy transaction
-            // completes. And the failure must not be handed to the logger either: a rendered stack
-            // trace carries getMessage() for every exception in the chain, so logging the throwable
-            // reintroduces exactly the external text the codes exist to replace.
             queueRefusesFromCard(MID_STREAM_FAILING_ORDINAL,
                     () -> new IllegalStateException(HOSTILE_CAUSE_TEXT));
 
@@ -1385,10 +1268,6 @@ class JobSubmissionServiceTest {
         @Test
         @DisplayName("a hostile publish-failure description reaches no part of the diagnostic: not the codes, not the chain, not a rendered trace, and not as a forged second record")
         void aHostileFailureDescriptionReachesNoPartOfTheDiagnostic() {
-            // This is the property the class already enforces on every caller-supplied value, applied
-            // to the one value that arrives from outside the module: the queue client's own exception
-            // text. The description used here names a credential, echoes it, and carries both line
-            // terminators, so a leak is unambiguous rather than inferred.
             queueRefusesFromCard(FIRST_CARD_ORDINAL,
                     () -> new IllegalStateException(HOSTILE_CAUSE_TEXT,
                             new IllegalArgumentException(HOSTILE_CAUSE_TEXT)));
@@ -1412,8 +1291,6 @@ class JobSubmissionServiceTest {
             assertThat(recorded.indexOf(TAB))
                     .as("a diagnostic must carry no raw tab: %s", recorded).isEqualTo(-1);
 
-            // And the codes it does carry are the sanitised type names, so suppression has not been
-            // achieved by writing nothing.
             assertThat(recorded)
                     .contains("response=" + IllegalStateException.class.getSimpleName())
                     .contains("reason=" + IllegalArgumentException.class.getSimpleName());
@@ -1422,10 +1299,6 @@ class JobSubmissionServiceTest {
         @Test
         @DisplayName("every derived code is one unbroken token of bounded length, so no failure can lengthen a log record without limit or split it into two")
         void everyDerivedCodeIsOneBoundedToken() {
-            // The legacy codes were fixed-width display fields, so an unbounded code has no legacy
-            // antecedent. This asserts the shape of the whole values rather than the absence of one
-            // hostile string, which is what makes the guarantee hold for descriptions this test never
-            // thought of.
             queueRefusesFromCard(FIRST_CARD_ORDINAL,
                     () -> new IllegalStateException(HOSTILE_CAUSE_TEXT,
                             new IllegalArgumentException(HOSTILE_CAUSE_TEXT)));
@@ -1449,10 +1322,6 @@ class JobSubmissionServiceTest {
         @Test
         @DisplayName("a self-referential cause chain terminates and is reported as truncated rather than followed forever")
         void aSelfReferentialCauseChainTerminates() {
-            // A cause chain that closes on itself is producible - a client that wraps a retained
-            // failure in itself, or a deserialised exception graph - and a naive walk over it does not
-            // return. The depth bound is what makes this method total rather than merely usually
-            // terminating, so it is exercised rather than assumed.
             queueRefusesFromCard(FIRST_CARD_ORDINAL, JobSubmissionServiceTest::cyclicRefusal);
 
             JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
@@ -1516,7 +1385,6 @@ class JobSubmissionServiceTest {
     @Nested
     @DisplayName("the single-card entry point reports the write-error flag rather than raising it")
     class SingleCardEntryPointContract {
-
         @Test
         @DisplayName("an accepted card reports acceptance and is published verbatim, at eighty bytes, to the configured destination and group")
         void anAcceptedCardIsPublishedVerbatim() {
@@ -1618,7 +1486,6 @@ class JobSubmissionServiceTest {
     @Nested
     @DisplayName("the failure type this service reports through: frozen text, unchecked ancestry, chained cause")
     class FailureTypeContract {
-
         @Test
         @DisplayName("the frozen failure text is exactly the legacy screen literal, with three separate full stops")
         void theFrozenFailureTextIsExactlyTheLegacyScreenLiteral() {
@@ -1713,7 +1580,6 @@ class JobSubmissionServiceTest {
     @Nested
     @DisplayName("the outcome record: three distinguishable states and a validated shape")
     class SubmissionOutcomeContract {
-
         @Test
         @DisplayName("a complete outcome is complete, is not partial and carries no failure text")
         void aCompleteOutcomeCarriesNoFailureText() {
@@ -1802,7 +1668,6 @@ class JobSubmissionServiceTest {
     @Nested
     @DisplayName("the caller's card stream is snapshotted and never mutated, and an unusable stream is refused before anything is published")
     class StreamOwnershipContract {
-
         @Test
         @DisplayName("the caller's own list is left byte-identical by a submission, so nothing the caller holds is rewritten")
         void theCallersOwnListIsLeftUnchanged() {
@@ -1906,7 +1771,6 @@ class JobSubmissionServiceTest {
     @Nested
     @DisplayName("absent reporting dates are refused deterministically, before any card exists")
     class AbsentInputContract {
-
         @Test
         @DisplayName("an absent start date is refused by name and publishes nothing, so no unattributable failure can surface later in the submission")
         void anAbsentStartDateIsRefusedByName() {
@@ -1948,13 +1812,9 @@ class JobSubmissionServiceTest {
     @Nested
     @DisplayName("the derived codes are total: every shape a failure's type or cause chain can take yields one bounded token")
     class DerivedCodeTotality {
-
         @Test
         @DisplayName("a cause chain exactly as deep as the bound is rendered whole, with no truncation marker, so the marker means what it says")
         void aChainExactlyAtTheBoundIsRenderedWhole() {
-            // The truncation marker is only informative if it appears when and only when the chain
-            // was actually cut. A chain of exactly the bounded depth is the boundary case where an
-            // off-by-one would append it spuriously.
             queueRefusesFromCard(FIRST_CARD_ORDINAL,
                     () -> chainOfDepth(ORACLE_MAX_FAILURE_CHAIN_DEPTH));
 
@@ -1987,9 +1847,6 @@ class JobSubmissionServiceTest {
         @Test
         @DisplayName("a failure whose getCause returns itself terminates, because a type may override that method and a walk that trusts it would not return")
         void aFailureWhoseCauseIsItselfTerminates() {
-            // Throwable.initCause refuses self-causation, but getCause is overridable and a client's
-            // exception type may return this from it - deliberately or through a defect. The walk has
-            // to be total against that, not merely against the chains this test imagined.
             queueRefusesFromCard(FIRST_CARD_ORDINAL, SelfCausingRefusal::new);
 
             JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
@@ -1997,9 +1854,6 @@ class JobSubmissionServiceTest {
             final String recorded = onlyErrorDiagnostic().getFormattedMessage();
             assertThat(codeFollowing("response=", recorded)).as("the response code")
                     .isEqualTo(SelfCausingRefusal.class.getSimpleName());
-            // The reason code qualifies the response code by naming what lies beneath it. A
-            // self-reference is a defect in the failure type rather than a real cause, so reporting
-            // the same type twice would describe a two-element chain where there is one element.
             assertThat(codeFollowing("reason=", recorded))
                     .as("a self-causing failure has nothing beneath it, so the reason code is empty")
                     .isEmpty();
@@ -2011,10 +1865,6 @@ class JobSubmissionServiceTest {
         @ValueSource(ints = {1, 2, 3, ORACLE_MAX_FAILURE_CHAIN_DEPTH})
         @DisplayName("the reason code is empty exactly when the chain names one type, which is the invariant that lets one field be read against the other")
         void theReasonCodeIsEmptyExactlyWhenTheChainNamesOneType(final int depth) {
-            // Two fields derived by two methods can drift apart, and a reader who compares them would
-            // then be misled. Asserting the relation across depths pins the relation rather than the
-            // two values independently, so a change to either method that breaks the correspondence
-            // is caught here.
             queueRefusesFromCard(FIRST_CARD_ORDINAL, () -> chainOfDepth(depth));
 
             JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
@@ -2055,10 +1905,6 @@ class JobSubmissionServiceTest {
         @Test
         @DisplayName("a type name carrying a character outside ASCII is folded to the substitute, which is why the admitted set is narrower than what a Java identifier allows")
         void aNonAsciiTypeNameIsFoldedToTheSubstitute() {
-            // Character.isJavaIdentifierPart admits non-ASCII letters and several Unicode formatting
-            // and ignorable code points, none of which belong in a value written into a log record.
-            // A type may legally be named with them, so the narrower ASCII rule is exercised rather
-            // than asserted.
             queueRefusesFromCard(FIRST_CARD_ORDINAL, RefusalNamedInCaf\u00e9Style::new);
 
             JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
@@ -2079,10 +1925,6 @@ class JobSubmissionServiceTest {
         @Test
         @DisplayName("a self-causing failure found part-way down a chain stops the walk there, so the walk is total wherever the self-reference sits rather than only at the top")
         void aSelfCausingFailureFoundPartWayDownStopsTheWalkThere() {
-            // The self-reference at the top of a chain takes the no-cause path, which is a different
-            // branch from the one that stops a walk already in progress. A client that wraps a
-            // self-causing failure produces exactly this shape, and it is the case in which a walk
-            // that only guards its first hop would not return.
             queueRefusesFromCard(FIRST_CARD_ORDINAL, () -> new IllegalStateException(
                     HOSTILE_CAUSE_TEXT, new SelfCausingRefusal()));
 
@@ -2103,9 +1945,6 @@ class JobSubmissionServiceTest {
         @Test
         @DisplayName("a chain that reaches the depth bound and genuinely ends there carries no truncation marker, so the marker distinguishes a cut chain from a complete one")
         void aChainEndingExactlyAtTheBoundCarriesNoMarker() {
-            // The marker is only informative if its absence means something. A chain whose last
-            // element self-references has genuinely ended, even though the walk stopped at the bound,
-            // so marking it as cut would assert something untrue about what lies beneath.
             queueRefusesFromCard(FIRST_CARD_ORDINAL,
                     () -> chainEndingInASelfReference(ORACLE_MAX_FAILURE_CHAIN_DEPTH));
 
@@ -2123,9 +1962,6 @@ class JobSubmissionServiceTest {
         @Test
         @DisplayName("a type name made only of admissible characters passes through unchanged, so sanitisation costs a legitimate generated name nothing")
         void anAdmissibleTypeNamePassesThroughUnchanged() {
-            // The rule has to be judged in both directions. Digits, the underscore and the dollar sign
-            // all occur in names the platform itself generates, and a rule that mangled them would
-            // damage exactly the codes an operator most needs to search for.
             queueRefusesFromCard(FIRST_CARD_ORDINAL, Refusal_2$WithDigitsAndConnectors::new);
 
             JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
@@ -2140,12 +1976,6 @@ class JobSubmissionServiceTest {
                     .isEqualTo(declared);
         }
 
-        /**
-         * Builds a cause chain of the requested length, outermost first.
-         *
-         * @param depth how many throwables the chain holds, at least one
-         * @return the outermost throwable of the chain
-         */
         private RuntimeException chainOfDepth(final int depth) {
             RuntimeException chain = new IllegalStateException(HOSTILE_CAUSE_TEXT);
             for (int level = 1; level < depth; level++) {
@@ -2154,15 +1984,6 @@ class JobSubmissionServiceTest {
             return chain;
         }
 
-        /**
-         * Builds a cause chain of the requested length whose deepest element causes itself.
-         *
-         * <p>Such a chain has genuinely ended at its deepest element even though a bounded walk stops
-         * there, which is what separates "the chain ended" from "the walk gave up".
-         *
-         * @param depth how many throwables the chain holds, at least one
-         * @return the outermost throwable of the chain
-         */
         private RuntimeException chainEndingInASelfReference(final int depth) {
             RuntimeException chain = new SelfCausingRefusal();
             for (int level = 1; level < depth; level++) {
@@ -2172,20 +1993,9 @@ class JobSubmissionServiceTest {
         }
     }
 
-    /**
-     * A refusal whose {@code getCause} returns the refusal itself.
-     *
-     * <p>{@link Throwable#initCause(Throwable)} refuses self-causation, so this shape is only
-     * reachable by overriding the accessor - which a client's exception type may do, deliberately or
-     * through a defect. It exists so that the service's cause walk is proved total against it rather
-     * than assumed safe.
-     */
     private static final class SelfCausingRefusal extends RuntimeException {
-
-        /** Serialisation identity, required of every serialisable type in this module. */
         private static final long serialVersionUID = 1L;
 
-        /** Creates the refusal with the hostile description used throughout this class. */
         SelfCausingRefusal() {
             super(HOSTILE_CAUSE_TEXT);
         }
@@ -2196,73 +2006,33 @@ class JobSubmissionServiceTest {
         }
     }
 
-    /**
-     * A refusal whose type name is longer than the bound a derived diagnostic code is held to.
-     *
-     * <p>The name is the fixture: it has to exceed sixty-four characters for the truncation branch to
-     * be reachable, and a type name is the one input to that branch this module does not author.
-     */
     private static final class
             ARefusalWhoseTypeNameIsDeliberatelyLongerThanTheSixtyFourCharacterDiagnosticCodeBound
             extends RuntimeException {
-
-        /** Serialisation identity, required of every serialisable type in this module. */
         private static final long serialVersionUID = 1L;
 
-        /** Creates the refusal with the hostile description used throughout this class. */
         ARefusalWhoseTypeNameIsDeliberatelyLongerThanTheSixtyFourCharacterDiagnosticCodeBound() {
             super(HOSTILE_CAUSE_TEXT);
         }
     }
 
-    /**
-     * A refusal whose type name carries a character that is a legal Java identifier part but is not
-     * ASCII.
-     *
-     * <p>The name is written with a Unicode escape so that this source file stays ASCII-only while the
-     * compiled identifier does not. It exists so that the narrower ASCII rule the service applies is
-     * exercised against a name that {@link Character#isJavaIdentifierPart(char)} would have admitted.
-     */
     private static final class RefusalNamedInCaf\u00e9Style extends RuntimeException {
-
-        /** Serialisation identity, required of every serialisable type in this module. */
         private static final long serialVersionUID = 1L;
 
-        /** Creates the refusal with the hostile description used throughout this class. */
         RefusalNamedInCaf\u00e9Style() {
             super(HOSTILE_CAUSE_TEXT);
         }
     }
 
-    /**
-     * A refusal whose type name exercises every character class a derived code admits.
-     *
-     * <p>The name carries an upper-case letter, a lower-case letter, a digit, an underscore and a
-     * dollar sign - all of which the platform itself puts into generated type names. It exists so that
-     * the sanitising rule is judged in both directions: a legitimate name must pass through unchanged,
-     * not merely a hostile one be rewritten.
-     */
     private static final class Refusal_2$WithDigitsAndConnectors extends RuntimeException {
-
-        /** Serialisation identity, required of every serialisable type in this module. */
         private static final long serialVersionUID = 1L;
 
-        /** Creates the refusal with the hostile description used throughout this class. */
         Refusal_2$WithDigitsAndConnectors() {
             super(HOSTILE_CAUSE_TEXT);
         }
     }
 
-    /**
-     * Records what the service asked the queue to send for one card. The service configures its message
-     * through the fluent options object the template hands it, so a recording implementation of that
-     * interface is the only way to observe the body, the message group and the deduplication identifier.
-     * The two settings the service must never make - a delivery delay and a message header, neither of
-     * which has a legacy antecedent - are counted rather than stored, so their absence is asserted
-     * positively.
-     */
     private static final class RecordedPublish implements SqsSendOptions<String> {
-
         private String queue;
 
         private String payload;

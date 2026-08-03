@@ -20,12 +20,9 @@
   STRUCTURED LOGGING FOR THE CARDDEMO JAVA MODULE
 
   WHAT THIS FILE REPLACES. The migrated estate had no logging framework, no metrics and no tracing.
-  Its ONLY diagnostic channel was the console display statement, of which there are approximately
-  230 across the 28 COBOL programs. The figure is deliberately approximate: three separate censuses
-  taken at different parse tolerances returned three different totals (raw token matches, matches in
-  statement context, and the count carried in the migration plan), so no exact number is contractual
-  and none is asserted here. Everything an operator could once read off a job's output must now be
-  visible through this configuration, structured and correlated.
+  Its ONLY diagnostic channel was the console display statement, of which the migration plan records
+  217 across the 28 COBOL programs. Everything an operator could once read off a job's output must
+  now be visible through this configuration, structured and correlated.
 
   PROVENANCE. Migrated from the CardDemo mainframe estate at commit
   7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release stamp CardDemo_v1.0-15-g27d6c6f-68
@@ -52,17 +49,31 @@
   module's .gitignore and .dockerignore each carry an explicit negation for this exact path so the
   file is neither untracked nor left out of the container image.
 
-  CORRELATION IDENTIFIERS. The tracing bridge publishes the current trace and span into the logging
-  context under the keys traceId and spanId. Those are the two keys to search on, and they are what
-  joins a log line to the matching exported trace. The JSON encoder emits the whole diagnostic
-  context rather than an allow list, so any key the application adds later appears without an edit
-  here; the readable pattern spells the two keys out explicitly rather than relying on the optional
-  correlation segment of the framework's own console pattern, so the identifiers are present whether
-  or not that segment has been populated.
+  CORRELATION IDENTIFIERS, AND WHY THE JSON ENCODER NAMES THEM RATHER THAN EXPORTING THE LOT. The
+  tracing bridge publishes the current trace and span into the logging context under the keys traceId
+  and spanId. Those are the two keys to search on, and they are what joins a log line to the matching
+  exported trace. The JSON encoder therefore emits an ALLOW LIST of exactly those two keys, and not the
+  whole diagnostic context.
+
+  The distinction matters because the logging context is a thread local map that any code on the request
+  thread can write, including a framework or a library this module did not author, and because the
+  machine facing appender is the one whose output leaves the process. Exporting the whole map means every
+  future key is published to the log pipeline by default, with no review at the point it is added - and
+  the values this application handles include a card primary account number, a card verification code, a
+  government issued identifier and a sign on credential. A key carrying one of those would be emitted
+  without an edit here, which is precisely the property that makes a default-open export the wrong
+  default for this service. An allow list inverts that: a new key is invisible until someone adds it
+  here, which is a one line change and a deliberate one.
+
+  Nothing is lost today. The two keys named below are the only keys this module uses, and no code in
+  src/main/java writes to the logging context at all, so the emitted field set is unchanged by the
+  narrowing. The readable pattern spells the same two keys out explicitly rather than relying on the
+  optional correlation segment of the framework's own console pattern, so the identifiers are present
+  whether or not that segment has been populated.
 
   NEVER IN A LOG LINE, UNDER ANY PROFILE. No credential, no signing value, no bearer token, no full
-  card primary account number, no national identifier. Because the diagnostic context is emitted
-  whole, the same rule binds anything placed into it. The two categories that would otherwise carry
+  card primary account number, no national identifier. Nothing may be added to this file's allow list
+  without that rule being applied to the key first. The two categories that would otherwise carry
   such a value out of the persistence provider, its statement text and its bound parameter values,
   are held below at a level that emits neither.
 
@@ -116,6 +127,23 @@
        and span identifiers appear in developer output exactly as they appear in the JSON. An event
        raised outside any request or job carries the empty default and stays aligned. -->
   <property name="CORRELATION_FIELDS" value="[${applicationName},%X{traceId:-},%X{spanId:-}]"/>
+
+  <!-- The two bounds the machine readable throwable rendering is held to, declared here rather than
+       inline so that both figures are read in one place and neither can be widened without the other
+       being seen. The reasoning for bounding at all is on the appender that applies them.
+
+       Frames per throwable. Chosen so that the frames that identify a failing migrated unit - the
+       boundary handler, the service method standing in for the COBOL paragraph, and the collaborator
+       beneath it - are inside the cap on every layer of the chain, while the repetitive framework and
+       container tail below them is not. The cause chain itself is NOT capped: every cause is still
+       named and still rendered, each to this depth, so a chain stays diagnosable at its full length.
+
+       And the whole rendered trace. This is the backstop that makes one event's size independent of
+       how deep a chain happens to be, and it is what removes log amplification as a lever: a caller
+       who can provoke a failure carrying text they control cannot choose how many bytes it writes.
+       Generous enough that a genuine multi-layer failure renders complete and never reaches it. -->
+  <property name="JSON_THROWABLE_MAX_DEPTH_PER_THROWABLE" value="12"/>
+  <property name="JSON_THROWABLE_MAX_LENGTH" value="8192"/>
 
   <!-- Human readable single line layout: instant, level, process, correlation, thread, category,
        message, and the throwable through the framework's exception conversion word. The date, level
@@ -198,10 +226,14 @@
            message     the formatted message
            stackTrace  present only when the event carries a throwable
            application the service label, matching the meter tag of the same name
-           plus every diagnostic context entry, flattened to the top level of the object, which is
-           where traceId and spanId land. Flat rather than nested because a top level trace identifier
-           is what a trace aware log search expects; the one rule this imposes is that a context key
-           must never reuse a field name listed above.
+           traceId     the current trace, from the diagnostic context, flattened to the top level
+           spanId      the current span, likewise
+           Flat rather than nested because a top level trace identifier is what a trace aware log search
+           expects. The two are named individually rather than taken as the whole diagnostic context:
+           the context is writable by any code on the thread and this appender's output leaves the
+           process, so a key added later must be admitted here deliberately rather than published by
+           default. Adding one is a single line; the rule it must satisfy is that it never reuses a field
+           name listed above.
 
          Two encoder defaults are dropped rather than renamed: the schema version, which is a constant
          and carries no information, and the numeric duplicate of the level. Two more are switched off:
@@ -211,15 +243,52 @@
          while the category already identifies the migrated unit precisely enough to trace back to it.
 
          A throwable is rendered into the single stackTrace string with its newlines escaped, so the
-         event remains one physical line and line oriented ingestion still works. The trace is NOT
-         truncated, because a truncated cause is the one thing that makes a failure unexplainable; the
-         root cause is written first so it is the first thing read, and frames already printed by an
-         enclosing cause are summarised rather than repeated. -->
+         event remains one physical line and line oriented ingestion still works. The root cause is
+         written first so it is the first thing read, and frames already printed by an enclosing cause
+         are summarised rather than repeated.
+
+         AND THE RENDERING IS BOUNDED IN BOTH DIRECTIONS. An earlier revision left it unbounded, on
+         the reasoning that a truncated cause is what makes a failure unexplainable. That trades a
+         diagnostic convenience against two things it cannot pay for. First, a throwable message is
+         arbitrary text that this module does not author: a driver failure carries the connection
+         string, a constraint violation carries the bound values, an interpolated message carries
+         whatever a caller submitted, and a rejected oversized input carries itself. Unbounded, every
+         one of those is published verbatim to a collector that retains it. Second, an attacker who can
+         provoke a failure whose message they control can then choose how many bytes each request
+         writes into centralised storage, which is a log amplification lever rather than a diagnostic.
+
+         Two bounds close both. maxDepthPerThrowable caps the frames printed for each throwable in the
+         chain, which keeps the cause chain itself complete - every cause is still named, with its own
+         top frames - while removing the repetitive tail that explains nothing. maxLength caps the
+         whole rendered trace, so a single event cannot grow without limit whatever the chain does. The
+         converter marks each cut it makes, so a reader can see that a bound was reached instead of
+         mistaking a bound for the end of the evidence, and the frame that names the failing migrated
+         unit is inside the cap because the root cause is written first.
+
+         The bounds are not the primary control and are not asked to be. They are the backstop for a
+         throwable this module never sees - one raised inside the framework, a driver or a library. The
+         primary control is at the boundary log sites, which record a sanitised, bounded failure chain
+         and do not hand an arbitrary throwable to an appender at all. -->
     <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
       <encoder class="net.logstash.logback.encoder.LogstashEncoder">
         <timeZone>UTC</timeZone>
         <timestampPattern>yyyy-MM-dd'T'HH:mm:ss.SSS'Z'</timestampPattern>
+        <!-- The diagnostic context is read, and read through an ALLOW LIST rather than wholesale.
+             includeMdc keeps the provider switched on; without it the two correlation identifiers below
+             would not be emitted at all. The two key names then narrow what it emits to exactly those
+             two, which are the only keys this module uses. It is stated explicitly rather than left to
+             the encoder default so that a future default change cannot silently drop the identifiers a
+             trace aware search joins on.
+
+             Why an allow list and not the whole context: the context is a thread local map that any code
+             on the thread can write, including a library this module did not author, and THIS appender's
+             output leaves the process. The values this service handles include a card primary account
+             number, a card verification code, a government issued identifier and a sign on credential,
+             so a key carrying one of those must be admitted here on purpose rather than published by
+             default. Adding one is a single line. -->
         <includeMdc>true</includeMdc>
+        <includeMdcKeyName>traceId</includeMdcKeyName>
+        <includeMdcKeyName>spanId</includeMdcKeyName>
         <includeContext>false</includeContext>
         <includeCallerData>false</includeCallerData>
         <customFields>{"application":"${applicationName}"}</customFields>
@@ -234,14 +303,26 @@
         <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
           <rootCauseFirst>true</rootCauseFirst>
           <omitCommonFrames>true</omitCommonFrames>
+          <!-- Frames per throwable, and the whole rendered trace. Both are caps rather than targets:
+               a well behaved failure is rendered in full and never reaches either. -->
+          <maxDepthPerThrowable>${JSON_THROWABLE_MAX_DEPTH_PER_THROWABLE}</maxDepthPerThrowable>
+          <maxLength>${JSON_THROWABLE_MAX_LENGTH}</maxLength>
         </throwableConverter>
       </encoder>
     </appender>
 
     <!-- prod: JSON only, on standard output, for a log driver or a collector. See
-         application-prod.yml, which narrows the management surface to three endpoints, withholds
-         health component detail, samples traces rather than exporting all of them, requires transport
+         application-prod.yml, which restates the shared baseline's four published management endpoints
+         rather than narrowing to them - health, info, metrics and prometheus - withholds health
+         component detail, samples traces rather than exporting all of them, requires transport
          security, and resolves every secret from the environment with no fallback.
+
+         Publishing an endpoint there is not the same as opening it: config/SecurityConfig permits
+         exactly two management paths anonymously, the health probe and the metrics scrape endpoint,
+         because a container health check and a Prometheus scrape both arrive without a token. The
+         other two, info and metrics in its individual-meter form, are published but authenticated. So
+         the surface a deployment exposes to an unauthenticated caller is two paths, and the surface it
+         exposes at all is four.
 
          No statement text is logged in production: the persistence provider's own statement echo is
          off in that overlay, and the two provider categories at the end of this file emit neither

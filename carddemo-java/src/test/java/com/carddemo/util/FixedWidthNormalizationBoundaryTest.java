@@ -92,7 +92,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class FixedWidthNormalizationBoundaryTest {
 
     /** Reference-data seed, read as text so its blank-bearing literals can be counted. */
-    private static final String SEED_RESOURCE = "/db/migration/V3__seed_reference_data.sql";
+    private static final String SEED_RESOURCE = "/db/migration/seed/V3__seed_reference_data.sql";
 
     /** A 32-byte key. Readable ASCII so a failure message stays intelligible; it protects nothing. */
     private static final byte[] KEY =

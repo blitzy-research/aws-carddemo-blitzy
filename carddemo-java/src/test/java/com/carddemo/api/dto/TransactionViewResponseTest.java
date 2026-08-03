@@ -44,89 +44,17 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 
 /**
- * Unit tests for {@link TransactionViewResponse}, the response contract of legacy CICS transaction
- * {@code CT01}.
+ * Unit tests for the transaction-view contract of legacy transaction {@code CT01}, held to its map
+ * widths.
  *
- * <p>A pure unit test. No application context is started, no connection is opened and no container is
- * launched: every instance is built by calling the canonical constructor, and every wire assertion goes
- * through a mapper this file configures itself. The mapper restates the four settings the module
- * declares under {@code spring.jackson} in {@code src/main/resources/application.yml} - absent members
- * omitted rather than written as null, temporal values as text rather than epoch numbers, unknown
- * incoming members tolerated, and decimals written plainly - because a suite that observes a wire shape
- * has to observe it under the settings a deployed instance would use.
- *
- * <h2>What this suite is for</h2>
- *
- * <p>The field inventory and every width come from the generated symbolic map
- * {@code app/cpy-bms/COTRN01.CPY}, whose input group opens at line 17 and whose output group redefines
- * it at line 145. The behaviour comes from {@code app/cbl/COTRN01C.cbl}, a 330-line program of nine
- * paragraphs. The underlying record is {@code app/cpy/CVTRA05Y.cpy}. Provenance for all three is
- * checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} and upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Nothing here reads that tree at run time and
- * no line of it is reproduced; the widths, offsets, counts and message texts below are metadata about
- * the contract rather than transcribed source.
- *
- * <p>Four properties of this contract are the ones a plausible, compiling, wrong translation would get
- * wrong, and each has its own group below.
- *
- * <p><strong>The two ten-character dates stay opaque text.</strong> This is the view-surface companion
- * to the folder's date-opacity assertion, whose primary form - a twenty-six space stamp surviving byte
- * for byte - belongs to {@link StatementSummary}'s suite. Here the two components carry the leading ten
- * characters of the record's origination and processing stamps, and they are asserted to be
- * {@code String} rather than any temporal type, to survive an all-space value unchanged, and to survive
- * a value that is not a possible calendar date at all. A translation that parsed either into a date
- * object would throw on data the seeded estate actually holds: all three hundred seeded daily
- * transactions carry the same processing date and timestamp, and a persisted processing stamp of
- * twenty-six spaces is ordinary production data rather than an error. That is exactly the failure this
- * group exists to prevent, so no date or time type, formatter or parser appears anywhere in this file.
- *
- * <p><strong>The two sixteen-character transaction identifiers stay separate.</strong> One is the
- * identifier the operator asked for, echoed back; the other is the identifier of the record actually
- * retrieved. The program blanks the second together with the twelve other retrieved display fields
- * before every read, at lines 159 to 171, and deliberately does not blank the first, so the
- * record-absent reply carries a populated search key beside a blank retrieved identifier. Merging them
- * looks like obvious de-duplication and would erase that distinction.
- *
- * <p><strong>Three widths diverge from their neighbours and none may be normalised.</strong> The
- * description is sixty here, one hundred in the transaction record and in the statement work area
- * {@code app/cpy/COSTM01.CPY}, and twenty-six on the transaction-list map
- * {@code app/cpy-bms/COTRN00.CPY}. The merchant name is thirty and the merchant city twenty-five here,
- * against fifty each in the record. Unifying any of them - by sharing a constant, a base type or an
- * interface - would let one screen's layout silently change what another screen's endpoint returns,
- * which is a parity defect rather than a simplification. The same holds for the seventy-eight character
- * message line, which is eighty on the two card maps alone. Each divergence is asserted behaviourally,
- * by showing that the declared bound accepts the width this surface uses and refuses one character
- * more, so the assertion fails if a width is ever widened to a neighbour's.
- *
- * <p><strong>The amount is a fixed-scale decimal that nothing here rescales.</strong> The record field
- * has nine integer digits and two decimal places, so the component is a {@link BigDecimal} of scale two
- * and no binary approximation of a fraction is admissible. The contract refuses a value of the wrong
- * decimal shape rather than repairing it, and every accepted value comes back as the very object that
- * was supplied. Rounding belongs to the module's single decimal codec, which is neither imported nor
- * used as an oracle here.
- *
- * <p><strong>How the structural claims are made without inspecting the class at run time.</strong> A
- * static type is proved by assigning an accessor's result to a declared local, which compiles only if
- * the type matches, so a wrong type is a compilation failure rather than a failed assertion. The
- * absence of a derived, reformatted or otherwise extra member is proved by serialising a fully
- * populated instance and comparing the emitted member names against the twenty-five the contract
- * declares, so any additional member on the wire fails the comparison. Bounds are proved by validating
- * real instances with a real validator rather than by reading annotations off the type. Immutability is
- * proved by construction: two instances built from identical components are equal, every accessor
- * returns the object it was handed, and rendering changes nothing.
+ * <p>The two sixteen-character transaction identifiers - the key that was searched for and the one
+ * that was retrieved - are separate components on purpose: the record-absent reply carries the search
+ * key with no retrieved identifier, so deriving either from the other would lose that state. Both
+ * stay text so sixteen leading-zero digits survive, and the two ten-character dates stay opaque text
+ * so an all-space value round-trips unchanged rather than becoming a parsed date.
  */
 @DisplayName("TransactionViewResponse :: the CT01 transaction-view contract, held to its map widths")
 class TransactionViewResponseTest {
-
-    /**
-     * Every member name the contract publishes, in the order the record declares them and therefore in
-     * the order the wire carries them.
-     *
-     * <p>Used as an exact expectation rather than a containment check. That is what makes it a negative
-     * oracle for every member this contract must not grow: a derived or reformatted date, a masked or
-     * truncated card number, a security code, a route table, a page cursor or a screen attribute byte
-     * would each appear here and fail the comparison.
-     */
     private static final List<String> PUBLISHED_MEMBERS = List.of(
             "transactionName", "title01", "currentDate", "programName", "title02", "currentTime",
             "searchTransactionId", "transactionId", "cardNumber", "typeCode", "categoryCode",
@@ -134,136 +62,73 @@ class TransactionViewResponseTest {
             "merchantName", "merchantCity", "merchantZip", "errorMessage", "generalError",
             "focusScreenFieldId", "nextRoute", "navigationContext");
 
-    /** Transaction name of this screen; four characters, from the map's own name field. */
     private static final String TRANSACTION_NAME = "CT01";
 
-    /** First screen title line, inside the forty characters the map carries. */
     private static final String TITLE01 = "AWS Mainframe Modernization";
 
-    /** Second screen title line, inside the same forty characters. */
     private static final String TITLE02 = "View Transaction";
 
-    /** Header clock date; eight characters, and deliberately not a transaction date. */
     private static final String CURRENT_DATE = "06/10/22";
 
-    /** Header clock time; eight characters. */
     private static final String CURRENT_TIME = "19:27:53";
 
-    /** Name of the legacy program behind this screen; eight characters. */
     private static final String PROGRAM_NAME = "COTRN01C";
 
-    /**
-     * The identifier the operator asked for, echoed back; sixteen characters with leading zeros.
-     *
-     * <p>Deliberately different from {@link #FOUND_TRANSACTION_ID}, because a fixture in which the two
-     * identifiers hold the same value cannot show that they are separate components.
-     */
     private static final String SEARCH_TRANSACTION_ID = "0000000000000042";
 
-    /** The identifier of the record actually retrieved; sixteen characters, and not the search key. */
     private static final String FOUND_TRANSACTION_ID = "0000000000000199";
 
-    /**
-     * The card number the retrieved transaction was made on; sixteen characters.
-     *
-     * <p>A test literal, and deliberately different from {@link #NAVIGATION_CARD_NUMBER} so that a
-     * non-disclosure assertion over a rendering cannot pass by matching the nested state's value
-     * instead of this one.
-     */
     private static final String CARD_NUMBER = "5111111111111118";
 
-    /** Two-character transaction type code. */
     private static final String TYPE_CODE = "01";
 
-    /** Four-character transaction category code, whose leading zeros are contract. */
     private static final String CATEGORY_CODE = "0002";
 
-    /** Ten-character origination channel, space padded exactly as the record stores it. */
     private static final String SOURCE = "POS TERM  ";
 
-    /**
-     * Transaction description at twenty-six characters, the width the transaction-list map uses.
-     *
-     * <p>Chosen at the neighbouring width on purpose: this contract must accept it and must also accept
-     * more than twice as much, which is what {@link WidthFamiliesStayDistinct} goes on to show.
-     */
     private static final String DESCRIPTION = "PURCHASE AT HARDWARE STORE";
 
-    /** Two-place transaction amount, negative because a return is legitimately signed. */
     private static final BigDecimal AMOUNT = new BigDecimal("-123.45");
 
-    /** Ten leading characters of the origination stamp. */
     private static final String ORIGINATION_DATE = "2022-06-10";
 
-    /** Ten leading characters of the processing stamp, and not the origination date. */
     private static final String PROCESSING_DATE = "2022-06-13";
 
-    /** Nine-character merchant identifier, whose leading zeros are contract. */
     private static final String MERCHANT_ID = "000000042";
 
-    /** Merchant name, inside the thirty characters this screen shows. */
     private static final String MERCHANT_NAME = "SMITH HARDWARE";
 
-    /** Merchant city, inside the twenty-five characters this screen shows. */
     private static final String MERCHANT_CITY = "SEATTLE";
 
-    /** Merchant postal code, space padded to the full ten characters the map carries. */
     private static final String MERCHANT_ZIP = "98101     ";
 
-    /** Identity of the one enterable field on this screen; seven characters. */
     private static final String FOCUS_SCREEN_FIELD_ID = "TRNIDIN";
 
-    /**
-     * Opaque next-call label.
-     *
-     * <p>Deliberately embeds no identifier. A label carrying a transaction identifier would make a
-     * non-disclosure assertion over a rendering fail for a reason unrelated to disclosure, because the
-     * label itself is retained while the identifiers are withheld.
-     */
     private static final String NEXT_ROUTE = "/api/transactions/view";
 
-    /** Account identifier carried by the nested navigation state; eleven characters, leading zeros. */
     private static final String NAVIGATION_ACCOUNT_ID = "00000000001";
 
-    /** Customer identifier carried by the nested navigation state; nine characters. */
     private static final String NAVIGATION_CUSTOMER_ID = "000000199";
 
-    /** Card number carried by the nested navigation state; sixteen characters. */
     private static final String NAVIGATION_CARD_NUMBER = "4111111111111111";
 
-    /** The fixed stand-in the contract emits in place of each withheld component. */
     private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
 
-    /** Shared validator factory, opened once for the whole suite and closed once. */
     private static ValidatorFactory validatorFactory;
 
-    /** Validator drawn from {@link #validatorFactory}. */
     private static Validator validator;
 
-    /** Opens the validator factory the declared-bound assertions use. */
     @BeforeAll
     static void openValidatorFactory() {
         validatorFactory = Validation.buildDefaultValidatorFactory();
         validator = validatorFactory.getValidator();
     }
 
-    /** Closes the factory {@link #openValidatorFactory()} opened. */
     @AfterAll
     static void closeValidatorFactory() {
         validatorFactory.close();
     }
 
-    /**
-     * Builds a mapper carrying the four serialisation settings the module declares.
-     *
-     * <p>Written out by hand here rather than obtained from a context, because this suite is
-     * context-free and needs to observe the shape a deployed instance would produce. The
-     * value-and-content form of the inclusion setter is used because the single-argument form is
-     * deprecated in the pinned databind release and this module compiles with warnings promoted to
-     * errors.
-     *
-     * @return a mapper configured as a deployed instance would be
-     */
     private static ObjectMapper declaredSettingsMapper() {
         return JsonMapper.builder()
                 .defaultPropertyInclusion(JsonInclude.Value.construct(
@@ -274,28 +139,8 @@ class TransactionViewResponseTest {
                 .build();
     }
 
-    /**
-     * The one mapper this suite uses, built once from {@link #declaredSettingsMapper()}.
-     *
-     * <p>Shared rather than rebuilt per assertion, and the reason is measured rather than stylistic. A
-     * freshly built mapper has an empty introspection cache, so its first encounter with this
-     * twenty-five component record and its nested state is expensive; rebuilding one for each of this
-     * suite's forty-odd wire assertions was measured at roughly ninety times the cost of reusing a
-     * single instance. That measurement is recorded here to explain a construction choice and nothing
-     * more: no assertion in this suite measures elapsed time, sleeps, reads a clock or depends on any
-     * timing figure whatsoever.
-     *
-     * <p>Sharing is safe because the instance is fully configured before it is published and no test
-     * here reconfigures it: a built mapper is immutable in its settings and thread-safe for reading and
-     * writing, so no test can observe a setting another test changed.
-     */
     private static final ObjectMapper MAPPER = declaredSettingsMapper();
 
-    /**
-     * Builds the fully populated reply a successful lookup produces.
-     *
-     * @return a reply with every one of the twenty-five components carrying a value
-     */
     private static TransactionViewResponse foundReply() {
         return new TransactionViewResponse(TRANSACTION_NAME, TITLE01, CURRENT_DATE, PROGRAM_NAME,
                 TITLE02, CURRENT_TIME, SEARCH_TRANSACTION_ID, FOUND_TRANSACTION_ID, CARD_NUMBER,
@@ -305,40 +150,18 @@ class TransactionViewResponseTest {
                 NEXT_ROUTE, populatedNavigation());
     }
 
-    /**
-     * Builds a reply carrying nothing at all beyond the primitive error indicator.
-     *
-     * <p>Not a degenerate case. The program blanks its whole display area before every read, so a reply
-     * in which every component is absent is a state the screen genuinely reaches.
-     *
-     * @return a reply with all twenty-four nullable components absent
-     */
     private static TransactionViewResponse absentReply() {
         return new TransactionViewResponse(null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, false, null,
                 null, null);
     }
 
-    /**
-     * Builds a reply carrying only the description, so a bound can be exercised in isolation.
-     *
-     * @param description the description to carry, of any length
-     * @return a reply whose only populated text component is the description
-     */
     private static TransactionViewResponse withDescription(final String description) {
         return new TransactionViewResponse(null, null, null, null, null, null, null, null, null,
                 null, null, null, description, null, null, null, null, null, null, null, null,
                 false, null, null, null);
     }
 
-    /**
-     * Builds a reply carrying only the merchant name and city, so both bounds can be exercised
-     * together.
-     *
-     * @param merchantName the merchant name to carry, of any length
-     * @param merchantCity the merchant city to carry, of any length
-     * @return a reply whose only populated text components are those two
-     */
     private static TransactionViewResponse withMerchant(final String merchantName,
             final String merchantCity) {
         return new TransactionViewResponse(null, null, null, null, null, null, null, null, null,
@@ -346,43 +169,18 @@ class TransactionViewResponseTest {
                 null, false, null, null, null);
     }
 
-    /**
-     * Builds a reply carrying only the summary message, so the message line's bound and its text can be
-     * exercised without any other value on the wire.
-     *
-     * @param errorMessage the message to carry, of any length
-     * @return a reply whose only populated text component is the message
-     */
     private static TransactionViewResponse withErrorMessage(final String errorMessage) {
         return new TransactionViewResponse(null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, errorMessage,
                 true, null, null, null);
     }
 
-    /**
-     * Builds a reply carrying only the amount, so its rendering can be observed without any other
-     * member sharing the payload.
-     *
-     * <p>Isolating the amount is what lets an exponent marker be asserted absent from the whole
-     * payload. On a populated payload the letter E appears inside member names and inside text values,
-     * so the same assertion would pass or fail for a reason unrelated to the number.
-     *
-     * @param amount the amount to carry, or {@code null}
-     * @return a reply whose only populated component is the amount
-     */
     private static TransactionViewResponse withAmount(final BigDecimal amount) {
         return new TransactionViewResponse(null, null, null, null, null, null, null, null, null,
                 null, null, null, null, amount, null, null, null, null, null, null, null, false,
                 null, null, null);
     }
 
-    /**
-     * Builds a reply carrying only the two transaction dates.
-     *
-     * @param originationDate the origination date text, of any shape
-     * @param processingDate the processing date text, of any shape
-     * @return a reply whose only populated components are those two
-     */
     private static TransactionViewResponse withDates(final String originationDate,
             final String processingDate) {
         return new TransactionViewResponse(null, null, null, null, null, null, null, null, null,
@@ -390,13 +188,6 @@ class TransactionViewResponseTest {
                 null, null, false, null, null, null);
     }
 
-    /**
-     * Builds a reply carrying only the two transaction identifiers.
-     *
-     * @param searchTransactionId the identifier the operator asked for
-     * @param transactionId the identifier of the record retrieved, or {@code null} when none was
-     * @return a reply whose only populated components are those two
-     */
     private static TransactionViewResponse withIdentifiers(final String searchTransactionId,
             final String transactionId) {
         return new TransactionViewResponse(null, null, null, null, null, null, searchTransactionId,
@@ -404,41 +195,18 @@ class TransactionViewResponseTest {
                 null, null, false, null, null, null);
     }
 
-    /**
-     * Builds a reply carrying only the origination channel.
-     *
-     * @param source the channel value, padded or not
-     * @return a reply whose only populated component is the channel
-     */
     private static TransactionViewResponse withSource(final String source) {
         return new TransactionViewResponse(null, null, null, null, null, null, null, null, null,
                 null, null, source, null, null, null, null, null, null, null, null, null, false,
                 null, null, null);
     }
 
-    /**
-     * Builds a fully populated navigation state whose account and customer identifiers carry leading
-     * zeros.
-     *
-     * @return the echoed conversation state this screen carries
-     */
     private static NavigationContext populatedNavigation() {
         return new NavigationContext("CT00", "COTRN00C", "CT01", "COTRN01C", "USER0001", "U",
                 NavigationContext.ProgramContext.REENTER, NAVIGATION_CUSTOMER_ID, "MARY", "ANN",
                 "SMITH", NAVIGATION_ACCOUNT_ID, "Y", NAVIGATION_CARD_NUMBER, "COTRN1A", "COTRN01");
     }
 
-    /**
-     * Pads text on the right with spaces to an exact width, the way a fixed-width field does.
-     *
-     * <p>Right padding only, and never any trimming: in this estate the padding is part of the value.
-     *
-     * @param text the text to pad
-     * @param width the exact width wanted
-     * @return the text followed by enough spaces to reach {@code width}
-     * @throws AssertionError if {@code text} is already longer than {@code width}, so that a mistaken
-     *     fixture fails with a diagnostic naming both lengths instead of throwing from the pad itself
-     */
     private static String atWidth(final String text, final int width) {
         if (text.length() > width) {
             throw new AssertionError("fixture text of length " + text.length()
@@ -447,61 +215,25 @@ class TransactionViewResponseTest {
         return text + " ".repeat(width - text.length());
     }
 
-    /**
-     * Builds a value exactly one character wider than a declared bound.
-     *
-     * @param width the declared bound
-     * @return a value of {@code width + 1} characters
-     */
     private static String oneCharacterOver(final int width) {
         return "X".repeat(width + 1);
     }
 
-    /**
-     * Validates a reply and returns whatever the validator reported.
-     *
-     * @param response the reply to validate
-     * @return the reported violations, empty when the reply is within every declared bound
-     */
     private static Set<ConstraintViolation<TransactionViewResponse>> violationsOf(
             final TransactionViewResponse response) {
         return validator.validate(response);
     }
 
-    /**
-     * Serialises a reply under the module's declared settings.
-     *
-     * @param response the reply to serialise
-     * @return the payload exactly as a client would receive it
-     * @throws JsonProcessingException if serialisation fails, which fails the calling test
-     */
     private static String serialise(final TransactionViewResponse response)
             throws JsonProcessingException {
         return MAPPER.writeValueAsString(response);
     }
 
-    /**
-     * Reads a payload back into a reply under the module's declared settings.
-     *
-     * @param payload the payload to read
-     * @return the reply the payload describes
-     * @throws JsonProcessingException if reading fails, which fails the calling test
-     */
     private static TransactionViewResponse deserialise(final String payload)
             throws JsonProcessingException {
         return MAPPER.readValue(payload, TransactionViewResponse.class);
     }
 
-    /**
-     * Reads the member names a payload actually carries, in the order it carries them.
-     *
-     * <p>Reading the names from the payload rather than from the type is deliberate: it observes what a
-     * client receives, which is the thing the contract promises.
-     *
-     * @param payload the payload to inspect
-     * @return the member names present, in payload order
-     * @throws JsonProcessingException if reading fails, which fails the calling test
-     */
     private static Set<String> memberNamesOf(final String payload) throws JsonProcessingException {
         Map<String, Object> members =
                 MAPPER.readValue(payload, new TypeReference<Map<String, Object>>() { });
@@ -511,7 +243,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("the two sixteen-character transaction identifiers are separate and stay separate")
     class TwoTransactionIdentifiers {
-
         @Test
         @DisplayName("both are carried as their own component and hold different values at once")
         void bothAreCarriedSeparatelyAndHoldDifferentValues() {
@@ -611,18 +342,11 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("the two ten-character dates stay opaque text, all-space values included")
     class OpaqueTenCharacterDates {
-
         @Test
         @DisplayName("both are text rather than any date or time type")
         void bothAreTextRatherThanATemporalType() {
             TransactionViewResponse reply = foundReply();
 
-            // These two declarations are the assertion. They compile only because each accessor's
-            // static type is String, so a translation that returned a date, a time, an instant or a
-            // driver-level temporal value would fail here at compilation rather than at run time. No
-            // temporal type, formatter or parser is imported anywhere in this file, for the same
-            // reason: strict parsing belongs to the module's date-validation service alone, which is
-            // where the legacy language-environment date call was translated to.
             String origination = reply.originationDate();
             String processing = reply.processingDate();
 
@@ -649,10 +373,6 @@ class TransactionViewResponseTest {
 
             TransactionViewResponse reply = withDates(blank, blank);
 
-            // The load-bearing case. All three hundred seeded daily transactions carry the same
-            // processing date and stamp, and a persisted processing stamp of twenty-six spaces is
-            // ordinary production data, so blank date text is a value rather than an error. A
-            // translation that parsed these into a date object would throw on exactly this input.
             assertThat(reply.originationDate())
                     .as("blank date text is production data, not an absent value")
                     .isEqualTo(blank)
@@ -730,7 +450,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("the sixty, thirty and twenty-five widths are this screen's own and stay distinct")
     class WidthFamiliesStayDistinct {
-
         @Test
         @DisplayName("the description holds sixty characters, refuses sixty-one and refuses the "
                 + "record's hundred")
@@ -786,9 +505,6 @@ class TransactionViewResponseTest {
             String thirtyOne = oneCharacterOver(30);
             String sixtyOne = oneCharacterOver(60);
 
-            // Unifying these three widths - by sharing a constant, a base type or an interface - would
-            // let one screen's layout change what another screen's endpoint returns. That is a parity
-            // defect rather than a simplification, which is why each surface declares its own width.
             assertThat(violationsOf(withDescription(twentySix))).isEmpty();
             assertThat(violationsOf(withMerchant(twentySix, null))).isEmpty();
             assertThat(violationsOf(withMerchant(null, twentySix)))
@@ -825,9 +541,6 @@ class TransactionViewResponseTest {
         @Test
         @DisplayName("no map width is published as a constant, so no sibling screen can share one")
         void noMapWidthIsPublishedAsAConstant() {
-            // The only integers this contract publishes are the focus hint's generator ceiling and the
-            // amount's two record figures. None of them is a map width, so there is no width for a
-            // neighbouring screen to reuse and no single edit that could move two surfaces at once.
             assertThat(List.of(TransactionViewResponse.SCREEN_FIELD_ID_LENGTH,
                             TransactionViewResponse.AMOUNT_SCALE,
                             TransactionViewResponse.AMOUNT_INTEGER_DIGITS))
@@ -854,13 +567,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("every text component round-trips at its own width, untrimmed and un-case-folded")
     class EveryTextComponentRoundTripsAtItsOwnWidth {
-
-        /**
-         * Builds a reply in which every text component carries a value of exactly the width its map
-         * field declares.
-         *
-         * @return a reply sitting on all twenty-one declared bounds at once
-         */
         private TransactionViewResponse atEveryDeclaredWidth() {
             return new TransactionViewResponse(atWidth("CT01", 4), atWidth("TITLE ONE", 40),
                     atWidth("06/10/22", 8), atWidth("COTRN01C", 8), atWidth("TITLE TWO", 40),
@@ -978,12 +684,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("every identifier and code is text, so its leading zeros and width survive")
     class IdentifiersAndCodesStayText {
-
-        /**
-         * Builds a reply carrying the three numerically-pictured values at their contract widths.
-         *
-         * @return a reply whose identifier, category code and merchant identifier all lead with zeros
-         */
         private TransactionViewResponse withZeroLeadingValues() {
             return new TransactionViewResponse(null, null, null, null, null, null, null,
                     "0000000000000001", null, null, "0002", null, null, null, null, null,
@@ -1047,15 +747,9 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("the origination channel stays a raw, space-padded ten-character value")
     class RawPaddedChannel {
-
         @Test
         @DisplayName("the channel is text rather than the domain enumeration")
         void theChannelIsTextRatherThanTheEnumeration() {
-            // This declaration is the assertion: it compiles only because the accessor's static type is
-            // String. The domain layer does declare an enumeration of the three observed values, and
-            // this contract deliberately does not use it - the stored column has no membership check,
-            // so a value outside the declared set is legal and must survive rather than fail
-            // conversion on the way out of a read-only view.
             String channel = withSource(SOURCE).source();
 
             assertThat(channel).isEqualTo(SOURCE).hasSize(TransactionSourceType.VALUE_LENGTH);
@@ -1129,16 +823,11 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("the amount is a fixed-scale decimal that nothing in this contract rescales")
     class AmountIsAFixedScaleDecimal {
-
         @Test
         @DisplayName("the amount is a decimal and the accepted value is the very object supplied")
         void theAcceptedValueIsTheObjectSupplied() {
             BigDecimal supplied = new BigDecimal("-123.45");
 
-            // This declaration is the assertion: it compiles only because the accessor's static type
-            // is BigDecimal. No binary approximation of a fraction is admissible, because a two-place
-            // monetary amount has no exact representation in one and the acceptance criterion compares
-            // emitted bytes rather than values within a tolerance.
             BigDecimal carried = withAmount(supplied).amount();
 
             assertThat(carried)
@@ -1250,7 +939,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("an upper bound is the only declarative constraint, so nothing else ever fires")
     class OnlyAnUpperBoundEverFires {
-
         @Test
         @DisplayName("a reply with every component absent reports no violation at all")
         void aWhollyAbsentReplyReportsNoViolation() {
@@ -1334,7 +1022,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("the conversation state is carried whole rather than re-implemented")
     class ConversationStateIsCarriedWhole {
-
         @Test
         @DisplayName("the nested state round-trips, leading-zero identifiers included")
         void theNestedStateRoundTrips() {
@@ -1401,14 +1088,9 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("the onward route is declarative data and never a decision taken here")
     class TheOnwardRouteIsDeclarativeData {
-
         @Test
         @DisplayName("the route is carried as an opaque label")
         void theRouteIsCarriedAsAnOpaqueLabel() {
-            // A declared local again, and again the assertion: the label is text, not a member of some
-            // route enumeration this contract would then own. The vocabulary of routes belongs to the
-            // navigation service, and holding it here would move a navigation decision into a
-            // data-transfer type.
             String route = foundReply().nextRoute();
 
             assertThat(route).isEqualTo(NEXT_ROUTE);
@@ -1448,7 +1130,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("the published payload carries exactly the contract and tolerates an echo")
     class ThePublishedPayload {
-
         @Test
         @DisplayName("a fully populated reply publishes exactly the twenty-five declared members")
         void aPopulatedReplyPublishesExactlyTheDeclaredMembers() throws JsonProcessingException {
@@ -1537,7 +1218,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("the three published message texts are reproduced character for character")
     class ThePublishedMessageTexts {
-
         @Test
         @DisplayName("the empty-identifier refusal is twenty-seven characters and round-trips whole")
         void theEmptyIdentifierRefusalIsTwentySevenCharacters() throws JsonProcessingException {
@@ -1622,7 +1302,6 @@ class TransactionViewResponseTest {
     @Nested
     @DisplayName("value semantics, immutability by construction, and the diagnostic rendering")
     class ValueSemanticsAndRendering {
-
         @Test
         @DisplayName("two replies built from identical components are equal and share a hash code")
         void twoRepliesFromIdenticalComponentsAreEqual() {

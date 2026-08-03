@@ -282,15 +282,15 @@
 
     <!-- Second generation JSON library, which is the serialisation
          layer of the whole request and response surface. This value
-         restates the version the frozen dependency inventory records,
-         which is also the version this framework line selects, so the
-         declaration pins rather than overrides. It is stated
-         explicitly for two reasons. It makes the inventory's value
-         visible at the single place a reader looks for a version, and
+         overrides the version the framework line selects, by exactly
+         one patch release, for the security reason set out below. It is
+         stated explicitly for two reasons. It makes the operative
+         version visible at the single place a reader looks for one, and
          because the property is the family bill of materials' own
          property name, one value governs the streaming core, the
          databind layer and every data format, data type and module
-         artifact together, so none of those can drift forward alone.
+         artifact together, so none of those can drift forward alone and
+         none can be left behind on the version being patched away from.
          The annotations artifact is the deliberate exception, and it
          is worth stating rather than glossing. Neither bill of
          materials ties annotations to the patch version: the second
@@ -304,29 +304,41 @@
          line - which is exactly why both bills of materials treat it
          separately and why the third generation reuses it instead of
          shipping a replacement - and because the frozen inventory
-         names the databind coordinate, which this value fixes.
-         An earlier revision raised this property to 2.21.5 to clear a
-         moderate finding about properties excluded by an
-         ignore-properties declaration being restored when contextual
-         case insensitive binding is in force. That is reverted. The
-         inventory is frozen and no exception authorises editing it,
-         the finding scores below the threshold at which the supply
-         chain scan fails a build, and the finding's precondition does
-         not hold here: this module enables case insensitive property
-         binding nowhere, and declares no ignore-properties exclusion
-         to be restored. The raise also did not achieve what it was
-         credited with, because the annotations divergence it was
-         thought to explain has the separate cause described above and
-         is unchanged by it. Recorded in docs/decision-log.md DL-090,
-         including why the residual advisory is reported rather than
-         gated and why suppressing it was rejected.
+         names the databind coordinate, which this value fixes to a
+         release of that same coordinate.
+         The value is one patch release ahead of the version the
+         inventory records, and that is a security patch of the very
+         coordinate the inventory names rather than a substitution of
+         something else. An executed supply chain scan reports
+         CVE-2026-54515 against 2.21.4, scoring 5.3 and network
+         reachable: under a vulnerable annotation combination a
+         property excluded by an ignore-properties declaration becomes
+         writable again. The fix is 2.21.5. This module uses no such
+         combination today, which lowers exploitability and settles
+         nothing, because the affected deserialiser is on the request
+         and response classpath regardless of which annotations the
+         current sources happen to carry - the next writer of a data
+         transfer object decides that, not this comment. Applicability
+         was therefore not accepted as a defence, the finding is not
+         suppressed, and no suppression file exists for the scan to
+         read. An earlier revision made this raise, a later one
+         reverted it to 2.21.4 on the grounds that the inventory is
+         frozen and the score sits below the build failing threshold,
+         and this revision restores it: the inventory freezes which
+         library is used, not the right to take its security patches,
+         and a finding below the gate threshold is still a reported
+         finding. Recorded in docs/decision-log.md DL-090, which is
+         decided twice and states why the revert does not survive.
+         The raise leaves the annotations divergence exactly where it
+         was, because that has the separate upstream cause described
+         above and was never attributable to this property.
          This is entirely separate from the third generation
          coordinates governed by tools-jackson.version below, which
          reach the classpath only through the logging encoder. That
          override stands; the two generations are distinct coordinate
          families and neither value constrains the other, save for the
          shared annotations artifact noted above. -->
-    <jackson-bom.version>2.21.4</jackson-bom.version>
+    <jackson-bom.version>2.21.5</jackson-bom.version>
 
     <!-- The structured logging encoder is built against the third
          major generation of the JSON library, which reaches the
@@ -1129,18 +1141,28 @@
            bundle the libraries it should, so the exclusion sweep cannot
            pass by inspecting an empty list.
 
-           Two findings remain, both scoring 5.3, and both are ACCEPTED
-           RATHER THAN SUPPRESSED - they are reported on every run and
-           nothing hides them. One is in the second generation JSON
-           library the framework bill of materials governs, whose
-           vulnerable precondition is absent from this configuration;
-           one is in the tracing semantic conventions artifact, whose
-           report text describes another language's exporter. Neither is
-           critical or high, so neither breaches the threshold, and
-           suppressing them would remove information for no benefit.
+           ONE finding remains, scoring 5.3, and it is ACCEPTED RATHER
+           THAN SUPPRESSED - it is reported on every run and nothing
+           hides it. It is in the tracing semantic conventions
+           artifact, and its report text describes another language's
+           implementation of that specification: the matched product
+           identifier names the Go platform and the defect it describes
+           is in that implementation's baggage header parsing, so the
+           match is a version number coincidence with a Java artifact
+           of a similar name. There is no version to move to, because
+           the affected product is not on this class path at all.
 
-           Because those two are reported, this plugin prints one
-           informational console line summarising them. That line is
+           There were two. The other was in the second generation JSON
+           library, and it was CLOSED BY UPGRADING rather than accepted:
+           the reasoning that its precondition is absent from this
+           configuration was a statement about today's sources and not
+           about the class path, so it was not treated as a disproof of
+           applicability. The property comment near the top of this file
+           and docs/decision-log.md DL-090 set out that decision, which
+           was taken, reverted and restored.
+
+           Because one finding is reported, this plugin prints one
+           informational console line summarising it. That line is
            the scanner's own summary and is deliberately left enabled;
            it is evidence for the supply chain gate, not a build
            diagnostic. The zero warning gate concerns compiler

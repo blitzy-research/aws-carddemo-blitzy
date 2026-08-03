@@ -47,13 +47,14 @@ import java.util.Objects;
  * in ASCII rather than in the mainframe encoding, no EBCDIC decode is needed to reproduce it, which is
  * why the EBCDIC dataset having no ASCII twin costs nothing.
  *
- * <p><strong>The credential column is the module's single intentional width divergence.</strong> The
- * legacy record holds the credential as eight cleartext characters at offset 48, and legacy sign-on
- * tests it for direct equality against the value keyed at the terminal. Reproducing cleartext storage
- * would satisfy byte-for-byte parity and violate the binding no-hardcoded-credentials requirement at
- * the same time, so this is the one place in the eleven-entity schema where fidelity is deliberately
- * broken: {@code sec_usr_pwd} is {@code VARCHAR(60)}, sized for a BCrypt digest, rather than the
- * legacy width of 8. Every other column width in the module equals its picture width.
+ * <p><strong>The credential column's width diverges deliberately.</strong> The legacy record holds
+ * the credential as eight cleartext characters at offset 48, and legacy sign-on tests it for direct
+ * equality against the value keyed at the terminal. Reproducing cleartext storage would satisfy
+ * byte-for-byte parity and violate the binding no-hardcoded-credentials requirement at the same
+ * time, so fidelity is deliberately broken here: {@code sec_usr_pwd} is {@code VARCHAR(60)}, sized
+ * for a BCrypt digest, rather than the legacy width of 8. It is one of three columns in the schema
+ * wider than its legacy field - {@code customer.cust_ssn} and {@code customer.govt_issued_id} are
+ * the other two, widened for protection at rest - and the only one widened for a credential.
  *
  * <p><strong>What this class stores, and what does not yet exist.</strong> This entity performs no
  * hashing, no verification and no comparison, and it is the width and the format of the column that
@@ -117,13 +118,13 @@ import java.util.Objects;
  * <p>The legacy record holds the credential as eight cleartext characters at offset 48, and the
  * sign-on path at {@code app/cbl/COSGN00C.cbl} L223 tests it for direct equality against the value
  * keyed at the terminal. Reproducing cleartext storage would satisfy byte-for-byte parity and
- * violate the binding no-hardcoded-credentials requirement at the same time, so this is the one
- * place in the eleven-entity schema where fidelity is deliberately broken: {@code sec_usr_pwd} is
- * {@code VARCHAR(60)}, sized for a BCrypt digest, and never the legacy width of 8. It is the
- * single intentional width divergence in the module - every other column width equals its picture
- * width. That divergence exists <em>because a binding requirement demands it</em>, and it is
- * recorded as the flagship security entry in {@code docs/decision-log.md} rather than silently
- * applied.
+ * violate the binding no-hardcoded-credentials requirement at the same time, so fidelity is
+ * deliberately broken here: {@code sec_usr_pwd} is {@code VARCHAR(60)}, sized for a BCrypt digest,
+ * and never the legacy width of 8. It is one of three columns wider than its legacy field, alongside
+ * {@code customer.cust_ssn} and {@code customer.govt_issued_id}, and the only one widened for a
+ * credential rather than for protection at rest. That divergence exists <em>because a binding
+ * requirement demands it</em>, and it is recorded as the flagship security entry in
+ * {@code docs/decision-log.md} rather than silently applied.
  *
  * <p>Hashing, verification and every other credential operation live outside this package, in
  * {@code com.carddemo.service.AuthenticationService} and {@code com.carddemo.config.SecurityConfig}.
