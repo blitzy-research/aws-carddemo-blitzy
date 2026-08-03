@@ -20,15 +20,20 @@
 -- sequential daily-transaction input. Every primary key is the natural business key taken from the
 -- corresponding cluster key definition, whose width and offset are recorded per table below.
 --
--- APPLIES TO ALL PROFILES. V1 is resolved from classpath:db/migration, the only Flyway location any
--- profile configures, so no profile can start without it. Sample rows and sign-on identities live in
--- the same location as V3 and V4 and are excluded from production by VERSION, not by directory: the
--- production overlay sets spring.flyway.target: 2, so it applies V1, V1_1 and V2 and never resolves
--- V3 or V4. A production migration therefore inherits schema and indexes and nothing else. This file
--- inserts no row of any kind.
+-- APPLIES TO ALL PROFILES. All four migrations are physically flat in the one location
+-- classpath:db/migration, which EVERY profile configures, so no profile can start without V1. Sample
+-- rows and sign-on identities are V3 and V4 in that same directory, and they are excluded from
+-- production by the version ceiling rather than by a directory: production sets
+-- spring.flyway.target: 2, so it applies V1 and V2 and reports the two seeds as above target. The flat
+-- layout is required by the migration specifications for V3 and V4, which direct that no subdirectory
+-- be created because directory-scoped locations cannot isolate the seeds - a location is scanned
+-- recursively. A production migration therefore inherits schema and indexes and nothing else. This
+-- file inserts no row of any kind.
 --
--- Forward-only and in order: no schema.sql, no data.sql, no framework SQL initialization, no
--- container init mount, no repeatable migration and no undo migration exists in this module.
+-- Forward-only and in order: no schema.sql, no data.sql, no container init mount, no repeatable
+-- migration and no undo migration exists in this module. The one framework-issued script in the
+-- module is Spring Batch's own job-repository DDL, which owns the BATCH_ family and no application
+-- table; see note 3 below.
 --
 -- Validated against PostgreSQL 16.14 initialized --encoding=UTF8 --locale=C.UTF-8, so ordering
 -- cannot drift between hosts. Flyway 11 no longer bundles database support, so the module declares
@@ -54,9 +59,11 @@
 --     transaction-report copybook is print formatting, not a table. The alternate 500-byte customer
 --     copybook restates the same nineteen fields at the same offsets under one differently spelled
 --     date field name, so it is an alternate projection of customer and not a second table. The six
---     Spring Batch metadata tables and their three sequences are created by
---     V1_1__create_batch_metadata.sql, which keeps them visibly separate from these eleven; the
---     framework's own start-up initializer is switched off under every profile. The validation
+--     Spring Batch metadata tables and their three sequences are created by Spring Batch itself from
+--     its bundled PostgreSQL script - spring.batch.jdbc.initialize-schema is `always` under every
+--     profile - which is what AAP 0.3.1 assigns and what keeps this file's table count at eleven; they
+--     are recognisable by their BATCH_ prefix and are expected in a listing of any of these
+--     databases. The validation
 --     lookup data - 490 North American area codes as an exact partition of 410 general-purpose plus
 --     80 easily-recognizable, 56 state codes and 240 state-with-ZIP-prefix combinations - is loaded
 --     from src/main/resources/lookup/*.json.

@@ -44,27 +44,44 @@ import com.carddemo.service.SensitiveFieldEncryptionService;
  *
  * <h2>Why this class exists</h2>
  *
- * <p>The migrations all ship from one directory, exactly as the plan's file tree lists them:
- * {@code classpath:db/migration} carries {@code V1__create_schema.sql},
- * {@code V1_1__create_batch_metadata.sql}, {@code V2__create_indexes.sql},
- * {@code V3__seed_reference_data.sql} and {@code V4__seed_user_security.sql}. What separates the
- * schema from the seeds is therefore not a directory but a <strong>version ceiling</strong>:
- * {@code spring.flyway.target} is {@value #SCHEMA_ONLY_TARGET} in the shared baseline and again in
- * the production overlay, and only the local and test overlays lift it to
- * {@value #SEEDING_TARGET}. The sign-on seed inserts ten known identities, five of them
- * administrative, whose stored credentials are all digests of one well-known value; the reference
- * seed inserts fifty synthetic customer rows carrying regulated identity data. Neither belongs in a
- * production database, and neither arriving there would be untidiness - it would be a credential
- * incident and a privacy incident respectively.
+ * <p>All four delivered migrations ship flat from the single location {@value #SCHEMA_LOCATION}:
+ * {@code V1__create_schema.sql}, {@code V2__create_indexes.sql},
+ * {@code V3__seed_reference_data.sql} and {@code V4__seed_user_security.sql}. The flat layout is
+ * required rather than chosen - the migration specifications for V3 and V4 both state that the four
+ * scripts are physically flat in one directory and direct that no subdirectory be created, giving the
+ * reason explicitly: directory-scoped locations cannot isolate the seeds from the schema, because a
+ * location is scanned recursively and any deployment that resolves both directories applies the whole
+ * ascending sequence whatever folder each script came from. What the plan means by "profile-scoped"
+ * is therefore a profile-scoped <em>ceiling</em>, not a profile-scoped directory, and both
+ * specifications name that ceiling: {@code spring.flyway.target=2}.
  *
- * <p>A ceiling declared in three profile documents is a statement, and the documents were the whole
- * of the mechanism until this class existed. <strong>Text is not a control.</strong> Two gaps
+ * <p>The two seeds are what the scoping exists for. The sign-on seed inserts ten known identities,
+ * five of them administrative, whose stored credentials are all digests of one well-known value; the
+ * reference seed inserts fifty synthetic customer rows carrying regulated identity data. Neither
+ * belongs in a production database, and neither arriving there would be untidiness - it would be a
+ * credential incident and a privacy incident respectively.
+ *
+ * <p><strong>Two independent controls hold that separation, and neither is a directory.</strong>
+ * The <em>version ceiling</em> decides what is applied: {@code spring.flyway.target} is
+ * {@value #SCHEMA_ONLY_TARGET} in the shared baseline and again in the production overlay, so a
+ * profile silent about migrations inherits the production posture, and only the local and test
+ * overlays lift it to {@value #SEEDING_TARGET}. V1 and V2 sit at or below the ceiling; V3 and V4 are
+ * resolved, reported above target and never executed. The <em>applied-state check</em> decides
+ * whether this database was ever entitled to start under production at all:
+ * {@link ProductionSeedRejectionCallback} refuses a production start against a database whose history
+ * records a seed migration or whose tables still hold seeded rows. The two are genuinely independent -
+ * the ceiling cannot help a database that was seeded before production was ever pointed at it, and the
+ * applied-state check cannot stop a seed being applied for the first time.
+ *
+ * <p>Both controls declared in three profile documents are statements, and the documents were the
+ * whole of the mechanism until this class existed. <strong>Text is not a control.</strong> Two gaps
  * followed from having no code behind it, and closing them is this class's entire purpose.
  *
- * <p>Decision {@code DL-102} in {@code docs/decision-log.md} records why the seeds are excluded by
- * version rather than by directory - the plan's file tree lists one directory and its version
- * numbers and file names are kept exactly - and decision {@code DL-110} records the sealing callback
- * this class registers for the two seeding profiles.
+ * <p>Decision {@code DL-102} in {@code docs/decision-log.md} records why both controls are kept
+ * rather than either alone, and decision {@code DL-110} records the sealing callback this class
+ * registers for the two seeding profiles. The third control - a refusal to start production against
+ * a database that was seeded before this process existed, which no configuration value can reach - is
+ * {@link ProductionSeedRejectionCallback}, registered below for production alone.
  *
  * <h2>Gap one: the profile list is a list, and a list can hold both</h2>
  *
@@ -90,41 +107,53 @@ import com.carddemo.service.SensitiveFieldEncryptionService;
  * write a chosen line into the start-up log; decision {@code DL-041} in {@code docs/decision-log.md}
  * governs that, and the same rule is applied here.
  *
- * <h2>Gap two: a ceiling is only a ceiling while nothing raises it</h2>
+ * <h2>Gap two: a ceiling is only a control while nothing widens it</h2>
  *
- * <p>{@link #resolveTarget(Collection, String)} is the profile-scoped resolution the plan requires
- * of this class, applied to whatever the property binding produced rather than restating it. When
- * production is active it <strong>refuses</strong> any ceiling that would reach version
+ * <p>{@link #resolveTarget(Collection, String)} guards the control that actually holds the seeds back.
+ * When production is active it <strong>refuses</strong> any ceiling that would reach version
  * {@value #FIRST_SEED_VERSION} or beyond - which includes {@value #SEEDING_TARGET}, a predefined
- * marker and an absent value, because Flyway migrates to the latest version when no target is set -
- * so a merged environment, an operator override or a copied overlay block cannot raise it in
- * silence. When local or test is active it <strong>lifts</strong> a ceiling that would stop short of
- * the seeds, because a fixture-bearing profile that quietly migrated no fixtures is a defect too,
- * just a different one. With neither active the bound value is returned unchanged.
+ * marker and an absent value, because Flyway migrates to the latest version when no target is set - so
+ * a merged environment, an operator override or a copied overlay block cannot raise it in silence.
+ * When local or test is active it <strong>lifts</strong> a ceiling that would stop short of the seeds,
+ * because a fixture-bearing profile that stopped at the schema would migrate no fixtures. With neither
+ * active the bound value is returned unchanged, which means the shared baseline's production posture
+ * is what a profile-less start inherits.
  *
- * <p>{@link #resolveLocations(Collection, Collection)} guards the other half of the same statement.
- * One directory now carries every script, so under production any location other than
- * {@value #SCHEMA_LOCATION} is refused: a second location is how an unreviewed script would arrive
- * with no version at all to cap it. Under local or test the schema location is added when the bound
- * list holds none, because a profile that resolved no location migrates nothing.
+ * <p>{@link #resolveLocations(Collection, Collection)} guards the sequence that ceiling was measured
+ * against. When production is active it <strong>refuses</strong> any resolved location other than
+ * {@value #SCHEMA_LOCATION}, because a location the ceiling never measured can carry a script the
+ * ceiling does not cap. When local or test is active it <strong>completes</strong>
+ * {@value #SCHEMA_LOCATION} if the bound list is missing it, because a profile that resolved no
+ * migration location migrates nothing at all. With neither active the bound list is returned
+ * unchanged. It does not separate schema from seed, and it is not asked to: that is the ceiling's job,
+ * and the specifications for V3 and V4 both say so directly.
  *
- * <h2>And the consequence of the seeds existing at all: cleartext at rest</h2>
+ * <p>Both resolutions fire on the <em>merged, bound</em> configuration rather than on any one
+ * document, so an inherited value, an operator override on the command line and a co-activated
+ * overlay are all covered by the same check.
+ *
+ * <h2>And the consequence of the seeds existing at all: two invariants on the sealed columns</h2>
  *
  * <p>{@code V1__create_schema.sql} defines {@code customer.govt_issued_id} as {@code NOT NULL} and
  * states that any row a seed inserts must carry an application-produced envelope rather than a
- * cleartext identifier. Static forward-only SQL cannot honour that: producing an envelope requires
- * the deployment's own key, and committing a key to the repository to make a seed deterministic
- * would be worse than the gap it closed. So the reference seed writes the fixture's twenty-digit
- * identifiers as they stand, and the column then holds fifty cleartext regulated values that the
- * entity's own accessors would have refused - object-relational hydration bypasses those accessors,
- * so nothing failed and nothing said so.
+ * cleartext identifier. The reference seed honours that directly, inserting fifty fixed envelopes
+ * produced by the module's own encryption service and seeding {@code customer.cust_ssn} as
+ * {@code null} in every row. {@link SeededIdentifierSealingCallback} is registered here for the two
+ * seeding profiles alone, and it holds the columns to two distinct invariants.
  *
- * <p>{@link SeededIdentifierSealingCallback} closes that. It runs as a migration-lifecycle callback
- * on the one path the seeds can arrive by, converts each unsealed value through the module's single
- * encryption service, and is registered here <em>only</em> for the two profiles whose ceiling
- * reaches the seeds - so production neither seeds a row nor carries the component that would seal
- * one. The delivered reference seed already writes sealed envelopes, so the callback converts
- * nothing today and stands as defence in depth against a future edit to that script.
+ * <p>The first is <strong>shape</strong>: any unsealed value it finds is sealed. On a delivered
+ * database that converts nothing, and it stands as defence in depth against a future edit to the
+ * seed - which matters because the entity's own accessors would refuse a cleartext value while
+ * object-relational hydration bypasses them, so nothing else would object.
+ *
+ * <p>The second is <strong>key</strong>, and it is not redundant on a delivered database: every
+ * stored value is <em>opened</em> under the key the running process actually holds, and one that will
+ * not open fails start-up. A shape check cannot make that statement, because an envelope sealed under
+ * some other key still looks like an envelope, and the fifty seeded envelopes are fixed literals that
+ * no pass can re-key. That is also why the two seeding profiles declare their fixture key as a bare
+ * literal rather than as an environment-variable default. Production carries neither invariant nor
+ * the component enforcing them, because it lists no seed location and receives no row from either
+ * seed.
  *
  * <h2>What this class deliberately does not do</h2>
  *
@@ -157,24 +186,35 @@ public final class FlywayConfig {
     public static final String TEST_PROFILE = "test";
 
     /**
-     * The location every profile migrates from, holding the schema and its indexes. Held as a
+     * The one location every profile migrates from, holding all four delivered scripts. Held as a
      * constant so the value this class refuses to lose and the value the documents declare cannot
      * drift apart.
+     *
+     * <p>There is deliberately no second location. The migration specifications for
+     * {@code V3__seed_reference_data.sql} and {@code V4__seed_user_security.sql} both require the four
+     * scripts to be physically flat in this one directory and direct that no subdirectory be created,
+     * on the stated ground that directory-scoped locations cannot isolate the seeds from the schema.
+     * The seeds are held out of production by the version ceiling
+     * {@value #SCHEMA_ONLY_TARGET} instead - see {@link #resolveTarget(Collection, String)} - and a
+     * database that has already been seeded is refused outright by
+     * {@link ProductionSeedRejectionCallback}. An earlier revision of this class split the scripts
+     * across a schema and a seed location; that split is withdrawn, and this constant is the record of
+     * it, because a directory boundary is not a boundary Flyway enforces.</p>
      */
     public static final String SCHEMA_LOCATION = "classpath:db/migration";
 
     /**
      * The classpath-relative path inside {@link #SCHEMA_LOCATION}. A location is recognised as the
-     * module's own by this path rather than by string equality with the descriptor, so a trailing
-     * separator, a differently spelled prefix or a file-system descriptor addressing the same
-     * directory is still recognised - and anything else is not.
+     * module's migration location by this path rather than by string equality with the descriptor, so
+     * a trailing separator, a differently spelled prefix or a file-system descriptor addressing the
+     * same directory is still recognised - and anything else is not.
      */
     private static final String SCHEMA_PATH = "db/migration";
 
     /**
-     * The path separator a normalised location descriptor uses. The schema location is recognised by
-     * finding the schema path bounded by this separator on both sides, which is what keeps a sibling
-     * directory whose name begins with the same characters from matching.
+     * The path separator a normalised location descriptor uses. A location is recognised by finding
+     * its path bounded by this separator on both sides, which is what keeps a sibling directory whose
+     * name begins with the same characters from matching.
      */
     private static final String SEGMENT_SEPARATOR = "/";
 
@@ -235,11 +275,11 @@ public final class FlywayConfig {
      * <p>A customizer is applied after the property binding and after the callbacks are registered,
      * which is exactly when the bound location list and the bound ceiling can be inspected and, if
      * necessary, refused. Both halves are resolved here because either one alone would leave a way
-     * for a seed script to be applied: a raised ceiling reaches the seeds that ship in the one
-     * location, and a second location carries scripts that no ceiling caps.
+     * for a seed script to be applied: a raised ceiling reaches a seed that a widened location list
+     * made visible, and a widened location list carries scripts a renumbering put below the ceiling.
      *
      * @param environment the environment whose active-profile list selects the resolution
-     * @return a customizer that refuses a seed-reaching ceiling or a foreign location under
+     * @return a customizer that refuses a seed-reaching ceiling or a non-schema location under
      *         production, and completes both under local or test
      */
     @Bean
@@ -252,7 +292,7 @@ public final class FlywayConfig {
             final List<String> resolved = resolveLocations(activeProfiles, declared);
             if (!resolved.equals(declared)) {
                 configuration.locations(resolved.toArray(String[]::new));
-                LOGGER.info("Schema migration location completed for a non-production profile;"
+                LOGGER.info("Migration location list completed for a non-production profile;"
                         + " {} location(s) now resolve", resolved.size());
             }
             final MigrationVersion boundTarget = configuration.getTarget();
@@ -280,6 +320,29 @@ public final class FlywayConfig {
     @Profile({LOCAL_PROFILE, TEST_PROFILE})
     Callback seededIdentifierSealingCallback(final SensitiveFieldEncryptionService encryption) {
         return new SeededIdentifierSealingCallback(encryption);
+    }
+
+    /**
+     * Publishes the component that refuses a production start-up against an already-seeded database,
+     * for the production profile alone.
+     *
+     * <p>This is the third control and the only one that inspects the DATABASE rather than this
+     * process's configuration. {@link #resolveLocations(Collection, Collection)} and
+     * {@link #resolveTarget(Collection, String)} both decide what this run would apply, and both are
+     * therefore blind to a database that was seeded before this run existed - a re-pointed connection
+     * string, or a development dump restored into a production instance. The callback closes exactly
+     * that gap, and it does so before the first script executes.
+     *
+     * <p>The profile restriction is the whole of the reason this bean is conditional. Under local and
+     * test the seeded rows are the point, so the same inspection there would refuse every start-up the
+     * fixtures depend on.
+     *
+     * @return the migration-lifecycle callback that refuses an already-seeded production database
+     */
+    @Bean
+    @Profile(PRODUCTION_PROFILE)
+    Callback productionSeedRejectionCallback() {
+        return new ProductionSeedRejectionCallback();
     }
 
     /**
@@ -321,27 +384,35 @@ public final class FlywayConfig {
     /**
      * Resolves the migration locations for the active profiles.
      *
+     * <p>All four delivered scripts sit in {@value #SCHEMA_LOCATION}, so this method does not separate
+     * schema from seed - that separation is the version ceiling's job, not a directory's. What it does
+     * is keep every profile pointed at the one location the delivered scripts actually occupy, so that
+     * the ceiling is applied to the sequence it was measured against.
+     *
      * <p>Three outcomes, and each is a different kind of statement:
      *
      * <ul>
-     *   <li>Production active - any location that is not {@value #SCHEMA_LOCATION} is
-     *       <strong>refused</strong>. This is the security control on the location half: every
-     *       delivered script lives in that one directory and is capped by the version ceiling, so a
-     *       second location can only be carrying something unreviewed that no ceiling caps. It fires
-     *       on the merged, bound list rather than on one document, so an inherited value, an
-     *       operator override and a copied overlay block are all covered by the same check.</li>
-     *   <li>Local or test active - the schema location is <strong>added</strong> when the bound list
-     *       holds none, keeping the declared order and appending rather than replacing, because a
-     *       profile that resolved no location migrates nothing at all.</li>
+     *   <li>Production active - any location that is not {@value #SCHEMA_LOCATION} or a path beneath
+     *       it is <strong>refused</strong>. An unrecognised location could carry scripts no ceiling
+     *       caps, and the ceiling is the only thing keeping the reference-data seed and the
+     *       sign-on-identity seed out of a production database: those insert fifty synthetic customer
+     *       rows holding regulated identity data and ten known sign-on identities whose stored
+     *       credentials are digests of one well-known value. It fires on the merged, bound list rather
+     *       than on one document, so an inherited value, an operator override and a copied overlay
+     *       block are all covered by the same check.</li>
+     *   <li>Local or test active - {@value #SCHEMA_LOCATION} is <strong>completed</strong> if the
+     *       bound list does not already resolve it, keeping the declared order and appending rather
+     *       than replacing, because a profile that resolved no migration location migrates nothing at
+     *       all.</li>
      *   <li>Neither active - the bound list is returned unchanged. A profile-less start migrates
-     *       whatever the shared baseline declares.</li>
+     *       whatever the shared baseline declares, which carries the production posture.</li>
      * </ul>
      *
      * @param activeProfiles    the active-profile list, which may be empty
      * @param declaredLocations the location descriptors the property binding produced, in order
      * @return the locations to migrate from, in order; the same values when nothing changed
-     * @throws IllegalStateException when production is active and a location other than the schema
-     *                               location is present
+     * @throws IllegalStateException when production is active and a location other than the delivered
+     *                               migration location is present
      */
     public static List<String> resolveLocations(final Collection<String> activeProfiles,
             final Collection<String> declaredLocations) {
@@ -353,14 +424,14 @@ public final class FlywayConfig {
                 if (location != null && !location.isBlank() && !isSchemaLocation(location)) {
                     throw new IllegalStateException("profile '" + PRODUCTION_PROFILE
                             + "' resolved a migration location outside '" + SCHEMA_LOCATION
-                            + "'. Every delivered script lives there and is capped at version '"
-                            + SCHEMA_ONLY_TARGET + "', which is what keeps the reference-data seed"
-                            + " and the sign-on-identity seed out of a production database: those"
-                            + " insert fifty synthetic customer rows holding regulated identity data"
-                            + " and ten known sign-on identities whose stored credentials are digests"
-                            + " of one well-known value. A second location carries scripts no ceiling"
-                            + " caps, so production must migrate from '" + SCHEMA_LOCATION
-                            + "' alone");
+                            + "'. All four delivered scripts live there and production is capped at"
+                            + " version '" + SCHEMA_ONLY_TARGET + "', which is what keeps the"
+                            + " reference-data seed and the sign-on-identity seed out of a production"
+                            + " database: those insert fifty synthetic customer rows holding regulated"
+                            + " identity data and ten known sign-on identities whose stored credentials"
+                            + " are digests of one well-known value. Another location carries scripts"
+                            + " that ceiling never measured, so production must migrate from '"
+                            + SCHEMA_LOCATION + "' alone");
                 }
             }
             return declared;
@@ -452,19 +523,33 @@ public final class FlywayConfig {
     }
 
     /**
-     * Reports whether a location descriptor addresses the module's own migration path or anything
+     * Reports whether a location descriptor addresses the module's migration path or anything beneath
+     * it.
+     *
+     * @param descriptor a location descriptor, such as {@code classpath:db/migration}
+     * @return {@code true} when the descriptor addresses the migration path
+     */
+    private static boolean isSchemaLocation(final String descriptor) {
+        return addressesPath(descriptor, SCHEMA_PATH);
+    }
+
+    /**
+     * Reports whether a location descriptor addresses one classpath-relative path or anything
      * beneath it.
      *
      * <p>The match is on a whole path segment sequence rather than on the raw descriptor, so that
      * every spelling of the same directory is recognised: {@code classpath:db/migration}, a trailing
      * separator, a nested sub-path such as {@code classpath:db/migration/regional}, a file-system
      * descriptor pointing at the same directory on disk, and a bare {@code db/migration} with no
-     * prefix. A location prefix is separated by a colon and a file-system descriptor may use
-     * back-slashes, so both are normalised to the forward slash before the segment is looked for -
-     * and because the match requires a separator on both sides, a sibling directory whose name
-     * merely begins with the same characters, such as {@code db/migrations}, is correctly not
-     * matched, which is the conservative answer here: an unrecognised location is refused under
-     * production rather than accepted.
+     * prefix. A nested sub-path is deliberately accepted rather than refused, because Flyway scans a
+     * location recursively: a descriptor beneath the migration path resolves a subset of the same
+     * ascending sequence the ceiling was measured against, so it is the same location for this
+     * predicate's purpose. A location prefix is separated by a colon and a file-system descriptor may
+     * use back-slashes, so both are normalised to the forward slash before the segment is looked for -
+     * and because the match requires a separator on both sides, a sibling whose name merely begins with
+     * the same characters, such as {@code db/migrations}, is not matched. That exclusion matters: such
+     * a directory would carry scripts outside the sequence the production ceiling was measured against,
+     * so a production profile that declared it must be refused rather than accepted.
      *
      * <p>The descriptor is deliberately not parsed by {@link Location}. That parser raises its own
      * exception for a malformed descriptor and puts the descriptor into the message, which would
@@ -472,17 +557,18 @@ public final class FlywayConfig {
      * predicate answers {@code false} for anything it cannot recognise and lets the production
      * refusal, or the migration tool itself, deal with it.
      *
-     * @param descriptor a location descriptor, such as {@code classpath:db/migration}
-     * @return {@code true} when the descriptor addresses the schema path
+     * @param descriptor a location descriptor, which may be {@code null} or blank
+     * @param path       the classpath-relative path to look for, without a prefix or a separator
+     * @return {@code true} when the descriptor addresses the given path or a path beneath it
      */
-    private static boolean isSchemaLocation(final String descriptor) {
+    private static boolean addressesPath(final String descriptor, final String path) {
         if (descriptor == null || descriptor.isBlank()) {
             return false;
         }
         final String normalised = SEGMENT_SEPARATOR
                 + descriptor.strip().replace('\\', '/').replace(':', '/')
                 + SEGMENT_SEPARATOR;
-        return normalised.contains(SEGMENT_SEPARATOR + SCHEMA_PATH + SEGMENT_SEPARATOR);
+        return normalised.contains(SEGMENT_SEPARATOR + path + SEGMENT_SEPARATOR);
     }
 
     /**

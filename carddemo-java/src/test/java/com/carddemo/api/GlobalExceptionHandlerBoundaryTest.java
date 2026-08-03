@@ -549,7 +549,7 @@ class GlobalExceptionHandlerBoundaryTest {
         @DisplayName("a failed submission completes the request, reproducing ignore-on-error")
         void aFailedSubmissionCompletesTheRequest() {
             JobSubmissionException failure = new JobSubmissionException(
-                    "JOBS.fifo", "0016", "0000", 3, new IllegalStateException("no route"));
+                    "carddemo-jobs.fifo", "0016", "0000", 3, new IllegalStateException("no route"));
 
             ResponseEntity<ErrorResponse> response = handler.handleJobSubmission(failure);
 
@@ -563,13 +563,13 @@ class GlobalExceptionHandlerBoundaryTest {
         @DisplayName("the queue name and the response codes do not reach the body")
         void theQueueNameAndCodesDoNotReachTheBody() {
             JobSubmissionException failure = new JobSubmissionException(
-                    "JOBS.fifo", "0016", "0084", 3, new IllegalStateException("no route"));
+                    "carddemo-jobs.fifo", "0016", "0084", 3, new IllegalStateException("no route"));
 
             ResponseEntity<ErrorResponse> response = handler.handleJobSubmission(failure);
 
             assertThat(response.getBody()).isNotNull();
             assertThat(response.getBody().message())
-                    .doesNotContain("JOBS.fifo")
+                    .doesNotContain("carddemo-jobs.fifo")
                     .doesNotContain("0016")
                     .doesNotContain("0084");
         }

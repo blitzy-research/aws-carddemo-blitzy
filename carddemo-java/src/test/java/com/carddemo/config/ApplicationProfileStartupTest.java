@@ -162,8 +162,8 @@ final class ApplicationProfileStartupTest {
     /** The property that selects a profile, set on the environment before the loader runs. */
     private static final String KEY_ACTIVE_PROFILES = "spring.profiles.active";
 
-    /** The one location every profile migrates from. */
-    private static final String MIGRATION_LOCATION = "classpath:db/migration";
+    /** The one location every profile migrates from, holding all four delivered scripts flat. */
+    private static final String SCHEMA_LOCATION = "classpath:db/migration";
 
     /** The pin that applies the schema and leaves both seeds pending. */
     private static final String SCHEMA_ONLY_TARGET = "2";
@@ -239,7 +239,7 @@ final class ApplicationProfileStartupTest {
             "spring.cloud.aws.sns.endpoint");
 
     /** The closed management surface, spelled once. */
-    private static final String CLOSED_EXPOSURE = "health,info,prometheus";
+    private static final String CLOSED_EXPOSURE = "health,info,metrics,prometheus";
 
     /**
      * One production requirement: an environment variable, the shipped key that reads it, and a value
@@ -295,7 +295,7 @@ final class ApplicationProfileStartupTest {
                     "management.otlp.tracing.endpoint",
                     "http://collector.internal:4318/v1/traces"),
             new RequiredSecret("CARDDEMO_SQS_QUEUE", "carddemo.aws.sqs.job-submission-queue",
-                    "JOBS.fifo"),
+                    "carddemo-jobs.fifo"),
             new RequiredSecret("CARDDEMO_JWT_SECRET", "carddemo.security.jwt.secret",
                     SUPPLIED_JWT_SECRET),
             new RequiredSecret("CARDDEMO_FIELD_ENCRYPTION_KEY",
@@ -329,9 +329,10 @@ final class ApplicationProfileStartupTest {
                                 + "it and by nothing else")
                         .isEqualTo(SCHEMA_ONLY_TARGET);
                 assertThat(bound.getLocations())
-                        .as("one location, so there is no second place a script could sit outside the "
-                                + "pin's reach")
-                        .containsExactly(MIGRATION_LOCATION);
+                        .as("the schema location alone, so the seed scripts are not resolved at all - "
+                                + "and not the shared parent classpath:db/migration, which Flyway would "
+                                + "scan recursively and which would therefore reach them")
+                        .containsExactly(SCHEMA_LOCATION);
                 assertThat(bound.isCleanDisabled())
                         .as("a production migration must not be able to drop the schema it manages")
                         .isTrue();
@@ -346,15 +347,15 @@ final class ApplicationProfileStartupTest {
                 FlywayProperties bound = context.getBean(FlywayProperties.class);
 
                 assertThat(bound.getTarget()).isEqualTo(SCHEMA_ONLY_TARGET);
-                assertThat(bound.getLocations()).containsExactly(MIGRATION_LOCATION);
+                assertThat(bound.getLocations()).containsExactly(SCHEMA_LOCATION);
                 assertThat(bound.isCleanDisabled()).isTrue();
             });
         }
 
-        @ParameterizedTest(name = "the {0} profile lifts the pin to the head")
+        @ParameterizedTest(name = "the {0} profile adds the seed location and lifts the pin to the head")
         @ValueSource(strings = {LOCAL, TEST})
-        @DisplayName("the two profiles that need reference rows resolve the head, which is the only way "
-                + "a seed is ever applied")
+        @DisplayName("the two profiles that need reference rows resolve BOTH the seed location and the "
+                + "head, which together is the only way a seed is ever applied")
         void theTwoSeedingProfilesResolveTheHead(final String profile) {
             runner(MigrationSettings.class, profile).run(context -> {
                 FlywayProperties bound = context.getBean(FlywayProperties.class);
@@ -363,7 +364,11 @@ final class ApplicationProfileStartupTest {
                         .as("%s must lift the pin explicitly; inheriting a lifted one would mean every "
                                 + "profile seeded", profile)
                         .isEqualTo(HEAD_TARGET);
-                assertThat(bound.getLocations()).containsExactly(MIGRATION_LOCATION);
+                assertThat(bound.getLocations())
+                        .as("%s resolves the same single location production resolves - the lifted pin "
+                                + "above is the ONLY difference, which is what makes the pin the "
+                                + "control rather than a directory", profile)
+                        .containsExactly(SCHEMA_LOCATION);
                 assertThat(bound.isCleanDisabled())
                         .as("%s iterates on migrations, so dropping and re-applying is permitted here "
                                 + "and only here", profile)
@@ -414,14 +419,37 @@ final class ApplicationProfileStartupTest {
                     .isEqualTo(PRODUCTION);
         }
 
-        @ParameterizedTest(name = "{0} resolves exactly one migration location")
+        @ParameterizedTest(name = "{0} resolves exactly the one delivered location, never a subdirectory")
         @ValueSource(strings = {PRODUCTION, LOCAL, TEST})
-        @DisplayName("every profile resolves one location, so no profile can see a script another "
-                + "cannot")
-        void everyProfileResolvesOneLocation(final String profile) {
+        @DisplayName("every profile resolves exactly the one delivered location, so the profiles differ "
+                + "in their ceiling alone and no document has drifted back to a directory split")
+        void everyProfileResolvesOnlyDeliveredLocations(final String profile) {
             runner(MigrationSettings.class, profile).run(context ->
                     assertThat(context.getBean(FlywayProperties.class).getLocations())
-                            .containsExactly(MIGRATION_LOCATION));
+                            .isNotEmpty()
+                            .allSatisfy(location -> assertThat(location)
+                                    .isEqualTo(SCHEMA_LOCATION)));
+        }
+
+        @Test
+        @DisplayName("the location production resolves is the location the code control admits, so "
+                + "neither half of the location control is silently doing nothing")
+        void theResolvedLocationIsTheLocationTheCodeAdmits() {
+            runner(MigrationSettings.class, PRODUCTION).run(context ->
+                    assertThat(context.getBean(FlywayProperties.class).getLocations())
+                            .as("FlywayConfig refuses a production profile resolving any location other "
+                                    + "than %s; a configured value naming a different one would leave "
+                                    + "the deployment refused at start-up rather than migrated",
+                                    FlywayConfig.SCHEMA_LOCATION)
+                            .containsExactly(FlywayConfig.SCHEMA_LOCATION));
+
+            assertThat(FlywayConfig.SCHEMA_LOCATION)
+                    .as("there is no second location: the delivered scripts are flat in one directory, "
+                            + "so a seeding profile differs from production in its CEILING alone. A "
+                            + "location naming a subdirectory would mean the withdrawn split had "
+                            + "returned")
+                    .doesNotContain("/schema")
+                    .doesNotContain("/seed");
         }
     }
 
@@ -686,7 +714,7 @@ final class ApplicationProfileStartupTest {
                         .isFalse();
                 assertThat(environment.getProperty(KEY_FLYWAY_TARGET)).isEqualTo(SCHEMA_ONLY_TARGET);
                 assertThat(environment.getProperty(KEY_FLYWAY_LOCATIONS))
-                        .isEqualTo(MIGRATION_LOCATION);
+                        .isEqualTo(SCHEMA_LOCATION);
             });
         }
 
@@ -852,7 +880,7 @@ final class ApplicationProfileStartupTest {
     private static List<Integer> deliveredMigrationVersions() {
         try {
             Resource[] found = new PathMatchingResourcePatternResolver()
-                    .getResources("classpath*:db/migration/V*__*.sql");
+                    .getResources("classpath*:db/migration/**/V*__*.sql");
             return Stream.of(found)
                     .map(Resource::getFilename)
                     .filter(name -> name != null)

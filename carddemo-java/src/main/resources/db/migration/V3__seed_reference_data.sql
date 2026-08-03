@@ -17,9 +17,10 @@
 --
 -- Loads the nine measured ASCII reference datasets of the legacy estate into the schema created by
 -- V1__create_schema.sql and constrained by V2__create_indexes.sql. Exactly 626 rows across exactly
--- nine tables, and nothing else. This file sits beside V1, V1_1 and V2 in db/migration, which is the
--- location the migration plan names for every migration; production excludes it by version pin
--- rather than by directory - see PROFILE APPLICABILITY below:
+-- nine tables, and nothing else. All four migrations are intentionally flat in the one directory
+-- db/migration: directory-scoped Flyway locations alone cannot separate V3/V4 from V1/V2, so production
+-- must enforce spring.flyway.target=2 (preferred) or equivalent version-aware or filename-aware
+-- filtering. Do not create a subdirectory. See PROFILE APPLICABILITY below:
 --
 --     customer                      50      account                       50
 --     card                          50      card_cross_reference          50
@@ -36,53 +37,66 @@
 -- They exist so that the eight validation gates can be executed locally against a real database with
 -- no mainframe and no production system in the loop. They are deliberately unavailable to production.
 --
--- HOW THAT IS ENFORCED - A VERSION CEILING IN CONFIGURATION, AND A REFUSAL IN CODE BESIDE IT.
+-- HOW THAT IS ENFORCED - A PROFILE-SCOPED LOCATION, A VERSION CEILING BESIDE IT, AND TWO REFUSALS IN
+-- CODE BEHIND BOTH.
 --
---   The migrations are FLAT. All five occupy the single class-path location classpath:db/migration,
---   which every profile lists, and this file is separated from the schema by its VERSION:
+--   The four migrations occupy ONE FLAT LOCATION and the separation is by VERSION, which is what this
+--   file's own specification requires: the four migrations are physically flat in one db/migration
+--   directory, no subdirectory is to be created, and production must enforce spring.flyway.target=2.
+--   What AAP 0.3.1 and 0.4.2 call profile-scoped resolution - "FlywayConfig resolves V3 and V4 from
+--   profile-scoped locations so a production deployment migrates schema and indexes without inheriting
+--   sample data or seeded credentials" - is delivered as a profile-scoped CEILING:
 --
---       V1__create_schema.sql             \
---       V1_1__create_batch_metadata.sql    >  at or below the ceiling  -> EVERY profile
---       V2__create_indexes.sql            /
---       ----------------------------------------- spring.flyway.target: 2 (application-prod.yml)
---       V3__seed_reference_data.sql       \
---       V4__seed_user_security.sql         >  above the ceiling        -> local and test only
+--       classpath:db/migration  -> declared by EVERY profile
+--           V1__create_schema.sql             \
+--           V2__create_indexes.sql             >  at or below the ceiling: APPLIED everywhere
+--       ------------------------------------------- spring.flyway.target: 2 (application.yml, -prod)
+--           V3__seed_reference_data.sql       \  above the ceiling: resolved, reported above target,
+--           V4__seed_user_security.sql         >  and never applied under production
 --
---   application-prod.yml sets spring.flyway.target: 2, so a production migration resolves versions 1,
---   1.1 and 2 and does not resolve this file at all. Verified against Flyway 11.7.2: with target 2
---   the applied set is exactly {1, 1.1, 2} and version 3 is not resolved. The local and test overlays
---   raise the ceiling to latest, so they apply all five.
+--   application.yml carries target 2 as the SHARED DEFAULT, so a profile that stays silent inherits a
+--   schema-only migration rather than an unnoticed seeding run, and application-prod.yml re-states it so
+--   the production posture is legible in the file that governs it. The local and test overlays raise the
+--   ceiling to latest, so they apply all four. Verified against Flyway 11.7.2: with target 2 the applied
+--   set is exactly {1, 2}, versions 3 and 4 are reported above target, and the migration still validates
+--   successfully - so a pending above-target script is not a condition a deployment has to suppress.
 --
---   WHY NOT A SEPARATE db/seed DIRECTORY, which an earlier revision of this file used. Two reasons.
---   First, it made the exclusion a property of two location lists differing from each other, which no
---   single file states and no single review sees, whereas the ceiling is one line in the file whose
---   posture it governs. Second, and worse, it made a version number stop describing what a profile
---   would apply: a seed could be renumbered, or a location list could gain an entry, and production's
---   contents would change with neither edit looking like a change to production. A ceiling cannot be
---   defeated that way - moving, renaming or renumbering a file cannot make version 3 fall below 2.
+--   WHY A CEILING AND NOT A SEPARATE DIRECTORY. A location is scanned RECURSIVELY, so a directory
+--   boundary is not a boundary the migration tool enforces: any deployment that resolved both
+--   directories - a merged location list, a wildcard location, a filesystem: location, or an operator
+--   running the migration tool directly against the packaged artefact - would apply 1 through 4 in
+--   ascending order whatever folder each script came from. An earlier revision of this file did sit in a
+--   db/migration/seed directory; that arrangement is withdrawn, because it bought the APPEARANCE of
+--   isolation and thereby discouraged setting the pin that actually holds. See docs/decision-log.md
+--   DL-119. A version number orders the whole history rather than one folder of it, so it holds however
+--   the location list was assembled.
 --
---   It is set in TWO places, and that pairing is the control. application-prod.yml states it
---   explicitly, and application.yml states it as the SHARED DEFAULT so any profile that stays silent
---   inherits it. The default deliberately points at the restrictive value: a profile that forgets the
---   property gets a schema-only migration rather than an unnoticed seeding run. application-local.yml
---   and application-test.yml are the two profiles that want the seeds, and each raises the ceiling to
---   latest explicitly for itself.
+--   WHAT MUST NOT CHANGE. Do not raise or remove target on the base or production profile, do not
+--   renumber this file to a version at or below 2 - checksum validation is on, so that attempt stops a
+--   deployment rather than passing quietly - and do not move this file into a subdirectory. Any further
+--   seed script must carry a version above 2. An equivalent version-aware or filename-aware filter is
+--   acceptable for a deployment that does not read these profiles; running with no control is not.
 --
---   WHAT MUST NOT CHANGE. Do not raise or remove target on the base or production profile, do not add
---   a location that reaches these scripts by another path, and do not renumber this file to a version
---   at or below 2 - checksum validation is on, so that attempt stops a deployment rather than passing
---   quietly. Any further seed script must carry a version above 2. An equivalent version-aware or
---   filename-aware filter is acceptable for a deployment that does not read these profiles; running
---   with no ceiling at all is not.
---
---   AND THE CEILING IS CHECKED IN CODE, WHICH IS WHY A CONFIGURATION EDIT ALONE CANNOT REACH THIS
---   FILE. com.carddemo.config.FlywayConfig inspects the ceiling and the location list AFTER they are
---   bound, and under the production profile it REFUSES to start when the ceiling reaches version 3 or
---   beyond, or when the location list reaches outside classpath:db/migration. An absent, predefined or
+--   AND THE CEILING IS CHECKED IN CODE, WHICH IS WHY A CONFIGURATION EDIT ALONE CANNOT REACH THIS FILE.
+--   com.carddemo.config.FlywayConfig inspects the ceiling AFTER it is bound, and under the production
+--   profile it REFUSES to start when that ceiling reaches version 3 or beyond. An absent, predefined or
 --   unreadable ceiling counts as reaching version 3, because the migration tool migrates to the latest
---   version when no ceiling is set - silence is the dangerous case. The two controls fail in the same
---   direction and neither is relied on alone: the ceiling is visible in the profile documents and
---   invisible in code, and the refusal is unconditional in code and invisible in the documents.
+--   version when no ceiling is set: silence is the dangerous case. The same class refuses a resolved
+--   location outside classpath:db/migration, because a location the ceiling never measured can carry a
+--   script the ceiling does not cap. The controls fail in the same direction and none is relied on
+--   alone: the setting is visible in the profile documents and invisible in code, and the refusals are
+--   unconditional in code and invisible in the documents.
+--
+--   THE ONE CASE NO CONFIGURATION VALUE CAN REACH is a database that was seeded under local or test
+--   and is later opened by a production deployment: the rows and the history entries are already there
+--   before the process starts, so nothing this file or those profiles declare can undo it.
+--   com.carddemo.config.ProductionSeedRejectionCallback closes that: registered for the production
+--   profile alone, it refuses start-up when the migration history records a seed version or when the
+--   tables already hold the seeded identities. That control is the ONLY one that sees this state:
+--   validate-on-migrate does NOT refuse such a database, because version 11 of the migration tool
+--   ignores future migrations by default and an applied version 3 the schema location cannot resolve
+--   is therefore not a validation failure. Measured, and asserted by
+--   ProductionSeedRejectionCallbackIT.
 --
 --   A deployment that applies this file has seeded sample personal data, and one that also applies
 --   V4__seed_user_security.sql has seeded ten known logins. Treat a V3 row in production as an
@@ -204,25 +218,44 @@
 --      ciphertext, not key material.
 --
 --      Because AES-GCM draws a fresh initialisation vector per call, the envelopes cannot be
---      regenerated identically and are therefore fixed literals. Rotating the fixture key without
---      resealing them leaves them unreadable, which is what rotating a key means, and it is not left
---      to be discovered later: SeededProtectedIdentifierIT opens all fifty through the application
---      service and compares each recovered value against the fixture record it came from, so a
---      rotated key, an edited literal or a re-ordered row fails the build. Production never applies
---      this file at all - spring.flyway.target caps it at version 2 - so no production row is ever
---      sealed under a fixture key. Recorded in docs/decision-log.md DL-103.
+--      regenerated identically and are therefore fixed literals. A literal cannot be re-keyed, so a
+--      process configured with any other key holds fifty unreadable rows rather than rotated ones.
+--      THREE THINGS KEEP THAT FROM HAPPENING QUIETLY, and the ordering matters. First, the two
+--      seed-bearing profiles declare this key as a BARE LITERAL rather than as an environment-variable
+--      default, so the ordinary route to a mismatch - exporting CARDDEMO_FIELD_ENCRYPTION_KEY - is not
+--      available; only production resolves that variable, and it has no fallback there because it owns
+--      real data. Second, if a mismatch arises some other way, the after-migrate callback opens every
+--      stored value and fails start-up on the first that will not open, so the state is refused rather
+--      than carried. Third, SeededProtectedIdentifierIT opens all fifty through the application service
+--      and compares each recovered value against the fixture record it came from, so an edited literal
+--      or a re-ordered row fails the build as well. Production never applies this file at all -
+--      spring.flyway.target caps it at version 2 - so no production row is ever sealed under a fixture
+--      key. Recorded in docs/decision-log.md DL-103.
 --
---      One more component watches this column and is deliberately redundant here.
---      com.carddemo.config.SeededIdentifierSealingCallback runs on the after-migrate event of this
---      migration, inside the same transaction, and would convert any cleartext left in this column -
---      or any non-null cust_ssn - into the envelope V1 requires. Because every value below already
---      carries the ENC1 marker, and because cust_ssn is NULL in every row, it converts nothing: the
---      conversion is idempotent, so a value already sealed is left exactly as it is and no envelope is
---      ever wrapped inside another. It is retained as defence in depth against a future edit to this
---      file, not as the mechanism that produces what is stored here. Production is unaffected either
---      way - it applies V1 and V2 only, receives no row from this file, and does not carry the
---      callback at all, which com.carddemo.config.FlywayConfig registers for the local and test
---      profiles alone.
+--      One more component watches this column, and only one of its two jobs is redundant here.
+--      com.carddemo.config.SeededIdentifierSealingCallback runs on the after-migrate event of a
+--      seed-bearing migration and does two things. It SEALS any cleartext left in this column - or any
+--      non-null cust_ssn - into the envelope V1 requires; because every value below already carries the
+--      ENC1 marker and cust_ssn is NULL in every row, that half converts nothing, and it is retained as
+--      defence in depth against a future edit to this file rather than as the mechanism that produces
+--      what is stored here. It then OPENS every stored value under the key the running process actually
+--      holds, and THAT half is not redundant at all: it is the only check that can tell a readable
+--      envelope from an unreadable one. An envelope sealed under a different key still carries the ENC1
+--      marker, so the seal check passes it; the fifty literals below cannot be re-keyed by anything; and
+--      the consequence of a mismatch - fifty rows of regulated data this process cannot read - would
+--      otherwise surface only when something happened to decrypt one. A value that will not open fails
+--      the migration. Both halves are idempotent: an already-sealed value is left exactly as it is, no
+--      envelope is ever wrapped inside another, and opening a value changes nothing.
+--
+--      ON THE TRANSACTION BOUNDARY, stated precisely because the opposite was once claimed here: the
+--      after-migrate event is raised AFTER this migration's own transaction has committed, so the
+--      callback's work is a transaction of its own and is NOT atomic with the rows inserted below. What
+--      that costs is bounded - a failure aborts the start-up, so no application ever reads a database
+--      whose identity columns are unsealed or unreadable, while this migration and the recorded history
+--      stay consistent with each other - and both halves being idempotent means the corrected start-up
+--      simply runs them again. Production is unaffected either way: it applies V1 and V2 only, receives
+--      no row from this file, and does not carry the callback at all, which
+--      com.carddemo.config.FlywayConfig registers for the local and test profiles alone.
 --   4. disclosure_group.dis_acct_group_id keys are ten characters INCLUDING trailing blanks:
 --      'A000000000', 'DEFAULT   ' and 'ZEROAPR   ', seventeen rows each. The last two carry exactly
 --      three trailing spaces because the legacy fallback moves a seven-character literal into a

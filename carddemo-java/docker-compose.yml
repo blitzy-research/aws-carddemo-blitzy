@@ -95,7 +95,7 @@ services:
       # transient-data resource name, suffixed only because a FIFO queue must be - see
       # docs/decision-log.md DL-092.
       CARDDEMO_S3_BUCKET: ${CARDDEMO_S3_BUCKET:-carddemo-batch-staging}
-      CARDDEMO_SQS_QUEUE: ${CARDDEMO_SQS_QUEUE:-JOBS.fifo}
+      CARDDEMO_SQS_QUEUE: ${CARDDEMO_SQS_QUEUE:-carddemo-jobs.fifo}
       CARDDEMO_SQS_MESSAGE_GROUP_ID: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:-carddemo-job-submission}
       CARDDEMO_SNS_TOPIC: ${CARDDEMO_SNS_TOPIC:-carddemo-job-notifications}
     ports:

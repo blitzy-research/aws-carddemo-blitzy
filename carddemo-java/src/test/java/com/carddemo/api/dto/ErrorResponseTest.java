@@ -18,6 +18,7 @@ package com.carddemo.api.dto;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -1112,8 +1113,9 @@ class ErrorResponseTest {
         String payloadWithAnExtraProperty = """
                 {"message":"%s",\
                 "fieldErrors":[{"fieldName":"%s","screenFieldId":"%s","state":"MISSING"}],\
-                "aPropertyThisEndpointDoesNotConsume":"echoed back by a client"}"""
-                .formatted(SUMMARY, PROP_ACCT_STATUS, SCREEN_ACCT_STATUS);
+                "aPropertyThisEndpointDoesNotConsume":"echoed back by a client"}""";
+        payloadWithAnExtraProperty = String.format(Locale.ROOT, payloadWithAnExtraProperty,
+                SUMMARY, PROP_ACCT_STATUS, SCREEN_ACCT_STATUS);
 
         ErrorResponse received = moduleEquivalentMapper()
                 .readValue(payloadWithAnExtraProperty, ErrorResponse.class);

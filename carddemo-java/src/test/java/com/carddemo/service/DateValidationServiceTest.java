@@ -19,6 +19,7 @@ package com.carddemo.service;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.EnumSet;
+import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -705,7 +706,7 @@ final class DateValidationServiceTest {
                 }
                 final SubprogramResult synthesised = new SubprogramResult(feedback,
                         ORACLE_FAILURE_SEVERITY,
-                        String.format("%04d", feedback.getMessageNumber()),
+                        String.format(Locale.ROOT, "%04d", feedback.getMessageNumber()),
                         ORACLE_TEXT_DATE_IS_INVALID,
                         " ".repeat(ORACLE_LINKAGE_TEXT_WIDTH),
                         " ".repeat(ORACLE_LINKAGE_TEXT_WIDTH));
@@ -754,7 +755,7 @@ final class DateValidationServiceTest {
             for (final DateFeedback feedback : DateFeedback.values()) {
                 final SubprogramResult result = new SubprogramResult(feedback,
                         ORACLE_FAILURE_SEVERITY,
-                        String.format("%04d", feedback.getMessageNumber()),
+                        String.format(Locale.ROOT, "%04d", feedback.getMessageNumber()),
                         ORACLE_TEXT_DATE_IS_INVALID,
                         " ".repeat(ORACLE_LINKAGE_TEXT_WIDTH),
                         " ".repeat(ORACLE_LINKAGE_TEXT_WIDTH));
@@ -1011,7 +1012,7 @@ final class DateValidationServiceTest {
                 if (century == ORACLE_THIS_CENTURY || century == ORACLE_LAST_CENTURY) {
                     continue;
                 }
-                final String candidate = String.format("%02d220101", century);
+                final String candidate = String.format(Locale.ROOT, "%02d220101", century);
 
                 assertThat(service.validateCcyymmddDate(candidate).yearFlag())
                         .as("century %02d", century)
@@ -1075,7 +1076,7 @@ final class DateValidationServiceTest {
         @DisplayName("all twelve months in range are accepted")
         void allTwelveMonthsAreAccepted() {
             for (int month = 1; month <= 12; month++) {
-                final String candidate = String.format("2022%02d01", month);
+                final String candidate = String.format(Locale.ROOT, "2022%02d01", month);
 
                 assertThat(service.validateCcyymmddDate(candidate).monthFlag())
                         .as("month %02d", month)
@@ -1156,7 +1157,7 @@ final class DateValidationServiceTest {
         @DisplayName("every day from one to thirty-one is accepted by this stage in a 31-day month")
         void everyDayInRangeIsAcceptedByThisStage() {
             for (int day = 1; day <= 31; day++) {
-                final String candidate = String.format("202201%02d", day);
+                final String candidate = String.format(Locale.ROOT, "202201%02d", day);
 
                 assertThat(service.validateCcyymmddDate(candidate).dayFlag())
                         .as("day %02d of January", day)
@@ -1199,7 +1200,7 @@ final class DateValidationServiceTest {
         @DisplayName("the seven 31-day months are exactly those the condition name enumerates")
         void theSevenThirtyOneDayMonthsAreTheEnumeratedOnes() {
             for (int month = 1; month <= 12; month++) {
-                final String candidate = String.format("2022%02d31", month);
+                final String candidate = String.format(Locale.ROOT, "2022%02d31", month);
                 final DateEditResult result = service.validateCcyymmddDate(candidate);
 
                 if (ORACLE_THIRTY_ONE_DAY_MONTHS.contains(month)) {
@@ -1228,7 +1229,7 @@ final class DateValidationServiceTest {
         @DisplayName("only February rejects a 30th; the other short months reject only the 31st")
         void onlyFebruaryRejectsAThirtieth() {
             for (int month = 1; month <= 12; month++) {
-                final String candidate = String.format("2022%02d30", month);
+                final String candidate = String.format(Locale.ROOT, "2022%02d30", month);
                 final DateEditResult result = service.validateCcyymmddDate(candidate);
 
                 if (month == ORACLE_FEBRUARY) {
@@ -2902,7 +2903,7 @@ final class DateValidationServiceTest {
                 for (int month = 0; month <= 13; month++) {
                     for (int day = 0; day <= 32; day++) {
                         final String candidate =
-                                String.format("%04d%02d%02d", year, month, day);
+                                String.format(Locale.ROOT, "%04d%02d%02d", year, month, day);
                         if (encodedBytes(candidate) != ORACLE_CCYYMMDD_WIDTH) {
                             continue;
                         }

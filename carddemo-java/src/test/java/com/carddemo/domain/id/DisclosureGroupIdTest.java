@@ -27,6 +27,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -435,7 +436,7 @@ class DisclosureGroupIdTest {
             final Set<DisclosureGroupId> distinct = new HashSet<>();
             for (final String groupId : SEEDED_GROUP_IDS) {
                 for (int row = 1; row <= SEEDED_ROWS_PER_GROUP; row++) {
-                    distinct.add(key(groupId, TYPE_CODE, String.format("%04d", row)));
+                    distinct.add(key(groupId, TYPE_CODE, String.format(Locale.ROOT, "%04d", row)));
                 }
             }
 

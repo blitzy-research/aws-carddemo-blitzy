@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -1220,7 +1221,7 @@ class CobolStringUtilsTest {
         void theAsciiFoldIsUnchangedUnderATurkishDefaultLocale() {
             // Turkish is the decisive case rather than an arbitrary one. Under tr-TR the JDK folds
             // the lower-case dotted i to U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE, which is not
-            // an ASCII byte at all, so an implementation built on String.toUpperCase() would emit a
+            // an ASCII byte at all, so an implementation built on String.toUpperCase(Locale.ROOT) would emit a
             // two-byte character into a field whose width is counted in bytes. The 26-character
             // table this class uses cannot do that, and this test is what proves the difference
             // rather than assuming it.
@@ -1244,7 +1245,7 @@ class CobolStringUtilsTest {
         @Test
         @DisplayName("zero-fill emits ASCII zeros under an Arabic-Indic digit locale, where a locale-sensitive formatter would emit Arabic-Indic digits")
         void zeroFillEmitsAsciiZerosUnderAnArabicIndicDigitLocale() {
-            // Under a locale whose default numbering system is arab, String.format("%03d", 7) emits
+            // Under a locale whose default numbering system is arab, String.format(Locale.ROOT, "%03d", 7) emits
             // U+0660 U+0660 U+0667. This primitive pads rather than formats, so it cannot, and that
             // is the property worth pinning: the padding byte has to be ASCII zero, not "the locale's
             // zero digit".
@@ -1336,14 +1337,14 @@ class CobolStringUtilsTest {
      */
 
     /**
-     * Turkish, the one locale in which {@code String.toUpperCase()} folds ASCII {@code i} to a
+     * Turkish, the one locale in which {@code String.toUpperCase(Locale.ROOT)} folds ASCII {@code i} to a
      * non-ASCII character.
      */
     private static final java.util.Locale TURKISH = java.util.Locale.forLanguageTag("tr-TR");
 
     /**
      * A locale whose default numbering system emits Arabic-Indic digits, under which
-     * {@code String.format("%03d", 7)} produces {@code U+0660 U+0660 U+0667}.
+     * {@code String.format(Locale.ROOT, "%03d", 7)} produces {@code U+0660 U+0660 U+0667}.
      */
     private static final java.util.Locale ARABIC_INDIC =
             java.util.Locale.forLanguageTag("ar-EG-u-nu-arab");

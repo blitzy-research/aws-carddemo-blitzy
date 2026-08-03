@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -584,7 +585,7 @@ class AccountBaselineTest {
 
             for (int row = 1; row <= FIXTURE_ROWS; row++) {
                 final Account seeded = new Account();
-                seeded.setAcctId(String.format("%011d", row));
+                seeded.setAcctId(String.format(Locale.ROOT, "%011d", row));
                 accounts.add(seeded);
             }
 

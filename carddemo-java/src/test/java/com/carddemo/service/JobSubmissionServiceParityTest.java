@@ -104,7 +104,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 class JobSubmissionServiceParityTest {
 
     /** A first-in-first-out queue name, which the constructor requires. */
-    private static final String QUEUE_NAME = "JOBS.fifo";
+    private static final String QUEUE_NAME = "carddemo-jobs.fifo";
 
     /** The message group that carries one submission's cards in order. */
     private static final String MESSAGE_GROUP_ID = "carddemo-job-submission";

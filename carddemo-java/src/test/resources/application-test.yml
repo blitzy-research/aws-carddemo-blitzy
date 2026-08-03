@@ -53,11 +53,15 @@ spring:
 
   flyway:
     enabled: true
-    # One location holds all five scripts. The shared baseline pins spring.flyway.target at "2"; this
-    # overlay lifts the pin to latest, and that is what admits V3__seed_reference_data.sql and
-    # V4__seed_user_security.sql - the reference-data and sign-on seeds the gate fixtures assert
-    # against. Production re-asserts target: 2 and so applies only V1, V1_1 and V2. Do not lower this
-    # ceiling: it would leave the fixtures asserting against empty result sets.
+    # ONE SETTING ADMITS THE SEEDS: target. All four delivered scripts sit flat in the one location
+    # below - V1__create_schema.sql and V2__create_indexes.sql build the schema, and
+    # V3__seed_reference_data.sql and V4__seed_user_security.sql carry the reference-data and sign-on
+    # seeds the gate fixtures assert against. Nothing separates them but the version number, because the
+    # migration specifications for V3 and V4 require the flat layout and direct that no subdirectory be
+    # created; see docs/decision-log.md DL-119. The shared baseline pins spring.flyway.target at "2", so
+    # the seeds are resolved and reported above target; this overlay lifts the pin to latest so they are
+    # applied. Production re-asserts target: 2 and applies only V1 and V2. Do not lower the pin here -
+    # that leaves every fixture asserting against an empty result set.
     locations: classpath:db/migration
     target: latest
     clean-disabled: false
@@ -66,9 +70,13 @@ spring:
     job:
       enabled: false
     jdbc:
-      # `never` under every profile. V1_1__create_batch_metadata.sql owns the six framework metadata
-      # tables and three sequences, so a suite run exercises the same migration production depends on.
-      initialize-schema: never
+      # `always` under every profile, inherited from the shared baseline and restated here because this
+      # document is the one a suite run actually reads. Spring Batch provisions its own six metadata
+      # tables and three sequences from its bundled PostgreSQL script - AAP 0.3.1 assigns that metadata
+      # to the framework and the eleven application tables to V1__create_schema.sql - so a suite run
+      # exercises exactly the provisioning path a deployment uses. The initialiser is idempotent, so a
+      # re-used database is unaffected.
+      initialize-schema: always
 
   # AN AWS ENDPOINT IS NOT LIKE A DATABASE ADDRESS AND MUST BE DECLARED. An absent datasource URL
   # fails closed; an absent AWS endpoint does NOT - the SDK falls back to the REGION'S REAL PUBLIC
@@ -143,7 +151,7 @@ carddemo:
       # the operator-visible message text still names the transient-data queue as plain JOBS. The
       # 80-byte record width and the ignore-on-error tolerance are deliberately not keys here -
       # both are enforced in the publisher instead. See docs/decision-log.md DL-092 and DL-094.
-      job-submission-queue: JOBS.fifo
+      job-submission-queue: carddemo-jobs.fifo
       message-group-id: carddemo-job-submission
     sns:
       job-notification-topic: carddemo-job-notifications

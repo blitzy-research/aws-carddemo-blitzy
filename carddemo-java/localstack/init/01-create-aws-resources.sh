@@ -56,7 +56,7 @@
 # submission with nothing in the start-up log naming the cause.
 #
 #   carddemo-batch-staging       object-store bucket
-#   JOBS.fifo                    submission queue - the .fifo suffix is REQUIRED, not decoration:
+#   carddemo-jobs.fifo           submission queue - the .fifo suffix is REQUIRED, not decoration:
 #                                the queue service rejects a first-in-first-out queue whose name
 #                                omits it, which is a start-up failure rather than a style choice
 #   carddemo-job-notifications   notification topic
@@ -255,7 +255,7 @@ require_bounded_value() {
 # environment still produces the agreed stack.
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 BUCKET="${CARDDEMO_S3_BUCKET:-carddemo-batch-staging}"
-QUEUE="${CARDDEMO_SQS_QUEUE:-JOBS.fifo}"
+QUEUE="${CARDDEMO_SQS_QUEUE:-carddemo-jobs.fifo}"
 MESSAGE_GROUP_ID="${CARDDEMO_SQS_MESSAGE_GROUP_ID:-carddemo-job-submission}"
 TOPIC="${CARDDEMO_SNS_TOPIC:-carddemo-job-notifications}"
 
@@ -360,6 +360,17 @@ fi
 # .fifo - the only dot it may carry. That is not a style check: the queue service refuses to make a
 # first-in-first-out queue whose name omits the suffix, so a name without it cannot produce the
 # ordering the append-disposition contract below depends on. Refusing it here names the cause.
+#
+# THE THREE RULES BELOW ARE ALSO STATED IN JAVA, AND THE TWO STATEMENTS MUST AGREE.
+# The producer that publishes to this queue - com.carddemo.service.JobSubmissionService - holds its
+# configured destination to the same maximum, the same character set and the same suffix, in
+# com.carddemo.util.SqsNamingRules. That is deliberate: this script provisions the queue but never
+# publishes, so a rule enforced only here would leave the producer free to accept a name this script
+# would refuse, and such a name fails every publish while the producer's ignore-on-error contract
+# reports the failure as tolerable. If you change 80, 128, the [A-Za-z0-9._-] set or the .fifo
+# requirement here, change SqsNamingRules to match; the numbers below are read out of this file and
+# compared against the Java constants by LocalStackBootstrapContractTest, so a one-sided edit fails
+# the build rather than drifting silently. See docs/decision-log.md DL-117.
 require_bounded_value 'the queue name' "${QUEUE}" 80
 case "${QUEUE}" in
   *[!A-Za-z0-9._-]*)

@@ -28,6 +28,7 @@ import java.io.Serializable;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -415,7 +416,7 @@ class DisclosureGroupIdBaselineTest {
             for (final String group : FIXTURE_GROUPS) {
                 for (int category = 1; category <= FIXTURE_ROWS_PER_GROUP; category++) {
                     keys.add(new DisclosureGroupId(group, PURCHASE_TYPE,
-                            String.format("%04d", category)));
+                            String.format(Locale.ROOT, "%04d", category)));
                 }
             }
 

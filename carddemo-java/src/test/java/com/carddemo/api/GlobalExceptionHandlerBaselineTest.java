@@ -702,7 +702,7 @@ class GlobalExceptionHandlerBaselineTest {
                 + "ignores write errors and the transaction continues")
         void theStatusIsOkBecauseTheLegacyQueueIgnoresErrors() {
             final ResponseEntity<ErrorResponse> response = handler.handleJobSubmission(
-                    new JobSubmissionException("JOBS.fifo", "16", "13", 7,
+                    new JobSubmissionException("carddemo-jobs.fifo", "16", "13", 7,
                             new IllegalStateException("publish refused")));
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -715,7 +715,7 @@ class GlobalExceptionHandlerBaselineTest {
                 + "reporting transaction shows when the queue write fails")
         void theBodyCarriesTheLegacyFailureTextVerbatim() {
             final ErrorResponse body = handler.handleJobSubmission(
-                    new JobSubmissionException("JOBS.fifo", "16", "13", 7,
+                    new JobSubmissionException("carddemo-jobs.fifo", "16", "13", 7,
                             new IllegalStateException("publish refused"))).getBody();
 
             assertThat(body).isNotNull();
@@ -728,11 +728,11 @@ class GlobalExceptionHandlerBaselineTest {
                 + "diagnostics and none of them reaches the body")
         void theDiagnosticContextNeverReachesTheBody() {
             final ErrorResponse body = handler.handleJobSubmission(
-                    new JobSubmissionException("JOBS.fifo", "16", "13", 7,
+                    new JobSubmissionException("carddemo-jobs.fifo", "16", "13", 7,
                             new IllegalStateException("publish refused"))).getBody();
 
             assertThat(body).isNotNull();
-            assertThat(body.message()).doesNotContain("JOBS.fifo");
+            assertThat(body.message()).doesNotContain("carddemo-jobs.fifo");
             assertThat(body.message()).doesNotContain("16");
             assertThat(body.message()).doesNotContain("13");
             assertThat(body.fieldErrors()).isEmpty();
@@ -744,10 +744,10 @@ class GlobalExceptionHandlerBaselineTest {
                 + "whole-publish failure and a per-card failure look the same to the client")
         void aFailureWithNoCardOrdinalIsHandledIdentically() {
             final ResponseEntity<ErrorResponse> withoutOrdinal = handler.handleJobSubmission(
-                    new JobSubmissionException("JOBS.fifo", "16", "13",
+                    new JobSubmissionException("carddemo-jobs.fifo", "16", "13",
                             new IllegalStateException("publish refused")));
             final ResponseEntity<ErrorResponse> withOrdinal = handler.handleJobSubmission(
-                    new JobSubmissionException("JOBS.fifo", "16", "13", 3,
+                    new JobSubmissionException("carddemo-jobs.fifo", "16", "13", 3,
                             new IllegalStateException("publish refused")));
 
             assertThat(withoutOrdinal.getStatusCode()).isEqualTo(withOrdinal.getStatusCode());

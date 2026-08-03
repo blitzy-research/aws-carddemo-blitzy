@@ -26,6 +26,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -116,11 +118,39 @@ class SeededIdentifierSealingCallbackTest {
     private static void scriptRows(final Connection connection, final PreparedStatement update,
             final String[] keys, final String[] nationals, final String[] governments)
             throws SQLException {
+        scriptRead(connection, keys, nationals, governments);
+        when(connection.prepareStatement(anyString())).thenReturn(update);
+    }
+
+    /**
+     * Wraps a connection in the minimal migration context the callback reads.
+     *
+     * @param connection the connection the context supplies
+     * @return a context answering that connection and nothing else
+     */
+    private static org.flywaydb.core.api.callback.Context contextOver(final Connection connection) {
+        final org.flywaydb.core.api.callback.Context context =
+                mock(org.flywaydb.core.api.callback.Context.class);
+        when(context.getConnection()).thenReturn(connection);
+        return context;
+    }
+
+    /**
+     * Scripts the read half only, for the assertions that drive one pass directly rather than through
+     * {@code handle}.
+     *
+     * @param keys        the customer keys, in read order
+     * @param nationals   the national-identifier values, in read order
+     * @param governments the government-identifier values, in read order
+     * @param connection  the mocked connection to script
+     * @throws SQLException never; declared because the mocked methods declare it
+     */
+    private static void scriptRead(final Connection connection, final String[] keys,
+            final String[] nationals, final String[] governments) throws SQLException {
         final Statement select = mock(Statement.class);
         final ResultSet rows = mock(ResultSet.class);
         when(connection.createStatement()).thenReturn(select);
         when(select.executeQuery(anyString())).thenReturn(rows);
-        when(connection.prepareStatement(anyString())).thenReturn(update);
 
         final Boolean[] remaining = new Boolean[keys.length];
         for (int index = 0; index < keys.length; index++) {
@@ -178,10 +208,17 @@ class SeededIdentifierSealingCallbackTest {
         }
 
         @Test
-        @DisplayName("the pass runs inside the migration transaction, so a half-converted table "
-                + "cannot be left behind")
-        void thePassRunsInsideTheMigrationTransaction() {
-            assertThat(callback.canHandleInTransaction(Event.AFTER_MIGRATE, null)).isTrue();
+        @DisplayName("the pass elects a transaction of its OWN, which makes it all-or-nothing within "
+                + "itself and is not atomicity with the seeds it inspects")
+        void thePassRunsInTransactionOfItsOwn() {
+            assertThat(callback.canHandleInTransaction(Event.AFTER_MIGRATE, null))
+                    .as("returning true is what keeps the pass from leaving half the rows converted. "
+                            + "It does NOT make the pass atomic with the seed migration, and no return "
+                            + "value here could: the after-migrate event is raised after the "
+                            + "migration's own transaction has committed. The class documentation used "
+                            + "to claim otherwise, and this assertion's name is deliberately the "
+                            + "narrower claim so the two cannot drift apart again")
+                    .isTrue();
         }
 
         @Test
@@ -253,6 +290,35 @@ class SeededIdentifierSealingCallbackTest {
             assertThat(encryption.reveal(
                     SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD, national.getValue()))
                     .isEqualTo(CLEARTEXT_NATIONAL_IDENTIFIER);
+        }
+
+        @Test
+        @DisplayName("a PARTIALLY sealed row converts only the unsealed column and carries the sealed "
+                + "one through byte for byte")
+        void aPartiallySealedRowConvertsOnlyTheUnsealedColumn() throws SQLException {
+            final String alreadySealed = encryption.protect(
+                    SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD,
+                    CLEARTEXT_GOVERNMENT_IDENTIFIER);
+            final Connection connection = mock(Connection.class);
+            final PreparedStatement update = mock(PreparedStatement.class);
+            scriptRows(connection, update,
+                    new String[] {FIRST_CUSTOMER_KEY},
+                    new String[] {CLEARTEXT_NATIONAL_IDENTIFIER},
+                    new String[] {alreadySealed});
+
+            assertThat(callback.seal(connection))
+                    .as("one of the row's two values needed converting, so the count is one and not "
+                            + "two: a row is not all-or-nothing, each column is decided on its own")
+                    .isEqualTo(1);
+
+            final ArgumentCaptor<String> government = ArgumentCaptor.forClass(String.class);
+            verify(update).setString(eq(GOVERNMENT_PARAMETER), government.capture());
+            assertThat(government.getValue())
+                    .as("the column that was already sealed must be written back UNCHANGED. Re-sealing "
+                            + "it would wrap an envelope inside an envelope, and the encryption service "
+                            + "refuses that outright, so a partially converted row would otherwise turn "
+                            + "the next start-up into a failure")
+                    .isEqualTo(alreadySealed);
         }
 
         @Test
@@ -332,6 +398,218 @@ class SeededIdentifierSealingCallbackTest {
     }
 
     @Nested
+    @DisplayName("the key invariant - a stored value must OPEN, not merely look like an envelope")
+    class TheKeyInvariant {
+
+        /**
+         * A second Base64 key, decoding to thirty-two bytes and different from {@link #TEST_KEY}. It
+         * stands in for an overridden or rotated key: the state the seed-bearing profiles now prevent
+         * by declaring their key as a bare literal, and that this invariant refuses however else it
+         * arises.
+         */
+        private static final String FOREIGN_KEY = "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8=";
+
+        @Test
+        @DisplayName("an envelope sealed under a FOREIGN key is refused, and the envelope-marker check "
+                + "is proved blind to it in the same test")
+        void anEnvelopeSealedUnderFOREIGNKeyIsRefused() throws SQLException {
+            final String foreignEnvelope = new SensitiveFieldEncryptionService(FOREIGN_KEY)
+                    .protect(SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD,
+                            CLEARTEXT_GOVERNMENT_IDENTIFIER);
+            assertThat(encryption.isProtected(foreignEnvelope))
+                    .as("THE PRECONDITION THAT MAKES THIS INVARIANT NECESSARY. The shape check answers "
+                            + "true for a value this process cannot read, so sealing alone would pass "
+                            + "the row along and nothing would object until something decrypted it")
+                    .isTrue();
+
+            final Connection connection = mock(Connection.class);
+            scriptRead(connection, new String[] {FIRST_CUSTOMER_KEY}, new String[] {null},
+                    new String[] {foreignEnvelope});
+
+            assertThatExceptionOfType(FlywayException.class)
+                    .isThrownBy(() -> callback.verifyEveryStoredValueOpens(connection))
+                    .withMessageContaining("govt_issued_id")
+                    .withMessageContaining(
+                            SensitiveFieldEncryptionService.FIELD_ENCRYPTION_KEY_PROPERTY);
+        }
+
+        @Test
+        @DisplayName("the refusal names the column and the property, and never the value, the cleartext, "
+                + "the key or the row - decision DL-041")
+        void theRefusalNamesNeitherValueNorKey() throws SQLException {
+            final String foreignEnvelope = new SensitiveFieldEncryptionService(FOREIGN_KEY)
+                    .protect(SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD,
+                            CLEARTEXT_GOVERNMENT_IDENTIFIER);
+            final Connection connection = mock(Connection.class);
+            scriptRead(connection, new String[] {FIRST_CUSTOMER_KEY}, new String[] {null},
+                    new String[] {foreignEnvelope});
+
+            assertThatExceptionOfType(FlywayException.class)
+                    .isThrownBy(() -> callback.verifyEveryStoredValueOpens(connection))
+                    .satisfies(refusal -> {
+                        final StringWriter trace = new StringWriter();
+                        refusal.printStackTrace(new PrintWriter(trace));
+                        assertThat(trace.toString())
+                                .as("the whole chain is inspected, not only the top message: a cause "
+                                        + "carrying the value would publish it just as surely")
+                                .doesNotContain(CLEARTEXT_GOVERNMENT_IDENTIFIER)
+                                .doesNotContain(foreignEnvelope)
+                                .doesNotContain(FOREIGN_KEY)
+                                .doesNotContain(TEST_KEY);
+                        assertThat(refusal.getMessage())
+                                .doesNotContain(FIRST_CUSTOMER_KEY)
+                                .doesNotContain("\r")
+                                .doesNotContain("\n");
+                    });
+        }
+
+        @Test
+        @DisplayName("a SEEDED-STYLE unbound envelope opens, which the column-bound reading would have "
+                + "refused - so the check is authentication under the key and not the binding")
+        void anUnboundEnvelopeOpens() throws SQLException {
+            final String seededStyle = encryption.protect(CLEARTEXT_GOVERNMENT_IDENTIFIER);
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("THE REASON THIS INVARIANT CANNOT BE THE BOUND READING. All fifty envelopes in "
+                            + "V3__seed_reference_data.sql are produced in this unbound form, precisely "
+                            + "so the seeded form stays distinguishable from the callback's; reading "
+                            + "them through the column binding refuses every one of them, as here")
+                    .isThrownBy(() -> encryption.reveal(
+                            SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD,
+                            seededStyle))
+                    .withMessageContaining("field binding");
+
+            final Connection connection = mock(Connection.class);
+            scriptRead(connection, new String[] {FIRST_CUSTOMER_KEY}, new String[] {null},
+                    new String[] {seededStyle});
+
+            assertThat(callback.verifyEveryStoredValueOpens(connection))
+                    .as("and the key invariant accepts it, because it authenticates under the "
+                            + "configured key, which is the whole of what this invariant asserts")
+                    .isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("an envelope written for the OTHER column still opens, because the binding is a "
+                + "separate invariant enforced where a value is read into the domain")
+        void anEnvelopeBoundToTheOtherColumnStillOpens() throws SQLException {
+            final String misbound = encryption.protect(
+                    SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD,
+                    CLEARTEXT_GOVERNMENT_IDENTIFIER);
+            final Connection connection = mock(Connection.class);
+            scriptRead(connection, new String[] {FIRST_CUSTOMER_KEY}, new String[] {null},
+                    new String[] {misbound});
+
+            assertThat(callback.verifyEveryStoredValueOpens(connection))
+                    .as("PINS A DELIBERATE BOUNDARY. It decrypts under this key, so the key invariant "
+                            + "is satisfied and this pass accepts it. Refusing it here would require "
+                            + "the bound reading, which would refuse all fifty seeded rows instead - so "
+                            + "cross-column binding is checked by the service at the point of read, not "
+                            + "by this migration-time key check")
+                    .isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("both envelope forms open together and every present value is counted, while an "
+                + "absent one is not")
+        void everyValueUnderTheConfiguredKeyOpens() throws SQLException {
+            final Connection connection = mock(Connection.class);
+            scriptRead(connection,
+                    new String[] {FIRST_CUSTOMER_KEY, SECOND_CUSTOMER_KEY},
+                    new String[] {
+                        encryption.protect(SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD,
+                                CLEARTEXT_NATIONAL_IDENTIFIER),
+                        null},
+                    new String[] {
+                        encryption.protect(CLEARTEXT_GOVERNMENT_IDENTIFIER),
+                        encryption.protect(
+                                SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD,
+                                CLEARTEXT_GOVERNMENT_IDENTIFIER)});
+
+            assertThat(callback.verifyEveryStoredValueOpens(connection))
+                    .as("three values are present across the two rows - one seeded-style unbound "
+                            + "government identifier, one column-bound one, and one bound national "
+                            + "identifier - and the absent national identifier of the second row is not "
+                            + "a value and is not counted")
+                    .isEqualTo(3);
+        }
+
+        @Test
+        @DisplayName("handle runs BOTH passes: it converts what needs converting and then opens what is "
+                + "stored, so neither invariant depends on the other being invoked separately")
+        void handleRunsBothPasses() throws SQLException {
+            final Connection connection = mock(Connection.class);
+            final PreparedStatement update = mock(PreparedStatement.class);
+            scriptRows(connection, update,
+                    new String[] {FIRST_CUSTOMER_KEY},
+                    new String[] {CLEARTEXT_NATIONAL_IDENTIFIER},
+                    new String[] {CLEARTEXT_GOVERNMENT_IDENTIFIER});
+
+            callback.handle(Event.AFTER_MIGRATE, contextOver(connection));
+
+            verify(update).executeBatch();
+            // Two reads on the one connection: the seal pass reads to decide what to convert, and the
+            // key pass reads back to open what is stored. A handle that ran only the first would leave
+            // the key invariant unenforced wherever it matters most, since handle is the only entry
+            // point the migration tool calls.
+            verify(connection, times(2)).createStatement();
+        }
+
+        @Test
+        @DisplayName("an absent or blank value is not a value: it is neither opened nor counted, which "
+                + "is the same rule the seal pass applies")
+        void anAbsentOrBlankValueIsNotAValue() throws SQLException {
+            final Connection connection = mock(Connection.class);
+            scriptRead(connection, new String[] {FIRST_CUSTOMER_KEY}, new String[] {null},
+                    new String[] {"   "});
+
+            assertThat(callback.verifyEveryStoredValueOpens(connection))
+                    .as("a blank would not open, but the seal pass leaves a blank alone, so refusing "
+                            + "one here would make the two passes contradict each other")
+                    .isZero();
+        }
+
+        @Test
+        @DisplayName("an empty table is a complete pass, so a database migrated before any row exists "
+                + "is not refused")
+        void anEmptyTableOpensNothingAndIsAccepted() throws SQLException {
+            final Connection connection = mock(Connection.class);
+            final Statement select = mock(Statement.class);
+            final ResultSet rows = mock(ResultSet.class);
+            when(connection.createStatement()).thenReturn(select);
+            when(select.executeQuery(anyString())).thenReturn(rows);
+            when(rows.next()).thenReturn(Boolean.FALSE);
+
+            assertThat(callback.verifyEveryStoredValueOpens(connection)).isZero();
+        }
+
+        @Test
+        @DisplayName("a cleartext value is sealed by the first pass and then opens under the second, so "
+                + "the two passes agree about what a converted row looks like")
+        void aSealedCleartextValueThenOpens() throws SQLException {
+            final Connection connection = mock(Connection.class);
+            final PreparedStatement update = mock(PreparedStatement.class);
+            scriptRows(connection, update, new String[] {FIRST_CUSTOMER_KEY},
+                    new String[] {CLEARTEXT_NATIONAL_IDENTIFIER},
+                    new String[] {CLEARTEXT_GOVERNMENT_IDENTIFIER});
+
+            assertThat(callback.seal(connection))
+                    .as("both cleartext values are converted")
+                    .isEqualTo(2);
+
+            final ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
+            verify(update, times(1)).setString(eq(GOVERNMENT_PARAMETER), written.capture());
+            final Connection reread = mock(Connection.class);
+            scriptRead(reread, new String[] {FIRST_CUSTOMER_KEY}, new String[] {null},
+                    new String[] {written.getValue()});
+
+            assertThat(callback.verifyEveryStoredValueOpens(reread))
+                    .as("what the seal pass wrote must be exactly what the key invariant accepts; if "
+                            + "the two disagreed, a genuine conversion would fail its own start-up")
+                    .isEqualTo(1);
+        }
+    }
+
+    @Nested
     @DisplayName("a failure fails the migration and names no value - decision DL-041")
     class AFailureNamesNoValue {
 
@@ -389,20 +667,6 @@ class SeededIdentifierSealingCallbackTest {
             callback.handle(Event.AFTER_MIGRATE, contextOver(connection));
 
             verify(connection, never()).prepareStatement(anyString());
-        }
-
-        /**
-         * Wraps a connection in the minimal migration context the callback reads.
-         *
-         * @param connection the connection the context supplies
-         * @return a context answering that connection and nothing else
-         */
-        private static org.flywaydb.core.api.callback.Context contextOver(
-                final Connection connection) {
-            final org.flywaydb.core.api.callback.Context context =
-                    mock(org.flywaydb.core.api.callback.Context.class);
-            when(context.getConnection()).thenReturn(connection);
-            return context;
         }
     }
 }

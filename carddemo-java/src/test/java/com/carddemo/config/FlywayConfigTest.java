@@ -274,14 +274,14 @@ class FlywayConfigTest {
 
         @ParameterizedTest(name = "production refuses the location [{0}]")
         @ValueSource(strings = {
-            "classpath:db/seed",
             "classpath:db/migrations",
+            "classpath:db/seed",
             "classpath:db/fixtures",
             "filesystem:/tmp/extra",
-            "db/seed"
+            "classpath:migration"
         })
-        @DisplayName("production refuses any location outside the delivered one, because a second "
-                + "location carries scripts no version ceiling caps")
+        @DisplayName("production refuses any location outside the one the delivered scripts occupy, "
+                + "because a location the ceiling never measured can carry a script it does not cap")
         void productionRefusesAnyForeignLocation(final String foreignLocation) {
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> FlywayConfig.resolveLocations(
@@ -299,15 +299,25 @@ class FlywayConfigTest {
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> FlywayConfig.resolveLocations(
                             List.of(FlywayConfig.PRODUCTION_PROFILE),
-                            List.of("classpath:db/seed", FlywayConfig.SCHEMA_LOCATION)));
+                            List.of("classpath:db/fixtures", FlywayConfig.SCHEMA_LOCATION)));
         }
 
         @ParameterizedTest(name = "{0} has the delivered location completed for it")
         @ValueSource(strings = {"local", "test"})
         @DisplayName("a non-production profile that resolved no location at all has the delivered "
-                + "one appended, because it would otherwise migrate nothing")
+                + "location appended, because it would otherwise migrate nothing")
         void aNonProductionProfileWithNoLocationHasTheDeliveredOneAppended(final String profile) {
             assertThat(FlywayConfig.resolveLocations(List.of(profile), List.of()))
+                    .containsExactly(FlywayConfig.SCHEMA_LOCATION);
+        }
+
+        @ParameterizedTest(name = "{0} keeps the delivered location it already declared")
+        @ValueSource(strings = {"local", "test"})
+        @DisplayName("a non-production profile that already resolved the delivered location is left "
+                + "alone, because there is no second location to append")
+        void aNonProductionProfileWithTheDeliveredLocationIsLeftAlone(final String profile) {
+            assertThat(FlywayConfig.resolveLocations(
+                    List.of(profile), List.of(FlywayConfig.SCHEMA_LOCATION)))
                     .containsExactly(FlywayConfig.SCHEMA_LOCATION);
         }
 
@@ -315,8 +325,7 @@ class FlywayConfigTest {
         @DisplayName("a non-production profile already listing the delivered location is returned "
                 + "unchanged, so the declared order survives")
         void aNonProductionProfileListingTheDeliveredLocationIsUnchanged() {
-            final List<String> declared =
-                    List.of(FlywayConfig.SCHEMA_LOCATION, "classpath:db/extra");
+            final List<String> declared = List.of(FlywayConfig.SCHEMA_LOCATION, "classpath:db/extra");
 
             assertThat(FlywayConfig.resolveLocations(List.of(FlywayConfig.LOCAL_PROFILE), declared))
                     .containsExactlyElementsOf(declared);
@@ -324,7 +333,7 @@ class FlywayConfigTest {
 
         @Test
         @DisplayName("no active profile leaves the bound list alone, because the shared baseline "
-                + "declares the delivered location by itself")
+                + "declares the schema location by itself")
         void noActiveProfileLeavesTheBoundListAlone() {
             assertThat(FlywayConfig.resolveLocations(
                     List.of(), List.of(FlywayConfig.SCHEMA_LOCATION)))
@@ -428,7 +437,8 @@ class FlywayConfigTest {
         }
 
         @Test
-        @DisplayName("the published customizer lifts the ceiling for a non-production profile")
+        @DisplayName("the published customizer completes BOTH halves for a non-production profile: it "
+                + "lifts the ceiling and appends the seed location")
         void thePublishedCustomizerLiftsTheCeiling() {
             final MockEnvironment local = new MockEnvironment();
             local.setActiveProfiles(FlywayConfig.LOCAL_PROFILE);
@@ -442,6 +452,9 @@ class FlywayConfigTest {
             assertThat(Arrays.stream(configuration.getLocations())
                     .map(Location::getDescriptor)
                     .toList())
+                    .as("the location is left as handed over: lifting the ceiling is the whole of what "
+                            + "a seeding profile needs, because all four scripts sit in that one "
+                            + "location")
                     .containsExactly(FlywayConfig.SCHEMA_LOCATION);
         }
 
@@ -468,7 +481,7 @@ class FlywayConfigTest {
             final MockEnvironment production = new MockEnvironment();
             production.setActiveProfiles(FlywayConfig.PRODUCTION_PROFILE);
             final FluentConfiguration configuration = new FluentConfiguration()
-                    .locations(FlywayConfig.SCHEMA_LOCATION, "classpath:db/seed")
+                    .locations(FlywayConfig.SCHEMA_LOCATION, "classpath:db/fixtures")
                     .target(FlywayConfig.SCHEMA_ONLY_TARGET);
             final FlywayConfigurationCustomizer customizer =
                     new FlywayConfig().migrationScopeResolvingCustomizer(production);
@@ -519,11 +532,11 @@ class FlywayConfigTest {
         }
 
         @Test
-        @DisplayName("the foreign-location refusal names the delivered location and the ceiling and "
-                + "never the offending descriptor")
+        @DisplayName("the foreign-location refusal names the two delivered locations and never the "
+                + "offending descriptor")
         void theForeignLocationRefusalNamesThePathsOnly() {
             final String hostileLocation =
-                    "classpath:db/seed/" + HOSTILE_MARKER + CARRIAGE_RETURN + LINE_FEED;
+                    "classpath:db/fixtures/" + HOSTILE_MARKER + CARRIAGE_RETURN + LINE_FEED;
 
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> FlywayConfig.resolveLocations(
@@ -603,6 +616,55 @@ class FlywayConfigTest {
             assertThat(callback.supports(Event.AFTER_MIGRATE, null)).isTrue();
             assertThat(callback.getCallbackName())
                     .isEqualTo(SeededIdentifierSealingCallback.CALLBACK_NAME);
+        }
+
+        @Test
+        @DisplayName("the seeded-database refusal is restricted to the production profile alone, "
+                + "because under local and test the seeded rows are the point")
+        void theSeededDatabaseRefusalIsRestrictedToProduction() throws NoSuchMethodException {
+            final Method factory =
+                    FlywayConfig.class.getDeclaredMethod("productionSeedRejectionCallback");
+            final Profile profile = factory.getAnnotation(Profile.class);
+
+            assertThat(profile)
+                    .as("an unconditional registration would refuse every local and test start-up, "
+                            + "because those profiles deliberately seed the very rows it looks for")
+                    .isNotNull();
+            assertThat(profile.value()).containsExactly(FlywayConfig.PRODUCTION_PROFILE);
+        }
+
+        @Test
+        @DisplayName("the published seeded-database refusal acts before a script is executed, which is "
+                + "what keeps a refused database unwritten to")
+        void thePublishedSeededDatabaseRefusalActsBeforeExecution() {
+            final Callback callback = new FlywayConfig().productionSeedRejectionCallback();
+
+            assertThat(callback.supports(Event.BEFORE_VALIDATE, null))
+                    .as("both pre-execution events are handled, so this class's own diagnosis reaches "
+                            + "the operator whichever the tool raises first")
+                    .isTrue();
+            assertThat(callback.supports(Event.BEFORE_MIGRATE, null)).isTrue();
+            assertThat(callback.supports(Event.AFTER_MIGRATE, null))
+                    .as("acting after execution would mean acting on a database it had already allowed "
+                            + "to be written to")
+                    .isFalse();
+            assertThat(callback.getCallbackName())
+                    .isEqualTo(ProductionSeedRejectionCallback.CALLBACK_NAME);
+        }
+
+        @Test
+        @DisplayName("the three controls agree about where the seeds begin, so none of them refuses "
+                + "what another allows")
+        void theThreeControlsAgreeAboutWhereTheSeedsBegin() {
+            assertThat(MigrationVersion.fromVersion(
+                    ProductionSeedRejectionCallback.FIRST_SEED_VERSION).isAtLeast("3"))
+                    .as("the database-level refusal draws its boundary at the first seed version, and "
+                            + "the two configuration controls draw theirs immediately below it; a "
+                            + "disagreement would leave one control refusing what another allowed")
+                    .isTrue();
+            assertThat(MigrationVersion.fromVersion(FlywayConfig.SCHEMA_ONLY_TARGET).isAtLeast(
+                    ProductionSeedRejectionCallback.FIRST_SEED_VERSION))
+                    .isFalse();
         }
 
         @Test

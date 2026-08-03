@@ -119,7 +119,7 @@ class JobSubmissionServiceSecurityTest {
     // CONFIGURATION THE SERVICE IS CONSTRUCTED WITH
 
     /** A first-in-first-out queue name, whose suffix the service requires. */
-    private static final String QUEUE_NAME = "JOBS.fifo";
+    private static final String QUEUE_NAME = "carddemo-jobs.fifo";
 
     /** The single stable message group that carries a submission, which is what preserves order. */
     private static final String MESSAGE_GROUP_ID = "JOBS";
@@ -879,9 +879,9 @@ class JobSubmissionServiceSecurityTest {
             // Every printable value the queue service itself accepts must still construct, so the
             // rule is a control-character rule and not an alphanumeric one: a queue URL and a queue
             // ARN both carry punctuation this guard has to let through.
-            for (final String legitimate : List.of("JOBS.fifo",
-                    "https://sqs.us-east-1.amazonaws.com/000000000000/JOBS.fifo",
-                    "arn:aws:sqs:us-east-1:000000000000:JOBS.fifo")) {
+            for (final String legitimate : List.of("carddemo-jobs.fifo",
+                    "https://sqs.us-east-1.amazonaws.com/000000000000/carddemo-jobs.fifo",
+                    "arn:aws:sqs:us-east-1:000000000000:carddemo-jobs.fifo")) {
                 assertThat(new JobSubmissionService(sqsOperations, legitimate, MESSAGE_GROUP_ID))
                         .as("the legitimate configured value [%s] must construct", legitimate)
                         .isNotNull();

@@ -22,6 +22,7 @@ import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -596,7 +597,7 @@ class UserResponseRuleComplianceTest {
         void aFullPageOfTenRowsKeepsItsOrder() {
             final List<UserResponse.UserRow> tenRows = new ArrayList<>();
             for (int index = 1; index <= PageMetadata.USER_LIST_PAGE_SIZE; index++) {
-                tenRows.add(aRow(String.format("USER%04d", index)));
+                tenRows.add(aRow(String.format(Locale.ROOT, "USER%04d", index)));
             }
 
             final UserResponse response = aSparseResponse(tenRows, null);

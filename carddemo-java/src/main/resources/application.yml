@@ -141,50 +141,62 @@ spring:
           time_zone: UTC
 
   # -----------------------------------------------------------------------------------------------
-  # Schema evolution: versioned, forward-only, and the only path by which a table or a row is
-  # created. There is no framework-managed initialisation script and no boot-time initialiser
-  # property, so the migrations on the single location below are the whole story.
+  # Schema evolution: versioned, forward-only, and the only path by which an application table or a
+  # seeded row is created. There is no framework-managed initialisation script for the application
+  # tables, so the migrations on the one location below are the whole story for them.
   #
-  #   V1__create_schema.sql          the eleven application tables            schema
-  #   V1_1__create_batch_metadata.sql the batch job-repository metadata       schema
-  #   V2__create_indexes.sql         keys and alternate-index equivalents     schema
-  #   V3__seed_reference_data.sql    the sample reference rows                SEED
-  #   V4__seed_user_security.sql     the ten seeded sign-on identities        SEED
+  #   classpath:db/migration
+  #     V1__create_schema.sql        the eleven application tables            EVERY profile
+  #     V2__create_indexes.sql       keys and alternate-index equivalents     EVERY profile
+  #     V3__seed_reference_data.sql  the sample reference rows                local and test ONLY
+  #     V4__seed_user_security.sql   the ten seeded sign-on identities        local and test ONLY
   #
-  # ONE LOCATION, FIVE SCRIPTS. All five live in classpath:db/migration and every profile resolves
-  # all five. That flat set is what the frozen plan names, and it is also the only arrangement in
-  # which a version number means what it appears to mean.
+  # ONE LOCATION, FOUR SCRIPTS, AND THE SEEDS ARE HELD BACK BY THE TARGET RATHER THAN BY A DIRECTORY.
+  # The flat layout is required rather than chosen: the migration specifications for V3 and V4 both
+  # state that the four scripts are physically flat in this one directory, direct that no subdirectory
+  # be created, and name the reason - directory-scoped locations cannot isolate the seeds, because a
+  # location is scanned recursively and any deployment resolving both directories applies the whole
+  # ascending sequence whatever folder each script came from. Both specifications name the control that
+  # does work: spring.flyway.target=2. What AAP 0.3.1 and 0.4.2 mean by "profile-scoped" is therefore a
+  # profile-scoped CEILING, not a profile-scoped directory. The delivered inventory is exactly V1, V2,
+  # V3, V4 - there is no V1.1, because the batch metadata tables are owned by Spring Batch.
   #
-  # THE SEEDS ARE EXCLUDED BY VERSION, NOT BY DIRECTORY. The ceiling below is the shared default and
-  # it is deliberately the restrictive one: target "2" applies 1, 1.1 and 2 and never resolves 3 or 4,
-  # so an overlay that says nothing about seeding inherits a schema-only migration. application-prod.yml
-  # re-asserts "2" explicitly rather than relying on inheritance, and the two overlays that genuinely
-  # want the seeds - application-local.yml and application-test.yml - raise the ceiling to latest for
-  # themselves. Defaulting to latest and expecting production to opt out would let a forgotten override
-  # deposit seeded credentials in silence; defaulting to "2" makes a forgotten override fail loudly,
-  # because the tests assert the seeded rows are present. An earlier revision split
-  # the scripts into db/migration and db/seed and made the LOCATION LIST the exclusion control
-  # instead; the effect was that the version numbers no longer described what any profile would
-  # apply, and a seed script that was moved or a location list that gained an entry silently changed
-  # what production ran. A version ceiling cannot be defeated that way: a new script above 2 is
-  # excluded from production by arithmetic, wherever a future author happens to put it.
+  # AN EARLIER REVISION SPLIT THESE SCRIPTS ACROSS db/migration/schema AND db/migration/seed. That
+  # split is withdrawn. It read as the stronger control and was the weaker one: a directory boundary is
+  # not a boundary the migration tool enforces, so it bought the appearance of isolation and thereby
+  # discouraged setting the pin that actually holds. See docs/decision-log.md DL-119. Do not restore it
+  # as belt and braces.
+  #
+  # THE CEILING IS THE PRODUCTION CONTROL. target "2" applies 1 and 2; 3 and 4 are resolved, reported
+  # above target, and never executed. This shared baseline carries "2" rather than the convenience
+  # value, so a profile silent about migrations inherits the PRODUCTION posture; only the local and
+  # test overlays lift it, and each lifts it explicitly for itself.
   #
   # THE CONSEQUENCE FOR A NEW SCRIPT, stated once here and repeated at each profile: a script that
-  # production MUST run is numbered at or below 2, and a script that production must NEVER run is
-  # numbered above 2. Nothing else governs it.
+  # production MUST run is numbered at or below 2; a script production must NEVER run is numbered above
+  # 2. The number is the whole of the decision - there is no directory to choose.
   #
-  # WHAT THE CEILING MEANS TO THE MIGRATION TOOL, CHECKED RATHER THAN ASSUMED. target "2" applies V1,
-  # V1.1 and V2 and stops there. V3 and V4 are reported ABOVE_TARGET, are never executed, and - checked
-  # against PostgreSQL 16 with the five delivered scripts - do not fail validation while they remain
-  # pending, so the ceiling does not trade a seeded database for a refused start-up. The
-  # configuration-baseline test asserts the ceiling against the delivered scripts, so the sentences
-  # above cannot go stale unnoticed.
+  # WHAT THIS MEANS TO THE MIGRATION TOOL, CHECKED RATHER THAN ASSUMED. Under target "2" the two seeds
+  # are discovered and reported as above-target, and the migration still validates successfully, so a
+  # pending above-target script is not an error a deployment has to suppress. The
+  # configuration-baseline test asserts the resolved location list and the ceiling against the delivered
+  # scripts, so the sentences above cannot go stale unnoticed.
   #
-  # THE CEILING IS ENFORCED A SECOND TIME IN CODE. com.carddemo.config.FlywayConfig refuses to start a
-  # production profile whose resolved ceiling reaches version 3 or beyond, and refuses one whose
-  # resolved location list reaches outside the single location above. Restoring the seeds to a
-  # production deployment therefore takes more than an overlay edit: the refusal is unconditional and
-  # is not expressed in any configuration file, and the two controls fail in the same direction.
+  # THE CEILING IS ENFORCED A SECOND TIME IN CODE, AND PRODUCTION ADDS A HISTORY-AND-DATA CHECK.
+  # com.carddemo.config.FlywayConfig refuses to start a production profile whose resolved ceiling
+  # reaches version 3 or beyond, re-applying the pin AFTER the configuration has been bound so an
+  # inherited value, an operator override or a merged property source cannot lift it in silence; it also
+  # refuses a resolved location outside the one delivered location, because another location would carry
+  # scripts that ceiling never measured. com.carddemo.config.ProductionSeedRejectionCallback refuses a
+  # production
+  # start-up against a database whose migration history already records a seed version, whose
+  # user_security table holds any of the ten reserved fixture identifiers, or whose tables match all
+  # five of the reference seed's row counts at once - the case no configuration control can reach,
+  # because that seeding happened before this process existed. Nor does the migration tool reach it:
+  # validate-on-migrate does NOT reject such a database, because version 11 ignores future migrations
+  # by default. Restoring the seeds to a production deployment therefore takes more than an overlay
+  # edit: the refusals are unconditional, they are not expressed in any configuration file, and they
+  # all fail in the same direction.
   #
   # Version 11 of the migration tool resolves PostgreSQL support from a separate artefact declared
   # beside flyway-core in pom.xml; without it the build still succeeds and the application then
@@ -194,7 +206,8 @@ spring:
   # skipped in silence against a database that already holds objects.
   flyway:
     enabled: true
-    # See docs/decision-log.md DL-102.
+    # One location holding all four delivered scripts; the seeds are held back by target, not by a
+    # directory. See docs/decision-log.md DL-102 and DL-119.
     locations: classpath:db/migration
     target: "2"
     baseline-on-migrate: false
@@ -214,30 +227,31 @@ spring:
   # program; the rest are dataset-utility invocations absorbed by the migrations, the Compose
   # service definitions and test fixtures.
   #
-  # THE BATCH METADATA TABLES ARE OWNED BY A MIGRATION, AND initialize-schema IS `never` EVERYWHERE.
+  # THE BATCH METADATA TABLES ARE OWNED BY SPRING BATCH, AND initialize-schema IS `always` EVERYWHERE.
   #
-  # The framework can create its own six tables and three sequences on start-up from a bundled script,
-  # and this module declines that offer under every profile. Two reasons, and the second is the one
-  # that decided it:
+  # The framework creates its own six tables and three sequences on start-up from the bundled
+  # PostgreSQL script for the exact resolved version, and this module accepts that offer under every
+  # profile. AAP 0.3.1 assigns the job-repository metadata to Spring Batch and the eleven application
+  # tables to V1__create_schema.sql; V1__create_schema.sql therefore does not create them, which is
+  # what keeps the application-table count at eleven, and no migration transcribes them either. The
+  # prefix below is what lets a reader tell the two families apart at a glance.
   #
-  #   1. A framework issuing unversioned DDL against a database whose every other object arrived
-  #      through a checksum-validated migration is a second, invisible schema owner.
-  #   2. It cannot be switched off for production alone. An earlier revision set `never` here only in
-  #      the production overlay while no migration created the tables, so production was the ONE
-  #      environment where a job launch would have failed on a missing relation - and local and test,
-  #      where the framework still created them, could not reveal it. Either the framework owns them
-  #      in every environment or a migration does. A migration does.
+  # Three properties of `always` matter here and each was checked rather than assumed:
   #
-  # V1_1__create_batch_metadata.sql transcribes the framework's own PostgreSQL script for the exact
-  # resolved version, and is numbered 1.1 so that the production version ceiling of 2 still applies
-  # it. Those six tables are deliberately NOT part of V1__create_schema.sql, which is what keeps the
-  # application-table count at eleven; the prefix below is what lets a reader tell the two families
-  # apart at a glance.
+  #   1. It is idempotent. The bundled script is executed through the framework's own
+  #      DataSourceScriptDatabaseInitializer, which skips execution when the metadata tables already
+  #      exist, so a restart against a migrated database is a no-op rather than a failure.
+  #   2. It is uniform. The same value applies under every profile, so a job launch cannot succeed
+  #      locally and fail in production on a missing relation - the failure mode an earlier revision
+  #      created by setting a different value for production alone.
+  #   3. It does not compete with Flyway. The framework owns exactly the BATCH_ family and touches
+  #      nothing else, and the application tables remain migration-owned and checksum-validated, so
+  #      there is one owner per object rather than two owners of one schema.
   batch:
     job:
       enabled: false
     jdbc:
-      initialize-schema: never
+      initialize-schema: always
       table-prefix: BATCH_
 
   # Region only. Endpoint overrides and credentials are profile scoped: local and test aim the
@@ -322,26 +336,40 @@ management:
       base-path: /actuator
       exposure:
         # THE MINIMUM SURFACE THAT STILL HONOURS THIS MODULE'S CROSS-FILE CONTRACTS, and nothing
-        # beyond it. Exactly three endpoints are published, and each one is published because a
-        # sibling file resolves its path literally:
+        # beyond it. Exactly four endpoints are published, and each one is published because a
+        # sibling file, or this module's own performance gate, resolves it:
         #   health     - the HEALTHCHECK of carddemo-java/Dockerfile and the readiness gate every
         #                Compose service waiting on this application depends upon
         #   prometheus - the scrape target of config/prometheus/prometheus.yml and the surface the
-        #                provisioned dashboard panels read; also where the baseline is measured
+        #                provisioned dashboard panels read
+        #   metrics    - the surface the performance baseline is READ from. The baseline is
+        #                elapsed time, peak memory and records per second, and it has to be
+        #                readable from the running application directly, without a collector in
+        #                the path, because a scrape interval cannot resolve a single job run.
         #   info       - build and Java-version confirmation, with property publication switched
         #                off below, so it can identify the artifact but never its configuration
         #
-        # `metrics` is deliberately NOT here. It enumerates every registered meter name and lets
-        # any single meter be queried, which describes the shape of the running system to anyone
-        # who can reach it while adding nothing the scrape endpoint does not already provide to
-        # the collector. The local overlay adds it back, together with the environment, bean,
-        # mapping and logger endpoints, because diagnosing on a developer's own machine is what
-        # those are for.
+        # WHY `metrics` IS HERE, HAVING PREVIOUSLY BEEN ARGUED OUT. An earlier revision of this
+        # file excluded it, reasoning that it enumerates every registered meter name and so
+        # describes the shape of the running system while adding nothing the scrape endpoint does
+        # not already give the collector. That reasoning is withdrawn on two grounds. It is
+        # required: this module's own configuration contract names health, prometheus, metrics and
+        # info as the published set, and a minimisation preference does not overrule a stated
+        # requirement. And its premise was wrong about the exposure: publishing an endpoint here
+        # does not make it anonymously readable. `config/SecurityConfig` permits exactly two paths
+        # without a credential - the health probe and the Prometheus scrape, each because an
+        # unauthenticated machine consumer resolves it - and then authenticates every other
+        # management sub-path explicitly before the catch-all. `metrics` is therefore published
+        # and authenticated, which is the posture the argument was trying to reach by keeping it
+        # unpublished. Being unpublished additionally cost the thing it was meant to protect: the
+        # baseline had no surface to be read from.
         #
         # This list is IDENTICAL to the production overlay's list, and that is the point: the
         # shared baseline is the production posture, and a profile widens it deliberately rather
-        # than a profile having to remember to narrow it.
-        include: health,info,prometheus
+        # than a profile having to remember to narrow it. The local overlay widens it further,
+        # to the environment, bean, mapping and logger endpoints, because diagnosing on a
+        # developer's own machine is what those are for.
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       # Aggregate status only. The probe answers UP or DOWN and nothing else.
@@ -479,7 +507,7 @@ carddemo:
     #
     # The two names below are cross-file contracts rather than local choices: each appears
     # byte-identically in every place listed below, so changing one here changes nothing until all
-    # of them change together. The queue is JOBS.fifo and the message group is
+    # of them change together. The queue is carddemo-jobs.fifo and the message group is
     # carddemo-job-submission, and both occur in every profile overlay, in docker-compose.yml and
     # in the emulator bootstrap script. The .fifo suffix is not decoration: the queue service
     # rejects a first-in-first-out queue whose name omits it, which is a start-up failure rather
@@ -487,28 +515,34 @@ carddemo:
     # preserved only within a single message group, and append order is the part of the legacy queue
     # contract that acceptance drains a real queue to verify.
     #
-    # THE QUEUE CARRIES THE LEGACY RESOURCE NAME, and that is the whole point of the value. The
-    # migration plan names this resource, and it names it JOBS; the resource being replaced is the
-    # transient-data queue JOBS; and the emulator resource the environment provisions is JOBS.fifo.
-    # The queue is the one external interface this module publishes to, and the requirement on every
-    # external interface is that its contract is reproduced rather than renegotiated. So the only
-    # transformation applied to the name is the suffix the queue service demands.
+    # THE FOUR RESOURCE NAMES ARE MANDATED, NOT CHOSEN. The migration plan states them and requires
+    # them byte-identically: the bucket carddemo-batch-staging, the queue carddemo-jobs.fifo, the
+    # message group carddemo-job-submission and the topic carddemo-job-notifications. Three of the
+    # four were never in doubt; the queue was renamed to carddemo-jobs.fifo by an earlier revision and is
+    # restored here.
     #
-    # A module-namespaced name is deliberately not used, and the argument for one is worth stating so
-    # it is not re-made: an infrastructure name and an operator-visible message are two different
-    # contracts and only the second is byte-compared, so the resource could be renamed freely to avoid
-    # colliding with an unrelated queue in a shared account. That reasoning is reversed here. The
-    # distinction it draws is real but it does not license the rename: the resource name is itself part
-    # of the frozen inventory, no exception authorises editing it, and a collision-avoidance concern is
-    # a deployment concern that the environment override below already answers without changing what
-    # the module ships. A namespaced name would also disagree with the provisioned resource, which is
-    # how a valid-but-wrong name becomes possible in the first place - see the fail-fast strategy
-    # above, which exists to make exactly that mistake loud.
+    # The argument that produced that rename is worth stating so it is not re-made. It held that the
+    # legacy transient-data queue name is itself part of the frozen inventory, that no exception
+    # authorises editing it, and that the module should therefore agree with the resource the
+    # environment provisions. Each step fails. What the plan freezes for THIS resource is the target
+    # name it prescribes, stated six times and backed by a validation check on the bootstrap script.
+    # The legacy name is not lost: it is carried by the operator-visible message, which is the
+    # contract that is actually compared byte for byte, and reproducing an external interface means
+    # reproducing what the interface's consumers observe rather than what its infrastructure is
+    # called. And agreeing with the provisioned resource by editing the module inverts the
+    # dependency - the emulator bootstrap this module ships is what provisions the queue, so the
+    # module decides the name and the environment follows.
     #
-    # The operator-visible message text is unaffected either way. It names the transient-data queue
-    # verbatim as JOBS, without a suffix, and is asserted character for character; it is frozen text
-    # rather than a resource reference, and nothing here composes one from the other.
-    # See docs/decision-log.md DL-092.
+    # What survives from that argument is its warning, and it is retained: a well-formed name that
+    # names nothing is exactly the input a create-on-absence default resolves by provisioning a queue
+    # nothing consumes, so a submission would report complete while the cards sat unread. That is why
+    # every one of the places listed above states one value, and why the fail-fast strategy described
+    # above exists to make a disagreement loud rather than silent.
+    #
+    # The operator-visible message text is unaffected by any of this. It names the transient-data
+    # queue verbatim as JOBS, without a suffix and without a namespace, and is asserted character for
+    # character; it is frozen text rather than a resource reference, and nothing here composes one
+    # from the other. See docs/decision-log.md DL-092.
     #
     # Both are environment-overridable so that a deployment can relocate them without editing a
     # file. The group id is bound here rather than only in the overlays because the production
@@ -534,7 +568,7 @@ carddemo:
     # legacy mapping. A test asserts that neither key has come back.
     # See docs/decision-log.md DL-094.
     sqs:
-      job-submission-queue: ${CARDDEMO_SQS_QUEUE:JOBS.fifo}
+      job-submission-queue: ${CARDDEMO_SQS_QUEUE:carddemo-jobs.fifo}
       message-group-id: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:carddemo-job-submission}
     # Job-completion fan-out, part of the message-queue integration named in the target stack. It
     # carries operational notifications only; no business record travels through it.

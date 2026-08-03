@@ -28,6 +28,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.function.UnaryOperator;
 
@@ -291,7 +292,7 @@ class AccountConcurrencyTokenServiceTest {
         void aCaseOnlyChangeToTheAccountGroupIdIsNotAChange() {
             Customer customer = customer();
             String token = service.mint(account(), customer);
-            Account lowerCased = accountWith(AccountField.GROUP_ID, String::toLowerCase);
+            Account lowerCased = accountWith(AccountField.GROUP_ID, value -> value.toLowerCase(Locale.ROOT));
 
             assertThat(lowerCased.getAcctGroupId()).isEqualTo("default   ");
             assertThatCode(() -> service.verify(token, lowerCased, customer))
@@ -306,7 +307,7 @@ class AccountConcurrencyTokenServiceTest {
             Customer stored = customer();
             String token = service.mint(account(), stored);
             Customer foldedDifferently =
-                    customerWith(stored, position, valueAt(stored, position).toLowerCase());
+                    customerWith(stored, position, valueAt(stored, position).toLowerCase(Locale.ROOT));
 
             assertThatCode(() -> service.verify(token, account(), foldedDifferently))
                     .as("argument %d is compared through FUNCTION UPPER-CASE on both sides", position)

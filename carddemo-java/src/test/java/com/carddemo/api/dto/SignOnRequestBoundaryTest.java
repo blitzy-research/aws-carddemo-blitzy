@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.Set;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.carddemo.config.FixedLocaleMessageInterpolator;
 import com.carddemo.domain.enums.KeyAction;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -305,7 +306,17 @@ class SignOnRequestBoundaryTest {
      */
     @BeforeAll
     static void buildValidator() {
-        validatorFactory = Validation.buildDefaultValidatorFactory();
+        // Built with the SAME pinned interpolator the application installs on its own validator,
+        // rather than with the provider's default. These assertions compare rendered message text, and
+        // the provider renders against a locale: the default configuration would resolve a translated
+        // bundle whenever the host's default locale had one, so this test would pass on one machine
+        // and fail on another while the code under test was identical. Using the application's own
+        // statement of the rule - com.carddemo.config.FixedLocaleMessageInterpolator - means the text
+        // asserted here is the text a client receives, and neither side can be pinned without the
+        // other.
+        validatorFactory = Validation.byDefaultProvider().configure()
+                .messageInterpolator(new FixedLocaleMessageInterpolator())
+                .buildValidatorFactory();
         validator = validatorFactory.getValidator();
     }
 

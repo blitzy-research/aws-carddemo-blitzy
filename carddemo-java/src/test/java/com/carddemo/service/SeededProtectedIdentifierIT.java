@@ -45,6 +45,7 @@ import com.carddemo.util.SensitiveFieldCodec;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import java.util.Locale;
 
 /**
  * Verifies that the government-issued identifier every seeded customer row carries is a real,
@@ -58,10 +59,12 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * the column to {@code VARCHAR(255)} to make room for it; {@link Customer} refuses any value that is
  * not shaped like one, in its constructor and in its mutator; and
  * {@link SensitiveFieldEncryptionService} exists to produce and read exactly that shape. All three
- * held, and the seed still loaded fifty cleartext identifiers - because Hibernate hydrates fields
- * directly rather than through the constructor, so a seeded row loads silently and only fails at the
- * moment something actually decrypts it. Nothing in the build noticed, because nothing in the build
- * looked.
+ * held, and an earlier revision of the seed nonetheless loaded fifty cleartext identifiers - because
+ * Hibernate hydrates fields directly rather than through the constructor, so a seeded row loads
+ * silently and only fails at the moment something actually decrypts it. Nothing in the build noticed,
+ * because nothing in the build looked. (The delivered seed embeds sealed envelopes; that is DL-103.
+ * The failure mode is described in the past tense deliberately, because the same blindness recurs for
+ * a mis-keyed envelope, which loads just as silently.)
  *
  * <p>This test is what looks. It reads the seeded rows out of a real migrated database and, for every
  * one of them, opens the stored value through the application's own service and compares the recovered
@@ -162,7 +165,7 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
      * exact regardless of execution order, and keeps this test from ever depending on another test's
      * cleanup.
      */
-    private static final String SELECT_SEEDED_CUSTOMERS = """
+    private static final String SELECT_SEEDED_CUSTOMERS = String.format(Locale.ROOT, """
             SELECT cust_id, first_name, middle_name, last_name,
                    addr_line_1, addr_line_2, addr_line_3,
                    addr_state_cd, addr_country_cd, addr_zip,
@@ -172,7 +175,7 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
               FROM customer
              WHERE cust_id BETWEEN '%s' AND '%s'
              ORDER BY cust_id
-            """.formatted(FIRST_SEEDED_KEY, LAST_SEEDED_KEY);
+            """, FIRST_SEEDED_KEY, LAST_SEEDED_KEY);
 
     /** The legacy records the seeded identifiers must open back to. */
     private static final SeededRecordFixture FIXTURE =

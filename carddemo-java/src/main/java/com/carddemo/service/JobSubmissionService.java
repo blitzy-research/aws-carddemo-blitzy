@@ -31,6 +31,7 @@ import org.springframework.stereotype.Service;
 
 import com.carddemo.exception.JobSubmissionException;
 import com.carddemo.util.JclCardImageBuilder;
+import com.carddemo.util.SqsNamingRules;
 
 /**
  * The estate's only online-to-batch bridge: it hands a job-submission card stream from the online tier to
@@ -235,7 +236,7 @@ import com.carddemo.util.JclCardImageBuilder;
  * <table>
  *   <caption>Canonical resource names</caption>
  *   <tr><th>Resource</th><th>Canonical name</th><th>Referenced here</th></tr>
- *   <tr><td>job-submission queue</td><td>{@code JOBS.fifo}</td><td>yes, as the
+ *   <tr><td>job-submission queue</td><td>{@code carddemo-jobs.fifo}</td><td>yes, as the
  *       destination</td></tr>
  *   <tr><td>message group</td><td>{@code carddemo-job-submission}</td><td>yes, one group per
  *       submission</td></tr>
@@ -367,12 +368,6 @@ public final class JobSubmissionService {
      * Configuration key for the message group that carries one submission's cards in order.
      */
     private static final String MESSAGE_GROUP_ID_PROPERTY = "carddemo.aws.sqs.message-group-id";
-
-    /**
-     * The suffix a first-in-first-out queue name must carry. Ordering is contractual here, so a
-     * destination without this suffix is a misconfiguration rather than a degraded mode.
-     */
-    private static final String FIFO_QUEUE_NAME_SUFFIX = ".fifo";
 
     /**
      * Separator between the submission identity and the card ordinal in a deduplication
@@ -511,20 +506,24 @@ public final class JobSubmissionService {
      * Creates the service from its injected collaborator and its configured resource names.
      *
      * <p>Both names are bound from configuration with no inline default, so a deployment that omits
-     * either one fails at startup instead of failing at the first submission. The queue name is
-     * additionally checked for the first-in-first-out suffix, because message ordering is
-     * contractual for this destination and a standard queue cannot honour it.
+     * either one fails at startup instead of failing at the first submission. Both are then held to
+     * the queue service's own naming contract by {@link SqsNamingRules} - the queue destination in
+     * whichever of its three forms it was configured, and the message group against its own limit.
+     * That check belongs at construction rather than at first use because this class is deliberately
+     * non-fatal on a failed send, so an invalid name would otherwise be absorbed into the tolerated
+     * failure path and a submission would report complete having queued nothing.
      *
      * @param sqsOperations  the messaging operations bean used to publish cards; must not be
      *                       {@code null}
      * @param queueName      the destination queue, bound from
-     *                       {@code carddemo.aws.sqs.job-submission-queue}; must be non-blank and
-     *                       must name a first-in-first-out queue
+     *                       {@code carddemo.aws.sqs.job-submission-queue}; a queue name, queue URL or
+     *                       queue ARN, naming a first-in-first-out queue
      * @param messageGroupId the message group that carries one submission's cards in order, bound
-     *                       from {@code carddemo.aws.sqs.message-group-id}; must be non-blank
+     *                       from {@code carddemo.aws.sqs.message-group-id}
      * @throws NullPointerException     if {@code sqsOperations} is {@code null}
-     * @throws IllegalArgumentException if either configured name is absent or blank, or if the queue
-     *                                  name does not carry the first-in-first-out suffix
+     * @throws IllegalArgumentException if either configured value is absent or blank, holds a
+     *                                  character outside printable US-ASCII, or breaks the naming
+     *                                  contract stated by {@link SqsNamingRules}
      */
     public JobSubmissionService(
             final SqsOperations sqsOperations,
@@ -532,7 +531,9 @@ public final class JobSubmissionService {
             @Value("${" + MESSAGE_GROUP_ID_PROPERTY + "}") final String messageGroupId) {
         this.sqsOperations = Objects.requireNonNull(sqsOperations, "sqsOperations must not be null");
         this.queueName = requireFifoQueueName(queueName);
-        this.messageGroupId = requireConfiguredValue(messageGroupId, MESSAGE_GROUP_ID_PROPERTY);
+        this.messageGroupId = SqsNamingRules.requireMessageGroupId(
+                requireConfiguredValue(messageGroupId, MESSAGE_GROUP_ID_PROPERTY),
+                MESSAGE_GROUP_ID_PROPERTY);
     }
 
     /**
@@ -1362,27 +1363,41 @@ public final class JobSubmissionService {
     /**
      * Validates the configured destination queue and returns it unchanged.
      *
-     * <p>The rejection names the property key and the suffix the value has to carry, and does not
-     * repeat the configured value, per decision DL-041. The suffix literal stays because it is this
-     * class's own statement of what it expects rather than an echo of what it was given - the
-     * distinction DL-041 draws when it notes that a message's own prose is not an echo. The property
-     * key is the actionable fact: it points an operator at the exact configuration entry to correct,
-     * and the operator can already read the value there.
+     * <p>Two checks, in order, because they answer different questions. {@link
+     * #requireConfiguredValue(String, String)} first establishes that a value was supplied at all and
+     * that it is printable US-ASCII, which is this class's own rule about anything it will later write
+     * into a log record. {@link SqsNamingRules#requireQueueDestination(String, String)} then holds it
+     * to the queue service's rule: the destination is recognised as a bare name, a queue URL or a
+     * queue ARN, the envelope's shape is checked, and the queue name it carries is bounded at
+     * {@value SqsNamingRules#QUEUE_NAME_MAX_LENGTH} characters over a permitted character set and
+     * required to end in the first-in-first-out suffix.
+     *
+     * <p><strong>Why the second check is not optional here.</strong> This class is deliberately
+     * non-fatal on a failed send, because the legacy contract it reproduces ignores a queue-write
+     * error. A destination that is well formed enough to construct but invalid to the queue service
+     * therefore fails every send into that same tolerated path, and a submission reports complete
+     * while nothing was queued. Refusing it at construction is the only point at which the mistake is
+     * still loud. The rules live in {@link SqsNamingRules} rather than here because the emulator
+     * bootstrap enforces the same two limits, and one statement of them is what keeps the two from
+     * disagreeing. Decision {@code DL-117} records why the contract is stated once rather than twice.
+     *
+     * <p>Every rejection names the property key and this module's own limits and literals, and repeats
+     * no part of the configured value, per decision DL-041. The property key is the actionable fact:
+     * it points an operator at the exact configuration entry to correct, and the operator can already
+     * read the value there.
      *
      * @param queueName the configured queue name, queue URL or queue ARN
      * @return {@code queueName}, unchanged
-     * @throws IllegalArgumentException if the value is absent, blank, or does not carry the
-     *                                  first-in-first-out suffix
+     * @throws IllegalArgumentException if the value is absent or blank, if it does not sit in one of
+     *                                  the three recognised destination envelopes, or if the queue
+     *                                  name it resolves to exceeds
+     *                                  {@link SqsNamingRules#QUEUE_NAME_MAX_LENGTH}, holds a
+     *                                  character the queue service does not accept in a name, or
+     *                                  does not end in {@link SqsNamingRules#FIFO_SUFFIX}
      */
     private static String requireFifoQueueName(final String queueName) {
         final String configured = requireConfiguredValue(queueName, JOB_SUBMISSION_QUEUE_PROPERTY);
-        if (!configured.endsWith(FIFO_QUEUE_NAME_SUFFIX)) {
-            throw new IllegalArgumentException("property " + JOB_SUBMISSION_QUEUE_PROPERTY
-                    + " must name a first-in-first-out queue, whose name ends with '"
-                    + FIFO_QUEUE_NAME_SUFFIX + "', because job-submission cards must keep their"
-                    + " order, but the configured value does not carry that suffix");
-        }
-        return configured;
+        return SqsNamingRules.requireQueueDestination(configured, JOB_SUBMISSION_QUEUE_PROPERTY);
     }
 
     /**

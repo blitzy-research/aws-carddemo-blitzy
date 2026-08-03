@@ -32,7 +32,8 @@ import com.carddemo.config.FlywayConfig;
  * PostgreSQL server.
  *
  * <h2>What this provides</h2>
- * One PostgreSQL 16 server, migrated by Flyway to the head of {@code db/migration} - so the schema,
+ * One PostgreSQL 16 server, migrated by Flyway to the head of both delivered migration locations - so
+ * the schema,
  * the indexes and both seed migrations are applied - reachable through {@link #connect()} and through
  * the three connection accessors. Nothing else: this class
  * declares no test, no lifecycle callback and no fixture, so a subclass owns its own data and its
@@ -76,11 +77,11 @@ import com.carddemo.config.FlywayConfig;
  * per class also removes a source of ordering surprise.
  *
  * <h2>Why the migration runs to the head, and not to the production ceiling</h2>
- * The five delivered migrations share one location: {@code V1}, {@code V1_1} and {@code V2} create the
- * schema, the batch metadata and the indexes, and {@code V3} and {@code V4} seed sample reference rows
- * and ten sign-on identities. Production applies the first three only - {@code spring.flyway.target: 2}
- * in the shipped configuration, with {@link FlywayConfig} refusing a production
- * profile whose resolved ceiling or location list reaches further. <strong>This base reproduces the
+ * The four delivered migrations sit flat in one location, {@code db/migration}: {@code V1} and
+ * {@code V2} create the schema and the indexes, and {@code V3} and {@code V4} seed sample reference
+ * rows and ten sign-on identities. What separates them is the version, not a directory - production
+ * applies the first two only, by setting {@code spring.flyway.target: 2} in the shipped configuration,
+ * with {@link FlywayConfig} refusing a production profile whose resolved ceiling reaches further. <strong>This base reproduces the
  * TEST profile rather than the production one</strong>, because that is the posture the module actually
  * ships for tests: {@code src/test/resources/application-test.yml} lifts the ceiling to the head, and
  * the container-backed tier asserts against the seeded rows themselves - the fifty seeded customers and
@@ -128,7 +129,11 @@ public abstract class AbstractPostgresIT {
      */
     protected static final String DATABASE_PASSWORD = "carddemo";
 
-    /** Location Flyway scans, matching the module's own migration path. */
+    /**
+     * The one location every shipped profile declares, holding all four delivered scripts flat. This
+     * base exists to reproduce a shipped profile rather than to invent a third arrangement, so it
+     * declares exactly what they declare and lets the ceiling decide how far the migration runs.
+     */
     protected static final String MIGRATION_LOCATION = "classpath:db/migration";
 
     /**
@@ -147,9 +152,17 @@ public abstract class AbstractPostgresIT {
     /**
      * Starts the server and brings it to the head of the migration set.
      *
-     * <p>No ceiling is set, so all five delivered migrations are applied in version order and the
-     * seeded reference rows and sign-on identities are present. That matches the test profile the
-     * module ships and is what the container-backed assertions read.
+     * <p>Both delivered locations are declared and no ceiling is set, so all four delivered
+     * migrations are applied in version order and the seeded reference rows and sign-on identities are
+     * present. That matches the test profile the module ships and is what the container-backed
+     * assertions read.
+     *
+     * <p>The {@code BATCH_}-prefixed job-repository tables are deliberately NOT created here. They
+     * belong to Spring Batch, which provisions them from its own bundled script when a context starts
+     * with {@code spring.batch.jdbc.initialize-schema: always} - the value every shipped profile
+     * carries. A subclass that boots a context therefore finds them; a subclass that only reads the
+     * migrated schema does not need them, and creating them here would put a second, non-shipped
+     * provisioning path into the test estate.
      *
      * @return the started, migrated container
      */

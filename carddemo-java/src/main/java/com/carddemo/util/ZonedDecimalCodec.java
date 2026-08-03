@@ -20,6 +20,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 
 /**
  * The module's single point of decimal truth: the only place a zoned-decimal field image becomes a
@@ -530,7 +531,7 @@ public final class ZonedDecimalCodec {
             char current = image.charAt(index);
             if (current > MAX_ASCII_CODE_POINT) {
                 throw new IllegalArgumentException("zoned decimal field " + label + ": character"
-                        + " U+" + String.format("%04X", (int) current)
+                        + " U+" + String.format(Locale.ROOT, "%04X", (int) current)
                         + " at zero-based character index " + index + " cannot be represented in"
                         + " US-ASCII, so the image is not a valid zoned decimal field");
             }
@@ -560,7 +561,12 @@ public final class ZonedDecimalCodec {
     /** Renders one byte for a diagnostic, so an invalid image can be reported without echoing it. */
     private static String describeByte(byte value) {
         int unsigned = value & 0xFF;
-        String hex = String.format("0x%02X", unsigned);
+        // Locale.ROOT is stated even though a hexadecimal conversion is not localised the way a
+        // decimal one is, so that "every formatter in this module names its locale" is a property a
+        // reader can confirm by grep rather than by knowing the Formatter specification. DL-042
+        // requires this text to be printable US-ASCII, and a pinned locale is how that is guaranteed
+        // rather than inferred. See docs/decision-log.md DL-118.
+        String hex = String.format(Locale.ROOT, "0x%02X", unsigned);
         if (unsigned >= FIRST_PRINTABLE_US_ASCII && unsigned <= LAST_PRINTABLE_US_ASCII) {
             return hex + " ('" + (char) unsigned + "')";
         }

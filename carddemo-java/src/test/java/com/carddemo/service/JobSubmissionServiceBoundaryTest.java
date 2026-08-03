@@ -25,6 +25,7 @@ import java.util.function.Consumer;
 import com.carddemo.exception.JobSubmissionException;
 import com.carddemo.service.JobSubmissionService.SubmissionResult;
 import com.carddemo.util.JclCardImageBuilder;
+import com.carddemo.util.SqsNamingRules;
 
 import io.awspring.cloud.sqs.operations.SendResult;
 import io.awspring.cloud.sqs.operations.SqsOperations;
@@ -38,6 +39,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.messaging.support.GenericMessage;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -92,7 +94,7 @@ import static org.mockito.Mockito.when;
 class JobSubmissionServiceBoundaryTest {
 
     /** The canonical first-in-first-out queue name the module configures. */
-    private static final String QUEUE = "JOBS.fifo";
+    private static final String QUEUE = "carddemo-jobs.fifo";
 
     /** The canonical message group the cards are appended to, preserving their order. */
     private static final String MESSAGE_GROUP = "carddemo-job-submission";
@@ -286,13 +288,78 @@ class JobSubmissionServiceBoundaryTest {
         }
 
         @ParameterizedTest(name = "the non-ordered queue name [{0}] is refused")
-        @ValueSource(strings = {"JOBS", "JOBS.FIFO", "JOBS.fifo ", "JOBS.fifo-queue"})
+        @ValueSource(strings = {"carddemo-jobs", "carddemo-jobs.FIFO", "carddemo-jobs.fifo-queue",
+            "JOBS"})
         @DisplayName("a queue that is not first-in-first-out is refused, because order is contractual")
         void aNonOrderedQueueIsRefused(String candidate) {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new JobSubmissionService(sqsOperations, candidate,
                             MESSAGE_GROUP))
                     .withMessageContaining(".fifo");
+        }
+
+        @ParameterizedTest(name = "the malformed queue name [{0}] is refused")
+        @ValueSource(strings = {"carddemo-jobs.fifo ", " carddemo-jobs.fifo",
+            "carddemo jobs.fifo", "carddemo-jobs\u00e9.fifo", "carddemo/jobs.fifo",
+            "carddemo:jobs.fifo", ".fifo"})
+        @DisplayName("a queue name the queue service could not carry is refused before the suffix rule")
+        void aMalformedQueueNameIsRefused(String candidate) {
+            // These are the values the previous contract admitted: it looked only for printable text
+            // and a '.fifo' ending, so a name with a space, an accent or a path separator passed
+            // start-up and then failed every publish - which this class deliberately converts into a
+            // tolerated partial result, hiding the misconfiguration. The character rule now fires
+            // strictly before the suffix rule, which is why a trailing space is reported as the
+            // character it is rather than as a missing suffix.
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new JobSubmissionService(sqsOperations, candidate,
+                            MESSAGE_GROUP))
+                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue");
+        }
+
+        @Test
+        @DisplayName("a queue name longer than the queue service accepts is refused")
+        void anOverlongQueueNameIsRefused() {
+            final String overlong = "a".repeat(SqsNamingRules.QUEUE_NAME_MAX_LENGTH) + ".fifo";
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new JobSubmissionService(sqsOperations, overlong,
+                            MESSAGE_GROUP))
+                    .withMessageContaining("carddemo.aws.sqs.job-submission-queue")
+                    .withMessageContaining(String.valueOf(SqsNamingRules.QUEUE_NAME_MAX_LENGTH));
+        }
+
+        @ParameterizedTest(name = "the configured destination [{0}] is accepted")
+        @ValueSource(strings = {"carddemo-jobs.fifo",
+            "https://sqs.us-east-1.amazonaws.com/000000000000/carddemo-jobs.fifo",
+            "http://localhost:4566/000000000000/carddemo-jobs.fifo",
+            "http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/carddemo-jobs.fifo",
+            "arn:aws:sqs:us-east-1:000000000000:carddemo-jobs.fifo"})
+        @DisplayName("all three forms a deployment may configure the queue as are accepted")
+        void everyConfigurableDestinationFormIsAccepted(String candidate) {
+            // A tightened contract that refused a form the producer has always accepted would be a
+            // regression dressed as a fix, so each form is asserted to survive construction.
+            assertThatCode(() -> new JobSubmissionService(sqsOperations, candidate, MESSAGE_GROUP))
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("a message group id longer than the queue service accepts is refused")
+        void anOverlongMessageGroupIsRefused() {
+            final String overlong = "g".repeat(SqsNamingRules.MESSAGE_GROUP_ID_MAX_LENGTH + 1);
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new JobSubmissionService(sqsOperations, QUEUE, overlong))
+                    .withMessageContaining("carddemo.aws.sqs.message-group-id")
+                    .withMessageContaining(
+                            String.valueOf(SqsNamingRules.MESSAGE_GROUP_ID_MAX_LENGTH));
+        }
+
+        @ParameterizedTest(name = "the malformed message group [{0}] is refused")
+        @ValueSource(strings = {"carddemo job submission", "carddemo-job-submission\n",
+            "carddemo/job/submission", "carddemo-job-submission\u00e9"})
+        @DisplayName("a message group id the queue service could not carry is refused")
+        void aMalformedMessageGroupIsRefused(String candidate) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new JobSubmissionService(sqsOperations, QUEUE, candidate))
+                    .withMessageContaining("carddemo.aws.sqs.message-group-id");
         }
 
         @ParameterizedTest(name = "the unconfigured message group [{0}] is refused")

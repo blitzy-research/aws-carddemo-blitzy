@@ -24,6 +24,7 @@ import static org.mockito.Mockito.when;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
@@ -40,6 +41,7 @@ import com.carddemo.util.JclCardImageBuilder;
 
 import io.awspring.cloud.sqs.operations.SqsOperations;
 import io.awspring.cloud.sqs.operations.SqsSendOptions;
+import io.awspring.cloud.sqs.listener.QueueNotFoundStrategy;
 import io.awspring.cloud.sqs.operations.SqsTemplate;
 import software.amazon.awssdk.services.sqs.model.Message;
 import software.amazon.awssdk.services.sqs.model.MessageSystemAttributeName;
@@ -89,29 +91,30 @@ import software.amazon.awssdk.services.sqs.model.SqsException;
 class JobSubmissionServiceIT extends AbstractLocalStackIT {
 
     /** The canonical queue name, exactly as {@code application.yml} declares it. */
-    private static final String QUEUE_NAME = "JOBS.fifo";
+    private static final String QUEUE_NAME = "carddemo-jobs.fifo";
 
     /** The canonical message group, exactly as {@code application.yml} declares it. */
     private static final String MESSAGE_GROUP_ID = "carddemo-job-submission";
 
     /**
-     * A queue name the queue service itself refuses, because an embedded space is not a legal
-     * character in a queue name.
+     * A well-formed queue name that names no queue on the emulator, used to reach the ignore-on-error
+     * path through a genuine queue-service refusal with no fault injected.
      *
-     * <p>A name that is merely <em>absent</em> would not do <em>here</em>, because the template this
-     * test builds for itself carries the messaging library's own default for an unresolvable queue,
-     * which is to create it. An absent name would therefore be a successful submission into a newly
-     * created queue rather than a failed write. A name the service rejects outright exercises the
-     * ignore-on-error path regardless of that default, and exercises it as a genuine service refusal
-     * with no fault injected.</p>
+     * <p>This constant used to be a name carrying embedded spaces, because the messaging library's
+     * default for an unresolvable queue is to create it, and a name the queue service refused
+     * outright was the shortest way to a failed write. That is no longer available and the change is
+     * an improvement rather than a loss: the producer now holds its configured destination to the
+     * same naming contract the bootstrap script applies, so a name with a space cannot be configured
+     * at all and can no longer be absorbed into the tolerated failure path. The refusal is obtained
+     * instead from the queue service, by publishing through a template whose queue-not-found strategy
+     * is refusal rather than creation - which is also how the shipped configuration behaves.</p>
      *
-     * <p>The template the <em>application</em> publishes through does not carry that default: the
-     * shipped configuration fixes the strategy to refusal, so a well-formed name for an absent queue
-     * fails the submission and creates nothing. That is a different property from the one this
-     * constant serves and it is verified separately, against a template configured the way the
-     * application's is, in {@code JobSubmissionQueueBridgeIT}.</p>
+     * <p>The randomised element keeps the name absent even if a previous run created it, and
+     * {@code JobSubmissionQueueBridgeIT} verifies separately that nothing is created behind the
+     * refusal.</p>
      */
-    private static final String UNREACHABLE_QUEUE_NAME = "carddemo jobs unreachable.fifo";
+    private static final String ABSENT_QUEUE_NAME =
+            "carddemo-jobs-absent-" + UUID.randomUUID() + ".fifo";
 
     /** Card count the legacy paragraph transmits, sentinel included. */
     private static final int CARD_COUNT = 17;
@@ -337,8 +340,7 @@ class JobSubmissionServiceIT extends AbstractLocalStackIT {
         @DisplayName("a queue the service refuses fails the submission without raising to the caller")
         void aRefusedQueueFailsWithoutRaising() {
             final JobSubmissionService unreachableQueueService = new JobSubmissionService(
-                    SqsTemplate.newSyncTemplate(sqsAsyncClient()), UNREACHABLE_QUEUE_NAME,
-                    MESSAGE_GROUP_ID);
+                    refusingTemplate(), ABSENT_QUEUE_NAME, MESSAGE_GROUP_ID);
 
             final JobSubmissionService.SubmissionResult result = unreachableQueueService
                     .submitTransactionReportJob(submissionId("refused"), START_DATE, END_DATE);
@@ -387,6 +389,22 @@ class JobSubmissionServiceIT extends AbstractLocalStackIT {
                     .as("the sentinel is never reached, so the batch tier sees no end of stream")
                     .noneMatch(body -> body.startsWith(SENTINEL_CONTENT));
         }
+    }
+
+    /**
+     * Builds a template bound to the emulator that refuses an absent queue rather than creating it.
+     *
+     * @return a template configured the way the shipped application's template is
+     */
+    private static SqsTemplate refusingTemplate() {
+        // The messaging library's default is to CREATE a queue it cannot resolve, which would turn an
+        // absent destination into a successful publish and never reach the ignore-on-error path. The
+        // shipped configuration fixes the strategy to refusal, so this template is configured the way
+        // the application's is and the refusal that follows is the queue service's own.
+        return SqsTemplate.builder()
+                .sqsAsyncClient(sqsAsyncClient())
+                .configure(options -> options.queueNotFoundStrategy(QueueNotFoundStrategy.FAIL))
+                .build();
     }
 
     /**

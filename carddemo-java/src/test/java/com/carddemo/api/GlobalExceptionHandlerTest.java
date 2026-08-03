@@ -17,6 +17,7 @@
 package com.carddemo.api;
 
 import com.carddemo.api.dto.ErrorResponse;
+import com.carddemo.config.FixedLocaleMessageInterpolator;
 import com.carddemo.exception.AbendException;
 import com.carddemo.exception.FileStatusException;
 import com.carddemo.exception.JobSubmissionException;
@@ -139,7 +140,17 @@ class GlobalExceptionHandlerTest {
 
     @BeforeAll
     static void startValidationProvider() {
-        validatorFactory = Validation.buildDefaultValidatorFactory();
+        // Built with the SAME pinned interpolator the application installs on its own validator,
+        // rather than with the provider's default. These assertions compare rendered message text, and
+        // the provider renders against a locale: the default configuration would resolve a translated
+        // bundle whenever the host's default locale had one, so this test would pass on one machine
+        // and fail on another while the code under test was identical. Using the application's own
+        // statement of the rule - com.carddemo.config.FixedLocaleMessageInterpolator - means the text
+        // asserted here is the text a client receives, and neither side can be pinned without the
+        // other.
+        validatorFactory = Validation.byDefaultProvider().configure()
+                .messageInterpolator(new FixedLocaleMessageInterpolator())
+                .buildValidatorFactory();
         validator = validatorFactory.getValidator();
     }
 
@@ -513,7 +524,7 @@ class GlobalExceptionHandlerTest {
         @DisplayName("a failed job-submission publish answers 200 with the frozen failure literal, because "
                 + "the legacy destination ignores write errors and the transaction completes")
         void aFailedJobSubmissionAnswersTwoHundredWithTheFrozenLiteral() {
-            JobSubmissionException failure = new JobSubmissionException("JOBS.fifo",
+            JobSubmissionException failure = new JobSubmissionException("carddemo-jobs.fifo",
                     "QueueDoesNotExistException", "the queue does not exist", 3,
                     new IllegalStateException("transport failure"));
 
@@ -525,7 +536,7 @@ class GlobalExceptionHandlerTest {
             assertThat(body).isNotNull();
             assertThat(body.message()).isEqualTo(JobSubmissionException.DEFAULT_MESSAGE);
             // The diagnostic codes belong on the log line, exactly where the legacy put them.
-            assertThat(body.message()).doesNotContain("QueueDoesNotExistException", "JOBS.fifo");
+            assertThat(body.message()).doesNotContain("QueueDoesNotExistException", "carddemo-jobs.fifo");
             assertThat(body.fieldErrors()).isEmpty();
         }
     }

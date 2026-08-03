@@ -116,7 +116,7 @@ class JobSubmissionServiceTest {
      * refuses such a queue whose name lacks it - and ordering is contractual because the legacy queue
      * appends on every write.
      */
-    private static final String QUEUE_NAME = "JOBS.fifo";
+    private static final String QUEUE_NAME = "carddemo-jobs.fifo";
 
     private static final String MESSAGE_GROUP_ID = "carddemo-job-submission";
 

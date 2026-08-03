@@ -23,10 +23,12 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.exc.MismatchedInputException;
 
+import jakarta.validation.MessageInterpolator;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Locale;
 import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
@@ -37,6 +39,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 import org.springframework.web.servlet.HandlerExceptionResolver;
+import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
@@ -109,36 +112,84 @@ class WebMvcConfigBoundaryTest {
     }
 
     @Test
-    @DisplayName("the hook declares exactly one factory method, and it takes no collaborator, so there "
-            + "is nothing it could have closed over and nothing to substitute in a test")
-    void theHookDeclaresExactlyOneFactoryMethod() {
+    @DisplayName("the hook declares exactly two factory methods and neither takes a collaborator, so "
+            + "there is nothing either could have closed over and nothing to substitute in a test")
+    void theHookDeclaresExactlyTwoFactoryMethods() {
         List<Method> declared = Arrays.stream(WebMvcConfig.class.getDeclaredMethods())
                 .filter(method -> !method.isSynthetic())
                 .filter(method -> Modifier.isPublic(method.getModifiers()))
                 .toList();
 
-        assertThat(declared).hasSize(1);
-        assertThat(declared.get(0).getName()).isEqualTo("strictScalarCoercionCustomizer");
-        assertThat(declared.get(0).getParameterCount())
-                .as("a customiser that injected something would make the request-binding rule depend on "
-                        + "resolution order; this one depends on nothing")
-                .isZero();
-        assertThat(declared.get(0).getReturnType()).isEqualTo(Jackson2ObjectMapperBuilderCustomizer.class);
+        // TWO, and the second one is the validator. The count is asserted rather than left open
+        // because the property being protected is that nothing here is injected and nothing is
+        // stateful - a third method appearing silently is exactly what would erode that.
+        assertThat(declared).hasSize(2);
+        assertThat(declared).extracting(Method::getName)
+                .containsExactlyInAnyOrder("strictScalarCoercionCustomizer", "defaultValidator");
+        assertThat(declared).allSatisfy(method -> assertThat(method.getParameterCount())
+                .as("%s must inject nothing: a factory here that injected something would make the "
+                        + "request-binding rules depend on resolution order", method.getName())
+                .isZero());
+        assertThat(declared)
+                .as("each factory returns the type the framework resolves it by")
+                .extracting(Method::getReturnType)
+                .containsExactlyInAnyOrder(Jackson2ObjectMapperBuilderCustomizer.class,
+                        LocalValidatorFactoryBean.class);
         assertThat(WebMvcConfig.class.getDeclaredFields())
                 .as("no field means no state can be carried between two requests")
                 .isEmpty();
     }
 
     @Test
-    @DisplayName("the only bean-producing method by annotation is that same customiser, so no second "
-            + "contribution was added alongside it")
-    void theOnlyAnnotatedBeanMethodIsTheCoercionCustomiser() {
+    @DisplayName("both bean-producing methods are accounted for by annotation, so no third contribution "
+            + "was added alongside them")
+    void theAnnotatedBeanMethodsAreTheCoercionCustomiserAndTheValidator() {
         List<Method> beanMethods = Arrays.stream(WebMvcConfig.class.getDeclaredMethods())
                 .filter(method -> method.isAnnotationPresent(Bean.class))
                 .toList();
 
-        assertThat(beanMethods).hasSize(1);
-        assertThat(beanMethods.get(0).getName()).isEqualTo("strictScalarCoercionCustomizer");
+        assertThat(beanMethods).hasSize(2);
+        assertThat(beanMethods).extracting(Method::getName)
+                .containsExactlyInAnyOrder("strictScalarCoercionCustomizer", "defaultValidator");
+    }
+
+    @Test
+    @DisplayName("the validator renders constraint messages through the module's own pinned "
+            + "interpolator, so a field error is the same bytes for every caller")
+    void theValidatorPinsTheMessageLocale() {
+        LocalValidatorFactoryBean validator = new WebMvcConfig().defaultValidator();
+        validator.afterPropertiesSet();
+
+        // The framework wraps whatever interpolator is supplied, so the wrapper is what comes back out.
+        // What matters is the rendered result, and that is asserted directly: a size violation renders
+        // in the provider's base bundle regardless of the locale the context holder carries.
+        assertThat(validator.getMessageInterpolator())
+                .as("an interpolator must have been supplied rather than left to the default")
+                .isNotNull();
+        assertThat(validator.getMessageInterpolator()
+                        .interpolate("{jakarta.validation.constraints.NotBlank.message}",
+                                new StubInterpolatorContext(), Locale.forLanguageTag("tr-TR")))
+                .as("a Turkish request must not change the bytes of an emitted field error")
+                .isEqualTo("must not be blank");
+    }
+
+    /** Minimal interpolation context, so a rendering assertion needs no live validation run. */
+    private static final class StubInterpolatorContext implements MessageInterpolator.Context {
+
+        @Override
+        public jakarta.validation.metadata.ConstraintDescriptor<?> getConstraintDescriptor() {
+            return null;
+        }
+
+        @Override
+        public Object getValidatedValue() {
+            return null;
+        }
+
+        @Override
+        public <T> T unwrap(final Class<T> type) {
+            throw new jakarta.validation.ValidationException("no unwrapping in this stub");
+        }
     }
 
     @Test

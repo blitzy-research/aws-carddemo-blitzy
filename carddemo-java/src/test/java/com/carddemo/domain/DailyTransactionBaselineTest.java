@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -605,7 +606,7 @@ class DailyTransactionBaselineTest {
 
             for (int row = 1; row <= FIXTURE_ROWS; row++) {
                 final DailyTransaction seeded = new DailyTransaction();
-                seeded.setDalytranId(String.format("%016d", row));
+                seeded.setDalytranId(String.format(Locale.ROOT, "%016d", row));
                 rows.add(seeded);
             }
 

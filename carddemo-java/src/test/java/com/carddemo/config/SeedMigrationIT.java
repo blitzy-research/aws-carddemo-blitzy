@@ -62,8 +62,11 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
  * suite - and migrates two schemas of its own:
  *
  * <ul>
- *   <li>{@value #HEAD_SCHEMA}, brought to the head, which is what the local and test profiles resolve;</li>
- *   <li>{@value #PINNED_SCHEMA}, brought to the schema-only pin, which is what production resolves.</li>
+ *   <li>{@value #HEAD_SCHEMA}, migrated from the one delivered location with no ceiling, which is what
+ *       the local and test profiles resolve;</li>
+ *   <li>{@value #PINNED_SCHEMA}, migrated from that same location under the schema-only ceiling, which
+ *       is what production resolves. The two differ in their ceiling and in nothing else, which is
+ *       precisely what makes the comparison below evidence rather than illustration.</li>
  * </ul>
  *
  * <p>The migration scripts declare no schema of their own, so the schema each one lands in is decided
@@ -97,7 +100,9 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
  *       three would break a lookup or fabricate a processed timestamp.</li>
  *   <li><strong>No credential in cleartext, and none in production.</strong> Ten seeded identities,
  *       every credential a distinct digest, and the whole seed withheld from a production migration by
- *       the version pin.</li>
+ *       the version ceiling production pins. The four scripts are flat in one location - the migration
+ *       specifications for V3 and V4 direct that no subdirectory be created - so the ceiling is the
+ *       control, and the tests below prove it by removing it and watching the seeds land.</li>
  * </ol>
  *
  * <h2>Provenance</h2>
@@ -228,6 +233,21 @@ final class SeedMigrationIT extends AbstractPostgresIT {
     /** The applied and withheld version boundary, read from the module's own production control. */
     private static final String PINNED_TARGET = FlywayConfig.SCHEMA_ONLY_TARGET;
 
+    /**
+     * The location list a production deployment resolves: the schema location and nothing else, read
+     * from the module's own production control so the two cannot drift apart.
+     */
+    private static final List<String> PRODUCTION_LOCATIONS =
+            List.of(FlywayConfig.SCHEMA_LOCATION);
+
+    /**
+     * The location list a seeding profile resolves. It is the SAME single location the pinned profile
+     * resolves, which is the point: the two profiles differ only in their ceiling, so this constant
+     * proves the seeding is caused by the target and by nothing else.
+     */
+    private static final List<String> SEEDING_LOCATIONS =
+            List.of(FlywayConfig.SCHEMA_LOCATION);
+
     /** Migration state of the pinned schema, captured once so every assertion reads one answer. */
     private static List<MigrationInfo> pinnedMigrationState;
 
@@ -239,9 +259,9 @@ final class SeedMigrationIT extends AbstractPostgresIT {
      */
     @BeforeAll
     static void migrateBothSchemas() {
-        flywayFor(HEAD_SCHEMA, null).migrate();
+        flywayFor(HEAD_SCHEMA, SEEDING_LOCATIONS, null).migrate();
 
-        Flyway pinned = flywayFor(PINNED_SCHEMA, PINNED_TARGET);
+        Flyway pinned = flywayFor(PINNED_SCHEMA, PRODUCTION_LOCATIONS, PINNED_TARGET);
         pinned.migrate();
         pinnedMigrationState = List.of(pinned.info().all());
     }
@@ -632,26 +652,26 @@ final class SeedMigrationIT extends AbstractPostgresIT {
     }
 
     @Nested
-    @DisplayName("the production pin withholds both seeds")
-    final class TheProductionPinWithholdsBothSeeds {
+    @DisplayName("the production scope withholds both seeds, and the version ceiling is what does it")
+    final class TheProductionScopeWithholdsBothSeeds {
 
         @Test
-        @DisplayName("the schema is fully created under the pin, so the emptiness below is about the "
-                + "seeds and not about a failed migration")
-        void theSchemaIsFullyCreatedUnderThePin() throws SQLException {
+        @DisplayName("the schema is fully created under the production scope, so the emptiness below "
+                + "is about the seeds and not about a failed migration")
+        void theSchemaIsFullyCreatedUnderTheProductionScope() throws SQLException {
             for (final String table : ALL_TABLES) {
                 assertThat(scalar("SELECT count(*) FROM information_schema.tables WHERE"
                         + " table_schema = '" + PINNED_SCHEMA + "' AND table_name = '" + table + "'"))
-                        .as("%s must exist under the pin: production applies the whole schema and "
-                                + "withholds only the rows", table)
+                        .as("%s must exist under the production scope: production applies the whole "
+                                + "schema and withholds only the rows", table)
                         .isEqualTo(1L);
             }
         }
 
         @Test
-        @DisplayName("every table is empty under the pin, including the sign-on table, so a production "
-                + "migration receives no sample row and no seeded login")
-        void everyTableIsEmptyUnderThePin() throws SQLException {
+        @DisplayName("every table is empty under the production scope, including the sign-on table, so "
+                + "a production migration receives no sample row and no seeded login")
+        void everyTableIsEmptyUnderTheProductionScope() throws SQLException {
             for (final String table : ALL_TABLES) {
                 assertThat(count(PINNED_SCHEMA, table))
                         .as("%s must hold nothing. For the sign-on table in particular, a row here "
@@ -661,9 +681,9 @@ final class SeedMigrationIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("the three schema migrations are applied under the pin and the two seeds are "
-                + "reported above it, which is how they stay unexecuted")
-        void theTwoSeedsAreReportedAboveThePin() {
+        @DisplayName("under the production scope all four scripts are RESOLVED and only the two schema "
+                + "scripts are APPLIED, the seeds standing above target")
+        void theTwoSeedsAreResolvedAboveTargetAndNeverApplied() {
             Map<String, MigrationState> states = new LinkedHashMap<>();
             for (final MigrationInfo info : pinnedMigrationState) {
                 if (info.getVersion() != null) {
@@ -672,51 +692,92 @@ final class SeedMigrationIT extends AbstractPostgresIT {
             }
 
             assertThat(states.keySet())
-                    .as("all five migrations must be resolved from the one location; a seed that was "
-                            + "not resolved at all would be excluded by accident rather than by the "
-                            + "pin, and would reappear the moment the location list changed. The "
-                            + "order is the version order Flyway itself computes, which is why the "
-                            + "dotted version sorts between 1 and 2 rather than after 1 as a "
-                            + "leading-integer reading would place it")
-                    .containsExactly("1", "1.1", "2", "3", "4");
+                    .as("all four scripts sit in the one location every profile declares, so production "
+                            + "RESOLVES all four. That is the arrangement the migration specifications "
+                            + "for V3 and V4 require, and the separation is by version rather than by "
+                            + "directory")
+                    .containsExactly("1", "2", "3", "4");
             assertThat(states.get("1")).isEqualTo(MigrationState.SUCCESS);
-            assertThat(states.get("1.1"))
-                    .as("the batch metadata schema sits below the pin, so a production deployment "
-                            + "receives the tables its jobs need; withholding it would leave the pin "
-                            + "excluding a schema migration rather than only the rows")
-                    .isEqualTo(MigrationState.SUCCESS);
             assertThat(states.get("2")).isEqualTo(MigrationState.SUCCESS);
-            assertThat(states.get("3")).isEqualTo(MigrationState.ABOVE_TARGET);
+            assertThat(states.get("3"))
+                    .as("resolved and reported above target rather than applied - and note that this is "
+                            + "a normal steady state, proved by the validation assertion below")
+                    .isEqualTo(MigrationState.ABOVE_TARGET);
             assertThat(states.get("4")).isEqualTo(MigrationState.ABOVE_TARGET);
         }
 
         @Test
-        @DisplayName("validation succeeds under the pin, so a pending seed above the target is not an "
-                + "error a deployment has to suppress")
-        void validationSucceedsUnderThePin() {
-            assertThat(flywayFor(PINNED_SCHEMA, PINNED_TARGET).validateWithResult().validationSuccessful)
-                    .as("if a pending above-target migration failed validation, production would have "
-                            + "to disable validation to start - and would then also stop noticing a "
-                            + "genuinely altered migration")
+        @DisplayName("validation succeeds under the production scope, so the arrangement is not one a "
+                + "deployment has to suppress an error to live with")
+        void validationSucceedsUnderTheProductionScope() {
+            assertThat(flywayFor(PINNED_SCHEMA, PRODUCTION_LOCATIONS, PINNED_TARGET)
+                    .validateWithResult().validationSuccessful)
+                    .as("if the production scope failed validation, production would have to disable "
+                            + "validation to start - and would then also stop noticing a genuinely "
+                            + "altered migration")
                     .isTrue();
         }
 
         @Test
-        @DisplayName("lifting the pin on a schema that was pinned applies both seeds, so the pin is "
-                + "what withheld them and not the location")
-        void liftingThePinAppliesBothSeeds() throws SQLException {
-            String schema = "seed_lifted";
-            flywayFor(schema, PINNED_TARGET).migrate();
+        @DisplayName("the ceiling is the ONLY thing withholding the seeds: removing it against the same "
+                + "location seeds the database, which is why the pin is the control and not a formality")
+        void removingTheCeilingAloneAppliesBothSeeds() throws SQLException {
+            String schema = "seed_ceiling_lifted";
+            flywayFor(schema, PRODUCTION_LOCATIONS, null).migrate();
 
             assertThat(count(schema, "user_security"))
-                    .as("pinned first, so the emptiness is established before the lift")
+                    .as("the same single location, the same four scripts, and the ONLY difference is the "
+                            + "absent ceiling - so ten known sign-on identities land. This is the "
+                            + "falsifying case for the whole arrangement: it proves the pin is doing the "
+                            + "work, and it is why a deployment silent about the target must inherit the "
+                            + "restrictive value rather than none")
+                    .isEqualTo(10L);
+            assertThat(count(schema, "customer")).isEqualTo(50L);
+        }
+
+        @Test
+        @DisplayName("the ceiling withholds the seeds while still resolving them, so they are reported "
+                + "above target rather than hidden")
+        void theCeilingWithholdsTheSeedsWhileResolvingThem() throws SQLException {
+            String schema = "seed_location_added";
+            Flyway migration = flywayFor(schema, SEEDING_LOCATIONS, PINNED_TARGET);
+            migration.migrate();
+
+            Map<String, MigrationState> states = new LinkedHashMap<>();
+            for (final MigrationInfo info : migration.info().all()) {
+                if (info.getVersion() != null) {
+                    states.put(info.getVersion().getVersion(), info.getState());
+                }
+            }
+            assertThat(states.keySet())
+                    .as("both locations resolve now, so all four scripts are visible - which is the "
+                            + "situation a widened production location list would create")
+                    .containsExactly("1", "2", "3", "4");
+            assertThat(states.get("3")).isEqualTo(MigrationState.ABOVE_TARGET);
+            assertThat(states.get("4")).isEqualTo(MigrationState.ABOVE_TARGET);
+            assertThat(count(schema, "user_security"))
+                    .as("resolved, reported above target, and still unapplied - the ceiling doing "
+                            + "exactly the work the specifications assign to it")
+                    .isZero();
+        }
+
+        @Test
+        @DisplayName("lifting the ceiling on an already-migrated schema applies both seeds, so the pin "
+                + "is what separates the two postures and nothing else does")
+        void relaxingBothControlsAppliesBothSeeds() throws SQLException {
+            String schema = "seed_fully_relaxed";
+            flywayFor(schema, PRODUCTION_LOCATIONS, PINNED_TARGET).migrate();
+
+            assertThat(count(schema, "user_security"))
+                    .as("production-shaped first, so the emptiness is established before the relaxation")
                     .isZero();
 
-            flywayFor(schema, null).migrate();
+            flywayFor(schema, SEEDING_LOCATIONS, null).migrate();
 
             assertThat(count(schema, "user_security"))
-                    .as("the same location, the same scripts, only a different target - which is the "
-                            + "whole claim of the delivered exclusion mechanism")
+                    .as("the same location and the same scripts, differing only in target, produce ten "
+                            + "sign-on identities or none - which is the whole claim of the delivered "
+                            + "exclusion mechanism stated as an experiment rather than as prose")
                     .isEqualTo(10L);
             assertThat(count(schema, "daily_transaction")).isEqualTo(300L);
         }
@@ -725,19 +786,26 @@ final class SeedMigrationIT extends AbstractPostgresIT {
     // Helpers.
 
     /**
-     * Builds a migration configured to land in one schema.
+     * Builds a migration configured to land in one schema, with an explicit location list.
+     *
+     * <p>The location list is a parameter rather than a constant so that a foreign or withdrawn location
+     * can be exercised deliberately. Every shipped profile resolves the same single location, so the
+     * production and seeding constants hold the same value - which is the point: the two postures differ
+     * in their ceiling alone, and passing the location explicitly is what makes that visible here.
      *
      * <p>{@code cleanDisabled} is left at its safe default: nothing here drops a schema, and a
      * configuration that could would be one edit away from dropping the shared one.</p>
      *
-     * @param schema the schema to create and migrate into
-     * @param target the highest version to apply, or {@code null} for the head
+     * @param schema    the schema to create and migrate into
+     * @param locations the location descriptors to resolve migrations from
+     * @param target    the highest version to apply, or {@code null} for the head
      * @return a loaded migration, not yet run
      */
-    private static Flyway flywayFor(final String schema, final String target) {
+    private static Flyway flywayFor(final String schema, final List<String> locations,
+            final String target) {
         var configuration = Flyway.configure()
                 .dataSource(jdbcUrl(), databaseUser(), databasePassword())
-                .locations(MIGRATION_LOCATION)
+                .locations(locations.toArray(String[]::new))
                 .schemas(schema)
                 .defaultSchema(schema);
         if (target != null) {

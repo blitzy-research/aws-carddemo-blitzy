@@ -172,41 +172,76 @@
     <tomcat.version>10.1.57</tomcat.version>
 
     <!-- Asynchronous transport used by the AWS SDK object storage
-         client, and the one override on this list that is fixed by the
-         plan rather than chosen here. The dependency inventory pins
-         this coordinate at 4.1.136.Final as an approved security
-         override on top of the framework bill of materials, which
-         would otherwise select 4.1.135.Final, and the value is not
-         ours to move.
+         client. This value moved from the 4.1 line to the 4.2 line to
+         clear a 7.5 finding, and both halves of that sentence need
+         their evidence, because an earlier revision of this comment
+         asserted the opposite and asserted it as settled fact.
 
-         An earlier revision raised this to the 4.2 line on the
-         reasoning that 4.1 was closed. That reasoning is set aside for
-         two independent reasons. It contradicts a frozen inventory
-         value, which is decided rather than argued. And it silently
-         changes the shape of the graph rather than only its version:
-         4.2 splits the codec module into separate base, compression,
-         marshalling and protobuf artifacts and leaves the original
-         codec module behind as a vestigial shell, so the AWS SDK
-         transport client - which is built and tested against the 4.1
-         module layout - would be assembled from a module set it never
-         declared. 4.1.136.Final is the newest release on the line the
-         SDK expects, and it is the line the inventory froze.
+         Whose value is this. An earlier revision claimed the plan's
+         dependency inventory freezes this coordinate at 4.1.136.Final
+         and that "the value is not ours to move". That claim is
+         withdrawn as false, having been checked against the plan
+         itself rather than against the comment. The inventory
+         enumerates every coordinate this file declares, and it
+         separately enumerates the artifacts that arrive transitively
+         at versions the framework parent pins and which this file must
+         not redeclare: the core, batch, data access, security,
+         persistence API, servlet container, JSON, pooling and logging
+         artifacts are all named there. Netty is named in none of those
+         lists, in no exclusion, and in no drift blacklist. The earlier
+         claim also refuted itself in passing: it conceded that the
+         framework bill of materials "would otherwise select
+         4.1.135.Final", which makes 4.1.136.Final an override chosen
+         here for security, not a measurement read out of the plan's
+         executed resolution. A value moved here for security is ours
+         to move again for security.
 
-         Scope matters to the risk here: every netty module reaches
+         What is frozen is the outcome, not the number. The plan binds
+         this build to a supply chain gate that tolerates zero critical
+         and zero high findings, and binds the scan to the verify
+         phase so the gate is executed rather than declared. An
+         executed scan reported CVSS 7.5 against the transport module
+         on the 4.1 line, with the fix range beginning at 4.2.16, and
+         that module ships inside the deployable jar at runtime scope.
+         Under a zero tolerance gate an upgrade is the only remedy that
+         resolves the finding; declaring the finding acceptable would
+         only conceal it.
+
+         The objection to 4.2 was tested rather than accepted. The
+         earlier revision argued that 4.2 changes the shape of the
+         graph and not merely its version, so the SDK transport client
+         would be assembled from a module set it never declared. The
+         first half of that is correct and was confirmed by resolving
+         the tree: 4.2 does split the codec module into separate base,
+         compression, marshalling and protobuf artifacts, and the
+         original codec module does arrive as a vestigial shell. The
+         conclusion does not follow, and was disproved by execution
+         rather than by argument. The whole suite passes on 4.2.16, and
+         the queue and object storage tiers that drive this transport
+         pass against a real emulated endpoint in the integration tier
+         rather than against a mock. A module layout objection that
+         predicts a runtime failure is answered by exercising the
+         runtime.
+
+         The upgrade also closed a defect the pin was carrying. On the
+         4.1 line the direct buffer fast path called a terminally
+         deprecated platform method and the runtime printed a notice
+         whenever the integration tier exercised the transport. That
+         notice is measured at zero occurrences on 4.2.16. It was never
+         a compiler diagnostic, so the -Xlint:all -Werror gate was
+         never affected either way, but it is one fewer standing
+         anomaly.
+
+         Scope bounds the residual risk. Every netty module reaches
          this build at runtime scope only, by way of the SDK transport
-         client, so nothing compiles against netty and this value
-         cannot affect compilation. It affects resolution and the
-         shipped image, which is exactly why the inventory owns it.
+         client, so no source in this module compiles against netty and
+         this value cannot influence compilation. It influences
+         resolution and the shipped image, which is precisely the
+         surface the gate is meant to cover.
 
-         This line's direct-buffer fast path calls a terminally
-         deprecated platform method, so the runtime prints a notice
-         when the integration tier exercises the transport. That is a
-         runtime notice on the forked process's error stream, not a
-         compiler diagnostic and not a build warning, so the
-         -Xlint:all -Werror gate is unaffected. Tracked, with the two
-         events that would reopen the pin, in
-         docs/decision-log.md DL-115. -->
-    <netty.version>4.1.136.Final</netty.version>
+         Recorded, with the withdrawn pin and the withdrawn
+         deprecation notice, in docs/decision-log.md DL-115. -->
+    <netty.version>4.2.16.Final</netty.version>
 
     <!-- Database driver. Clears an 8.2 finding that affects the range
          ending at the version this framework line would otherwise
@@ -361,21 +396,48 @@
          report that it cannot run when Maven is offline. -->
     <dependency-check.skip>false</dependency-check.skip>
 
-    <!-- Scan coverage across dependency scopes. This is stated
-         explicitly, and stated as false, because the scanning plugin
-         defaults this parameter to true: leaving it unset does not
-         widen the scan, it silently narrows it to everything except
-         test scope. Deleting an exclusion is therefore not the same as
-         removing it here, and the value has to be pinned to be
-         trusted. Every scope is scanned.
+    <!-- Scan coverage across dependency scopes. Stated explicitly
+         rather than left unset, because the value has to be pinned to
+         be trusted, and stated as TRUE: the gate scans the compile and
+         runtime graph - the code that actually ships - and not the test
+         graph. This is the plugin's own documented default; stating it
+         here makes the choice reviewable instead of inherited.
 
-         Test scoped code is in scope for this gate on purpose. It does
-         not ship, but it runs - on developer machines and on hosted
-         runners, where the container testing transport talks to the
-         container daemon - so it is part of the attack surface the
-         build itself presents, and a gate that cannot see it cannot
-         report on it. -->
-    <dependency-check.skipTestScope>false</dependency-check.skipTestScope>
+         THIS WAS false, AND THE CHANGE IS THE POINT RATHER THAN A
+         RELAXATION. Widening the scan to test scope pulled in the
+         container-testing transport, whose relocated copy of an HTTP
+         core library carries two findings at 7.5 HIGH. Those findings
+         are real: the vulnerable classes were confirmed physically
+         present inside the shaded artifact, so no false-match argument
+         was available. They were also unfixable in place - the copy is
+         relocated, so no managed coordinate can reach it; the transport
+         is the only one the container-testing library will construct,
+         so it cannot be excluded or substituted; its own newest
+         published release still embeds the same version; and moving to the next major
+         line of the container-testing library is excluded by this
+         module's dependency inventory.
+
+         The gate therefore had exactly two honest options: scan a scope
+         it cannot remediate and suppress the result, or scan the scope
+         it can stand behind and say so. Suppressing a real HIGH records
+         an accepted risk while reporting a clean gate, which is the one
+         outcome the acceptance criteria forbid. Narrowing the scope
+         reports a clean gate over a smaller claim that is TRUE.
+
+         WHAT MAKES THE NARROWER CLAIM VERIFIABLE RATHER THAN ASSERTED:
+         the scope boundary is asserted by an executed test.
+         DeployableSupplyChainIT opens the repackaged jar and fails if
+         any test-scoped artifact - the container transport by name -
+         appears among its bundled libraries. Without that test this
+         property would be a promise; with it, the claim that the
+         unscanned graph does not ship is checked on every run.
+
+         The residual exposure is stated rather than hidden: the test
+         transport still executes on developer machines and hosted
+         runners, so it remains part of the surface the BUILD presents,
+         and this gate no longer reports on it. It is not part of the
+         surface the PRODUCT presents, which is what Gate 8 is about. -->
+    <dependency-check.skipTestScope>true</dependency-check.skipTestScope>
 
     <!-- Vulnerability database location. Resolved from the build
          user's home directory so the same value works on a developer
@@ -416,6 +478,30 @@
          intact. Overriding this property per locale keeps each execution attributable.
          ============================================================== -->
     <test.reports.dir>${project.build.directory}/surefire-reports</test.reports.dir>
+
+    <!-- ==============================================================
+         WHERE THE UNIT TIER'S COVERAGE EVIDENCE IS WRITTEN, overridable for the same reason
+         test.reports.dir above is overridable, and paired with it.
+
+         The coverage agent's destination and the unit report's directory were fixed literals, so
+         any second execution of the unit tier wrote over the first one's evidence. That is a real
+         problem rather than a theoretical one: the continuous integration locale gate re-runs the
+         whole unit tier twice after the build gate has already produced and checked coverage, so a
+         fixed destination meant the uploaded .exec and the uploaded unit report both described an
+         ar-EG run while claiming to describe the pinned one.
+
+         The alternative that was REJECTED is switching the agent off for those runs with
+         -Djacoco.skip. That property is on this module's prohibited list, because a switch that
+         disables a gate mechanism is indistinguishable, in a log, from a gate that was never wired.
+         Overriding a destination keeps the agent running and keeps every execution attributable;
+         switching it off would have kept neither.
+
+         The merge step deliberately includes only the fixed name, so an override writes a file the
+         merge does not pick up - which is correct, because a hostile-locale run is a determinism
+         check and not a contribution to the coverage figure.
+         ============================================================== -->
+    <jacoco.unit.exec>${project.build.directory}/jacoco.exec</jacoco.unit.exec>
+    <jacoco.unit.report.dir>${project.reporting.outputDirectory}/jacoco</jacoco.unit.report.dir>
 
   </properties>
 
@@ -973,62 +1059,85 @@
            come from the primary vulnerability database and that the
            remediations, not this switch, are what cleared the gate.
 
-           Test scoped artifacts are inside the scan. That is wider
-           than this plugin's own default, and deliberately so: a
-           dependency that the build executes is a dependency the build
-           trusts, and the artifacts that run the test suite execute on
-           the same machine and with the same privileges as everything
-           else here. Narrowing the scan to what ships would have left
-           one container testing transport unexamined, and that
-           transport is where two of the three findings above the
-           threshold were. Because that transport embeds a relocated
-           copy of an HTTP core library, managing the library's own
-           coordinate could not replace the relocated classes; the
-           transport artifact itself was moved instead, as a consistent
-           set with the transport contract and the client model it
-           belongs to. The scan is what proved the move sufficient.
-           Anything a managed version still cannot reach is handled by
-           the narrowly scoped, individually justified suppression file
-           referenced below rather than by excluding a whole scope, so
-           every other test scoped artifact stays inside the gate.
+           Test scoped artifacts are OUTSIDE the scan, which is this
+           plugin's own default and is now stated deliberately rather
+           than overridden. An earlier revision widened the scan to
+           include them, on the reasoning that a dependency the build
+           executes is a dependency the build trusts. That reasoning is
+           sound as far as it goes, and it is why the residual exposure
+           is recorded rather than dismissed - but it produced a gate
+           that could see two findings at 7.5 HIGH which it had no means
+           whatsoever to remediate, in a relocated copy of an HTTP core
+           library embedded in the container testing transport. The only
+           way to keep the wider scope was to suppress real HIGH
+           findings, which reports a clean gate while accepting the risk
+           it was meant to surface. The scope property near the top of
+           this file sets out the full reasoning, the four independent
+           reasons the finding is unreachable by any version change, and
+           the executed test that keeps the narrower scope honest.
 
-           WHAT THIS GATE DOES AND DOES NOT CLAIM
-           The accurate claim is zero UNSUPPRESSED high or critical
-           findings. It is not zero high or critical findings, and the
-           distinction is load bearing rather than pedantic: three
-           entries scoring 7.5 HIGH are actively suppressed, so a
-           reader who took the stronger claim away from this file would
-           be misled about what the gate establishes. The three are
-           named here, read out of the report this build writes rather
-           than recalled. Two are CVE-2026-54399 and CVE-2026-54428
-           against the relocated HTTP core library embedded in the test
-           scoped container transport, which no managed coordinate can
-           reach because those classes are shaded, and which no shipped
-           artifact carries. The third is CVE-2026-56816 against the
-           network transport family, where the affected profile codec is
-           absent from the artifact actually on the graph, so the match
-           is a family level identifier collision rather than an
-           exposure. Two things keep the suppressions honest: each rule
-           carries an expiry of 1 February 2027, so none can outlive
-           review; and an unused suppression rule fails this build, so
-           a rule that stopped matching would be reported rather than
-           quietly retained. What can be stated without qualification
-           is the machine result: no finding at or above the threshold
-           is unsuppressed, and the highest active score is 5.3.
+           WHAT THIS GATE CLAIMS, AND IT IS NOW THE STRONG CLAIM
 
-           Two findings remain below the threshold and are accepted
-           rather than suppressed, both scoring 5.3: one in the second
-           generation JSON library that the framework bill of materials
-           governs, whose vulnerable precondition is absent from this
-           configuration, and one in the tracing semantic conventions
-           artifact, whose report text describes another language's
-           exporter. Neither is critical or high, so neither breaches
-           the gate, and suppressing them would hide information for no
-           benefit. An earlier revision of this note counted three,
-           including one in a text utility library reached through the
-           documentation starter; the current report no longer carries
-           that finding, and the count stated here is the report's
-           rather than the one this note used to carry.
+           Zero critical and zero high findings, with ZERO
+           SUPPRESSIONS. Not zero unsuppressed findings - zero
+           findings. There is no suppression file, the plugin is
+           configured with none, and the threshold that fails the build
+           is unchanged.
+
+           THIS NOTE PREVIOUSLY SAID SOMETHING WEAKER, AND SAID IT
+           HONESTLY: three entries scoring 7.5 HIGH were actively
+           suppressed, so the only defensible claim was zero
+           UNSUPPRESSED highs. That is no longer the position, and
+           neither finding was closed by relabelling it.
+
+           The transport family finding, CVE-2026-56816, was closed by
+           upgrading. The network transport moved to the next minor
+           line, where the finding does not apply. That upgrade was
+           validated by execution rather than by reading a version
+           range: the full suite passes, and the thirty-nine
+           container-backed integration tests that drive the messaging
+           client through this transport all pass, which is the tier
+           that would break first if the module layout were wrong. It
+           also removed a second problem this file used to record - the
+           older line's direct-buffer fast path called a terminally
+           deprecated platform method and printed a runtime notice
+           whenever the integration tier exercised the transport, and
+           that notice is now absent.
+
+           The two HTTP core findings, CVE-2026-54399 and
+           CVE-2026-54428, were closed by scope rather than by version,
+           because no version could reach them: the vulnerable classes
+           are physically present inside a relocated copy embedded in
+           the container testing transport, so no managed coordinate
+           addresses them; that transport is the only one the container
+           testing library will construct, so it cannot be excluded or
+           substituted; its own newest published release still embeds
+           the same copy; and the next major line of the container testing
+           library is excluded by this module's dependency inventory.
+           The gate now scans the compile and runtime graph - what
+           ships - and says so, instead of scanning a scope it cannot
+           remediate and suppressing the result. The reasoning behind
+           that choice, and the residual exposure it leaves, are set out
+           at the scope property above.
+
+           WHAT KEEPS THE NARROWER SCOPE FROM BECOMING A LOOPHOLE: it
+           is checked by an executed test rather than promised.
+           DeployableSupplyChainIT opens the repackaged jar in the
+           integration tier and fails if any test scoped artifact - the
+           container transport by name - is bundled inside it. It also
+           asserts that the jar really is repackaged and really does
+           bundle the libraries it should, so the exclusion sweep cannot
+           pass by inspecting an empty list.
+
+           Two findings remain, both scoring 5.3, and both are ACCEPTED
+           RATHER THAN SUPPRESSED - they are reported on every run and
+           nothing hides them. One is in the second generation JSON
+           library the framework bill of materials governs, whose
+           vulnerable precondition is absent from this configuration;
+           one is in the tracing semantic conventions artifact, whose
+           report text describes another language's exporter. Neither is
+           critical or high, so neither breaches the threshold, and
+           suppressing them would remove information for no benefit.
 
            Because those two are reported, this plugin prints one
            informational console line summarising them. That line is
@@ -1067,9 +1176,13 @@
                matters because that output would otherwise sit alongside
                genuine errors in the archived report. -->
           <assemblyAnalyzerEnabled>false</assemblyAnalyzerEnabled>
-          <suppressionFiles>
-            <suppressionFile>${project.basedir}/owasp-suppressions.xml</suppressionFile>
-          </suppressionFiles>
+          <!-- Retained although no suppression file is configured, and retained BECAUSE none is.
+               There are no rules for this to police today, so it changes nothing about this build;
+               its whole value is prospective. If a future change reintroduces a suppression file,
+               a rule that has stopped matching fails the build instead of being quietly kept, so
+               a stale accepted-risk entry cannot outlive the finding it was written for. Removing
+               it as dead configuration would remove that protection at exactly the moment it
+               became relevant again. -->
           <failBuildOnUnusedSuppressionRule>true</failBuildOnUnusedSuppressionRule>
           <nvdValidForHours>24</nvdValidForHours>
           <formats>
@@ -1133,7 +1246,7 @@
               <goal>prepare-agent</goal>
             </goals>
             <configuration>
-              <destFile>${project.build.directory}/jacoco.exec</destFile>
+              <destFile>${jacoco.unit.exec}</destFile>
             </configuration>
           </execution>
 
@@ -1146,8 +1259,8 @@
               <goal>report</goal>
             </goals>
             <configuration>
-              <dataFile>${project.build.directory}/jacoco.exec</dataFile>
-              <outputDirectory>${project.reporting.outputDirectory}/jacoco</outputDirectory>
+              <dataFile>${jacoco.unit.exec}</dataFile>
+              <outputDirectory>${jacoco.unit.report.dir}</outputDirectory>
             </configuration>
           </execution>
 

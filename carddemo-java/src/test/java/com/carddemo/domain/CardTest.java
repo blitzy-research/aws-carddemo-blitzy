@@ -19,6 +19,7 @@ package com.carddemo.domain;
 import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.Set;
 
 import com.carddemo.support.SchemaColumnCatalog;
@@ -566,7 +567,7 @@ class CardTest {
 
             // Every one of the fifty sample names carries lower-case characters, so a fold applied
             // here would alter stored data for all of them.
-            assertThat(card.getCardEmbossedName()).isNotEqualTo(seedEmbossedName().toUpperCase());
+            assertThat(card.getCardEmbossedName()).isNotEqualTo(seedEmbossedName().toUpperCase(Locale.ROOT));
             assertThat(card.getCardEmbossedName()).containsPattern("[a-z]");
 
             // A mixed-case value passes through untouched, in either direction.

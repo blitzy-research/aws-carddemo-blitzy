@@ -27,6 +27,7 @@ import org.junit.jupiter.api.parallel.Resources;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import java.util.Locale;
 
 /**
  * Unit test for {@link StatementTextTemplates}, the holder of the plain-text account statement
@@ -1694,7 +1695,7 @@ class StatementTextTemplatesTest {
 
     /**
      * The locales the amount masks are re-rendered under. Four carry a non-Latin default numbering
-     * system, under which {@code String.format("%03d", 7)} and {@code new DecimalFormat("000")} emit
+     * system, under which {@code String.format(Locale.ROOT, "%03d", 7)} and {@code new DecimalFormat("000")} emit
      * non-ASCII digits; the fifth carries the Turkish casing rules. Between them they cover both ways
      * a default locale could change an emitted byte.
      */

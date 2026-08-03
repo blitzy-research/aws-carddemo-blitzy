@@ -30,6 +30,7 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import java.util.Locale;
 
 /**
  * Verifies that neither {@link UserResponse} nor its nested {@link UserRow} can disclose a personal
@@ -437,7 +438,7 @@ class UserResponseSecurityTest {
             assertThat(payload.has("password")).isFalse();
             assertThat(payload.has("passwordHash")).isFalse();
             assertThat(UserResponse.class.getRecordComponents())
-                    .noneMatch(component -> component.getName().toLowerCase()
+                    .noneMatch(component -> component.getName().toLowerCase(Locale.ROOT)
                             .contains("password"));
         }
 

@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 
 import org.junit.jupiter.api.DisplayName;
@@ -146,7 +147,7 @@ class KeyActionSecurityTest {
         void programFunctionIdentifiersUseATwoDigitZeroPaddedOrdinal() {
             for (int ordinal = 1; ordinal <= PROGRAM_FUNCTION_KEYS.size(); ordinal++) {
                 assertThat(PROGRAM_FUNCTION_KEYS.get(ordinal - 1).getAid())
-                        .isEqualTo("PFK%02d".formatted(ordinal));
+                        .isEqualTo(String.format(Locale.ROOT, "PFK%02d", ordinal));
             }
         }
 
@@ -201,7 +202,7 @@ class KeyActionSecurityTest {
                 + "same twelve flags rather than defining twelve further identifiers")
         void theUpperTwelveKeysAreNotIdentifiersOfTheirOwn() {
             for (int ordinal = 13; ordinal <= 24; ordinal++) {
-                assertThat(KeyAction.fromAid("PFK%02d".formatted(ordinal))).isEmpty();
+                assertThat(KeyAction.fromAid(String.format(Locale.ROOT, "PFK%02d", ordinal))).isEmpty();
             }
         }
 

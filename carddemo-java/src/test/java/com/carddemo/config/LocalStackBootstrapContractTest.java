@@ -18,6 +18,7 @@ package com.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.carddemo.util.SqsNamingRules;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -111,7 +112,7 @@ final class LocalStackBootstrapContractTest {
     private static final String BUCKET = "carddemo-batch-staging";
 
     /** The canonical queue. The suffix is required by the service, not decoration. */
-    private static final String QUEUE = "JOBS.fifo";
+    private static final String QUEUE = "carddemo-jobs.fifo";
 
     /** The suffix a first-in-first-out queue name must carry. */
     private static final String FIFO_SUFFIX = ".fifo";
@@ -302,7 +303,7 @@ final class LocalStackBootstrapContractTest {
         @CsvSource({
             "AWS_DEFAULT_REGION,            us-east-1",
             "CARDDEMO_S3_BUCKET,            carddemo-batch-staging",
-            "CARDDEMO_SQS_QUEUE,            JOBS.fifo",
+            "CARDDEMO_SQS_QUEUE,            carddemo-jobs.fifo",
             "CARDDEMO_SQS_MESSAGE_GROUP_ID, carddemo-job-submission",
             "CARDDEMO_SNS_TOPIC,            carddemo-job-notifications",
         })
@@ -324,12 +325,17 @@ final class LocalStackBootstrapContractTest {
         @DisplayName("the queue name carries the suffix the service requires of a fifo queue")
         void theQueueNameCarriesTheRequiredSuffix() throws IOException {
             // Not decoration: the service rejects a first-in-first-out queue whose name omits the
-            // suffix, which would be a start-up failure. The legacy resource name is retained ahead
-            // of it, so the operator-visible identity is unchanged.
+            // suffix, which would be a start-up failure.
             assertThat(QUEUE).endsWith(FIFO_SUFFIX);
             assertThat(QUEUE.substring(0, QUEUE.length() - FIFO_SUFFIX.length()))
-                    .as("the legacy transient-data resource name is retained ahead of the suffix")
-                    .isEqualTo("JOBS");
+                    .as("the stem ahead of the suffix is the name the migration plan MANDATES, and it "
+                            + "is module-namespaced like the other three resources rather than the "
+                            + "legacy transient-data name. An intermediate revision made this stem the "
+                            + "bare legacy 'JOBS'; that is withdrawn - see docs/decision-log.md DL-092 "
+                            + "- because what the plan freezes for this resource is the target name it "
+                            + "prescribes, while the legacy name is carried by the operator-visible "
+                            + "failure message, which is the contract actually compared byte for byte")
+                    .isEqualTo("carddemo-jobs");
             assertThat(executableBody()).contains(QUEUE);
         }
     }
@@ -590,7 +596,7 @@ final class LocalStackBootstrapContractTest {
         @ParameterizedTest(name = "{0}")
         @ValueSource(strings = {
             "carddemo-batch-staging",
-            "JOBS.fifo",
+            "carddemo-jobs.fifo",
             "carddemo-job-submission",
             "carddemo-job-notifications",
         })
@@ -748,6 +754,120 @@ final class LocalStackBootstrapContractTest {
                     .as("and must carry no fallback of any kind, canonical or otherwise")
                     .doesNotContain(":" + QUEUE)
                     .doesNotContain(":-");
+        }
+
+        @Test
+        @DisplayName("the shell's queue-name bound and SqsNamingRules' bound are the same number")
+        void theQueueNameBoundAgreesAcrossBothLanguages() throws IOException {
+            // The bootstrap and the producer validate the same queue name in two languages, and
+            // nothing but this assertion holds the two numbers together. If one side is relaxed the
+            // other silently becomes the only gate, and the gap reopens exactly where it was found:
+            // a name the shell refuses to provision that the producer accepts at start-up.
+            assertThat(boundedValueLimitFor("the queue name"))
+                    .as("the bootstrap's queue-name maximum must be the number "
+                            + "SqsNamingRules.QUEUE_NAME_MAX_LENGTH enforces in Java")
+                    .isEqualTo(SqsNamingRules.QUEUE_NAME_MAX_LENGTH);
+        }
+
+        @Test
+        @DisplayName("the shell's message-group bound and SqsNamingRules' bound are the same number")
+        void theMessageGroupBoundAgreesAcrossBothLanguages() throws IOException {
+            assertThat(boundedValueLimitFor("the message group id"))
+                    .as("the bootstrap's message-group maximum must be the number "
+                            + "SqsNamingRules.MESSAGE_GROUP_ID_MAX_LENGTH enforces in Java")
+                    .isEqualTo(SqsNamingRules.MESSAGE_GROUP_ID_MAX_LENGTH);
+        }
+
+        @Test
+        @DisplayName("both languages admit the same character set, and refuse the same one")
+        void theCharacterSetAgreesAcrossBothLanguages() throws IOException {
+            // The shell expresses its rule as a negated glob bracket; Java expresses it as a
+            // predicate. They cannot be compared textually, so the bracket is read out of the script
+            // and every character it names is put to the Java predicate - and a representative
+            // sample of what the bracket excludes is put to it too, so agreement is proved in both
+            // directions rather than only on the permitted side.
+            final String scriptText = read(SCRIPT_PATH);
+            assertThat(scriptText)
+                    .as("the script must still express its character rule as the negated set this "
+                            + "assertion reads, for both the queue name and the message group id")
+                    .contains("*[!A-Za-z0-9._-]*)");
+
+            final String permitted = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                    + "0123456789._-";
+            final List<Character> refusedByJava = new ArrayList<>();
+            for (final char candidate : permitted.toCharArray()) {
+                if (!SqsNamingRules.isPermittedNameCharacter(candidate)) {
+                    refusedByJava.add(candidate);
+                }
+            }
+            assertThat(refusedByJava)
+                    .as("every character the bootstrap's [A-Za-z0-9._-] set admits must be admitted "
+                            + "by SqsNamingRules.isPermittedNameCharacter")
+                    .isEmpty();
+
+            final List<Character> admittedByJava = new ArrayList<>();
+            for (final char candidate : " !\"#$%&'()*+,/:;<=>?@[\\]^`{|}~\t\n".toCharArray()) {
+                if (SqsNamingRules.isPermittedNameCharacter(candidate)) {
+                    admittedByJava.add(candidate);
+                }
+            }
+            assertThat(admittedByJava)
+                    .as("no character outside the bootstrap's set may be admitted by "
+                            + "SqsNamingRules.isPermittedNameCharacter")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("both languages require the same .fifo suffix, and the canonical name clears both")
+        void theFifoSuffixRequirementAgreesAcrossBothLanguages() throws IOException {
+            assertThat(read(SCRIPT_PATH))
+                    .as("the bootstrap must still refuse a queue name that omits the suffix")
+                    .contains("does not end in .fifo");
+            assertThat(SqsNamingRules.FIFO_SUFFIX)
+                    .as("Java must require the same suffix literal the bootstrap requires")
+                    .isEqualTo(".fifo");
+
+            // The agreement is only worth having if the value both sides actually carry satisfies
+            // it. This is the one assertion that puts the canonical name itself through the Java
+            // contract, in each of the three destination forms the producer accepts.
+            assertThat(SqsNamingRules.requireQueueDestination(QUEUE, "probe"))
+                    .as("the canonical bare queue name must satisfy the producer's contract")
+                    .isEqualTo(QUEUE);
+            assertThat(SqsNamingRules.requireQueueDestination(
+                            "http://localhost:4566/000000000000/" + QUEUE, "probe"))
+                    .as("the emulator's own URL form of the canonical name must satisfy it too")
+                    .endsWith(QUEUE);
+            assertThat(SqsNamingRules.requireQueueDestination(
+                            "arn:aws:sqs:us-east-1:000000000000:" + QUEUE, "probe"))
+                    .as("the ARN form of the canonical name must satisfy it too")
+                    .endsWith(QUEUE);
+            assertThat(SqsNamingRules.requireMessageGroupId(MESSAGE_GROUP, "probe"))
+                    .as("the canonical message group id must satisfy the producer's contract")
+                    .isEqualTo(MESSAGE_GROUP);
+        }
+
+        /**
+         * Reads the length bound the bootstrap applies to one named value out of the script itself.
+         *
+         * <p>The number is taken from the script rather than restated here, because a restated
+         * number agrees with Java while disagreeing with the shell - which is the drift these
+         * assertions exist to catch.</p>
+         *
+         * @param valueLabel the label the script passes to {@code require_bounded_value}
+         * @return the bound the script applies to that value
+         * @throws IOException if the script cannot be read
+         */
+        private int boundedValueLimitFor(final String valueLabel) throws IOException {
+            final String call = "require_bounded_value '" + valueLabel + "' ";
+            for (final String line : read(SCRIPT_PATH).split("\n", -1)) {
+                final String trimmed = line.strip();
+                if (trimmed.startsWith(call)) {
+                    final String[] words = trimmed.split(" ");
+                    return Integer.parseInt(words[words.length - 1]);
+                }
+            }
+            throw new AssertionError("the bootstrap no longer bounds " + valueLabel
+                    + " with require_bounded_value; the cross-language agreement cannot be checked");
         }
 
         @Test

@@ -118,7 +118,7 @@ class LocalStackBootstrapScriptSecurityTest {
 
     /** The canonical opening record, byte for byte, when nothing redirects a name. */
     private static final String CANONICAL_OPENING_RECORD = OPENING_RECORD_PREFIX
-            + "region=us-east-1 bucket=carddemo-batch-staging queue=JOBS.fifo "
+            + "region=us-east-1 bucket=carddemo-batch-staging queue=carddemo-jobs.fifo "
             + "topic=carddemo-job-notifications";
 
     /** The accepted character set, quoted in the refusal so an operator knows what to correct to. */

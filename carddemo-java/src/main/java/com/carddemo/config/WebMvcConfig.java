@@ -22,6 +22,7 @@ import com.fasterxml.jackson.databind.type.LogicalType;
 import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
@@ -154,5 +155,42 @@ public final class WebMvcConfig implements WebMvcConfigurer {
                     .setCoercion(CoercionInputShape.Float, CoercionAction.Fail)
                     .setCoercion(CoercionInputShape.Boolean, CoercionAction.Fail);
         });
+    }
+
+    /**
+     * The validator every request-body and parameter constraint is checked by, with its message
+     * rendering pinned to one locale so that a field error is the same bytes everywhere.
+     *
+     * <p><strong>What this fixes, and why it belongs in main rather than in a test.</strong> A
+     * constraint failure reaches the client through {@code GlobalExceptionHandler}, which places
+     * {@code ConstraintViolation.getMessage()} into {@code ErrorResponse.FieldError.message()}. That
+     * text is not this module's own literal - it is the validation provider's bundled message, and the
+     * provider resolves it against a locale. Left alone, the locale is whatever
+     * {@code LocaleContextHolder} yields, which for a servlet request is the caller's
+     * {@code Accept-Language} header and otherwise the JVM default. The same artifact given the same
+     * input would then emit {@code "size must be between 0 and 8"} on one host and
+     * {@code "boyut '0' ile '8' arasında olmalı"} on another, or on the same host to a different
+     * caller. For a migration whose contract is stated in bytes that is a defect, not a courtesy:
+     * nothing in the estate this module reproduces is multilingual, and no requirement asks for
+     * negotiated message text.</p>
+     *
+     * <p>Decision {@code DL-118} records the rule. It lives in
+     * {@link FixedLocaleMessageInterpolator} rather than here,
+     * because the tests that assert rendered message text build their own provider and must be held to
+     * the same statement. A test that pinned the locale its own way would pass while the application
+     * stayed non-deterministic.</p>
+     *
+     * <p>This governs only how a message is <em>rendered</em>. Which constraints exist, which fields
+     * carry them, and the two-state MISSING/INVALID decision derived from the message template are
+     * untouched - the template is read before interpolation, so that decision never depended on a
+     * locale in the first place.</p>
+     *
+     * @return the primary validator, rendering every constraint message in one fixed locale
+     */
+    @Bean
+    public LocalValidatorFactoryBean defaultValidator() {
+        LocalValidatorFactoryBean validator = new LocalValidatorFactoryBean();
+        validator.setMessageInterpolator(new FixedLocaleMessageInterpolator());
+        return validator;
     }
 }

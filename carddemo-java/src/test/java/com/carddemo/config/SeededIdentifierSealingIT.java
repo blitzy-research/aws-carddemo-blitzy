@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.FlywayException;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
@@ -47,16 +48,21 @@ import com.carddemo.util.SensitiveFieldCodec;
  *
  * <h2>Why this test exists rather than only its unit companion</h2>
  *
- * <p>The defect this closes was invisible precisely because every individual piece behaved. The
- * schema declared the column as holding an envelope; the entity refused a value that was not one; the
- * seed wrote a cleartext identifier anyway; and object-relational hydration assigned the field
- * directly, so nothing consulted the refusal. Only running the actual seed scripts through an actual
- * migration and then reading the actual column back can show whether the invariant now holds. A
- * mocked result set cannot, because the value it presents is the one the test chose.
+ * <p>Both invariants the callback holds are invisible to any single piece of the system, which is why
+ * they are asserted against a real migration. The shape invariant was once broken while every
+ * individual piece behaved: the schema declared the column as holding an envelope, the entity refused a
+ * value that was not one, and object-relational hydration assigned the field directly so nothing
+ * consulted the refusal. The key invariant is broken the same way today if a process is configured with
+ * a key the committed envelopes were not sealed under - the marker check still passes every row, and
+ * the failure surfaces only at whatever later moment something decrypts one. Only running the actual
+ * seed scripts through an actual migration and then reading the actual column back can show whether
+ * either invariant holds. A mocked result set cannot, because the value it presents is the one the test
+ * chose.
  *
  * <h2>Why a database of its own</h2>
  *
- * <p>{@link AbstractPostgresIT} migrates {@code classpath:db/migration} alone and shares one server
+ * <p>{@link AbstractPostgresIT} migrates the two delivered locations,
+ * {@code classpath:db/migration} to the head of the sequence, and shares one server
  * across every integration test in the run, so applying the seeds to it would leave fifty customer
  * rows, fifty cross-reference rows and ten sign-on identities behind for whichever test ran next.
  * This test therefore creates a database beside it on the same server, migrates that one from both
@@ -127,6 +133,19 @@ class SeededIdentifierSealingIT extends AbstractPostgresIT {
     /** The suite document that declares the field-encryption key this test must open envelopes with. */
     private static final String TEST_PROFILE_DOCUMENT = "application-test.yml";
 
+    /**
+     * A second Base64 key of the required thirty-two bytes, different from {@link #TEST_KEY} and used
+     * only to stand in for a mis-keyed process.
+     *
+     * <p>It exists because the state it produces used to be reachable by configuration: both packaged
+     * non-production profiles once declared the fixture key as
+     * {@code ${CARDDEMO_FIELD_ENCRYPTION_KEY:<literal>}}, so exporting that variable left the fifty
+     * committed envelopes unreadable while every marker-based check still passed. The profiles now
+     * declare the literal bare, which removes that route; this key is how the refusal that closes the
+     * remaining routes is exercised.
+     */
+    private static final String FOREIGN_KEY = "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8=";
+
     /** Name of the database this test creates, migrates and drops. */
     private static final String SEEDED_DATABASE = "carddemo_seed_sealing";
 
@@ -186,8 +205,12 @@ class SeededIdentifierSealingIT extends AbstractPostgresIT {
     }
 
     /**
-     * Runs the migration the local and test profiles run: the one delivered location, the ceiling
-     * those profiles lift to the seeds, and the sealing callback.
+     * Runs the migration the local and test profiles run: BOTH delivered locations, the ceiling those
+     * profiles lift to the seeds, and the sealing callback.
+     *
+     * <p>Both locations are named because either one alone would withhold the seeds - the schema
+     * location does not contain them and the seed location does not create the tables they load into.
+     * The shared parent is deliberately not used, because no shipped profile uses it.
      */
     private static void migrate() {
         Flyway.configure()
@@ -272,10 +295,10 @@ class SeededIdentifierSealingIT extends AbstractPostgresIT {
 
         assertThat(document)
                 .as("the profile must carry the same key literal this test uses. Asserted on the "
-                        + "literal rather than on the resolved property because the packaged profile "
-                        + "wraps it in an environment-variable default and the suite overlay states "
-                        + "it bare, and the point of the check is that the literal is one value in "
-                        + "both places")
+                        + "literal rather than on the resolved property because the point of the check "
+                        + "is that this one value is the same in the suite overlay, in the packaged "
+                        + "application-test.yml, in application-local.yml and here - all four now state "
+                        + "it bare, and the fifty committed envelopes open under it alone")
                 .contains(TEST_KEY);
     }
 
@@ -368,6 +391,44 @@ class SeededIdentifierSealingIT extends AbstractPostgresIT {
         assertThat(storedIdentities())
                 .as("a second migration must leave every envelope byte for byte as it was; wrapping "
                         + "one inside another would make the stored value unreadable")
+                .containsExactlyElementsOf(before);
+    }
+
+    @Test
+    @DisplayName("migrating this same seeded database under a FOREIGN key is refused, and the refusal "
+            + "changes nothing and does not stick")
+    void migratingUnderAForeignKeyIsRefusedAndChangesNothing() throws SQLException {
+        final List<StoredIdentity> before = storedIdentities();
+
+        assertThatExceptionOfType(FlywayException.class)
+                .as("THE F3 SCENARIO AGAINST A REAL DATABASE. Nothing is pending, so the migration "
+                        + "applies no script - and it must still be refused, because the fifty seeded "
+                        + "envelopes are fixed literals that no key but the one they were sealed under "
+                        + "can open. Every one of them still carries the ENC1 marker, so the seal pass "
+                        + "is content; only opening them sees the problem")
+                .isThrownBy(() -> Flyway.configure()
+                        .dataSource(seededJdbcUrl, databaseUser(), databasePassword())
+                        .locations(FlywayConfig.SCHEMA_LOCATION)
+                        .target(FlywayConfig.SEEDING_TARGET)
+                        .callbacks(new SeededIdentifierSealingCallback(
+                                new SensitiveFieldEncryptionService(FOREIGN_KEY)))
+                        .load()
+                        .migrate())
+                .withMessageContaining("govt_issued_id")
+                .withMessageContaining(SensitiveFieldEncryptionService.FIELD_ENCRYPTION_KEY_PROPERTY);
+
+        assertThat(storedIdentities())
+                .as("the refusal must not repair, re-key or delete anything: a pass that rewrote rows "
+                        + "under whatever key it happened to hold would destroy the only copy of the "
+                        + "seeded values")
+                .containsExactlyElementsOf(before);
+
+        migrate();
+
+        assertThat(storedIdentities())
+                .as("and the refusal must not be sticky. Restoring the declared key and migrating again "
+                        + "must succeed over the untouched rows, which is what makes the failure a "
+                        + "correctable configuration mistake rather than a destroyed database")
                 .containsExactlyElementsOf(before);
     }
 

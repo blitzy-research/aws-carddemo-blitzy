@@ -19,6 +19,7 @@ package com.carddemo.domain.enums;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.Arrays;
+import java.util.Locale;
 import java.util.Optional;
 
 import org.junit.jupiter.api.DisplayName;
@@ -277,7 +278,7 @@ class RejectReasonBaselineTest {
                 + "numeric field without truncation")
         void everyReasonCodeZeroFillsIntoFourBytes() {
             for (final RejectReason reason : RejectReason.values()) {
-                final String zeroFilled = String.format("%04d", reason.getReasonCode());
+                final String zeroFilled = String.format(Locale.ROOT, "%04d", reason.getReasonCode());
 
                 assertThat(zeroFilled).hasSize(REASON_CODE_FIELD_WIDTH);
                 assertThat(zeroFilled).startsWith("0");

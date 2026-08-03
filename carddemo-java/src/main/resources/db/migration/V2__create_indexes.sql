@@ -20,18 +20,21 @@
 -- alternate indexes, then exactly six foreign keys. No fourth index, no seventh foreign key, no new
 -- table and no data.
 --
--- APPLIES TO ALL PROFILES. V1, V1_1 and V2 are resolved from classpath:db/migration, the only Flyway
--- location any profile configures, and all three sit at or below the production version ceiling of
+-- APPLIES TO ALL PROFILES. V1 and V2 are resolved from classpath:db/migration, the one flat Flyway
+-- location EVERY profile configures, and both sit at or below the production version ceiling of
 -- spring.flyway.target: 2, so every profile receives an identical schema and integrity layer. Sample
--- rows and sign-on identities are numbered above that ceiling and so are never resolved in
--- production.
+-- rows and sign-on identities are V3 and V4 in the same directory and are numbered ABOVE that ceiling,
+-- which is what keeps them out of production; the migration specifications for V3 and V4 require that
+-- flat layout and direct that no subdirectory be created, because a location is scanned recursively and
+-- a directory therefore cannot isolate them.
 --
 -- V1 IS A REQUIRED PREDECESSOR. Every statement below names a table, column or primary key that V1
 -- creates and none is guarded, so applying V2 without V1 fails immediately and visibly. Flyway
--- applies versions in ascending order - 1, then 1.1, then 2, then the seeds - so any later seed lands
--- against a schema whose foreign keys are already in force and is constraint-checked as it is
--- written. V1_1__create_batch_metadata.sql sorts between V1 and this file and is independent of both:
--- it names no application table and this file names none of its six.
+-- applies versions in ascending order across ALL configured locations - 1, then 2, then the seeds
+-- where a profile resolves them - so any later seed lands against a schema whose foreign keys are
+-- already in force and is constraint-checked as it is written. The BATCH_-prefixed job-repository
+-- tables are provisioned by Spring Batch itself rather than by any migration, and are independent of
+-- this file in both directions: it names none of them and they name no application table.
 --
 -- Validated against PostgreSQL 16.14 using only plain, portable index and constraint DDL; nothing
 -- here depends on a version-specific extension or option. Checksum validation is enabled on

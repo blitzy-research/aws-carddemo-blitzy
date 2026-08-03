@@ -20,8 +20,10 @@
 # itself back into the module with defaults.run.working-directory.
 #
 # WHAT THIS RUN PROVES
-# Five gates, every one of which ends the run when it is not satisfied. The first two properties
-# below are both carried by the build gate; the remaining four are a gate each:
+# Four gates, every one of which ends the run where it is not satisfied - directly, by failing its
+# own step, with nothing recording a failure and carrying on. The first three properties below are
+# all carried by the build gate, because all three are bound to the one verify phase it invokes; the
+# remaining three are a gate each:
 #
 #   zero-warning build : the compiler plugin runs javac with -Xlint:all -Werror under release
 #                        25, so any warning ends the run instead of accumulating in a report.
@@ -294,29 +296,42 @@ jobs:
           ./mvnw -B --version
           docker version --format 'Docker server {{.Server.Version}}'
 
-      # ---- gate 1 of 5: build, test and coverage ---------------------------------------------
-      # A compiler warning, a failing test in either tier, or coverage under the floor ends this
-      # step. The supply chain scan is switched off for this invocation only, because it is run
-      # by itself in the next step; leaving it on here would either scan twice or, when this step
-      # fails, not scan at all. Nothing else is suppressed, and the module build still performs
-      # the scan by default for anyone running it by hand.
+      # ---- gate 1 of 4: build, test, coverage and supply chain --------------------------------
+      # THE COMMAND IS EXACTLY `./mvnw -B clean verify`, WITH NOTHING APPENDED. That is not a
+      # stylistic preference, it is the gate mechanism: the coverage check and the vulnerability
+      # scan are both bound to the verify phase in pom.xml, so this one invocation discharges the
+      # zero-warning, coverage-floor and supply-chain properties together. A compiler warning, a
+      # failing test in either tier, coverage under the floor, or a finding at or above the
+      # configured score ends this step, and ending this step ends the run.
       #
-      # The step is allowed to continue so that the scan below still runs and both sets of
-      # evidence are still uploaded. Its real result is recorded and read back by the final step,
-      # which fails the job - so this changes what else gets to run, not whether the run passes.
-      - name: Build, test and coverage gate
+      # AN EARLIER REVISION APPENDED A SCAN-DISABLING PROPERTY HERE and ran the vulnerability scan
+      # as a separate step afterwards, to avoid scanning twice. That is withdrawn. Such a property is
+      # on this module's prohibited list, and the reason is worth stating plainly: in a log, a build
+      # invoked with a gate switched off is indistinguishable from a build whose gate was never
+      # wired, so the switch costs exactly the assurance the gate exists to provide. Scanning once,
+      # inside verify, removes both the switch and the duplicate - the separate step is gone because
+      # verify already does its work, not because the scan was dropped.
+      #
+      # NOTHING MASKS THIS STEP. It tolerates no error of its own and carries no if: condition, so
+      # its failure is the run's failure directly. The legacy compile-and-link pipeline gated
+      # downstream work on upstream success - two COND= clauses in the whole of it, both of that
+      # shape - and a step that recorded a failure while letting the run continue would invert that.
+      #
+      # The list of properties that may never appear on this command is enumerated in the module's
+      # own build documentation rather than restated here, precisely so that this file can be
+      # verified by searching it for those names and finding none.
+      - name: Build, test, coverage and supply chain gate
         id: build_gate
-        continue-on-error: true
-        run: ./mvnw -B clean verify -Ddependency-check.skip=true
+        run: ./mvnw -B clean verify
 
-      # ---- gate 2 of 5: locale-hostile re-execution -----------------------------------------
+      # ---- gate 2 of 4: locale-hostile re-execution -----------------------------------------
       # The module pins -Duser.language=en -Duser.country=US in test.jvm.args so that a test's
       # result never depends on the machine running it. That pinning is correct, and it has one
       # cost: it makes the suite structurally unable to observe a locale defect. The module emits
       # fixed-width records whose widths are counted in bytes, and two JDK behaviours would break
       # them under a different default locale - a locale whose numbering system is not Latin makes
       # String.format("%d", n) emit non-ASCII digits, and Turkish casing folds ASCII i to U+0130,
-      # which is not a US-ASCII byte at all. Decision D-27 forbids every locale-sensitive formatter
+      # which is not a US-ASCII byte at all. Decision DL-118 forbids every locale-sensitive formatter
       # for exactly this reason, but a forbidden call is only actually absent if something checks.
       #
       # This step is that check: the unit tier is re-run twice with the default locale overridden,
@@ -329,43 +344,62 @@ jobs:
       # the container-backed tiers add execution time without adding locale surface, and coverage
       # and the supply chain are already gated above.
       #
-      # Each locale writes its Surefire XML to its OWN reports directory rather than the default
-      # one. That is not tidiness, it is what keeps the evidence bundle below honest. This step runs
-      # the whole unit tier after the build gate has already written target/surefire-reports, so
-      # without the redirect the second execution would overwrite every report the build gate
-      # produced and the uploaded test-reports artifact would silently describe an ar-EG run while
-      # claiming to be the pinned one. Redirecting per locale keeps all three executions readable
-      # side by side and keeps each one attributable to the locale that produced it.
+      # EACH LOCALE WRITES ITS OWN EVIDENCE, AND OVERWRITES NONE OF THE BUILD GATE'S. That is not
+      # tidiness, it is what keeps the evidence bundle below honest. This step re-runs the whole unit
+      # tier after the build gate has already written its Surefire XML, its coverage execution data
+      # and its unit coverage report, so every one of those three destinations is redirected per
+      # locale. Without the redirects the second execution would overwrite all of them and the
+      # uploaded artifacts would silently describe an ar-EG run while claiming to describe the
+      # pinned one.
+      #
+      # THREE DESTINATIONS, AND NO DISABLING SWITCH. An earlier revision redirected only the
+      # Surefire reports and dealt with the coverage collision by appending a property that switched
+      # the coverage agent off, together with one that switched off the vulnerability scan - and the
+      # latter did nothing whatsoever here, because the test phase never reaches verify, so that scan
+      # was never going to run in this invocation. Both are withdrawn. Disabling a gate mechanism in
+      # order to protect that mechanism's own evidence is the wrong trade when a destination override
+      # achieves the same thing with the agent still running and still recording. pom.xml exposes
+      # jacoco.unit.exec and jacoco.unit.report.dir for exactly this purpose, alongside the
+      # test.reports.dir it already exposed.
+      #
+      # NOTHING MASKS THIS STEP EITHER. A locale defect in a fixed-width byte format is a parity
+      # defect, so it fails the run where it is found rather than being recorded for a later summary.
       - name: Locale-hostile re-execution gate
         id: locale_gate
-        if: always()
-        continue-on-error: true
         run: |
           for locale in 'tr TR' 'ar EG'; do
             set -- $locale
             printf '::group::unit tier under %s-%s\n' "$1" "$2"
             ./mvnw -B -ntp test \
-              -Ddependency-check.skip=true \
-              -Djacoco.skip=true \
               -Dtest.reports.dir="target/surefire-reports-locale-$1-$2" \
+              -Djacoco.unit.exec="target/jacoco-locale-$1-$2.exec" \
+              -Djacoco.unit.report.dir="target/site/jacoco-locale-$1-$2" \
               -Dtest.jvm.args="-XX:+EnableDynamicAgentLoading -Xshare:off -Duser.language=$1 -Duser.country=$2 -Duser.timezone=UTC -Dfile.encoding=UTF-8"
             echo '::endgroup::'
           done
 
-      # ---- gate 3 of 5: supply chain --------------------------------------------------------
-      # Invoked on its own and unconditionally. This goal needs only the resolved dependency
-      # graph, not compiled output, so it produces a verdict and a report even when the step
-      # above failed outright - which is the whole point of separating them. Configuration comes
-      # from the module build: the score that fails the build, the accepted-finding file and the
-      # report formats are all declared there, so nothing about the gate's strictness is decided
-      # in this file.
-      - name: Supply chain gate
-        id: supply_chain_gate
-        if: always()
-        continue-on-error: true
-        run: ./mvnw -B dependency-check:check
+      # ---- the supply chain gate is NOT a step of its own, and that is deliberate -------------
+      # It used to be one, invoked as `dependency-check:check` after the build gate had been asked
+      # to skip it. Two steps, one switch, one scan. It is now zero steps, no switch, and still one
+      # scan - because the plugin is bound to the verify phase in pom.xml, so gate 1 above executes
+      # it as part of `./mvnw -B clean verify`. That is the mechanism this module was designed
+      # around, and running the goal separately only ever existed to compensate for the skip
+      # property that ran it out of the build in the first place.
+      #
+      # WHAT IS GIVEN UP, STATED RATHER THAN GLOSSED. The separate step needed only the resolved
+      # dependency graph, so it produced a scan report even when compilation failed. Inside verify,
+      # a build that never reaches verify produces no scan report. That is the correct trade: a run
+      # that fails to compile has no artifact to assess and is already red, whereas a scan invoked
+      # with the build's own scan switched off can report clean while nothing in the build enforced
+      # it. One property is preserved deliberately and must not be undone - pom.xml declares the
+      # scan AHEAD of the coverage check, both bound to verify, so a build that misses the coverage
+      # floor has still produced and uploaded its vulnerability report. Reordering those two plugins
+      # would silently lose that.
+      #
+      # Nothing about the gate's strictness is decided in this file: the score that fails the build
+      # and the report formats are all declared in the module build.
 
-      # ---- gate 4 of 5: bootstrap contract --------------------------------------------------
+      # ---- gate 3 of 4: bootstrap contract --------------------------------------------------
       # The module's local AWS surface is provisioned by a single emulator initializer,
       # localstack/init/01-create-aws-resources.sh. Nothing in the Maven build reads that file, so
       # every other gate here can pass while it is broken - and it is the one file the
@@ -401,13 +435,12 @@ jobs:
       # resource. The emulator re-runs its ready hooks on every container start, so an initializer
       # that is not idempotent breaks the second start rather than the first.
       #
-      # The step is allowed to continue for the same reason its peers are: so that it records its
-      # own real result for the verdict step below to report, rather than stopping the run before
-      # the remaining evidence has been gathered.
+      # Nothing masks this step. It runs after the build gate because a broken initializer is not a
+      # reason to skip compiling, and it fails the run directly when the contract does not hold -
+      # the evidence uploads below carry if: always(), so stopping here still publishes whatever
+      # was gathered.
       - name: Bootstrap contract gate
         id: bootstrap_gate
-        if: always()
-        continue-on-error: true
         run: |
           set -euo pipefail
 
@@ -453,11 +486,11 @@ jobs:
           # execution, so the second run is held to exactly the same standard as the first.
           verify_resources() {
             queue_url="$(docker exec "${container}" \
-              awslocal sqs get-queue-url --queue-name JOBS.fifo --output text)"
+              awslocal sqs get-queue-url --queue-name carddemo-jobs.fifo --output text)"
             case "${queue_url}" in
-              */JOBS.fifo) printf '  queue url: %s\n' "${queue_url}" ;;
+              */carddemo-jobs.fifo) printf '  queue url: %s\n' "${queue_url}" ;;
               *)
-                printf 'Bootstrap contract violated: queue url %s does not name JOBS.fifo.\n' \
+                printf 'Bootstrap contract violated: queue url %s does not name carddemo-jobs.fifo.\n' \
                   "${queue_url}" >&2
                 exit 1
                 ;;
@@ -544,16 +577,30 @@ jobs:
           echo 'Bootstrap contract holds: linted, executed, read back, and idempotent.'
 
       # ---- evidence bundle ------------------------------------------------------------------
-      # The three uploads below carry if: always() so the gate reports survive a failed gate.
-      # A report that is absent is reported as a warning rather than swallowed, because an
-      # unexpectedly missing gate report is itself a finding a reviewer needs to see.
+      # THESE THREE UPLOADS ARE THE ONLY PLACE if: always() IS PERMITTED IN THIS FILE, and they
+      # carry it so that the gate reports survive a failed gate. It masks nothing: the job's
+      # conclusion is already set by whichever gate step failed, and uploading that gate's own report
+      # is precisely what a reviewer needs in order to see why. A report that is absent is reported as
+      # a warning rather than swallowed, because an unexpectedly missing gate report is itself a
+      # finding.
       #
-      # For that promise to hold, the ORDER the gates run in matters as much as the if: always()
-      # above. The vulnerability scan and the coverage check both bind to the same build phase, so
-      # whichever is declared first in pom.xml runs first - and a coverage failure ends the phase.
-      # pom.xml therefore declares the scan ahead of the coverage check, so a build that misses the
-      # coverage floor still produces and uploads its vulnerability report instead of publishing no
-      # supply-chain evidence at all. Reordering those two plugins would silently break this step.
+      # These uploads are also what makes the linear gate model above affordable. A failing gate now
+      # stops the job, so the gates after it never run and produce nothing - but everything produced
+      # up to that point is still published here, which is the evidence that matters.
+      #
+      # THE LOCALE RUNS' COVERAGE EVIDENCE IS UPLOADED TOO, and it exists to be uploaded only because
+      # the locale gate no longer switches the coverage agent off. Those files are NOT a contribution
+      # to the coverage figure - the check ran once, in gate 1, over the pinned execution - they are
+      # the record that each hostile-locale run genuinely instrumented and executed the tier it claims
+      # to have executed. Without them a reviewer has the locale runs' test reports and no independent
+      # evidence that the instrumented code was the same code.
+      #
+      # For that to hold, the ORDER INSIDE pom.xml matters as much as the if: always() here. The
+      # vulnerability scan and the coverage check both bind to the same verify phase, so whichever is
+      # declared first runs first - and a coverage failure ends the phase. pom.xml therefore declares
+      # the scan ahead of the coverage check, so a build that misses the coverage floor still produces
+      # and uploads its vulnerability report instead of publishing no supply-chain evidence at all.
+      # Reordering those two plugins would silently break this step.
       - name: Upload coverage reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -566,6 +613,8 @@ jobs:
             carddemo-java/target/jacoco.exec
             carddemo-java/target/jacoco-it.exec
             carddemo-java/target/jacoco-merged.exec
+            carddemo-java/target/site/jacoco-locale-*/**
+            carddemo-java/target/jacoco-locale-*.exec
           if-no-files-found: warn
           retention-days: 30
 
@@ -593,7 +642,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      # ---- gate 5 of 5: deployability -------------------------------------------------------
+      # ---- gate 4 of 4: deployability -------------------------------------------------------
       # A repackaged jar names a start class in its manifest, and nothing earlier in this workflow
       # proves that the class is present in the artifact or that the context it starts can reach a
       # started state. Both are proven here, before the upload, so that the only artifact this
@@ -610,13 +659,13 @@ jobs:
       # here without any secret. The production profile resolves all of its secrets from the
       # environment with no fallback and is therefore not a smoke-test profile by design.
       #
-      # The step is conditioned on the build gate rather than on success(). The gates above are
-      # allowed to continue, so success() is true even when one of them failed, and there is no
-      # jar to start at all when the build gate failed - the step would then fail for the wrong
-      # reason and hide the real verdict.
+      # The step carries no condition at all, and no longer needs one. It used to be guarded on the
+      # build gate's recorded outcome, because that gate was allowed to continue and there is no jar
+      # to start when it failed. Now that no gate above continues past its own failure, reaching this
+      # step already means every gate before it passed and the jar exists - the guard would be
+      # restating the control flow rather than adding to it.
       - name: Smoke test the executable jar
         id: deployability_gate
-        if: steps.build_gate.outcome == 'success'
         run: |
           set -euo pipefail
 
@@ -722,22 +771,18 @@ jobs:
       # locale gate, so a run whose only failure was a locale defect still published this artifact.
       # That is the precise failure this condition exists to prevent: a locale defect corrupts the
       # emitted bytes of the fixed-width records, which is a defect in the artifact itself and not
-      # merely in the evidence around it. The bootstrap result is named for the same reason - a jar
-      # whose local AWS surface was never proven to provision is not a publishable artifact - and
-      # the deployability result is named so the only artifact published is one the smoke test above
-      # observed start and report healthy.
+      # merely in the evidence around it.
       #
-      # Any gate added above must be added here too. The verdict step below fails the run in that
-      # case regardless, so an omission here does not turn a red run green; it publishes an artifact
-      # from a run that was already going to fail, which is the more dangerous outcome, because the
-      # artifact outlives the run.
+      # THIS STEP CARRIES NO CONDITION, AND THAT IS THE POINT OF THE LINEAR MODEL. It used to
+      # enumerate all five gate outcomes, because every gate was allowed to continue past its own
+      # failure and so the run could reach this step with a gate already red. That enumeration was a
+      # standing hazard: a gate added above and not added here would publish a jar from a run that
+      # was going to fail anyway, and the artifact outlives the run. Now no gate continues past its
+      # own failure, so reaching this step IS the proof that every one of them passed - including the
+      # smoke test immediately above, which means the only artifact this workflow ever publishes is
+      # one that was observed to start and report healthy. A gate added above needs no change here,
+      # because the control flow states the condition instead of a list restating it.
       - name: Upload the executable jar
-        if: >-
-          steps.build_gate.outcome == 'success' &&
-          steps.locale_gate.outcome == 'success' &&
-          steps.supply_chain_gate.outcome == 'success' &&
-          steps.bootstrap_gate.outcome == 'success' &&
-          steps.deployability_gate.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: carddemo-java-jar
@@ -745,50 +790,25 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # ---- the verdict ----------------------------------------------------------------------
-      # This is the step that decides the run. It reads every gate's real result back and fails
-      # the job when any one of them did not pass, and it prints all of them, so the run's summary
-      # states which gate failed without a reviewer opening a log.
+      # ---- the summary ----------------------------------------------------------------------
+      # THIS STEP NO LONGER DECIDES THE RUN, AND THAT IS THE WHOLE CHANGE. It used to: every gate
+      # above was allowed to continue past its own failure, so the job's status came from a final
+      # step that read all five recorded outcomes back and exited non-zero if any was not a pass.
+      # That design put the run's verdict at the end of a chain of recorded results rather than in
+      # the gates themselves, and it had to run unconditionally to be reached at all - which is the
+      # one thing this file may not do outside an evidence upload.
       #
-      # All five are read, not some of them. An earlier revision printed and required the build and
-      # supply chain gates only. The job still failed when the deployability gate failed, because
-      # that gate does not continue on error and its own step failure propagates - but the verdict
-      # this step printed was then incomplete, and could report that every gate passed while saying
-      # nothing at all about the gate it had not consulted. The evidence a gate produces is the
-      # point of the gate, so a verdict that omits one is not evidence even when the exit status
-      # happens to be right.
+      # Each gate now fails the run where it fails. The status is therefore decided by the failing
+      # step directly and there is nothing left for a verdict step to decide, so this step carries no
+      # condition: it is reached only when every gate before it passed, and its presence in the log
+      # is itself the statement that they did. It cannot report a pass that did not happen, because
+      # a failed gate stops the job before it.
       #
-      # The five gates fail differently on purpose, and reading all five is what makes that uniform
-      # here. The first four continue on error so that each publishes its evidence regardless of the
-      # others, which means their failures reach this step rather than stopping the job. The
-      # deployability gate does not continue on error, and it is skipped outright when the build
-      # gate failed, because there is then no artifact to start.
-      #
-      # It runs even on cancellation, and treats anything other than an outright pass as a
-      # failure, so a cancelled or skipped gate can never be mistaken for a satisfied one - which
-      # is precisely what makes the skipped deployability case fail the verdict rather than pass it
-      # by omission.
-      - name: Gate verdict
-        if: always()
+      # A gate added above needs no change here.
+      - name: Gate summary
         run: |
-          build_gate='${{ steps.build_gate.outcome }}'
-          locale_gate='${{ steps.locale_gate.outcome }}'
-          supply_chain_gate='${{ steps.supply_chain_gate.outcome }}'
-          bootstrap_gate='${{ steps.bootstrap_gate.outcome }}'
-          deployability_gate='${{ steps.deployability_gate.outcome }}'
-          printf 'build, test and coverage gate : %s\n' "$build_gate"
-          printf 'locale-hostile gate           : %s\n' "$locale_gate"
-          printf 'supply chain gate             : %s\n' "$supply_chain_gate"
-          printf 'bootstrap contract gate       : %s\n' "$bootstrap_gate"
-          printf 'deployability gate            : %s\n' "$deployability_gate"
-          failed=0
-          if [ "$build_gate" != 'success' ]; then failed=1; fi
-          if [ "$locale_gate" != 'success' ]; then failed=1; fi
-          if [ "$supply_chain_gate" != 'success' ]; then failed=1; fi
-          if [ "$bootstrap_gate" != 'success' ]; then failed=1; fi
-          if [ "$deployability_gate" != 'success' ]; then failed=1; fi
-          if [ "$failed" -ne 0 ]; then
-            echo 'At least one gate did not pass. Failing the run.' >&2
-            exit 1
-          fi
+          echo 'build, test, coverage and supply chain gate : passed'
+          echo 'locale-hostile re-execution gate            : passed'
+          echo 'bootstrap contract gate                     : passed'
+          echo 'deployability gate                          : passed'
           echo 'Every gate passed.'

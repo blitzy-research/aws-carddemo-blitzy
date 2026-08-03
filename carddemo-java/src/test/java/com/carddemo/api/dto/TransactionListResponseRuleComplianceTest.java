@@ -42,6 +42,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import java.util.Locale;
 
 /**
  * Unit tests for {@link TransactionListResponse} and its nested
@@ -446,7 +447,7 @@ class TransactionListResponseRuleComplianceTest {
         void aForwardPageCarriesTenRowsAscending() {
             final List<TransactionListResponse.TransactionRow> ascending = new ArrayList<>();
             for (int index = 1; index <= PageMetadata.TRANSACTION_LIST_PAGE_SIZE; index++) {
-                ascending.add(aRow(" ", String.format("%016d", index), index + ".00"));
+                ascending.add(aRow(" ", String.format(Locale.ROOT, "%016d", index), index + ".00"));
             }
 
             assertThat(aResponseWithRows(ascending).rows())

@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 
 import com.carddemo.util.SensitiveFieldCodec;
@@ -720,7 +721,7 @@ class CustomerBaselineTest {
 
             for (int row = 1; row <= FIXTURE_ROWS; row++) {
                 final Customer seeded = new Customer();
-                seeded.setCustId(String.format("%09d", row));
+                seeded.setCustId(String.format(Locale.ROOT, "%09d", row));
                 customers.add(seeded);
             }
 

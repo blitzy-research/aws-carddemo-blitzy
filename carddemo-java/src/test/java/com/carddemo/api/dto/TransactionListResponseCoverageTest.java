@@ -37,6 +37,7 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterAll;
@@ -1270,7 +1271,7 @@ class TransactionListResponseCoverageTest {
         void aFullPageIsCarriedUnaltered() {
             List<TransactionListResponse.TransactionRow> full = new ArrayList<>();
             for (int index = 0; index < PageMetadata.TRANSACTION_LIST_PAGE_SIZE; index++) {
-                full.add(row(String.format("%016d", index + 1)));
+                full.add(row(String.format(Locale.ROOT, "%016d", index + 1)));
             }
 
             assertThat(withRows(full).rows())
@@ -1294,7 +1295,7 @@ class TransactionListResponseCoverageTest {
         void anOverDeepPageIsNotTruncated() {
             List<TransactionListResponse.TransactionRow> tooMany = new ArrayList<>();
             for (int index = 0; index < TransactionListResponse.ROW_COUNT + 1; index++) {
-                tooMany.add(row(String.format("%016d", index + 1)));
+                tooMany.add(row(String.format(Locale.ROOT, "%016d", index + 1)));
             }
 
             assertThatExceptionOfType(IllegalArgumentException.class)
@@ -1314,7 +1315,7 @@ class TransactionListResponseCoverageTest {
         void aPageAtExactlyTheScreenDepthIsAccepted() {
             List<TransactionListResponse.TransactionRow> exact = new ArrayList<>();
             for (int index = 0; index < TransactionListResponse.ROW_COUNT; index++) {
-                exact.add(row(String.format("%016d", index + 1)));
+                exact.add(row(String.format(Locale.ROOT, "%016d", index + 1)));
             }
 
             assertThat(withRows(exact).rows()).hasSize(TransactionListResponse.ROW_COUNT);

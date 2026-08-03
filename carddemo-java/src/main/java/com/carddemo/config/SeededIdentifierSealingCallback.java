@@ -35,24 +35,42 @@ import org.slf4j.LoggerFactory;
 import com.carddemo.service.SensitiveFieldEncryptionService;
 
 /**
- * Converts every seeded customer identity value that is still at rest in cleartext into the
- * module's own authenticated envelope, as the last act of a migration.
+ * Guarantees, as the last act of a migration, that every seeded customer identity value is held as
+ * the module's own authenticated envelope <em>and</em> opens under the key the running process holds.
  *
- * <h2>The defect this closes</h2>
+ * <h2>The two invariants this holds, and why one check cannot cover both</h2>
  *
  * <p>{@code V1__create_schema.sql} defines two protected customer columns and states the invariant
- * plainly: {@code govt_issued_id} is {@code NOT NULL}, so any row a seed migration inserts must
- * carry an envelope produced under the deployment's own key and never a cleartext identifier.
- * {@code V3__seed_reference_data.sql} cannot honour that. It is static forward-only SQL, an envelope
- * is keyed, and committing key material to the repository to make a seed deterministic would be a
- * worse defect than the one it closed - so the reference seed writes the fixture's twenty-character
- * identifiers as they stand and records the divergence in its own header.
+ * plainly: {@code govt_issued_id} is {@code NOT NULL}, and any row a seed migration inserts must carry
+ * an envelope rather than a cleartext identifier. {@code V3__seed_reference_data.sql} honours that
+ * directly - it inserts fifty fixed {@code ENC1} envelopes, each produced by
+ * {@link SensitiveFieldEncryptionService} over the twenty characters the fixture record holds, under
+ * the one non-production key the seed-bearing profiles commit - and it seeds {@code cust_ssn} as
+ * {@code null} in every row so that no national identifier is transcribed into a checked-in artifact
+ * at all.
  *
- * <p>Nothing then objected. {@code Customer}'s constructor and its setter both refuse a value that
- * is not an envelope, but object-relational hydration assigns fields directly and consults neither,
- * so fifty regulated identifiers sat in cleartext in every local and test database while the code
- * that reads them was written as though they could not. That is the whole of the gap: not a missing
- * check, a check that the only writer of those rows never passed through.
+ * <p>So on a delivered database this class converts nothing, and that is the intended outcome rather
+ * than a sign it is idle. It exists for the two ways the invariant can still be broken, and it
+ * enforces one thing for each:
+ *
+ * <ol>
+ *   <li><strong>Shape.</strong> A future edit to a seed, or a row inserted by any other means, could
+ *       leave a cleartext identifier in a protected column. {@code Customer}'s constructor and its
+ *       setter both refuse such a value, but object-relational hydration assigns fields directly and
+ *       consults neither, so nothing else would object. Every unsealed value found is sealed.</li>
+ *   <li><strong>Key.</strong> An envelope opens under exactly one key. Fifty of them are fixed
+ *       literals in a committed script, so a process whose configured key is not the key they were
+ *       sealed under holds fifty rows of regulated data it cannot read. <strong>The marker check that
+ *       decides the first invariant is blind to this</strong>, because an envelope sealed under a
+ *       foreign key is still shaped like an envelope. Every stored value is therefore <em>opened</em>
+ *       rather than merely recognised, and one that does not open fails the migration.</li>
+ * </ol>
+ *
+ * <p>The second invariant is what gives this class teeth on a delivered database, and it is why the
+ * seed-bearing profiles state the fixture key as a bare literal instead of as an environment-variable
+ * default: an override would produce precisely that state. Between them, the literal removes the
+ * ordinary way in and this check refuses the state however else it arose - turning a failure that
+ * would otherwise surface only when something happened to decrypt a row into a refusal at start-up.
  *
  * <h2>Why a callback and not a fifth migration</h2>
  *
@@ -63,11 +81,13 @@ import com.carddemo.service.SensitiveFieldEncryptionService;
  * wanted is an invariant that holds after <em>every</em> migration of a seed-bearing profile,
  * including one that applied nothing because the seeds were already present.
  *
- * <p>An {@link Event#AFTER_MIGRATE} callback carries no version, runs on the migration's own
- * connection inside the migration's own transaction, and is therefore complete before the
- * application's first read. {@link FlywayConfig} registers it for the local and test profiles alone,
- * so production - which lists no seed location and receives no row from either seed - neither seeds
- * an identifier nor carries the component that would seal one.
+ * <p>An {@link Event#AFTER_MIGRATE} callback carries no version and fires once per migrate operation,
+ * including one that applied nothing - which is what makes both invariants hold on every start-up
+ * rather than only on a first run. What the event does <em>not</em> offer is atomicity with the seeds
+ * themselves; {@link #canHandleInTransaction(Event, Context)} states that boundary rather than
+ * claiming more than the event gives. {@link FlywayConfig} registers this for the local and test
+ * profiles alone, so production - which lists no seed location and receives no row from either seed -
+ * neither seeds an identifier nor carries the component that would seal one.
  *
  * <h2>Idempotence, and why it is a property rather than a precaution</h2>
  *
@@ -170,11 +190,25 @@ final class SeededIdentifierSealingCallback implements Callback {
     }
 
     /**
-     * Elects to run inside the migration's transaction.
+     * Elects to run the pass in a transaction of its own.
      *
-     * <p>The conversion must be atomic with the seeds it converts: a failure half-way through would
-     * otherwise leave some identifiers sealed and some in cleartext, and the next start-up would
-     * find a database no assertion describes.
+     * <p>Returning {@code true} makes the conversion all-or-nothing <em>within itself</em>: either
+     * every value this pass converts is written or none is, so it cannot leave some identifiers sealed
+     * and some in cleartext.
+     *
+     * <p><strong>It does not make the pass atomic with the seeds it inspects, and no return value here
+     * could.</strong> {@link Event#AFTER_MIGRATE} is raised after migration execution has completed
+     * and the migration's own transaction has committed, so the seeded rows are already durable before
+     * this class is called at all. Saying so plainly matters, because the opposite was once claimed
+     * here and a reader relying on it would believe a rollback exists that does not.
+     *
+     * <p>What the boundary actually costs is bounded, and is why {@link Event#AFTER_MIGRATE} remains
+     * the right event. A failure in this pass propagates out of {@code migrate()} and aborts the
+     * start-up, so the application never runs over a database whose identity columns are unsealed or
+     * unreadable, while the committed migration and the recorded history stay consistent with each
+     * other rather than diverging. Both halves of the pass are idempotent - an already-sealed value is
+     * left alone, and opening a value changes nothing - so the corrected start-up simply runs them
+     * again.
      *
      * @param event   the event being handled, unused in this decision
      * @param context the migration context, unused in this decision
@@ -200,17 +234,26 @@ final class SeededIdentifierSealingCallback implements Callback {
      *
      * @param event   the event being handled, already matched by {@link #supports(Event, Context)}
      * @param context the migration context supplying the connection
-     * @throws FlywayException when the conversion cannot be completed, so the migration fails rather
-     *                         than reporting success over a database still holding cleartext
+     * @throws FlywayException when the conversion cannot be completed, or when a stored value does not
+     *                         open under the configured key, so the migration fails rather than
+     *                         reporting success over a database holding cleartext or unreadable
+     *                         regulated data
      */
     @Override
     public void handle(final Event event, final Context context) {
+        final Connection connection = context.getConnection();
         try {
-            final int converted = seal(context.getConnection());
+            final int converted = seal(connection);
             if (converted > 0) {
                 LOGGER.info("Sealed {} seeded customer identity value(s) into the at-rest"
                         + " encryption envelope", converted);
             }
+            // Sealing satisfies the shape invariant; only opening the values satisfies the key
+            // invariant. It runs second because it must also inspect what sealing just wrote, and it
+            // runs on the same connection, so it reads this pass's own writes.
+            final int opened = verifyEveryStoredValueOpens(connection);
+            LOGGER.info("Verified {} stored customer identity value(s) open under the configured"
+                    + " field-encryption key", opened);
         } catch (final SQLException failure) {
             // The message names the operation and the columns, which are this class's own literals.
             // No row key and no value is named: a diagnostic that carried either would put the very
@@ -219,6 +262,89 @@ final class SeededIdentifierSealingCallback implements Callback {
                     + NATIONAL_IDENTIFIER_COLUMN + " and " + GOVERNMENT_IDENTIFIER_COLUMN
                     + " into the at-rest encryption envelope; the migration is failed rather than"
                     + " reported successful over rows still holding cleartext", failure);
+        }
+    }
+
+    /**
+     * Opens every stored protected value under the configured key, and fails the migration on the
+     * first one that will not open.
+     *
+     * <p>This is the check the envelope-marker test cannot make. {@link #needsSealing(String)} asks
+     * whether a value <em>looks</em> like an envelope, which is the right question for the shape
+     * invariant and the wrong one for the key invariant: an envelope sealed under some other key looks
+     * exactly like an envelope sealed under this one. The fifty envelopes in
+     * {@code V3__seed_reference_data.sql} are fixed literals that no pass can re-key, so the only way
+     * to know they are readable by the process that just migrated them is to read them.
+     *
+     * <p><strong>The check is authentication under the key, and deliberately not the column binding.</strong>
+     * Two forms of envelope legitimately occupy these columns. The fifty seeded literals are
+     * <em>unbound</em> - their payload is the twenty characters and nothing else, which is what makes a
+     * seeded envelope sixty-nine characters wide and what lets the seeded form stay distinguishable from
+     * this class's - while a value this class seals is <em>bound</em> to its column. Opening through the
+     * binding would therefore refuse all fifty delivered rows, which is the opposite of the intent.
+     * Authenticated decryption is what the key invariant is actually about: it succeeds for both forms
+     * and fails for neither reason other than the key being wrong or the bytes being altered. The
+     * binding is a separate invariant, satisfied by what this class writes, deliberately not satisfied
+     * by the seed, and enforced where a value is read into the domain rather than here.
+     *
+     * <p>The recovered cleartext is deliberately discarded. Nothing is compared against an expected
+     * value, because the expected values are regulated identifiers and this class must not hold them;
+     * that a value opens at all is exactly the property being established. The stronger comparison
+     * against the fixture record is made by {@code SeededProtectedIdentifierIT}, where a test fixture
+     * may legitimately carry it.
+     *
+     * @param connection the migration's open connection
+     * @return the number of stored values proved openable, which is fifty on a delivered database
+     * @throws SQLException    when the read fails
+     * @throws FlywayException when a stored value does not open under the configured key
+     */
+    int verifyEveryStoredValueOpens(final Connection connection) throws SQLException {
+        int opened = 0;
+        try (Statement select = connection.createStatement();
+                ResultSet rows = select.executeQuery(SELECT_CUSTOMER_IDENTITIES)) {
+            while (rows.next()) {
+                opened += verifyOpens(NATIONAL_IDENTIFIER_COLUMN,
+                        rows.getString(NATIONAL_IDENTIFIER_COLUMN));
+                opened += verifyOpens(GOVERNMENT_IDENTIFIER_COLUMN,
+                        rows.getString(GOVERNMENT_IDENTIFIER_COLUMN));
+            }
+        }
+        return opened;
+    }
+
+    /**
+     * Opens one stored value, or fails the migration naming the column and the property and nothing
+     * else.
+     *
+     * <p>An absent or blank value is not a failure and is not counted: the national identifier is
+     * deliberately unseeded, and {@link #needsSealing(String)} leaves a blank alone for the same
+     * reason, so the two passes agree about what is and is not a value.
+     *
+     * @param column the column the value was read from, one of this class's own literals
+     * @param stored the value read from the column, possibly {@code null}
+     * @return {@code 1} when a value was present and opened, {@code 0} when there was no value
+     * @throws FlywayException when a present value does not open under the configured key
+     */
+    private int verifyOpens(final String column, final String stored) {
+        if (stored == null || stored.isBlank()) {
+            return 0;
+        }
+        try {
+            this.encryption.reveal(stored);
+            return 1;
+        } catch (final RuntimeException unreadable) {
+            // Names the column and the property key, both of which are literals of this module. The
+            // value, the recovered cleartext and the key are all withheld - decision DL-041 - and the
+            // chained cause carries only the service's own verdict, which names no value either.
+            throw new FlywayException("a stored value in customer." + column + " does not open under"
+                    + " the key configured by "
+                    + SensitiveFieldEncryptionService.FIELD_ENCRYPTION_KEY_PROPERTY
+                    + "; an envelope opens under exactly one key, and the seeded envelopes are fixed"
+                    + " literals that no migration can re-key, so an overridden or rotated key leaves"
+                    + " regulated data unreadable. The migration is failed rather than reported"
+                    + " successful over rows the application cannot read. Restore the key this"
+                    + " profile declares, or rebuild the database from the migrations under the key"
+                    + " now configured", unreadable);
         }
     }
 

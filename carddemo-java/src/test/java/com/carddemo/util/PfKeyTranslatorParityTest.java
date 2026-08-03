@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -292,7 +293,7 @@ class PfKeyTranslatorParityTest {
         @DisplayName("resolves function keys one through twelve in ordinal order")
         void resolvesTheFirstTwelveFunctionKeys() {
             for (int key = 1; key <= 12; key++) {
-                final KeyAction expected = KeyAction.valueOf(String.format("PFK%02d", key));
+                final KeyAction expected = KeyAction.valueOf(String.format(Locale.ROOT, "PFK%02d", key));
 
                 assertThat(PfKeyTranslator.translate("DFHPF" + key))
                         .as("function key %d", key)

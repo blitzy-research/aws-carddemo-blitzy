@@ -27,6 +27,7 @@ import java.io.ObjectStreamClass;
 import java.io.Serializable;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -406,7 +407,7 @@ class TransactionCategoryBalanceIdBaselineTest {
 
             for (int account = 1; account <= FIXTURE_ROWS; account++) {
                 keys.add(new TransactionCategoryBalanceId(
-                        String.format("%011d", account), PURCHASE_TYPE, FIRST_CATEGORY));
+                        String.format(Locale.ROOT, "%011d", account), PURCHASE_TYPE, FIRST_CATEGORY));
             }
 
             assertThat(keys).hasSize(FIXTURE_ROWS);

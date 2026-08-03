@@ -212,32 +212,33 @@ spring:
         highlight_sql: false
 
   # -----------------------------------------------------------------------------------------------
-  # SCHEMA EVOLUTION - THE LOAD-BEARING SETTING IN THIS FILE IS THE LIFTED VERSION CEILING.
+  # SCHEMA EVOLUTION - THE LOAD-BEARING SETTING IN THIS FILE IS THE LIFTED VERSION CEILING. WITHOUT IT
+  # THIS PROFILE MIGRATES AN UNSEEDED DATABASE.
   #
-  # One location, five scripts, and this profile applies all five:
+  # One location, four scripts, and this profile applies all four:
   #
-  #   V1__create_schema.sql            the eleven application tables            schema
-  #   V1_1__create_batch_metadata.sql  the batch job-repository metadata        schema
-  #   V2__create_indexes.sql           keys and alternate-index equivalents     schema
-  #   V3__seed_reference_data.sql      sample rows                              SEED
-  #   V4__seed_user_security.sql       sign-on identities, hashed               SEED
+  #   classpath:db/migration  - what every profile resolves
+  #     V1__create_schema.sql          the eleven application tables            EVERY profile
+  #     V2__create_indexes.sql         keys and alternate-index equivalents     EVERY profile
+  #     V3__seed_reference_data.sql    sample rows                              local and test ONLY
+  #     V4__seed_user_security.sql     sign-on identities, hashed               local and test ONLY
   #
-  # The shared baseline defaults spring.flyway.target to "2" and the production overlay re-asserts it,
-  # so production applies 1, 1.1 and 2 and never resolves 3 or 4 - it migrates schema and indexes
-  # without inheriting sample rows or seeded identities. This profile raises the ceiling to latest,
-  # which is exactly what admits the seeds. An earlier revision achieved the
-  # same split with a second classpath:db/seed location that production did not list; the ceiling
-  # replaced it because a version number then described what every profile applies, and because an
-  # exclusion by arithmetic cannot be defeated by moving or renaming a file. Any seed script added
-  # must therefore be numbered ABOVE 2 - not placed in a particular directory - and must store a
-  # sign-on credential only as a hash.
+  # The shared baseline pins spring.flyway.target to "2" and the production overlay re-asserts it, so
+  # production applies 1 and 2 and reports 3 and 4 as above target - it migrates schema and indexes
+  # without inheriting sample rows or seeded identities. That ceiling is what AAP 0.3.1 and 0.4.2 mean
+  # by profile-scoped resolution, and it is what the migration specifications for V3 and V4 name
+  # directly; those same specifications require the four scripts to be flat in one directory and direct
+  # that no subdirectory be created, so there is no seed location to add here. See
+  # docs/decision-log.md DL-119. This profile raises the ceiling, which is exactly what admits the
+  # seeds. Any seed script added must therefore be numbered above 2 and must store a sign-on credential
+  # only as a hash.
   #
-  # LOWERING THIS CEILING DOES NOT PRODUCE AN ERROR - IT PRODUCES EMPTY RESULT SETS. Without the
+  # LOSING THAT SETTING DOES NOT PRODUCE AN ERROR - IT PRODUCES EMPTY RESULT SETS. Without the
   # seeds the container-backed tiers have nothing to assert against: acceptance reads the seeded
   # cardinalities directly, and the byte comparison compares output produced FROM the seeded state.
   # Both would then fail on an empty query rather than on a message naming the cause. Copying
-  # production's `target` into this file, to "align the profiles", is the one change here that breaks
-  # the most while looking like tidying up.
+  # production's `locations` or `target` into this file, to "align the profiles", is the one change
+  # here that breaks the most while looking like tidying up.
   #
   # WHAT THE SEEDS BRING, at the counts measured from the sample datasets rather than estimated:
   #
@@ -281,29 +282,58 @@ spring:
   #      field-encryption key, service endpoints and transport rule - and re-add the seed location to
   #      a deployment reading the production document. A profile document is selected BY the
   #      active-profile list and cannot see it, so the refusal has to live in code.
-  #   2. It seals the seeded regulated identifiers. V3__seed_reference_data.sql writes
-  #      customer.govt_issued_id as cleartext because static SQL cannot produce a keyed envelope
-  #      without committing a key; a callback registered for this profile and `local` alone converts
-  #      every such value through the module's one encryption service on the after-migrate event of
-  #      the same migration, inside the same transaction. CONSEQUENCE FOR A TEST: a seeded customer
-  #      row read through this profile carries an ENC1 envelope in that column and NOT the fixture's
-  #      twenty digits, which is the same value the entity's own accessors would have demanded. A
-  #      test that wants the cleartext reveals it through the encryption service.
+  #   2. It holds the seeded regulated identifiers to two invariants, through a callback registered for
+  #      this profile and `local` alone. V3__seed_reference_data.sql inserts customer.govt_issued_id as
+  #      an ENC1 envelope in every row - never as cleartext - and seeds customer.cust_ssn as NULL in all
+  #      fifty, so on a delivered database there is nothing to convert. The callback still SEALS any
+  #      unsealed value it finds, guarding a future edit to the seed, and it OPENS every stored value
+  #      under the key this process holds, guarding what the seal check cannot see: an envelope sealed
+  #      under some OTHER key looks exactly like an envelope, so recognising its shape proves nothing
+  #      about readability. A value that will not open fails the run at migration time instead of at
+  #      whichever assertion first decrypted a seeded row. It runs on the after-migrate event, which
+  #      Flyway raises AFTER the migration's own transaction has committed, in a transaction of the
+  #      callback's own. CONSEQUENCE FOR A TEST: a seeded customer row read through this profile carries
+  #      an ENC1 envelope in that column and NOT the fixture's twenty digits, which is the same value
+  #      the entity's own accessors would have demanded. A test that wants the cleartext reveals it
+  #      through the encryption service.
+  #
+  # WHAT STOPS A DATABASE THIS OVERLAY SEEDED FROM ENDANGERING A LATER PRODUCTION RUN. Seeding writes
+  # V3 and V4 rows into this database's migration history, and fifty synthetic customer rows and ten
+  # known sign-on identities into its tables. Neither the added seed location nor the lifted ceiling
+  # can undo that, because both describe what THIS process applies and neither is consulted about what
+  # some earlier process already applied. A container-backed test database is per-run and is discarded,
+  # so the path that matters is the OTHER one: a long-lived database once opened under this profile, or
+  # a dump of one, later read by a production deployment. That is closed by
+  # com.carddemo.config.ProductionSeedRejectionCallback, registered for `prod` alone, which refuses
+  # production start-up outright - before the first script runs and before any application bean is
+  # instantiated - when the migration history records a seed version, when user_security holds any of
+  # the ten seeded identities, or when five reference tables match the seeded row counts
+  # simultaneously. Nothing else sees this state, and that was measured rather than assumed:
+  # validate-on-migrate does NOT reject such a database, because version 11 of the migration tool
+  # ignores future migrations by default, so applied versions 3 and 4 that the production schema
+  # location cannot resolve are not a validation failure. It refuses rather than cleaning, because a
+  # production database holding these rows is an incident to be corrected and never data for a
+  # start-up path to delete. ProductionSeedRejectionCallbackIT asserts all of it.
   #
   # validate-on-migrate stays on so a locally edited script cannot diverge from what was applied.
   # clean-disabled is relaxed here and in the development profile only, so a test that needs a
   # pristine schema can drop and re-apply; the baseline and the production overlay both forbid it.
-  # `target: latest` lifts the schema-only pin the shared baseline declares, so a migration under this
-  # overlay applies V1 and V2 and then the two seeds. The baseline and the production overlay pin
-  # `target: 2`, and com.carddemo.config.FlywayConfig re-applies that pin unconditionally whenever the
+  # The seed location and `target: latest` together lift the schema-only scoping the shared baseline
+  # declares, so a migration under this overlay applies V1 and V2 and then the two seeds. The baseline
+  # and the production overlay declare the schema location alone and pin `target: 2`, and
+  # com.carddemo.config.FlywayConfig re-applies BOTH restrictions unconditionally whenever the
   # production profile is active, so seeded reference rows and seeded sign-on identities cannot reach
   # a production migration however this file is edited.
   flyway:
     enabled: true
     # See docs/decision-log.md DL-102.
+    #
+    # The one location every profile resolves, holding all four delivered scripts flat. Restated here
+    # rather than inherited so this document reads completely on its own.
     locations: classpath:db/migration
-    # The shared baseline pins target at "2". This overlay lifts the pin for itself so the reference
-    # and sign-on seeds are applied and the fixtures have rows to assert against.
+    # THIS IS THE ONE SETTING THAT ADMITS THE SEEDS. The shared baseline pins target at "2", so V3 and
+    # V4 are resolved, reported above target and never executed. This overlay lifts the pin for itself
+    # so the reference and sign-on seeds are applied and the fixtures have rows to assert against.
     target: latest
     baseline-on-migrate: false
     validate-on-migrate: true
@@ -320,24 +350,23 @@ spring:
   # Jobs are launched deliberately - from the batch test utilities or through the job-launch endpoint
   # - and never as a side effect of starting a context.
   #
-  # The job-metadata tables come from V1_1__create_batch_metadata.sql, not from the framework's
-  # bundled script: initialize-schema is `never` here as it is under every other profile. They remain
-  # NOT part of V1__create_schema.sql and must not be added to it - they belong to the framework and
-  # they change with its version, so they get their own migration, whose header records the exact
-  # framework version its DDL was transcribed from and is diffed against on an upgrade.
+  # The job-metadata tables come from Spring Batch's own bundled PostgreSQL script:
+  # initialize-schema is `always` here as it is under every other profile, inherited from the shared
+  # baseline and deliberately not restated. They are NOT part of V1__create_schema.sql and must not be
+  # added to it - they belong to the framework and they change with its version, so the framework
+  # provisions them, which is what AAP 0.3.1 assigns and what keeps the delivered migration inventory
+  # at exactly V1, V2, V3, V4. The framework's initialiser skips execution when the tables already
+  # exist, so a re-used database is unaffected.
   #
-  # A suite run is therefore the environment that PROVES the migration works. While this profile let
-  # the framework create its own tables, a missing metadata migration was invisible here and fatal in
-  # production, which is the situation this setting exists to prevent recurring.
+  # A suite run is therefore the environment that PROVES the arrangement works: every container-backed
+  # test that launches a job runs against framework-created metadata tables in exactly the way a
+  # deployment will, so a value that differed between environments could not hide here.
   #
   # THEREFORE, AND THIS IS NOT A SCHEMA DEFECT: the "eleven tables" assertion is about APPLICATION
   # tables only - account, card, customer, card_cross_reference, transaction, daily_transaction,
   # transaction_category_balance, disclosure_group, transaction_type, transaction_category and
   # user_security. The BATCH_-prefixed metadata tables are ADDITIONAL AND EXPECTED, and a listing of
   # this database shows both sets. A count that includes them is counting the wrong thing.
-  batch:
-    jdbc:
-      initialize-schema: never
 
   # -----------------------------------------------------------------------------------------------
   # AWS INTEGRATION, aimed at the LocalStack Community emulator that AbstractLocalStackIT starts.
@@ -441,7 +470,10 @@ management:
     web:
       base-path: /actuator
       exposure:
-        include: health,info,prometheus
+        # IDENTICAL to the shared baseline, for the same reason the endpoint path above is restated:
+        # the published set stays the same across profiles so a test that resolves a management path
+        # resolves the one production would. `metrics` is included because the baseline includes it.
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       show-details: never
@@ -499,7 +531,7 @@ logging:
 # that starts cleanly and then fails on the first publish, with no start-up error naming the cause.
 #
 #   carddemo-batch-staging       object-store bucket
-#   JOBS.fifo                    first-in-first-out submission queue
+#   carddemo-jobs.fifo           first-in-first-out submission queue
 #   carddemo-job-submission      message group id
 #   carddemo-job-notifications   notification topic
 #   us-east-1                    region, bound in the spring.cloud.aws block above
@@ -535,7 +567,7 @@ carddemo:
     s3:
       bucket: ${CARDDEMO_S3_BUCKET:carddemo-batch-staging}
     sqs:
-      job-submission-queue: ${CARDDEMO_SQS_QUEUE:JOBS.fifo}
+      job-submission-queue: ${CARDDEMO_SQS_QUEUE:carddemo-jobs.fifo}
       message-group-id: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:carddemo-job-submission}
       # The 80-character card width and the tolerate-a-publish-failure behaviour are NOT declared as
       # properties. Both are fixed by the legacy queue definition rather than chosen by a deployment,
@@ -576,12 +608,22 @@ carddemo:
     # as an environment reference with NO fallback, and production never applies V3 at all -
     # spring.flyway.target caps it at version 2 - so no production row is sealed under this literal.
     #
-    # Overriding CARDDEMO_FIELD_ENCRYPTION_KEY leaves the fifty seeded envelopes unreadable, because
-    # they are sealed literals rather than values this process produced. That is what rotating a key
-    # means, not a defect; anything the application seals itself continues to work normally.
+    # STATED AS A BARE LITERAL, DELIBERATELY, AND NOT AS ${CARDDEMO_FIELD_ENCRYPTION_KEY:<default>},
+    # which is also how the suite's own src/test/resources/application-test.yml has always stated it.
+    # This profile is FIXTURE-BEARING: V3 inserts fifty govt_issued_id envelopes that are fixed
+    # literals in a committed script, and an envelope opens under exactly one key. An environment
+    # override could not rotate them - nothing can re-key a literal - it would only leave fifty rows
+    # of regulated data unreadable, and the envelope-marker check cannot detect that, because an
+    # envelope sealed under a foreign key still looks like an envelope. A suite run would then fail
+    # somewhere far from the cause, at whichever assertion first decrypted a seeded row. Removing the
+    # override removes the ordinary way into that state; com.carddemo.config
+    # .SeededIdentifierSealingCallback refuses it however else it arises, by OPENING every stored value
+    # at the end of each migration rather than checking its shape, and failing the run on the first
+    # value that will not open. Production is the only profile resolving this from the environment, and
+    # it carries no fallback there for the opposite reason: it owns real data.
     # See docs/decision-log.md DL-103.
     field-encryption:
-      key: ${CARDDEMO_FIELD_ENCRYPTION_KEY:Y2FyZGRlbW8tbm9ucHJvZC1maXh0dXJlLWtleSEhISE=}
+      key: Y2FyZGRlbW8tbm9ucHJvZC1maXh0dXJlLWtleSEhISE=
     # RELAXES A REQUIRED BASELINE, stated here so the concession is visible in the profile taking it.
     # application.yml requires transport security, because a bearer token lifted from plaintext can
     # be replayed until it expires and a field sealed at rest travels in the clear once an endpoint

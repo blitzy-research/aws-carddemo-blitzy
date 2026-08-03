@@ -151,8 +151,17 @@ final class ConfigurationProfileBaselineTest {
      */
     private static final String SUITE_ORIGIN = "/test-classes/";
 
-    /** The management surface the baseline publishes: three endpoints, each a cross-file contract. */
-    private static final String EXPECTED_CLOSED_EXPOSURE = "health,info,prometheus";
+    /**
+     * The management surface the baseline publishes: four endpoints.
+     *
+     * <p>Three are cross-file contracts - the health probe the image health check reads, the scrape
+     * endpoint the Prometheus job resolves, and the build identifier. The fourth, {@code metrics}, is
+     * the surface the performance baseline is read from, and it is required rather than optional: a
+     * scrape interval cannot resolve a single job run. Publishing it does not open it, because
+     * {@code SecurityConfig} authenticates every management sub-path except the health probe and the
+     * scrape endpoint.</p>
+     */
+    private static final String EXPECTED_CLOSED_EXPOSURE = "health,info,metrics,prometheus";
 
     /** The health-probe detail setting of a closed posture. */
     private static final String EXPECTED_CLOSED_DETAIL = "never";
@@ -315,28 +324,41 @@ final class ConfigurationProfileBaselineTest {
     /** Whether the batch framework may create its own metadata tables at start-up. */
     private static final String KEY_BATCH_INITIALIZE_SCHEMA = "spring.batch.jdbc.initialize-schema";
 
-    /** The single location carrying every migration - schema, framework metadata and seeds alike. */
-    private static final String MIGRATION_LOCATION = "classpath:db/migration";
+    /** The one location carrying all four delivered migrations, which every profile declares. */
+    private static final String SCHEMA_LOCATION = "classpath:db/migration";
 
-    /** Class-path folder behind {@link #MIGRATION_LOCATION}, as a resource pattern reads it. */
-    private static final String MIGRATION_FOLDER = "db/migration";
+    /** Class-path folder behind {@link #SCHEMA_LOCATION}, as a resource pattern reads it. */
+    private static final String SCHEMA_FOLDER = "db/migration";
 
     /**
-     * The folder a superseded revision used to hold the seeds, asserted to be gone.
+     * A withdrawn subdirectory, kept here only so its emptiness can be asserted.
      *
-     * <p>Kept as a constant rather than inlined because two assertions refer to it and both are about
-     * its absence: the split it represented is what the version ceiling replaced.
+     * <p>An earlier revision split the delivered scripts across {@code db/migration/schema} and
+     * {@code db/migration/seed}. The specifications for V3 and V4 both direct that no subdirectory be
+     * created, so that split is withdrawn. These two names are retained as GUARDS rather than as
+     * configuration: a script reappearing in either folder must fail a test instead of quietly
+     * resurrecting a topology the documents no longer describe.
      */
-    private static final String WITHDRAWN_SEED_FOLDER = "db/seed";
+    private static final String WITHDRAWN_SCHEMA_FOLDER = "db/migration/schema";
+
+    /** The other withdrawn subdirectory; see {@link #WITHDRAWN_SCHEMA_FOLDER}. */
+    private static final String WITHDRAWN_SEED_FOLDER = "db/migration/seed";
 
     /**
-     * The withdrawn folder written as a location descriptor, which is the form a location list holds.
+     * The folder every delivered migration occupies, which is also the one location every profile
+     * declares. Retained as a separate constant because the resource-pattern assertions read a folder
+     * while the configuration assertions read a location descriptor.
+     */
+    private static final String PARENT_FOLDER = "db/migration";
+
+    /**
+     * The delivered location written as a location descriptor, which is the form a location list holds.
      *
      * <p>Asserted against the resolved value of {@code spring.flyway.locations} rather than against a
      * document's text, so the check is about what a deployment would migrate from and not about what a
      * comment may mention.
      */
-    private static final String WITHDRAWN_SEED_LOCATION = "classpath:" + WITHDRAWN_SEED_FOLDER;
+    private static final String PARENT_LOCATION = "classpath:" + PARENT_FOLDER;
 
     /** The production version ceiling, above which a script is never resolved. */
     private static final String PRODUCTION_VERSION_CEILING = "2";
@@ -354,21 +376,25 @@ final class ConfigurationProfileBaselineTest {
     /**
      * Every migration this module delivers, in the order a migration applies them.
      *
-     * <p>Flat in one location by design. The first three sit at or below the production ceiling and
-     * reach every profile; the last two sit above it and reach local and test only.
+     * <p>Split across two profile-scoped locations by design. The first two sit in the schema location
+     * at or below the production ceiling and reach every profile; the last two sit in the seed location
+     * above the ceiling and reach local and test only. AAP 0.3.1 and 0.4.2 name exactly these four.
      */
     private static final List<String> DELIVERED_MIGRATIONS = List.of(
             "V1__create_schema.sql",
-            "V1_1__create_batch_metadata.sql",
             "V2__create_indexes.sql",
             "V3__seed_reference_data.sql",
             "V4__seed_user_security.sql");
 
-    /** The delivered migrations production applies, being those at or below the ceiling. */
-    private static final List<String> MIGRATIONS_AT_OR_BELOW_CEILING = List.of(
+    /** The delivered migrations production applies, being those in the schema location. */
+    private static final List<String> SCHEMA_MIGRATIONS = List.of(
             "V1__create_schema.sql",
-            "V1_1__create_batch_metadata.sql",
             "V2__create_indexes.sql");
+
+    /** The delivered migrations only local and test apply, being those in the seed location. */
+    private static final List<String> SEED_MIGRATIONS = List.of(
+            "V3__seed_reference_data.sql",
+            "V4__seed_user_security.sql");
 
     /** The seed migration whose customer rows carry sealed government-issued identifiers. */
     private static final String SEED_REFERENCE_DATA = "V3__seed_reference_data.sql";
@@ -403,7 +429,7 @@ final class ConfigurationProfileBaselineTest {
             Pattern.compile("'\\d{" + SEALED_IDENTIFIER_WIDTH + "}'");
 
     /** The legacy transient-data queue's name, carrying the suffix the queue service requires. */
-    private static final String EXPECTED_JOB_SUBMISSION_QUEUE = "JOBS.fifo";
+    private static final String EXPECTED_JOB_SUBMISSION_QUEUE = "carddemo-jobs.fifo";
 
     /** The only strategy that keeps queue provisioning outside the application. */
     private static final String EXPECTED_QUEUE_NOT_FOUND_STRATEGY = "FAIL";
@@ -424,14 +450,20 @@ final class ConfigurationProfileBaselineTest {
     /**
      * Management endpoints that must never appear in the shared baseline's exposure list.
      *
-     * <p>Each of these describes the running system rather than serving it. The first four enumerate
-     * resolved configuration, the bean graph, the request mappings and the applied migrations; the
-     * next two enumerate and query every registered meter and let log levels be rewritten at run
-     * time; the last three dump memory, dump threads and stop the application.
+     * <p>Each of these describes or controls the running system rather than serving it. The first five
+     * enumerate resolved configuration, the bean graph, the request mappings and the applied
+     * migrations, and let log levels be rewritten at run time; the last three dump memory, dump
+     * threads and stop the application.
+     *
+     * <p>{@code metrics} was on this list and has been REMOVED from it, because it is required to be
+     * published. The reasoning that put it here - that it enumerates every registered meter and so
+     * describes the shape of the running system - was true but not decisive: the endpoint is
+     * authenticated, and withholding it left the performance baseline with no surface to be read
+     * from. Its presence is now asserted positively through the expected exposure list instead.
      */
     private static final List<String> ENDPOINTS_CLOSED_IN_THE_BASELINE = List.of(
             "env", "configprops", "beans", "mappings", "flyway",
-            "metrics", "loggers", "heapdump", "threaddump", "shutdown");
+            "loggers", "heapdump", "threaddump", "shutdown");
 
     /** Tokens that must not appear as a value anywhere in the shared baseline. */
     private static final List<String> CREDENTIAL_TOKENS = List.of(
@@ -795,7 +827,11 @@ final class ConfigurationProfileBaselineTest {
                 KEY_FIELD_ENCRYPTION_KEY,
                 KEY_JWT_SECRET,
                 KEY_REQUIRE_HTTPS,
+                // A scalar rather than an indexed sequence, because the four delivered scripts sit flat
+                // in ONE location. An earlier revision listed [0] and [1] here, which is exactly the
+                // trace a returning directory split would leave in this file.
                 KEY_FLYWAY_LOCATIONS,
+                KEY_FLYWAY_TARGET,
                 "spring.jpa.hibernate.ddl-auto");
 
         @Test
@@ -1120,7 +1156,7 @@ final class ConfigurationProfileBaselineTest {
         @DisplayName("the seed really does carry sealed values, which is what makes the agreement "
                 + "load-bearing rather than tidiness")
         void theSeedCarriesSealedValuesRatherThanCleartext() {
-            String seed = contentsOfClassPathScript(MIGRATION_FOLDER, SEED_REFERENCE_DATA);
+            String seed = contentsOfClassPathScript(SCHEMA_FOLDER, SEED_REFERENCE_DATA);
 
             assertThat(countSealedLiterals(seed))
                     .as("%s must seal every one of the %d customer rows it loads. A single cleartext"
@@ -1414,35 +1450,36 @@ final class ConfigurationProfileBaselineTest {
 
     /**
      * Holds the documented migration set to the migration set that ships, and holds the production
-     * exclusion of the seeds to the mechanism that actually performs it.
+     * exclusion of the seeds to the two mechanisms that actually perform it.
      *
      * <p>Three separate things are asserted here and they fail for different reasons.</p>
      *
-     * <p>The first is the exclusion itself. The seeds are kept out of production by a VERSION CEILING -
-     * {@code spring.flyway.target: 2} - and not by a directory. The shared baseline declares that
-     * restrictive ceiling so a profile silent about seeding inherits a schema-only migration, the
-     * production overlay re-declares it so the guarantee is visible in the document that depends on it,
-     * and the two seeding profiles lift it to {@code latest} for themselves. Every profile lists the one
-     * location {@code classpath:db/migration}; production applies versions 1, 1.1 and 2 and never
-     * resolves 3 or 4. The ceiling is asserted against the merged environment as well as
-     * against the document, because inheritance is what a running application resolves and a
-     * per-document reading cannot answer an inheritance question.</p>
+     * <p>The first is the exclusion itself, which rests on a PROFILE-SCOPED VERSION CEILING,
+     * {@code spring.flyway.target: 2}. All four scripts sit flat in one location,
+     * {@code classpath:db/migration}, which every profile declares - the migration specifications for V3
+     * and V4 both direct that no subdirectory be created, on the ground that a location is scanned
+     * recursively and a directory therefore cannot isolate the seeds. The shared baseline declares the
+     * restrictive ceiling, so a profile silent about seeding inherits a schema-only migration; the
+     * production overlay re-declares it so the guarantee is visible in the document that depends on it;
+     * and the two seeding profiles lift it for themselves. Production therefore resolves all four scripts
+     * and applies two, the seeds standing above target. The ceiling is asserted against the merged
+     * environment as well as against the document,
+     * because inheritance is what a running application resolves and a per-document reading cannot answer
+     * an inheritance question.</p>
      *
-     * <p>A superseded revision instead split the scripts across {@code db/migration} and {@code db/seed}
-     * and made the two location lists differ. That is asserted to be gone, for reasons worth recording
-     * because the superseded arrangement looked like the safer one: it made the guarantee a property of
-     * four location lists staying different from each other, which no single file states and no single
-     * review sees; it detached a version number from what any profile applies, so renumbering a seed or
-     * adding one entry to one list could change production's contents without either edit looking like a
-     * change to production; and it made a new script safe only if its author knew which directory to
-     * choose. A ceiling has none of those properties - no move, rename or renumber can make version 4
-     * fall below 2 - and it is what the frozen migration plan specifies.</p>
+     * <p>Neither control is redundant, and that is why both are asserted. They are defeated by different
+     * mistakes: renumbering a seed below the ceiling defeats the ceiling and not the location list, while
+     * declaring the shared parent {@code classpath:db/migration} - which Flyway scans RECURSIVELY, and
+     * which therefore resolves both folders - defeats the location list and not the ceiling. The parent is
+     * accordingly asserted never to appear in any resolved location list, by equality of each entry rather
+     * than by substring, since both legitimate descriptors begin with it.</p>
      *
-     * <p>The second is that the arithmetic and the intent agree: {@link
-     * #theCeilingSeparatesSchemaFromSeedByArithmetic()} requires every delivered script at or below the
-     * ceiling to be a schema script and every script above it to be a seed. That is the assertion that
-     * would catch a seed numbered {@code V1_2} or a required schema script numbered {@code V5}, either of
-     * which reads as harmless and silently inverts the control.</p>
+     * <p>The second is that the placement and the arithmetic agree: {@link
+     * #eachControlSeparatesSchemaFromSeedOnItsOwn()} requires every script in the schema folder to be a
+     * schema script at or below the ceiling and every script in the seed folder to be a seed strictly
+     * above it. That is the assertion that would catch a seed numbered {@code V1_2}, a seed dropped into
+     * the schema folder, or a required schema script numbered {@code V5} - each of which reads as harmless
+     * and silently reduces two controls to one.</p>
      *
      * <p>The third is truthfulness of the prose. The documents once described a seed location as
      * supplying sample rows while it carried no script at all. Correcting such text is never durable on
@@ -1455,33 +1492,49 @@ final class ConfigurationProfileBaselineTest {
      * document naming the new script at all.</p>
      */
     @Nested
-    @DisplayName("the documented migration set is the migration set that ships, and the ceiling is what "
-            + "excludes the seeds")
+    @DisplayName("the documented migration set is the migration set that ships, and the location list and "
+            + "the ceiling together are what exclude the seeds")
     final class TheDocumentedMigrationSetIsTheDeliveredOne {
 
-        @ParameterizedTest(name = "{0} lists the one migration location and nothing else")
-        @ValueSource(strings = {SHARED, LOCAL, TEST, PRODUCTION})
-        @DisplayName("every profile lists exactly one migration location, so no profile's contents "
-                + "depend on how its location list differs from another's")
-        void everyProfileListsExactlyTheOneLocation(final String document) {
-            assertThat(text(document, KEY_FLYWAY_LOCATIONS))
-                    .as("all five scripts are flat in %s. A second location would reintroduce the "
-                            + "superseded split, in which what production applied was a consequence of "
-                            + "four lists differing rather than of one reviewable line",
-                            MIGRATION_LOCATION)
-                    .isEqualTo(MIGRATION_LOCATION)
-                    .doesNotContain(WITHDRAWN_SEED_FOLDER);
+        @ParameterizedTest(name = "{0} declares the one delivered location, flat")
+        @ValueSource(strings = {SHARED, PRODUCTION, LOCAL, TEST})
+        @DisplayName("every shipped document declares exactly the one delivered location, so the "
+                + "profiles differ in their ceiling alone and no document has drifted to a split")
+        void everyDocumentDeclaresTheOneDeliveredLocation(final String document) {
+            assertThat(declaredLocations(document))
+                    .as("%s must resolve exactly one location, %s, holding all four delivered scripts "
+                            + "flat. A subdirectory here would be the withdrawn split returning, and the "
+                            + "specifications for V3 and V4 both direct that none be created",
+                            document, PARENT_LOCATION)
+                    .containsExactly(SCHEMA_LOCATION)
+                    .allSatisfy(location -> assertThat(location)
+                            .doesNotContain(WITHDRAWN_SCHEMA_FOLDER)
+                            .doesNotContain(WITHDRAWN_SEED_FOLDER));
         }
 
         @Test
-        @DisplayName("the suite overlay lists the same one location, so a suite run migrates from the "
+        @DisplayName("the suite overlay declares the same one location, so a suite run migrates from the "
                 + "set the artefact carries")
-        void theSuiteOverlayListsTheSameOneLocation() {
-            assertThat(propertiesOf(suiteOverlay()).get(KEY_FLYWAY_LOCATIONS))
-                    .as("the overlay is the copy Spring reads during a suite run. Left listing a "
-                            + "withdrawn location it would resolve no seed at all, and every fixture "
-                            + "cardinality would fail on an empty result set rather than on the cause")
-                    .isEqualTo(MIGRATION_LOCATION);
+        void theSuiteOverlayDeclaresTheOneDeliveredLocation() {
+            assertThat(locationsIn(propertiesOf(suiteOverlay())))
+                    .as("the overlay is the copy Spring reads during a suite run. It resolves the same "
+                            + "location every other document resolves and lifts the ceiling instead, "
+                            + "which is what gives the fixtures rows to assert against")
+                    .containsExactly(SCHEMA_LOCATION);
+        }
+
+        @Test
+        @DisplayName("neither withdrawn subdirectory delivers a script, so the split cannot return "
+                + "unnoticed")
+        void neitherWithdrawnSubdirectoryDeliversAScript() {
+            assertThat(versionedScriptsIn(WITHDRAWN_SCHEMA_FOLDER))
+                    .as("%s is withdrawn; a script delivered there would be resolved through the "
+                            + "recursive scan of the parent while no document describes it",
+                            WITHDRAWN_SCHEMA_FOLDER)
+                    .isEmpty();
+            assertThat(versionedScriptsIn(WITHDRAWN_SEED_FOLDER))
+                    .as("%s is withdrawn for the same reason", WITHDRAWN_SEED_FOLDER)
+                    .isEmpty();
         }
 
         @Test
@@ -1535,8 +1588,16 @@ final class ConfigurationProfileBaselineTest {
 
             assertThat(FlywayConfig.SCHEMA_LOCATION)
                     .as("and the one location the code control admits under production must be the one "
-                            + "location these documents declare")
-                    .isEqualTo(MIGRATION_LOCATION);
+                            + "location the non-seeding documents declare")
+                    .isEqualTo(SCHEMA_LOCATION);
+
+            assertThat(FlywayConfig.SCHEMA_LOCATION)
+                    .as("and there must be no second location to complete: every document declares this "
+                            + "one location, the delivered scripts are flat inside it, and a value "
+                            + "naming a subdirectory would mean the withdrawn directory split had "
+                            + "returned in code while the documents still read flat")
+                    .doesNotContain("/schema")
+                    .doesNotContain("/seed");
         }
 
         @ParameterizedTest(name = "{0} raises the ceiling for itself")
@@ -1558,46 +1619,39 @@ final class ConfigurationProfileBaselineTest {
         }
 
         @Test
-        @DisplayName("the delivered scripts are flat in one folder and are exactly the five named")
-        void theDeliveredScriptsAreFlatAndExactlyTheFiveNamed() {
-            assertThat(versionedScriptsIn(MIGRATION_FOLDER))
-                    .as("the delivered set is the whole migration history: three schema scripts at or "
-                            + "below the ceiling and two seeds above it. A script added here without a "
-                            + "corresponding edit to the four profile documents would leave them naming "
-                            + "a shorter set than ships")
-                    .containsExactlyElementsOf(DELIVERED_MIGRATIONS);
+        @DisplayName("the delivered scripts sit flat in the one folder and are exactly the four named")
+        void theDeliveredScriptsSitFlatAndAreExactlyTheFourNamed() {
+            assertThat(versionedScriptsIn(SCHEMA_FOLDER))
+                    .as("all four delivered scripts sit directly in the one location every profile "
+                            + "declares. A script added here without a corresponding edit to the profile "
+                            + "documents would leave them naming a shorter set than ships")
+                    .containsExactlyInAnyOrderElementsOf(DELIVERED_MIGRATIONS);
 
-            assertThat(versionedScriptsIn(WITHDRAWN_SEED_FOLDER))
-                    .as("the superseded seed folder must carry no script and must not be recreated: a "
-                            + "seed placed there would be resolved by no profile at all, so it would "
-                            + "fail silently by never running rather than loudly by running")
-                    .isEmpty();
+            assertThat(recursiveVersionedScriptsIn(PARENT_FOLDER))
+                    .as("and a RECURSIVE scan must find the same four and no more, so no script hides in "
+                            + "a subdirectory the documents do not describe. This is the assertion that "
+                            + "catches the withdrawn split returning")
+                    .containsExactlyInAnyOrderElementsOf(DELIVERED_MIGRATIONS);
         }
 
         @Test
-        @DisplayName("the ceiling separates schema from seed by arithmetic, so a misnumbered script "
-                + "cannot invert the control")
+        @DisplayName("the ceiling separates schema from seed by arithmetic alone, which is why the "
+                + "numbering is the whole of the decision")
         void theCeilingSeparatesSchemaFromSeedByArithmetic() {
-            List<String> atOrBelow = versionedScriptsIn(MIGRATION_FOLDER).stream()
-                    .filter(script -> !isAboveCeiling(script))
-                    .toList();
-            List<String> above = versionedScriptsIn(MIGRATION_FOLDER).stream()
-                    .filter(ConfigurationProfileBaselineTest::isAboveCeiling)
-                    .toList();
+            assertThat(SCHEMA_MIGRATIONS)
+                    .as("every script production applies must sit at or below %s. One numbered above it "
+                            + "would silently stop being applied in production",
+                            PRODUCTION_VERSION_CEILING)
+                    .isNotEmpty()
+                    .noneMatch(ConfigurationProfileBaselineTest::isAboveCeiling);
 
-            assertThat(atOrBelow)
-                    .as("every script production applies must be schema or framework metadata. A SEED "
-                            + "numbered at or below %s - V1_2, say - would be applied by a production "
-                            + "migration, and for the sign-on seed that means ten known identities in "
-                            + "production", PRODUCTION_VERSION_CEILING)
-                    .containsExactlyElementsOf(MIGRATIONS_AT_OR_BELOW_CEILING);
-
-            assertThat(above)
-                    .as("and every script above the ceiling must be a seed. A REQUIRED schema script "
-                            + "numbered above %s would reach local and test and never reach production, "
-                            + "which is the failure mode the batch-metadata migration was numbered 1.1 "
-                            + "to avoid", PRODUCTION_VERSION_CEILING)
-                    .containsExactly("V3__seed_reference_data.sql", "V4__seed_user_security.sql");
+            assertThat(SEED_MIGRATIONS)
+                    .as("and every seed must sit STRICTLY ABOVE %s. Since a directory no longer separates "
+                            + "them, a seed numbered at or below the ceiling would be applied in "
+                            + "production - for the sign-on seed that means ten known identities there",
+                            PRODUCTION_VERSION_CEILING)
+                    .isNotEmpty()
+                    .allMatch(ConfigurationProfileBaselineTest::isAboveCeiling);
         }
 
         @ParameterizedTest(name = "{0} names every delivered migration")
@@ -1616,63 +1670,64 @@ final class ConfigurationProfileBaselineTest {
                             .contains(script));
         }
 
-        @ParameterizedTest(name = "{0} leaves the framework schema initializer off")
+        @ParameterizedTest(name = "{0} lets Spring Batch provision its own metadata tables")
         @ValueSource(strings = {SHARED, LOCAL, TEST, PRODUCTION})
-        @DisplayName("every profile resolves the batch schema initializer to never, so one migration is "
-                + "the single owner of the framework metadata tables")
-        void everyProfileLeavesTheFrameworkSchemaInitializerOff(final String document) {
+        @DisplayName("every profile resolves the batch schema initializer to always, so Spring Batch is "
+                + "the single owner of the framework metadata tables in every environment")
+        void everyProfileLetsSpringBatchProvisionItsOwnTables(final String document) {
             assertThat(resolvedAcrossSharedThen(document, KEY_BATCH_INITIALIZE_SCHEMA))
-                    .as("V1_1__create_batch_metadata.sql owns the six framework tables and three "
-                            + "sequences. Relaxing this to `always` under any profile gives the database "
-                            + "a second, unversioned schema owner - and relaxing it under local and test "
-                            + "specifically is what previously hid the absence of that migration from "
-                            + "the only environments able to reveal it, leaving production the one place "
-                            + "a job launch would have failed on a missing relation")
-                    .isEqualTo("never");
+                    .as("AAP 0.3.1 assigns the six framework tables and three sequences to Spring Batch "
+                            + "and the eleven application tables to V1__create_schema.sql, which is what "
+                            + "keeps the delivered migration inventory at exactly four scripts. The value "
+                            + "must be the SAME under every profile: setting a different one for "
+                            + "production alone is what previously made production the single environment "
+                            + "in which a job launch could fail on a missing relation, with local and test "
+                            + "configured not to reveal it")
+                    .isEqualTo("always");
         }
 
         @Test
-        @DisplayName("the suite overlay also leaves the initializer off, so the copy Spring reads "
-                + "during a suite run exercises the migration")
-        void theSuiteOverlayAlsoLeavesTheInitializerOff() {
+        @DisplayName("the suite overlay resolves the initializer the same way, so the copy Spring reads "
+                + "during a suite run exercises the provisioning path a deployment uses")
+        void theSuiteOverlayResolvesTheInitializerTheSameWay() {
             assertThat(propertiesOf(suiteOverlay()).get(KEY_BATCH_INITIALIZE_SCHEMA))
-                    .as("the overlay shadows the packaged copy during a suite run, so a value of "
-                            + "`always` here would let the framework create the tables and the migration "
-                            + "would go unexercised however the packaged copy is configured")
-                    .isEqualTo("never");
+                    .as("the overlay shadows the packaged copy during a suite run, so a different value "
+                            + "here would leave the suite exercising a provisioning path no deployment "
+                            + "uses, however the packaged copy is configured")
+                    .isEqualTo("always");
         }
 
         @Test
-        @DisplayName("the withdrawn second location returns neither as a delivered script nor as a "
-                + "documented location, so the exclusion cannot revert to a directory split")
-        void noDocumentOrDeliveredScriptReacquiresTheWithdrawnLocation() {
-            assertThat(versionedScriptsIn(WITHDRAWN_SEED_FOLDER))
-                    .as("a script delivered under %s would be invisible to every profile, because no "
-                            + "profile lists that location any more - it would look applied and would "
-                            + "never run", WITHDRAWN_SEED_FOLDER)
-                    .isEmpty();
-
+        @DisplayName("every document declares the one delivered location and no subdirectory of it, so "
+                + "the withdrawn split cannot return through a document edit")
+        void everyDocumentDeclaresTheDeliveredLocationAndNoSubdirectory() {
             for (final String document : List.of(SHARED, LOCAL, PRODUCTION, TEST)) {
-                assertThat(text(document, KEY_FLYWAY_LOCATIONS))
-                        .as("%s must not list %s: the directory split it belonged to was withdrawn, and "
-                                + "a location list that reacquired it would give that profile a second "
-                                + "way to reach a script the ceiling does not govern", document,
-                                WITHDRAWN_SEED_LOCATION)
-                        .doesNotContain(WITHDRAWN_SEED_LOCATION)
-                        .doesNotContain(WITHDRAWN_SEED_FOLDER);
+                assertThat(declaredLocations(document))
+                        .as("%s must declare exactly %s. All four delivered scripts sit flat inside it and "
+                                + "are told apart by version alone, so a subdirectory would be the "
+                                + "withdrawn split returning - and the specifications for V3 and V4 both "
+                                + "direct that none be created", document, PARENT_LOCATION)
+                        .isNotEmpty()
+                        .containsExactly(PARENT_LOCATION);
 
-                assertThat(resolvedAcrossSharedThen(document, KEY_FLYWAY_LOCATIONS))
-                        .as("and it must not reacquire it through inheritance either, which is the only "
-                                + "form of this defect a per-document reading cannot see")
-                        .doesNotContain(WITHDRAWN_SEED_FOLDER);
+                assertThat(resolvedLocations(document))
+                        .as("and it must not acquire a different location through inheritance either, "
+                                + "which is the only form of this defect a per-document reading cannot see")
+                        .containsExactly(PARENT_LOCATION);
             }
 
-            // The documents' PROSE deliberately names the withdrawn folder: each of them explains why the
-            // directory split was abandoned in favour of the version ceiling, and that explanation is the
-            // most useful paragraph in the file for a reader who wonders where the seeds are kept out. So
-            // the assertions above read the resolved location VALUE and never the document text. Forbidding
-            // the words would forbid the explanation, and an unexplained control is the one most likely to
-            // be undone by the next author.
+            assertThat(locationsIn(propertiesOf(suiteOverlay())))
+                    .as("the suite-only overlay is read in preference to the packaged copy during a suite "
+                            + "run, so it is governed by the same rule")
+                    .containsExactly(PARENT_LOCATION);
+
+            // Every assertion above reads a resolved location VALUE and never a document's text. The
+            // documents' PROSE deliberately names the two withdrawn subdirectories, because each of them
+            // explains why the ceiling rather than a directory is the control, and that explanation is the
+            // most useful paragraph in the file for a reader who wonders how the seeds are kept out.
+            // Forbidding the words would forbid the explanation, and an unexplained control is the one
+            // most likely to be undone next - which is exactly how the split came to be reintroduced once
+            // already.
         }
     }
 
@@ -2081,6 +2136,91 @@ final class ConfigurationProfileBaselineTest {
                             .comparing(ConfigurationProfileBaselineTest::versionOf,
                                     ConfigurationProfileBaselineTest::compareVersions)
                             .thenComparing(Comparator.naturalOrder()))
+                    .toList();
+        } catch (IOException failure) {
+            throw new UncheckedIOException("migration location is unreadable: " + folder, failure);
+        }
+    }
+
+    /**
+     * Reads the migration location list a shipped document declares.
+     *
+     * <p>Both YAML spellings are accepted, because the module uses both: the two non-seeding documents
+     * declare a single scalar and the two seeding documents declare a sequence, which a property loader
+     * flattens into indexed leaves. A reader that understood only one spelling would answer {@code null}
+     * for half the documents and would make every assertion over it vacuous.
+     *
+     * @param document the class-path name of the document to read
+     * @return the declared location descriptors in declared order; empty when the document declares none
+     */
+    private static List<String> declaredLocations(final String document) {
+        return locationsIn(properties(document));
+    }
+
+    /**
+     * Reads the migration location list a shipped document resolves once layered over the baseline.
+     *
+     * <p>A sequence in an overlay does not merge with a scalar in the baseline - the highest-precedence
+     * source that contributes the property wins outright - so an overlay that declares its own list
+     * resolves that list, and one that declares none inherits the baseline's.
+     *
+     * @param overlay the class-path name of the overlay to read
+     * @return the resolved location descriptors in order; never {@code null}
+     */
+    private static List<String> resolvedLocations(final String overlay) {
+        List<String> own = declaredLocations(overlay);
+        return own.isEmpty() ? locationsIn(properties(SHARED)) : own;
+    }
+
+    /**
+     * Extracts the migration location list from a flattened property map.
+     *
+     * @param properties the flattened properties of one document
+     * @return the location descriptors in declared order; empty when none is declared
+     */
+    private static List<String> locationsIn(final Map<String, Object> properties) {
+        Object scalar = properties.get(KEY_FLYWAY_LOCATIONS);
+        if (scalar != null) {
+            return Stream.of(String.valueOf(scalar).split(","))
+                    .map(String::strip)
+                    .filter(descriptor -> !descriptor.isEmpty())
+                    .toList();
+        }
+        List<String> indexed = new ArrayList<>();
+        for (int index = 0; properties.containsKey(indexedLocationKey(index)); index++) {
+            indexed.add(String.valueOf(properties.get(indexedLocationKey(index))).strip());
+        }
+        return List.copyOf(indexed);
+    }
+
+    /**
+     * Names the flattened key a sequence entry of the location list occupies.
+     *
+     * @param index the zero-based position in the sequence
+     * @return the flattened key, such as {@code spring.flyway.locations[0]}
+     */
+    private static String indexedLocationKey(final int index) {
+        return KEY_FLYWAY_LOCATIONS + "[" + index + "]";
+    }
+
+    /**
+     * Returns the versioned scripts under a class-path folder and every folder beneath it.
+     *
+     * <p>Recursive, because that is how Flyway resolves a location: a script in a sub-folder of a
+     * declared location is applied exactly as one sitting directly in it. Used to prove that the two
+     * profile-scoped folders account for every delivered script.
+     *
+     * @param folder the class-path folder to search, such as {@code db/migration}
+     * @return the versioned script file names, sorted by name; never {@code null}
+     */
+    private static List<String> recursiveVersionedScriptsIn(final String folder) {
+        try {
+            Resource[] found = new PathMatchingResourcePatternResolver()
+                    .getResources("classpath*:" + folder + "/**/V*__*.sql");
+            return Stream.of(found)
+                    .map(Resource::getFilename)
+                    .filter(name -> name != null)
+                    .sorted()
                     .toList();
         } catch (IOException failure) {
             throw new UncheckedIOException("migration location is unreadable: " + folder, failure);

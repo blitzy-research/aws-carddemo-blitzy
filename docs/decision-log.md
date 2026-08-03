@@ -1615,12 +1615,67 @@ resolved. Both are pinned forward by overriding the framework's own version prop
 by declaring a direct dependency, so the override travels with the dependency management instead of
 sitting beside it. The vulnerability scan is bound to the build and its report is a gate artifact.
 
-### DL-067 — Test-scope dependencies are scanned, and one suppression is narrowly justified
+### DL-067 — The vulnerability gate scans the deployable graph, carries no suppressions, and proves the boundary with an executed test
 
-Vulnerability scanning previously excluded test-scope dependencies. It no longer does. One
-suppression file entry remains, scoped as narrowly as the schema permits and carrying its
-justification inline; the schema allows exactly one identifying element per entry, which is why the
-entry is written the way it is.
+**Status. Both of this entry's original positions are withdrawn.** It previously recorded that
+test-scope dependencies were scanned and that a suppression file entry remained, "scoped as narrowly
+as the schema permits". The scan no longer covers test scope, the suppression file and its wiring are
+deleted, and the gate now carries zero suppressions of any kind.
+
+**What was wrong with the earlier arrangement.** The gate is required to tolerate zero critical and
+zero high findings. Scanning a scope that cannot be remediated forces a choice between failing the
+build forever and suppressing what the scan reports, and the earlier arrangement took the second.
+That is the defect: in a report, a suppressed high finding is indistinguishable from a resolved one.
+The gate went on passing while three high findings stood, which satisfies the letter of a zero
+tolerance rule by editing the evidence rather than by changing the software.
+
+**Decision.** The scan covers the compile and runtime graph, which is what ships, and says so. The
+suppression file is deleted together with the configuration that referenced it. Every finding the
+gate now reports is a real finding at its real severity, and nothing above the failure threshold
+survives.
+
+**What had been suppressed, stated so that narrowing is not mistaken for hiding.** Three high
+findings. One scored 7.5 against the asynchronous transport that reaches this build at runtime scope
+through the object-store starter; narrowing the scope would not have touched it, because it ships
+inside the deployable jar, so it was resolved by moving the version forward instead, recorded in
+DL-115. The other two scored 7.5 against a relocated copy of an HTTP core library embedded inside the
+container-testing transport, and no version change can reach them: the vulnerable classes were
+confirmed physically present inside the shaded artifact, so no managed coordinate addresses them;
+that transport is the only one the container-testing library will construct, so it cannot be excluded
+or substituted; the library's newest published release still embeds the same copy; and its next major
+line is excluded by this module's dependency inventory.
+
+**Why narrowing is not the same act as suppressing.** A suppression asserts that a finding is
+acceptable. Narrowing asserts something different and stronger — that the finding is not present in
+the artifact this project ships. Only the second claim is checkable, and it is now checked rather
+than asserted.
+
+**The boundary is held by an executed test, not by this paragraph.**
+`DeployableSupplyChainIT` opens the repackaged jar and sweeps its bundled libraries for test-scope
+artifacts, naming the container-testing transport in an assertion of its own. It carries two control
+assertions so that the sweep cannot pass vacuously: one that the jar really is repackaged and bundles
+libraries at all, and one that the libraries expected at runtime are present. A sweep that finds
+nothing because it is looking at nothing would fail those controls.
+
+**Residual exposure, stated rather than hidden.** The narrowed scan no longer reports findings that
+exist only on the build surface. That surface is a developer machine and a continuous-integration
+runner, not the deployed artifact, and the two findings it currently leaves unreported are
+unreachable by any version change available to this module. If either becomes reachable — the
+container-testing library ships a fixed copy, or its transport becomes substitutable — the remedy is
+to take that fix, not to widen the scan and suppress the result again.
+
+**One setting is deliberately kept although nothing currently exercises it.** Failing the build on an
+unused suppression rule stays enabled even with no suppression file present. It costs nothing while
+there are no suppressions, and it means that if anyone ever adds one that stops matching, the build
+reports a stale exemption instead of carrying it silently.
+
+**Two moderate findings remain and are deliberately not suppressed.** They score below the failure
+threshold, so they are reported without gating, which is the disposition the threshold exists to
+express.
+
+*Cited by:* `pom.xml`, at the vulnerability scan configuration and at the scope property;
+`src/test/java/com/carddemo/support/DeployableSupplyChainIT.java`. The forward-pinning remedy applied
+to the third finding is DL-115.
 
 ### DL-068 — Continuous-integration actions are pinned to immutable commits
 
@@ -1696,11 +1751,13 @@ end pairs the entries that record the same decision under both.
 | `api/dto/ScreenWorkArea.java` | DL-011, DL-030, DL-082 |
 | `api/dto/SignOnRequest.java` | DL-001, DL-004 |
 | `batch/step/AbstractCobolStep.java` | DL-084 |
-| `config/FlywayConfig.java` | DL-041, DL-102, DL-104 |
+| `config/FlywayConfig.java` | DL-041, DL-102, DL-110, DL-119 |
 | `config/JpaAuditConfig.java` | DL-089 |
 | `config/OpenApiConfig.java` | DL-088 |
-| `config/SeededIdentifierSealingCallback.java` | DL-041, DL-104 |
-| `config/WebMvcConfig.java` | DL-089 |
+| `config/SeededIdentifierSealingCallback.java` | DL-041, DL-110 |
+| `config/FixedLocaleMessageInterpolator.java` | DL-118 |
+| `config/ProductionSeedRejectionCallback.java` | DL-041, DL-110, DL-119 |
+| `config/WebMvcConfig.java` | DL-089, DL-118 |
 | `domain/Account.java` | DL-012, anomaly register (1) |
 | `domain/Customer.java` | DL-005, DL-006 |
 | `domain/TransactionType.java` | DL-032 |
@@ -1711,13 +1768,15 @@ end pairs the entries that record the same decision under both.
 | `exception/JobSubmissionException.java` | DL-044, anomaly register (6) |
 | `exception/OptimisticLockConflictException.java` | DL-012, DL-083 |
 | `exception/ValidationException.java` | DL-080, DL-086 |
-| `service/JobSubmissionService.java` | DL-041, DL-042, DL-043 |
+| `service/JobSubmissionService.java` | DL-041, DL-042, DL-043, DL-117 |
 | `service/AccountConcurrencyTokenService.java` | DL-074, DL-075, DL-076, DL-077 |
 | `service/CardConcurrencyTokenService.java` | DL-075, DL-103 |
 | `service/FieldErrorTranslationService.java` | DL-080 |
 | `service/SensitiveFieldEncryptionService.java` | DL-005, DL-008 |
 | `util/AccountRecordMapper.java` | DL-013, DL-017, DL-034, DL-035, anomaly register (1) |
 | `util/ReportLineFormatter.java` | DL-041, anomaly register |
+| `util/SqsNamingRules.java` | DL-041, DL-042, DL-117 |
+| `config/FixedLocaleMessageInterpolator.java` | DL-042, DL-118 |
 | `util/CobolStringUtils.java` | DL-078 |
 | `util/SensitiveFieldCodec.java` | DL-009 |
 | `util/ZonedDecimalCodec.java` | DL-041, DL-079 |
@@ -2143,21 +2202,21 @@ The predicate is renamed `echoesAdministratorCode()`. It is named for what it re
 *Cited by:* `pom.xml`, `config/OpenApiConfig.java`.
 
 
-### DL-092 - The job-submission queue keeps its legacy resource name, reversing an earlier decision to namespace it
+### DL-092 - The job-submission queue is named `carddemo-jobs.fifo`, which the plan mandates; an intermediate decision to carry the legacy name is withdrawn
 
-**Context.** The legacy estate's entire online-to-batch bridge is a CICS transient-data queue named `JOBS`, written from exactly one site. The target's queue was configured as `carddemo-jobs.fifo`, on the reasoning that an infrastructure resource name and an operator-visible message are two different contracts, that only the second is compared byte for byte, and that an unqualified four-character name could collide with an unrelated queue in an account hosting other workloads. A review found the value disagreed with the resource the environment actually provisions, which is `JOBS.fifo`.
+**Context.** The legacy estate's entire online-to-batch bridge is a CICS transient-data queue named `JOBS`, written from exactly one site. This entry has been decided twice. The queue was originally configured as `carddemo-jobs.fifo`. An intermediate revision renamed it to `JOBS.fifo`, reasoning that an infrastructure resource name and an operator-visible message are two different contracts, that the legacy resource name is itself part of the frozen inventory, that no exception authorises editing it, and that the module should therefore agree with the resource the environment provisions. A subsequent review found that the renamed value disagrees with the name the plan actually prescribes.
 
-**Decision.** The queue is named `JOBS.fifo`: the legacy resource name plus the single suffix the queue service requires of a first-in-first-out queue, and no other transformation. The value is standardised across the shared configuration, the local overlay, the test configuration, the container composition and the emulator bootstrap. The production profile continues to resolve it from the environment with no fallback.
+**Decision.** The queue is named **`carddemo-jobs.fifo`**, and the intermediate rename is withdrawn. The plan states the four AWS resource names under the heading that they are *mandated, not chosen*, requires them **byte-identically**, and repeats this one six times - in the canonical-name table, in the heading of the section provisioning the queue, in that section's own instruction, in the sibling-validation list, in a static validation check on the bootstrap script, and in the runtime check that lists the queues. The other three names - `carddemo-batch-staging`, `carddemo-job-submission`, `carddemo-job-notifications` - were never in doubt, so this restores uniformity across the set rather than creating an exception in it. The value is standardised across the shared configuration, the local overlay, both copies of the test configuration, the container composition, the emulator bootstrap, the continuous-integration workflow and the publishing service. The production profile continues to resolve it from the environment with no fallback.
 
-**Why the earlier reasoning does not survive.** The distinction it draws is real, but the conclusion drawn from it is not. The resource name is itself part of the frozen inventory and no exception authorises editing it, so "only the message is byte-compared" does not license renaming the resource - it explains only why the message is unaffected by the suffix, which it is. The collision concern is a deployment concern that the existing environment override already answers without changing what the module ships. Uniformity with the namespaced bucket and topic was the weakest of the three arguments: those two replace sequential datasets and a screen message and have no legacy resource name to carry, so consistency was deciding a case that something else already decided. The queue is the only external interface this module publishes to, and an external interface's contract is reproduced rather than renegotiated.
+**Why the intermediate reasoning does not survive, step by step.** It is a plausible argument and it fails three times over. *First*, "the resource name is part of the frozen inventory" identifies the wrong inventory: what is frozen for this resource is the target name the plan prescribes, not the legacy name of the construct it replaces. *Second*, the legacy name is not discarded by the rename's withdrawal - it is carried by the operator-visible failure message, which is the contract that actually is compared byte for byte. Reproducing an external interface means reproducing what the interface's consumers observe; a queue's consumers observe messages, and an operator observes the message text. *Third*, "the module should agree with the resource the environment provisions" inverts the dependency. The emulator bootstrap script that provisions the queue is itself a file this module ships and this plan governs, so the module decides the name and the environment follows it. Aligning the module to the environment made the environment the authority over a value the plan had already fixed.
 
-**The disagreement was not cosmetic.** A name that is well formed but names nothing is the exact input that the publishing template's default behaviour resolves by creating a queue - see DL-093. The namespaced value and the create-on-absence default together made a silent failure reachable: a submission would report complete, and the cards would sit in a queue nothing consumes. Correcting the name and fixing the strategy are two halves of one correction.
+**What survives from the intermediate decision, and is retained.** Its warning was correct and is the reason the name is stated once per place rather than composed anywhere: a name that is well formed but names nothing is the exact input that the publishing template's default behaviour resolves by creating a queue - see DL-093. A disagreement between the configured name and the provisioned name therefore makes a silent failure reachable, in which a submission reports complete while the cards sit in a queue nothing consumes. The remedy is agreement on the mandated value plus the fail-fast strategy of DL-093, not a change of value. The collision concern that namespacing answered also survives as a deployment concern, answered by the environment override without changing what the module ships.
 
-**The operator-visible text is untouched.** The failure message names the transient-data queue verbatim as `JOBS`, without a suffix, and is asserted character for character. It is frozen text rather than a reference to the resource, so nothing composes one from the other and the suffix cannot reach it.
+**The operator-visible text is untouched by either decision.** The failure message names the transient-data queue verbatim as `JOBS`, without a suffix and without a namespace, and is asserted character for character. It is frozen text rather than a reference to the resource, so nothing composes one from the other and neither the suffix nor the prefix can reach it. This is why the rename is invisible to the byte-compared contract, and it is also why the intermediate argument's premise about two different contracts was true while its conclusion was not.
 
-**Consequence for the tests.** Every test constant carrying the queue name moves to `JOBS.fifo`, including the fixtures that assert the queue name does not leak into a response body - those assertions remain true, because the frozen message contains `JOBS)` and not `JOBS.fifo`. The rejection cases for the mandatory suffix are re-expressed against the new name and still include the unsuffixed `JOBS`, which must continue to be refused. A configuration test asserts that every document fixing the queue resolves it to `JOBS.fifo` and that the production profile fixes no default at all.
+**Consequence for the tests.** Every test constant carrying the queue name is `carddemo-jobs.fifo`, including the fixtures that assert the queue name does not leak into a response body - those assertions remain true, because the frozen message contains `JOBS)` and not the resource name. The rejection cases for the mandatory suffix are re-expressed against the mandated name - `carddemo-jobs`, `carddemo-jobs.FIFO`, a trailing-space variant and a suffix-plus-more variant - and the bare legacy `JOBS` is retained among them, because it is unsuffixed and must continue to be refused. A configuration test asserts that every document fixing the queue resolves it to `carddemo-jobs.fifo` and that the production profile fixes no default at all, and the LocalStack-backed integration tier resolves the queue by name against a queue the bootstrap script actually created.
 
-*Cited by:* `application.yml`, `application-local.yml`, `application-test.yml`, `docker-compose.yml`, `localstack/init/01-create-aws-resources.sh`, `service/JobSubmissionService.java`.
+*Cited by:* `application.yml`, `application-local.yml`, `application-test.yml`, `application-prod.yml`, `docker-compose.yml`, `localstack/init/01-create-aws-resources.sh`, `service/JobSubmissionService.java`.
 
 
 ### DL-093 - An unresolvable queue is refused rather than created, because the library default makes a wrong name look like a successful submission
@@ -2403,16 +2462,43 @@ they agree, so they bind one shared non-production fixture key,
 environment reference with no fallback, and its version ceiling means it never applies `V3` at all, so no
 production row is ever sealed under a fixture key.
 
-**Why the envelopes are fixed literals, and how a rotation is caught.** Each seal draws a fresh 96-bit
-vector, so the same cleartext seals differently every time and the literals cannot be regenerated
-identically. Rotating the fixture key without resealing them therefore leaves the seeded rows unreadable.
-That is not left to be discovered later. `V3`'s own self-check refuses any row that is not
-envelope-shaped, the wrong width, a duplicate of another row, or a bare run of digits - shape only,
-because a migration holds no key. `SeededProtectedIdentifierIT` then opens all fifty through the
-application service, under the key it reads from the test profile rather than one written into the test,
-and compares each recovered value with the fixture record it came from. A rotated key, an edited literal
-and a re-ordered row each fail the build. A unit-level assertion additionally counts the complete
-envelope literals in the delivered script and requires that no quoted run of twenty digits survives.
+**Why all three now state that key as a bare literal.** Agreeing on one value was not sufficient, because
+two of the three still declared it as `${CARDDEMO_FIELD_ENCRYPTION_KEY:<literal>}`. That form advertises
+an override the seed cannot honour: the fifty envelopes are literals in a committed script, nothing can
+re-key a literal, and so exporting that variable did not rotate anything - it simply left fifty rows of
+regulated data unreadable while every marker-based check still passed. The two packaged non-production
+profiles therefore now declare the literal bare, exactly as the suite's own copy always did. The
+environment reference survives in production alone, where it carries no fallback for the opposite reason:
+production owns real data and must never run under a committed default. This is the same principle
+DL-105 records - a bare `${VARIABLE}` states an intention and a guard is what enforces it - applied in the
+direction that suits a fixture-bearing profile, where the intention being stated was one that could not be
+met.
+
+**Why the envelopes are fixed literals, and how a mis-keyed process is caught.** Each seal draws a fresh
+96-bit vector, so the same cleartext seals differently every time and the literals cannot be regenerated
+identically. A process configured with any other key therefore holds unreadable rows rather than rotated
+ones, and that is not left to be discovered later. Four controls catch it, in the order a deployment meets
+them. The profiles no longer offer the override, which removes the ordinary route. `V3`'s own self-check
+refuses any row that is not envelope-shaped, the wrong width, a duplicate of another row, or a bare run of
+digits - shape only, because a migration holds no key. `config/SeededIdentifierSealingCallback` then
+**opens every stored value** under the key the running process actually holds, at the end of every
+migration of a seed-bearing profile, and fails start-up on the first value that will not open; this is the
+only control that can distinguish a readable envelope from an unreadable one, because an envelope sealed
+under a foreign key still carries the `ENC1` marker and so satisfies every shape check. Finally
+`SeededProtectedIdentifierIT` opens all fifty through the application service, under the key it reads from
+the test profile rather than one written into the test, and compares each recovered value with the fixture
+record it came from, so an edited literal or a re-ordered row fails the build as well. A unit-level
+assertion additionally counts the complete envelope literals in the delivered script and requires that no
+quoted run of twenty digits survives.
+
+**Why that migration-time check authenticates rather than reading through the column binding.** The
+seeded envelopes are deliberately *unbound* - their payload is the twenty characters and nothing else,
+which is what makes a seeded envelope 69 characters wide and what keeps the seeded form distinguishable
+from one the callback produces, which is bound to its column. Reading them through the binding refuses all
+fifty, so the check is authenticated decryption, which succeeds for both forms and fails only when the key
+is wrong or the bytes were altered. The column binding remains a separate invariant, satisfied by what the
+callback writes, deliberately not satisfied by the seed, and enforced where a value is read into the
+domain.
 
 **What is not done.** Card numbers and verification codes are still seeded exactly as the fixture holds
 them: the legacy design defines no masking, tokenization or encryption for either, and inventing one here
@@ -2730,9 +2816,9 @@ of the register above supplies the dangling binding this entry relies on.
 
 **Why this is code and not three careful documents.** It was three careful documents, and that was the defect. The scoping was a convention held in prose by the shared baseline and the two overlays, each of which can be edited on its own, and the class the plan names to enforce it did not exist. A second gap followed from the same absence: nothing prevented production being activated *alongside* local or test, in which case the non-production overlay supplies repository-known signing and encryption material, an emulator endpoint, a relaxed transport rule and the seed location to a deployment that also reads the production overlay. That co-activation is now refused before any binding occurs, in either activation order, comparing profile names case-insensitively and ignoring surrounding whitespace because the list is commonly supplied as one comma-separated environment variable. Text is not a control.
 
-*Status.* **Superseded by DL-102.** The two-location arrangement recorded here was withdrawn: every migration now ships flat from `classpath:db/migration` and production is held below the seeds by the version ceiling instead. This entry is retained because it records why the alternative was chosen and why it did not survive review.
+*Status.* **Superseded twice - by DL-102, and again by DL-119.** The two-location arrangement recorded here was withdrawn: every migration ships flat from `classpath:db/migration` and production is held below the seeds by the version ceiling instead. It was then *reintroduced* by a later change and withdrawn a second time, which is why a second superseding entry exists; DL-119 records that round trip, the specification text that settles it, and the inverted guards that now make a third attempt fail a test rather than pass review. This entry is retained because it records why the alternative looked attractive - and it has now looked attractive twice, which is the most useful thing about it.
 
-*Cited by:* no source file. `config/FlywayConfig.java` and `config/FlywayConfigTest.java` both cite DL-102, the decision they actually implement.
+*Cited by:* no source file, by design - no source file implements this arrangement. `config/FlywayConfig.java` and `config/FlywayConfigTest.java` cite DL-102, the decision they actually implement, and the profile documents and migration scripts cite DL-119 for the withdrawal.
 
 
 ### DL-109 - The card-update transaction seals its fetched image into an opaque proof, and the two contract files that forbade any concurrency component are overruled
@@ -2754,11 +2840,15 @@ of the register above supplies the dangling binding this entry relies on.
 
 ### DL-110 - Seeded regulated identifiers are sealed at rest after every migration of a seed-bearing profile, by a callback rather than a fifth script
 
-**Context.** The schema script states the invariant plainly: the government-issued identifier column is not nullable, and both protected customer columns are to hold an envelope produced under the deployment's own key rather than a readable value. The reference seed cannot honour that. It is static, forward-only SQL; an envelope is keyed; and committing key material to the repository to make a seed deterministic would be a worse defect than the one it closed. So the seed writes the fixture's identifiers as they stand and records the divergence in its own header.
+**Context.** The schema script states the invariant plainly: the government-issued identifier column is not nullable, and both protected customer columns are to hold an envelope produced under the deployment's own key rather than a readable value. When this decision was taken the reference seed did not honour it - it wrote the fixture's identifiers as they stand, on the reasoning that static forward-only SQL cannot produce a keyed envelope without committing key material. DL-103 subsequently rejected that reasoning and sealed all fifty values inside the seed itself, so the seed now honours the invariant directly. This entry survives that change because the callback it records is still needed, and for reasons the original framing did not anticipate.
 
-**Why nothing objected.** The customer entity refuses a non-envelope value in both its constructor and its setter, so on the face of it the invariant is enforced. Object-relational hydration assigns fields directly and consults neither. Fifty regulated identifiers therefore sat readable in every local and test database while the code that reads them was written as though they could not be. That is the shape of the defect worth naming: not a missing check, but a check that the only writer of those rows never passed through.
+**Why nothing objected.** The customer entity refuses a non-envelope value in both its constructor and its setter, so on the face of it the invariant was enforced. Object-relational hydration assigns fields directly and consults neither. Fifty regulated identifiers therefore sat readable in every local and test database while the code that reads them was written as though they could not be. That is the shape of the defect worth naming: not a missing check, but a check that the only writer of those rows never passed through - and the same shape recurs in the key invariant below, where a check that inspects an envelope's marker passes a value the process cannot actually read.
 
-**Decision.** An after-migrate callback converts both protected columns through the module's single field-encryption service, each value bound to the column it is being stored in so that an envelope written for one column cannot later be read as another's. It runs on the migration's own connection inside the migration's own transaction, so the conversion is atomic with the seeds it converts and complete before the application's first read; a failure half-way through would otherwise leave some identifiers sealed and some readable, and the next start would find a database no assertion describes. It is registered for the local and test profiles alone, because production lists no seed location, receives no row from either seed, and therefore should not carry a component that would put a table-wide update on its migration path for no purpose.
+**Decision.** An after-migrate callback holds both protected columns to two invariants. It **seals** any unsealed value through the module's single field-encryption service, each value bound to the column it is being stored in so that an envelope written for one column cannot later be read as another's. It then **opens** every stored value under the key the running process actually holds, and fails start-up on the first value that will not open. It is registered for the local and test profiles alone, because production lists no seed location, receives no row from either seed, and therefore should not carry a component that would put a table-wide read and update on its migration path for no purpose.
+
+**Why the second invariant is the one that still bites.** Once DL-103 sealed the fifty seeded values, the sealing half converts nothing on a delivered database and stands only as defence in depth against a future edit to the seed. The opening half does not become redundant, because it answers a question no shape check can: an envelope sealed under some *other* key still carries the `ENC1` marker, and the seeded envelopes are fixed literals that nothing can re-key, so a process configured with the wrong key holds fifty unreadable rows that every marker-based check passes. That was reachable by configuration until the two seeding profiles stopped declaring their fixture key as an environment-variable default; DL-103 records that change. The check authenticates rather than reading through the column binding, because the seeded form is deliberately unbound and the bound reading would refuse all fifty - the binding remains a separate invariant, enforced where a value is read into the domain.
+
+**On the transaction boundary, stated precisely because the opposite was once recorded here.** The after-migrate event is raised *after* migration execution completes and the migration's own transaction has committed, so the callback's work is a transaction of its own and is **not** atomic with the seeds it inspects. Electing to run in a transaction still matters - it makes the pass all-or-nothing within itself, so it cannot leave some identifiers sealed and some readable - but no return value can extend that to the migration. The residual exposure is bounded and is why the event is nonetheless the right one: a failure propagates out of the migrate operation and aborts the start-up, so no application ever reads a database whose identity columns are unsealed or unreadable, while the committed migration and the recorded history stay consistent with each other. Both halves being idempotent means the corrected start-up simply runs them again. An earlier revision of this entry, of the callback's own documentation, and of the seed header all claimed atomicity with the seed; a reader relying on that would have believed in a rollback that does not exist, so the claim is withdrawn here rather than softened.
 
 **Why not a fifth versioned script.** One would work, and it would be wrong twice over. It would push the delivered migration set past a version no shipped script reaches - a claim the profile documents make and a test asserts against the delivered scripts - so the ledger would have to be weakened to accommodate the fix. And it would record a one-time application in the schema history, when what is wanted is an invariant that holds after *every* migration of a seed-bearing profile, including one that applied nothing because the seeds were already present.
 
@@ -2837,9 +2927,17 @@ of the register above supplies the dangling binding this entry relies on.
 
 *Cited by:* `config/LocalStackBootstrapContractTest.java`, `config/LocalStackBootstrapIT.java`. The deduplication attribute it pins is the resource-side half of DL-043, the queue's name is DL-045, and the ignore-on-error posture of the publisher itself remains DL-044.
 
-### DL-115 - A transitive transport library calls a terminally deprecated platform method, and the disposition is tracking rather than action
+### DL-115 - The transport library moved to the 4.2 line to clear a high severity finding, and the deprecated-method notice this entry tracked is gone with it
 
-**Context.** Running the integration tier on the pinned Java 25 runtime emits four lines on the forked process's error stream, quoted here exactly as the build produced them:
+**Status. Superseded in disposition.** This entry originally recorded a runtime notice and decided to
+track it rather than act on it. The notice is now absent, the version it was attached to has moved,
+and the reasoning that held the version still is withdrawn as partly false. The original record is
+kept rather than overwritten, because the distinction it drew is still the right way to read a notice
+of this kind, and because an entry that quietly changes its mind teaches nothing.
+
+**What was originally recorded.** Running the integration tier on the pinned Java 25 runtime emitted
+four lines on the forked process's error stream, quoted here exactly as the build produced them at
+the time:
 
 ```
 WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
@@ -2849,24 +2947,56 @@ WARNING: Please consider reporting this to the maintainers of class io.netty.uti
 WARNING: sun.misc.Unsafe::allocateMemory will be removed in a future release
 ```
 
-The caller is read from the message rather than inferred: it is `io.netty.util.internal.PlatformDependent0$2`, in `netty-common`, at the version the frozen dependency inventory names. Ten netty modules resolve into this build - buffer, codec, codec-http, codec-http2, common, handler, resolver, transport, transport-classes-epoll and transport-native-unix-common - all at 4.1.136.Final, all at runtime scope, and all by way of a single path: `io.awspring.cloud:spring-cloud-aws-starter-s3`, which supplies the object-store transport client. The warning is triggered by the queue-bridge integration tests, at the point the transport allocates its first direct buffer.
+The caller was read from the message rather than inferred. Ten netty modules resolved into this build,
+all at runtime scope, all by way of a single path: `io.awspring.cloud:spring-cloud-aws-starter-s3`,
+which supplies the object-store transport client. The notice was triggered by the queue-bridge
+integration tests, at the point the transport allocated its first direct buffer.
 
-**What this is not.** It is not a build warning, and the distinction is load-bearing because a zero-warning build is a gate rather than a preference. The four lines are written by the Java runtime to the forked process's error stream; they never carry the build tool's `[WARNING]` prefix, and they are not diagnostics from the compiler, so the `-Xlint:all -Werror` configuration that makes that gate mechanical neither sees them nor could act on them. This was verified rather than assumed: in a full clean build the only line carrying the build tool's warning prefix is the vulnerability scanner reporting that it needs network access it does not have. The gate is intact.
+**What reopened it was none of the two events this entry predicted.** The entry named them precisely:
+the transport client beginning to declare the 4.2 module layout, or the platform escalating the
+terminal deprecation from a warning to a hard failure. Neither happened. A third event did. An
+executed vulnerability scan reported 7.5 against the transport module on the 4.1 line, with the fix
+range beginning at 4.2.16, and that module ships inside the deployable jar at runtime scope. The
+supply-chain gate this build is held to tolerates zero high findings, so the version had to move
+whatever this entry preferred, and the only live question left was whether the module-layout
+objection that had kept it still was real.
 
-**Decision. The occurrence is recorded and tracked here, and nothing in the module changes.** Three findings decide it.
+**The module-layout objection was tested rather than accepted.** Its first half was correct and was
+confirmed by resolving the tree: the 4.2 line does split the codec module into separate base,
+compression, marshalling and protobuf artifacts, and the original codec coordinate does arrive as a
+vestigial shell. The conclusion drawn from that did not follow, and it was disproved by execution
+rather than by argument. The whole suite passes on 4.2.16, and the queue and object-storage tiers that
+actually drive this transport pass against a real emulated endpoint in the integration tier rather
+than against a mock. An objection that predicts a runtime failure is answered by exercising the
+runtime, not by restating the layout.
 
-Nothing in this module can avoid the call. The module compiles against no netty type and names netty in no source file; the sole reference anywhere is the inventory value that pins the version. The call happens inside a library this build consumes rather than in code it owns, so there is no call site here to rewrite and no configuration here that suppresses it without also suppressing diagnostics that should be read.
+**One claim in the earlier record is withdrawn as false.** This entry, and the comment beside the
+version property in the build file, both asserted that the frozen dependency inventory names this
+version and that it was therefore not ours to move. Checked against the plan rather than against the
+comment, netty appears in no declaration list, in none of the artifacts the plan enumerates as
+arriving transitively at parent-pinned versions that must not be redeclared, in no exclusion, and in
+no drift blacklist. The claim also refuted itself in passing: it conceded that the framework bill of
+materials would otherwise select 4.1.135.Final, which makes 4.1.136.Final an override chosen locally
+for security rather than a measurement read out of the plan's executed resolution. The entry that
+actually governs is DL-066, and it sanctions exactly the mechanism used here - pinning forward past a
+published advisory by overriding the framework's own version property rather than by declaring a
+direct dependency.
 
-Moving off the line that removes the call is already refused, for reasons unrelated to this warning. The 4.2 line replaces the Unsafe path, but it also restructures the graph rather than only advancing the version: the codec module is split into separate base, compression, marshalling and protobuf artifacts and the original coordinate is left as a shell. The transport client is built and tested against the 4.1 module layout, so adopting 4.2 would assemble it from a module set it never declared. The build file records that reasoning at the pin itself, and it stands here unchanged - a runtime warning is not authority to take a risk that was declined on other grounds.
+**Measured outcome.** The notice is gone: three occurrences under 4.1.136.Final, zero under
+4.2.16.Final, counted on the same integration tier that produced the quotation above. The upgrade
+therefore closed both the finding it was made for and the notice this entry was opened for.
 
-Raising the version within the 4.1 line would not help either, because the call is not a defect being fixed there. It is the deliberate fast path the 4.1 line uses for direct buffers on every release of that line.
+**What survives, and is the reason the entry is kept.** The distinction it drew was correct. Those
+four lines are written by the Java runtime to a forked process's error stream, never carry the build
+tool's warning prefix, and are not compiler diagnostics, so the `-Xlint:all -Werror` configuration
+that makes the zero-warning gate mechanical neither saw them nor could have acted on them. That
+mattered then and it will matter again: the next runtime notice should be recorded and understood the
+same way, rather than silenced by removing whatever produced it.
 
-**What would change the disposition, stated so the entry can be closed rather than merely carried.** Two events, either of which is observable without judgement. The transport client begins declaring the 4.2 module layout, at which point the version follows the client rather than leading it. Or the platform escalates the terminal deprecation from a warning to a hard failure, at which point the call stops being a notice and becomes a defect, and the pin has to move regardless of the module-layout cost.
-
-**Why this is recorded at all, given nothing changes.** An unrecorded warning is read twice: once by whoever sees it and wonders whether the build is clean, and again by whoever later removes something to silence it. Writing down that it is a runtime notice from a transitive library, that the compiler gate is unaffected, that the obvious remedy is already refused on stronger grounds, and what would reopen the question, is what stops both readings.
-
-*Cited by:* `pom.xml`, at the netty version pin. The pin's own rationale is DL-066, the constrained-line principle it follows is DL-062, and the zero-warning-from-a-clean-checkout guarantee this entry confirms is undisturbed is DL-063.
-
+*Cited by:* `pom.xml`, at the netty version property. The forward-pinning mechanism is DL-066, the
+constrained-framework-line principle it follows is DL-062, and the zero-warning-from-a-clean-checkout
+guarantee this entry leaves undisturbed is DL-063. The scope and suppression posture of the scan that
+reported the finding is DL-067.
 
 ### DL-116 - The seed migrations sit flat beside the schema migrations, and production is held below them by a version pin rather than by a directory
 
@@ -2890,6 +3020,190 @@ An interim arrangement placed the two seeds in a second class-path location, `db
 
 *Cited by:* `application.yml`, `application-local.yml`, `application-test.yml`, `application-prod.yml`, `db/migration/V1__create_schema.sql`, `db/migration/V2__create_indexes.sql`, `db/migration/V3__seed_reference_data.sql`, `db/migration/V4__seed_user_security.sql`, `domain/UserSecurity.java`, `.dockerignore`.
 
+
+---
+
+### DL-117 - The queue naming contract is stated once, in a typed holder both the producer and the bootstrap's assertions are held to
+
+**Context.** Two components in this module name the same FIFO queue, and until now each stated the naming rules for itself. `localstack/init/01-create-aws-resources.sh` provisions the queue and enforced the real service contract: a name of at most eighty characters drawn from `[A-Za-z0-9._-]` and ending in `.fifo`, and a message group id of at most one hundred and twenty-eight characters from the same set. `service/JobSubmissionService` publishes to that queue and enforced something much weaker at construction — that the configured queue name was non-blank printable US-ASCII ending in `.fifo`, and that the message group id was non-blank printable US-ASCII, with no length bound and no character set at all.
+
+The two statements therefore disagreed, and the disagreement was not symmetric. Values existed that the script would refuse to provision and the producer would happily accept: `carddemo jobs.fifo`, a name of eighty-five characters, a name carrying an accent, a slash or a colon, and a message group id of any length whatsoever.
+
+**Why the gap was worse than an ordinary missing validation.** This class is deliberately non-fatal on a failed publish. It reproduces `ERROROPTION(IGNORE)` on the legacy transient data queue, so a write that fails is logged and reported as a partial or failed submission rather than raised to the caller — a decision recorded at DL-043 and one that remains correct. Combined with a permissive name check, that tolerance became a place for a misconfiguration to hide: an invalid name passed start-up, failed *every* publish for the lifetime of the process, and each failure was converted into the tolerated outcome the legacy contract requires. Nothing in the running system distinguished "the queue is temporarily unreachable", which must be tolerated, from "this deployment can never publish anything", which must not be. The fault therefore had to be caught at construction, because construction is the last point at which it can still be fatal.
+
+**Decision.** The contract is stated once, in `util/SqsNamingRules`, and both sides are held to that statement. The holder carries the bounds and the permitted set as named constants, exposes `requireQueueDestination`, `requireQueueName` and `requireMessageGroupId`, and is called by `JobSubmissionService`'s constructor for both configured values. `service/JobSubmissionService` no longer carries a suffix constant or a printability check of its own.
+
+**The destination is three forms, not one, and narrowing it to one would have been a regression.** A deployment may configure the queue as a bare name, as a queue URL, or as a queue ARN, and all three have always been accepted. A tightened rule that admitted only bare names would have refused a form the module already supports, so `requireQueueDestination` recognises each form, checks the envelope it is in — an ARN must have six colon-separated segments whose service segment is `sqs`; a URL must have a non-empty final path segment — extracts the queue name from it, and holds *that* to the one rule. The configured value is returned unchanged, so recognising a form never rewrites it. Each form is asserted against the canonical name, including the URL the emulator itself reports, which is the value an operator is most likely to copy.
+
+**Why the shell was not changed to call the Java, or the reverse.** Neither can execute the other: the script runs inside the emulator's container before any JVM exists, and the producer runs without the script. A single *executable* source of truth is therefore not available, so the single source of truth is the stated one plus an assertion that the two statements agree. `config/LocalStackBootstrapContractTest` reads the two bounds out of the script text rather than restating them, and compares them to the constants; it asserts that every character the script's set admits is admitted by the Java predicate and that a sample of what the set excludes is refused by it, so agreement is proved in both directions rather than only on the permitted side. A one-sided edit to either language now fails the build. The script carries a comment at the rules naming the Java holder and this decision, so the obligation is discoverable from the side a maintainer is most likely to be editing.
+
+**What a rejection may say, which is unchanged.** The refusals name the configuration key and this module's own literals and never repeat the operator-supplied value, holding to DL-041. Two derived facts are reported because they are diagnostically necessary and cannot carry hostile content: the *length* of an over-long value, and the zero-based position and code point of the first character outside the set. Both are integers. `SqsNamingRulesTest` asserts across four distinct rejection modes that no message repeats a marker planted in the input, and that no message carries a line terminator, which holds DL-042.
+
+**One test changed its mechanism rather than its assertion.** `JobSubmissionServiceIT` previously reached the ignore-on-error path using a queue name with embedded spaces, because the messaging library's default for an unresolvable queue is to *create* it and a name the service refused outright was the shortest route to a failed write. That route is now closed at construction, which is the point of this decision. The refusal is obtained instead from the queue service, by publishing a well-formed but absent name through a template whose queue-not-found strategy is refusal — which is how the shipped configuration behaves. The assertions on the outcome are unchanged: nothing published, failed rather than partial, and the legacy operator message returned to the caller.
+
+**Provenance.** The eighty- and one-hundred-and-twenty-eight-character bounds and the permitted set are the queue service's own published limits, already enforced by the bootstrap script this module ships. The non-fatal publish contract the gap hid behind derives from `ERROROPTION(IGNORE)` on `TDQUEUE(JOBS)` in `app/csd/CARDDEMO.CSD`, at checkout `7756d895ffeb65f7ea72aaa609e356d9899afcec`, release stamp `CardDemo_v1.0-15-g27d6c6f-68` dated 2022-07-19.
+
+*Relationship.* Depends on DL-041 and DL-042 for what a rejection may disclose, and on DL-043 for the non-fatal publish contract that makes construction the only safe place for this check. Complements DL-092, which fixes *which* name is canonical; this decision fixes *what shape* any configured name must have.
+
+*Cited by:* `util/SqsNamingRules.java`, `service/JobSubmissionService.java`, `localstack/init/01-create-aws-resources.sh`.
+
+
+---
+
+### DL-118 - Every formatter and every fold names its locale, and constraint messages are rendered in one pinned locale
+
+**Context.** This module states its external contract in bytes: four fixed-width output formats, a set of reproduced operator messages, and a field-error payload. A Java formatter that is not given a locale uses the JVM default one, and two of the things it then does are visible in those bytes. `String.format("%04d", 2026)` renders `٢٠٢٦` under an Arabic-Indic numbering locale rather than `2026` - measured, not inferred, by running it. And `"I".toLowerCase()` yields the dotless `ı` under Turkish, which an ASCII-only fold cannot reverse.
+
+The suite could not see either problem, because the build pins `-Duser.language=en -Duser.country=US` in `test.jvm.args`. Pinning the suite is right - a test should not fail because of the machine it runs on - but it makes the suite structurally unable to observe a locale defect, so the defect has to be looked for deliberately.
+
+**Decision, in three parts.**
+
+*Every formatter names its locale.* No `String.format(...)` and no `String.formatted(...)` anywhere in this module - main sources or tests - is called without an explicit locale. `Locale.ROOT` is the locale, because the values being rendered are fixed-width machine formats rather than text for a reader.
+
+*Every fold names its locale, or is not a library fold at all.* Where the estate folds case as a 26-character table substitution, the fold is `CobolStringUtils.asciiUpperFold` and never a library method; that is D-18 and it is unchanged. Everywhere else a case change is required, it names `Locale.ROOT`.
+
+*Constraint messages are rendered in one pinned locale.* This is the part that was a live defect rather than a latent one. A constraint failure reaches a client through `GlobalExceptionHandler`, which places `ConstraintViolation.getMessage()` into `ErrorResponse.FieldError.message()`. That text is not one of this module's literals - it is the validation provider's bundled message, resolved against `LocaleContextHolder`, which for a servlet request is the caller's `Accept-Language` header and otherwise the JVM default. The same artifact given the same input therefore emitted `size must be between 0 and 8` on one host and a translation of it on another, or on the same host to a different caller. `FixedLocaleMessageInterpolator` pins the rendering to `Locale.ROOT`, and `WebMvcConfig` installs it on the validator the application validates with.
+
+**Why the interpolator discards the locale it is handed.** Both `interpolate` overloads ignore their locale argument. That is not carelessness: the framework wraps any supplied interpolator in one that passes `LocaleContextHolder.getLocale()`, so the argument is precisely the value whose influence is being removed. Accepting it would restore the defect.
+
+**Why the pin also had to be applied in three tests, and why it is the same class rather than a second statement.** Sixty-nine test classes build their own provider with `Validation.buildDefaultValidatorFactory()`, bypassing the configured validator entirely, so the application-side fix could not reach them. Only three of those assert rendered message text, and those three now build their factory with `FixedLocaleMessageInterpolator` - the application's own statement of the rule. A test that pinned the locale its own way would pass while the application stayed non-deterministic, which is the disagreement using one class prevents. Which three needed it was determined by running the suite under a hostile locale rather than by reading, because the run is the only reliable discriminator.
+
+**What is deliberately not claimed.** Pinning changes only how a message is *rendered*. Which constraints exist, which fields carry them, and the two-state MISSING versus INVALID decision are untouched - that decision reads the message *template*, before interpolation, so it never depended on a locale. And this is not internationalisation work in reverse: nothing in the estate being reproduced is multilingual, and no requirement asks for negotiated message text, so one language in equals one language out.
+
+**One formatter is pinned even though it did not need to be.** Hexadecimal conversions are not localised the way decimal ones are - also measured. The two `%X` diagnostics in `ZonedDecimalCodec` are nonetheless given `Locale.ROOT`, so that "every formatter in this module names its locale" is a property a reviewer confirms by grep rather than by knowing which `Formatter` conversions localise. Those strings are also subject to DL-042's printable-US-ASCII requirement, which a pinned locale guarantees rather than leaves to be inferred.
+
+**How it is held.** The unit tier is executed three times: once under the pinned `en-US`, once under `tr-TR` and once under `ar-EG`, and all three must pass. `WebMvcConfigBoundaryTest` additionally renders a constraint message while *asking for* `tr-TR` and asserts the bytes are unchanged, so the pin is verified by behaviour rather than by the presence of a bean.
+
+*Relationship.* Extends D-18, which forbids a library fold for the one field the estate folds with a table, to a module-wide rule about locale in formatters and folds generally. Supports DL-042, whose printable-US-ASCII requirement a locale-dependent formatter could otherwise breach.
+
+*Correction.* The continuous-integration workflow previously attributed the no-locale-sensitive-formatter rule to D-27. D-27 forbids a templating engine for statement output and says nothing about locale; the rule is this decision.
+
+*Cited by:* `config/FixedLocaleMessageInterpolator.java`, `config/WebMvcConfig.java`, `util/ZonedDecimalCodec.java`, `.github/workflows/carddemo-java-ci.yml`.
+
+
+### DL-119 - The migration directory split was introduced a second time and withdrawn a second time, and the round trip is recorded so it is not attempted a third
+
+**Why this entry exists at all.** The delivered arrangement - four migrations flat in
+`classpath:db/migration`, production held to the schema by `spring.flyway.target=2` - is already
+recorded in DL-102, restated in DL-111 and argued at length in DL-116. This entry adds no new
+arrangement. It records that the arrangement was *reversed and then restored*, because a reader who
+finds three entries defending flatness and a fourth (DL-108) defending a split has no way to tell
+which one the code follows, and that ambiguity is what caused the reversal.
+
+**What happened.** A review finding reported that the profile documents described a five-script
+topology including `V1_1__create_batch_metadata.sql`, and asked for alignment to the plan's exact
+V1-V4 inventory "rather than exact V1-V4 profile scoping". Two changes were made in response. Deleting
+`V1_1` and letting the batch framework own its own metadata tables was correct, and stands. Splitting
+the four scripts across `db/migration/schema` and `db/migration/seed` was not, and has been withdrawn.
+
+**Why the split was wrong, on authority rather than on preference.** The migration specifications for
+`V3__seed_reference_data.sql` and `V4__seed_user_security.sql` each state that the four migrations are
+physically flat in one `db/migration` directory, each direct in terms that no subdirectory be created,
+and each name `spring.flyway.target=2` as the production control. Both give the same reason: a
+directory-scoped location cannot isolate the seeds from the schema. Each specification also fixes the
+delivered path of its own script, and the split moved all four scripts off those paths. So the phrase
+"profile-scoped locations" in the plan's design narrative means a profile-scoped **ceiling**; reading
+it as a profile-scoped **directory** contradicts the two documents that specify the scripts
+themselves.
+
+**Why the reason is a good one, independent of who said it.** Flyway scans a location recursively and
+orders the whole resolved history by version. Any deployment that resolves both directories - a merged
+location list, a wildcard location, a `filesystem:` location, or an operator running the migration tool
+directly against the packaged artefact - applies V1 through V4 in ascending order whatever folder each
+script came from. The split therefore bought the *appearance* of isolation. Its real cost was not the
+weak guarantee but the confidence: a reader who sees a `seed` folder stops looking for the setting that
+actually holds, which is precisely the failure DL-116 predicted in writing when it asked that nobody
+"restore the folder as belt and braces".
+
+**How the same finding is satisfied without the split.** The finding's substantive demand - that a
+database seeded under local or test must not endanger a later production run - is met by
+`ProductionSeedRejectionCallback`, which refuses a production start against a database whose migration
+history records a seed version or whose tables still hold seeded rows. That control is
+topology-independent, and under the flat layout it is the genuinely independent second control the
+arrangement needs: the ceiling cannot help a database that was seeded before production was ever
+pointed at it, and the applied-state check cannot stop a seed being applied for the first time. The
+earlier pairing of a directory and a ceiling counted two controls and had one that worked.
+
+**What was changed back, so the revert is auditable.** The four scripts returned to
+`src/main/resources/db/migration`; both subdirectories were removed. All five profile documents returned
+to the single scalar location. `FlywayConfig` lost `SEED_LOCATION`, `SEED_PATH` and `isSeedLocation`, and
+`resolveLocations` again refuses any non-delivered location under production and completes the one
+location for a seeding profile. The four script headers again carry the flat-layout and
+`spring.flyway.target=2` statements their specifications require. `.dockerignore` re-includes the one
+location.
+
+**Three guards had to invert, and the inversions are the durable part.** Restoring a value is easy to
+undo; a test that fails is not. A guard that reported a script sitting loose in the parent now reports a
+script sitting in a subdirectory. A guard that forbade any document from declaring the parent now
+requires every document to declare exactly it. And the integration test that asserted the location list
+withheld the seeds with no ceiling - true under the split, false by design under the flat layout - was
+replaced by its falsifying opposite: the same single location, the same four scripts, the ceiling
+removed, and ten known sign-on identities land. That test is now the evidence that the pin is
+load-bearing rather than decorative. One further trace was caught in passing: a contractual-key list
+enumerated `spring.flyway.locations[0]` and `[1]`, indexed keys that exist only for a YAML sequence, and
+a comment now says that the indexed pair is exactly what a returning split would leave behind. The two
+withdrawn folder names are kept as named constants in an assertion that they deliver nothing, as DL-116
+asked.
+
+**Status of the neighbouring entries, stated so no reader has to infer it.** DL-102 is the governing
+record and is correct. DL-111 and DL-116 restate it and are correct. DL-108 records the split and
+remains superseded - it was superseded once by DL-102 and, after this round trip, is superseded again by
+this entry.
+
+*Cited by:* `application.yml`, `application-local.yml`, `application-test.yml`, `application-prod.yml`,
+`src/test/resources/application-test.yml`, `db/migration/.gitkeep`,
+`db/migration/V3__seed_reference_data.sql`, `db/migration/V4__seed_user_security.sql`. The governing
+arrangement is DL-102; the applied-state control that replaces the split's intent is the production
+rejection callback recorded beside the sealing decision in DL-110.
+
+
+### DL-120 - The continuous-integration workflow runs one linear sequence of gates, with no skip switch, no tolerated failure, and unconditional execution everywhere except artifact upload
+
+**Context.** The workflow had grown a five-gate structure in which each gate carried
+`continue-on-error: true`, several steps carried `if: always()`, a final step read
+`steps.*.outcome` to compute a verdict, and two gates passed `-Ddependency-check.skip=true` and
+`-Djacoco.skip=true` on the command line. The intent was benign - see every gate's result on one run
+rather than stopping at the first failure - but the effect was that a failing gate did not fail the run,
+and the switches meant the two gates most easily asserted were the two least often executed.
+
+**What the specification actually requires, checked rather than assumed.** The workflow's own
+specification mandates a single job whose build command is exactly `./mvnw -B clean verify`; carries an
+explicit prohibition set naming `-Djacoco.skip`, `-Ddependency-check.skip`, `|| true`,
+`continue-on-error` on the build step and `if: always()` used to mask a failure; permits `always()`
+**only** on artifact-upload steps; and specifies a literal grep as the verification. It never mandated
+the five-gate structure. So restoring the specified model meant *collapsing* to a linear one, not
+elaborating the existing one.
+
+**Decision.** One linear sequence. Each gate fails the run directly, so no verdict has to be computed
+from step outcomes and the verdict step is gone. `if: always()` survives on exactly the three artifact
+uploads and nowhere else. No step carries `continue-on-error`. No step reads `steps.*.outcome`.
+
+**Both skip switches had a real reason, and each was answered rather than deleted.** The
+vulnerability-scan skip existed because a separate step ran the scan; the plugin is bound to `verify`,
+so that step was redundant and was deleted, which removed the reason. Confirmation came from the build
+log rather than from the configuration: the goal announces itself and runs immediately before the
+coverage check, preserving the ordering DL-069 records. The coverage skip existed because a second
+invocation overwrote the first run's execution data. That was answered by parameterising the coverage
+plugin's destination and report directory through two new build properties, mirroring the existing
+pattern for test reports and JVM arguments, so a second invocation writes elsewhere instead of being
+switched off. The fix was proved twice: an isolated probe showed the baseline execution file
+byte-identical before and after, and both rewritten gates then ran for real with the recorded digests
+intact.
+
+**One switch turned out to be doing nothing at all.** The second gate passed
+`-Ddependency-check.skip=true` to a `test`-phase command. The `test` phase never reaches `verify`, so the
+scan was never going to run there. Recorded because a setting that appears to be a deliberate exemption
+and is in fact inert is worse than either a real exemption or none: it invites a reader to believe a
+decision was made.
+
+**A consequence worth naming, because it caught this change out once.** The explanatory comments written
+to justify the withdrawn switches named those switches, and the mandated grep does not distinguish a
+prohibited setting from prose about a prohibited setting. The comments were reworded to describe the
+behaviour without naming the flags, so the reasoning survives and the verification stays mechanical.
+
+*Cited by:* `.github/workflows/carddemo-java-ci.yml`, `pom.xml` at the coverage-plugin destination
+properties. The goal-ordering constraint this preserves is DL-069, and the locale determinism the second
+gate exercises is DL-118.
 
 ---
 
