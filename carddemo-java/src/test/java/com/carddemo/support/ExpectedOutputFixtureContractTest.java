@@ -51,11 +51,14 @@ import org.springframework.core.io.FileSystemResource;
  * artefacts.
  *
  * <h2>Why this class exists</h2>
- * The module ships three fixed-width golden files - a 430-byte reject dataset, a 133-byte transaction
- * report and an 80-byte statement - and a golden file that no test opens proves nothing at all. This
- * class is their only consumer, and it is the byte-equivalence gate for all three: every record of
- * every fixture is compared, on raw encoded bytes, to output produced by the shipped code, and every
- * record is accounted for so that no line can be quietly skipped.
+ * Three of the module's four fixed-width golden files are flat sequences of one record type - a
+ * 430-byte reject dataset, a 133-byte transaction report and an 80-byte statement - and a golden file
+ * that no test opens proves nothing at all. This class is their only consumer, and it is the
+ * byte-equivalence gate for all three: every record of every fixture is compared, on raw encoded bytes,
+ * to output produced by the shipped code, and every record is accounted for so that no line can be
+ * quietly skipped. The fourth golden file, the 100-byte HTML statement, is structured as fifty
+ * concatenated documents rather than a flat record sequence, so its ordering contract needs different
+ * machinery and it has its own consumer in {@link ExpectedHtmlStatementFixtureContractTest}.
  *
  * <h2>Which side is which, stated explicitly</h2>
  * <strong>The expected side is always the committed fixture bytes, and nothing else.</strong> No

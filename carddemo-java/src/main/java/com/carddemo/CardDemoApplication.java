@@ -32,11 +32,13 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * <h2>What it replaces</h2>
  * The legacy estate has no equivalent, because it has no single process to start. Online work was
  * reached through the transaction table of the CICS resource definition
- * {@code app/csd/CARDDEMO.CSD}, which registers eighteen transactions against eighteen programs and
- * ten files, and batch work was reached by submitting job streams. The Spring context now performs
+ * {@code app/csd/CARDDEMO.CSD}, which registers eighteen transactions against eighteen programs,
+ * seventeen screen mapsets, eight file entries - six base datasets plus two alternate index paths -
+ * and one queue; batch work was reached by submitting job streams. The Spring context now performs
  * that registration role: the transactions become the endpoints the API layer publishes, and the job
- * streams become the jobs the batch layer defines. Sign-on, the first of those transactions, is
- * translated from {@code app/cbl/COSGN00C.cbl}.
+ * streams become the jobs the batch layer defines. Sign-on hands off to whichever of the two menus
+ * the authenticated user type selects, which makes it the transaction every other one is reached
+ * from, and it is translated from {@code app/cbl/COSGN00C.cbl}.
  *
  * <h2>Why it carries exactly one annotation</h2>
  * Because this class sits at the root of the package tree, the component scan implied by

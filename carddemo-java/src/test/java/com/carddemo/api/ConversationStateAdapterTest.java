@@ -64,6 +64,23 @@ import org.junit.jupiter.params.provider.EnumSource;
  *       gives {@link NavigationContext#reconciledWith(String, UserType)} a production caller.
  * </ol>
  *
+ * <p><strong>Where property one holds, and where it is licensed not to.</strong> Property one holds
+ * without exception for the batch, repository, domain and utility tiers, and for every service that
+ * needs nothing but routing. It does not hold for the ten screen services enrolled in
+ * {@code NoProductionSourceAuthorizesFromAnEchoedValue#ENROLLED_SCREEN_SERVICE_FILE_NAMES}, and the
+ * reason is in the estate rather than in the Java. Those ten reproduce CICS programs that read carried
+ * communication-area members as their own input: {@code COACTVWC} moves {@code CDEMO-ACCT-ID} into the
+ * read key at line 691 and {@code CDEMO-CUST-ID} at line 708, and {@code COCRDSLC} moves
+ * {@code CDEMO-ACCT-ID} and {@code CDEMO-CARD-NUM} into its work area at lines 342 and 343, tests them
+ * for zero at lines 462 and 468, and branches on {@code CDEMO-LAST-MAPSET} at lines 505 and 527. A
+ * five-field state cannot carry those members, so a service handed only a five-field state could not
+ * reproduce the programs at all. The enrolment is therefore a recorded deviation and not an oversight:
+ * it is written down in {@code docs/decision-log.md}, it names each of the ten files individually, and
+ * the guards below still fail for an eleventh file, for a stale enrolment, and - by the new third guard
+ * - for any enrolled file that compares an echoed identity instead of merely carrying it. The property
+ * that actually protects authorization is the narrower one, and it is unconditional: no production
+ * source anywhere decides a role from an echoed value.
+ *
  * <p><strong>On the mismatch report.</strong>
  * {@link ConversationStateAdapter#echoedIdentityDisagrees(NavigationContext, String, UserType)} is
  * asserted to be a report and not a refusal: nothing throws, and reconciliation happens whether the
@@ -583,6 +600,54 @@ final class ConversationStateAdapterTest {
         }
 
         /**
+         * The ten screen services licensed to name the wire record and to carry its echoed members,
+         * named one by one so that an eleventh file still fails and so that a failure names the file.
+         *
+         * <p>Each of these reproduces a CICS screen program whose own input includes carried
+         * communication-area members, which a five-field conversation state cannot express. The
+         * services receive the record, read the carried members the legacy program reads, and rebuild
+         * the record through its canonical constructor to hand the client's own view back unchanged -
+         * which is the same pass-through the entitled boundary performs, performed in the one place the
+         * screen program requires it. Two properties are asserted rather than assumed: every name here
+         * must really name the record, so a service later reduced to a five-field state cannot leave a
+         * dead licence behind; and no enrolled file may compare an echoed identity, only carry it.
+         *
+         * <p>Enrolling a file here is a layering decision and is recorded in
+         * {@code docs/decision-log.md} alongside the matching entry for
+         * {@code PackageLayeringTest.LICENSED_UPWARD_EDGES}. Nothing else may be added without the same
+         * record.
+         */
+        private static final List<String> ENROLLED_SCREEN_SERVICE_FILE_NAMES = List.of(
+                "AccountUpdateService.java", "AccountViewService.java", "BillPaymentService.java",
+                "CardDetailService.java", "CardListService.java", "CardUpdateService.java",
+                "TransactionAddService.java", "TransactionListService.java",
+                "TransactionViewService.java", "UserManagementService.java");
+
+        /**
+         * The receiver identifiers the enrolled services hold a wire record in, so the identity guard
+         * below reads an echoed member and not a homonym off a request or a screen work area. The names
+         * are matched as substrings, so a qualified form such as {@code state.context} is covered by
+         * {@code context} and needs no separate entry.
+         */
+        private static final List<String> CARRIED_STATE_RECEIVER_NAMES = List.of(
+                "context", "inbound", "received", "base", "echoed", "carried", "current", "commarea",
+                "navigationContext", "carriedImage");
+
+        /**
+         * Tokens that would turn a carried read into a decision. A carried read is an argument in a
+         * copy of the record and nothing else, so none of these may share its line.
+         */
+        private static final List<String> COMPARISON_TOKENS = List.of(
+                "==", "!=", ".equals(", "if (", "switch", "?", ".compareTo(", ".startsWith(",
+                ".contains(", "&&", "||");
+
+        /**
+         * A floor on the number of carried identity reads found, so the identity guard cannot pass by
+         * finding nothing. Thirty-four lines carry one at the time of writing.
+         */
+        private static final int MINIMUM_CARRIED_IDENTITY_READS = 30;
+
+        /**
          * The two packages entitled to name the wire record at all: the API layer, which is where the
          * boundary and the transport records live, and the configuration layer, which publishes the
          * record's schema and is the composition root.
@@ -608,34 +673,51 @@ final class ConversationStateAdapterTest {
         }
 
         @Test
-        @DisplayName("no source outside the API and configuration packages names the wire record at "
-                + "all, so no service, batch, repository, domain or utility class can read an echoed "
-                + "member even in principle")
-        void noSourceOutsideTheApiAndConfigurationPackagesNamesTheWireRecord() {
+        @DisplayName("only the API and configuration packages and the ten enrolled screen services "
+                + "name the wire record, so no batch, repository, domain or utility class and no "
+                + "unenrolled service can read an echoed member even in principle")
+        void onlyTheEntitledPackagesAndTheEnrolledScreenServicesNameTheWireRecord() {
             // This is the structural half of the guarantee and the stronger half. A class that never
             // names NavigationContext has no receiver to read an echoed member off, so the question of
             // whether it trusts one cannot arise. It is asserted on the file text rather than on
             // imports because a fully qualified reference in a signature would evade an import check.
             final List<String> offenders = new ArrayList<>();
+            final List<String> enrolledFilesFound = new ArrayList<>();
             for (final Map.Entry<Path, String> source : productionSources()) {
+                final String fileName = source.getKey().getFileName().toString();
                 if (entitledToNameTheWireRecord(source.getKey())) {
                     continue;
                 }
-                if (source.getValue().contains("NavigationContext")) {
-                    offenders.add(source.getKey().toString());
+                if (!source.getValue().contains("NavigationContext")) {
+                    continue;
                 }
+                if (ENROLLED_SCREEN_SERVICE_FILE_NAMES.contains(fileName)) {
+                    enrolledFilesFound.add(fileName);
+                    continue;
+                }
+                offenders.add(source.getKey().toString());
             }
 
             assertThat(offenders)
-                    .as("a service that needs carried routing takes ConversationState, which models "
-                            + "five routing and mode fields and none of the eleven echoed members")
+                    .as("a service that needs nothing but carried routing takes ConversationState, "
+                            + "which models five routing and mode fields and none of the eleven echoed "
+                            + "members; a service that reproduces a screen program reading carried "
+                            + "communication-area members is licensed only by being named in "
+                            + "ENROLLED_SCREEN_SERVICE_FILE_NAMES, which is where that layering "
+                            + "decision is recorded")
                     .isEmpty();
+            assertThat(enrolledFilesFound)
+                    .as("every enrolled file must exist and must really name the wire record, so a "
+                            + "service later reduced to a five-field state cannot leave a dead licence "
+                            + "behind for an unrelated file to inherit")
+                    .containsExactlyInAnyOrderElementsOf(ENROLLED_SCREEN_SERVICE_FILE_NAMES);
         }
 
         @Test
-        @DisplayName("among the sources that do name the wire record, only this boundary reads an "
-                + "echoed member, so the pass-through happens in exactly one place")
-        void onlyTheBoundaryReadsAnEchoedMember() {
+        @DisplayName("among the sources that do name the wire record, only this boundary and the ten "
+                + "enrolled screen services read an echoed member, so no other file performs the "
+                + "pass-through")
+        void onlyTheBoundaryAndTheEnrolledScreenServicesReadAnEchoedMember() {
             // Scoped to the files that name the wire record, because a member accessor name can be a
             // homonym elsewhere: MenuOptionCatalog.UserMenuOption declares its own userType(), which is
             // the option's required role read from app/cpy/COMEN02Y.cpy and not an echoed claim. Only a
@@ -644,6 +726,7 @@ final class ConversationStateAdapterTest {
             for (final Map.Entry<Path, String> source : productionSources()) {
                 final String fileName = source.getKey().getFileName().toString();
                 if (ENTITLED_FILE_NAMES.contains(fileName)
+                        || ENROLLED_SCREEN_SERVICE_FILE_NAMES.contains(fileName)
                         || !source.getValue().contains("NavigationContext")) {
                     continue;
                 }
@@ -655,10 +738,70 @@ final class ConversationStateAdapterTest {
             }
 
             assertThat(offenders)
-                    .as("the transport records declare the eleven members; only the boundary reads "
-                            + "them, and it reads them to carry them through rather than to decide "
-                            + "anything from them")
+                    .as("the transport records declare the eleven members; only the boundary and the "
+                            + "ten enrolled screen services read them, and each reads them to carry "
+                            + "them through rather than to decide anything from them, which the "
+                            + "identity guard below asserts for the enrolled ten")
                     .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the ten enrolled screen services only carry the echoed identity and never "
+                + "compare it, so the licence to name the wire record is not a licence to authorize "
+                + "from one")
+        void theEnrolledScreenServicesCarryTheEchoedIdentityAndNeverCompareIt() {
+            // This is what keeps the enrolment above from widening the trust boundary. The ten are
+            // licensed to read carried members because the screen programs they reproduce read them,
+            // but the two identity members are the security-bearing pair, and a carried read of either
+            // is only ever an argument inside a copy of the record. A comparison sharing the line would
+            // be a decision taken from a value the client supplied. Scoped to the carried-state
+            // receivers so that a request DTO's own userId(), which those services validate and must be
+            // free to compare, is not mistaken for an echoed claim.
+            final List<String> offenders = new ArrayList<>();
+            int carriedIdentityReads = 0;
+            for (final Map.Entry<Path, String> source : productionSources()) {
+                final String fileName = source.getKey().getFileName().toString();
+                if (!ENROLLED_SCREEN_SERVICE_FILE_NAMES.contains(fileName)) {
+                    continue;
+                }
+                for (final String line : source.getValue().split("\n", -1)) {
+                    if (!readsCarriedIdentity(line)) {
+                        continue;
+                    }
+                    carriedIdentityReads++;
+                    for (final String comparison : COMPARISON_TOKENS) {
+                        if (line.contains(comparison)) {
+                            offenders.add(fileName + ": " + line.strip());
+                            break;
+                        }
+                    }
+                }
+            }
+
+            assertThat(carriedIdentityReads)
+                    .as("the enrolled services must really carry the echoed identity, or this guard "
+                            + "would pass by finding nothing at all")
+                    .isGreaterThanOrEqualTo(MINIMUM_CARRIED_IDENTITY_READS);
+            assertThat(offenders)
+                    .as("a carried identity is an argument in a copy of the record and nothing else; "
+                            + "the role split reads the authenticated principal, which is why "
+                            + "NavigationService takes a user type as its own parameter")
+                    .isEmpty();
+        }
+
+        /**
+         * Reports whether a line reads the echoed user identifier or user type off carried state.
+         *
+         * @param line one line of production source
+         * @return {@code true} when the line reads either identity member off a carried-state receiver
+         */
+        private static boolean readsCarriedIdentity(final String line) {
+            for (final String receiver : CARRIED_STATE_RECEIVER_NAMES) {
+                if (line.contains(receiver + ".userId()") || line.contains(receiver + ".userType()")) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         @Test

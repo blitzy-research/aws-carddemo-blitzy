@@ -19,6 +19,7 @@ package com.carddemo.service;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.carddemo.config.AwsConfig;
+import com.carddemo.config.AwsProperties;
 import com.carddemo.exception.JobSubmissionException;
 import com.carddemo.support.AbstractLocalStackIT;
 import io.awspring.cloud.sqs.listener.QueueNotFoundStrategy;
@@ -238,9 +239,31 @@ class JobSubmissionQueueBridgeIT extends AbstractLocalStackIT {
                 .credentialsProvider(StaticCredentialsProvider.create(
                         AwsBasicCredentials.create("test", "test")));
         if (applyModuleCustomizer) {
-            new AwsConfig().singleAttemptSqsClientCustomizer().customize(builder);
+            new AwsConfig(settingsWithoutRedirection()).singleAttemptSqsClientCustomizer()
+                    .customize(builder);
         }
         return builder.build();
+    }
+
+    /**
+     * Builds the module settings the customizer reads, deliberately carrying no endpoint redirection.
+     *
+     * <p>The customizer applies the configured region unconditionally and a redirection only when one
+     * is configured. Withholding the redirection is what leaves the counting socket above as the
+     * client's endpoint, which is the whole point of this fixture: a redirection supplied here would
+     * aim the client at the emulator instead and the attempts this test counts would never arrive. The
+     * region is the emulator's own, so applying it changes nothing the builder above did not already
+     * say.</p>
+     *
+     * @return settings naming this emulator's region, with no endpoint redirection
+     */
+    private static AwsProperties settingsWithoutRedirection() {
+        return new AwsProperties(
+                emulatorRegion(),
+                null,
+                new AwsProperties.S3("carddemo-batch-staging"),
+                new AwsProperties.Sqs("carddemo-jobs" + FIFO_SUFFIX, MESSAGE_GROUP_ID),
+                new AwsProperties.Sns("carddemo-job-notifications"));
     }
 
     /**

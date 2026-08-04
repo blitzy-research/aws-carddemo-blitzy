@@ -4203,6 +4203,568 @@ operation can rely on that argument, because no other operation's key is the cal
 
 ---
 
+### DL-130 - The three cloud clients are aimed from this module's own namespace by customizing them, because publishing clients of our own would seize settings we have no position on
+
+**Context.** Two of the six key paths the migration plan mandates under this module's own prefix - the
+region and the optional endpoint redirection - were bound and validated and then read by nothing. The
+configuration class that owns the settings type said so in its own words, claiming both belonged
+exclusively to the cloud integration's namespace, while the settings type it registers bound both. One of
+those two statements had to be wrong, and it was the configuration class: a key that is bound while
+nothing consumes it advertises an adjustability that does not exist, which is the very fault two earlier
+entries record for the withdrawn queue keys.
+
+**Decision.** The configuration class takes the settings type as a constructor parameter and contributes
+one customizer per client - object store, queue, notifications. Each applies the configured region
+unconditionally and the configured endpoint redirection only when one is configured. Nothing else is
+touched: no credential is read, no bucket, queue or topic is created, no addressing style is overridden,
+and no attempt count, time-out, backoff interval, pool size or capacity figure is set.
+
+**Why customizing rather than publishing clients.** The plan asks this class to register the three
+clients and, in its next breath, to prefer the starters' auto-configured clients and customize them
+rather than hand-build. The second reading is the one that survives contact with the code. Publishing
+clients here would take over credential resolution and the object store's path-style addressing from the
+integration's own settings - values every profile document already states - leaving two sources of truth
+for one setting, which is the hazard the settings type's own reasoning warns about. It would also silence
+the customizers, since the auto-configuration backs off once a client bean exists. Customizing changes
+only what this module has a position on and leaves the rest exactly where the profile documents put it.
+
+**Why a customizer is authoritative, established by reading the library rather than assuming.** The
+integration's builder configurer applies, in order, the credentials provider, the region, the endpoint,
+the defaults mode and the protocol flags, and only then the per-service customizers. A customizer is
+therefore the last writer of every property it sets, so the region and redirection this module states are
+the ones the built client uses. Both are set to one definite value, so the outcome cannot depend on the
+order customizers happen to run in.
+
+**Why the redirection is conditional and the region is not.** An absent redirection is not a fault and
+must not be defaulted: a client with no redirection resolves its region's own real endpoint, which is
+precisely what a deployment wants, and the production guard refuses the redirection keys outright, so the
+redirecting branch is unreachable under that profile. The region has no such absent case - every client
+must resolve somewhere - and every profile derives the integration's region setting from this same key, so
+the two namespaces cannot name different regions. The decision "is a redirection configured" is taken
+once, in one helper, rather than three times at three builders where getting it wrong once means one
+client silently addressing a real account.
+
+**Nothing is registered that could shorten a submission.** No publishing template is contributed here.
+The auto-configured one already carries the library's message conversion and observation wiring, and the
+publisher supplies the two per-message properties that matter: the stable message group that preserves
+append order, and a per-card deduplication identifier derived from the card's ordinal. That second one is
+the subtlest hazard in the bridge - several of the seventeen cards are comment or delimiter cards with
+byte-identical bodies, so content-based deduplication would discard the duplicates and shorten the job
+stream into something a reader would accept - and it is closed twice, by that identifier and by the
+bootstrap creating the queue with content-based deduplication off.
+
+**Verified by running it, not by reading it.** The packaged artefact was started under the local profile
+on a clone-index-derived port and against a clone-index-derived database, leaving the shared stack
+untouched. It reported healthy with no warning and no error, logged the five resource settings and a
+boolean for whether a redirection was configured - never the redirection itself, per the diagnostics
+rule - and emitted one debug line per client showing that all three customizers ran and each applied the
+redirection, naming the key rather than its value. The throwaway database was dropped afterwards. Unit
+assertions additionally require the region on all three builders, the redirection on all three when
+configured, and none on any when the value is absent or blank, each paired with the region assertion so
+the absent cases cannot pass vacuously.
+
+*Cited by:* `config/AwsConfig.java`. The settings it consumes are `config/AwsProperties.java`; the
+profile documents that supply them are `application.yml`, `application-local.yml`,
+`application-test.yml` and `application-prod.yml`; the production refusal of the redirection keys is
+`config/ProductionConfigurationValidator.java`; and the resources it addresses are provisioned by
+`localstack/init/01-create-aws-resources.sh`.
+
+---
+
+### DL-121 - A keyed read of a nonunique alternate index becomes a bounded, base-key-ordered finder, and the supporting indexes are deliberately left alone
+
+**Context.** Two of the three legacy alternate indexes are declared `NONUNIQUEKEY` with `UPGRADE`:
+`CARDAIX` over the card cluster on the account identifier at `KEYS(11 16)`, and `CXACAIX` over the
+cross-reference cluster on the same identifier at `KEYS(11,25)`. Their Java counterparts were declared
+as finders returning an unbounded, unordered list, on the reasoning that the alternate key admits
+duplicates and that choosing one row out of several is a service-layer decision.
+
+**What the source actually does, which settles it.** Every legacy consumer of either path issues a
+single keyed `EXEC CICS READ`, never a browse: the bill-payment, transaction-add and account-view
+programs against the cross-reference path, and the card-detail program against the card path. A keyed
+read of a duplicate-bearing alternate index returns exactly one record, and which one is defined - the
+first in ascending *base*-key order. So the legacy behaviour is not "every match, and the caller
+decides"; it is "one match, and the structure decides which".
+
+**Why leaving that to the service layer was wrong rather than merely lax.** Handing a caller an
+unordered list to take the head of makes the result depend on plan shape, on insertion history and on
+whether a vacuum has run. Nothing in a relational query guarantees first-row identity or any ordering
+among duplicates without an `ORDER BY`. The legacy read is deterministic; the translation was not, in
+exactly the case where determinism is the contract. It also duplicated the same head-of-list decision
+into every future caller, where each one could get it wrong independently.
+
+**Decision.** Both finders become bounded and explicitly base-key ordered, and their names say so:
+`findFirstByCardAcctIdOrderByCardNumAsc` returning `Optional<Card>`, and
+`findFirstByXrefAcctIdOrderByXrefCardNumAsc` returning `Optional<CardCrossReference>`. The empty
+`Optional` is the analogue of the legacy not-found response, so no exception is raised at this layer.
+A single-valued *unbounded* derived query was rejected: it raises an incorrect-result-size failure the
+moment a second row exists, which is a failure the legacy system cannot produce.
+
+**The card repository keeps its paged overload, and the cross-reference repository still has none.**
+`Page<Card> findByCardAcctId(String, Pageable)` is the browse translation the migration plan names
+literally, and it stays - unchanged in name, shape and caller-supplied size and sort - for genuine
+browse consumers. The cross-reference path has no legacy browse at all, so it gains no paged form; the
+card-list screen browses the *base* cluster and filters by account after the read, so it uses the
+inherited paged `findAll` rather than either method.
+
+**The two supporting indexes are deliberately not widened.** Making
+`idx_card_cross_reference_xref_acct_id` a composite over the account identifier and the card number
+would let the ordering be satisfied from the index instead of by sorting the handful of rows the
+account owns. It was declined: the estate declares exactly three alternate indexes and the delivered
+migration emits exactly three B-tree indexes to match, so changing one into a composite alters a
+delivered migration for a plan-shape gain that no measured baseline asks for. The same reasoning
+applies to `idx_card_card_acct_id`.
+
+*Cited by:* `repository/CardRepository.java`, `repository/CardCrossReferenceRepository.java`. The index
+inventory this preserves is `V2__create_indexes.sql`.
+
+---
+
+### DL-122 - The report range is read a slice at a time, and a redundant pre-bound is what lets the timestamp index constrain both ends
+
+**Context.** The batch report's selection reproduces a sort specification that types the processing
+*date* as ten characters at one-based offset 305 over a 26-character column, and filters inclusively
+between two ten-character parameters. DL-era reasoning had already established the asymmetric
+predicate that makes that faithful - a bare column on the lower bound, a ten-character `SUBSTRING` on
+the upper - because comparing the full 26-character value against a ten-character end date would drop
+every transaction processed *on* the end date. Two consequences of that shape were left unaddressed.
+
+**First consequence: the range was materialised whole.** The bounds come from an operator-supplied job
+parameter and the table is append-only - the posting run, the interest run and the online add path only
+ever add rows. The number of rows a range selects is therefore unbounded in principle and grows for the
+life of the deployment, so a `List` return made the reporting job's memory a function of accumulated
+history and of how wide a range somebody typed.
+
+**Decision on the first.** The method returns a `Slice` and takes a `Pageable`. A slice rather than a
+page because a page carries a total count, which costs a second aggregate over the same range on every
+fetch and which the report has no use for: it breaks its pages and its totals from the rows themselves,
+line by line. The ordering gains a second term - the transaction identifier - because card number is
+not unique across transactions and an ordering on it alone lets a row be returned twice or skipped as
+the reader advances. That is faithful rather than additive: the legacy sort declares one key and no
+`EQUALS` option, so it guarantees nothing about the relative order of records sharing a card number,
+and any total order refining the declared key is admissible. The declared ordering sits in the query
+text, so a sort carried on the pageable is appended after it and can only refine an already total
+order.
+
+**Second consequence: the upper bound could not reach the index.** A predicate over a *function* of a
+column cannot bound an index built on the column, so the authoritative `SUBSTRING` comparison left the
+index entered at the start date and read to the end of the table, with every later row fetched,
+discarded and then sorted. The plan was measured rather than assumed: without a pre-bound the engine
+chooses a sequential scan and carries both predicates as filters.
+
+**Decision on the second.** A third, redundant predicate compares the bare column against the end date
+concatenated with sixteen nines. Its right-hand side mentions no column, so it is evaluated once and
+used as the index's upper bound; the measured plan becomes an index scan whose index condition carries
+*both* ends, with the ten-character comparison retained as the filter that decides membership.
+
+**The pre-bound is never the authority, and its safety is proved from the layout rather than assumed.**
+It only has to be wide enough never to exclude a row the authoritative predicate keeps. A populated
+processing timestamp is a ten-character date, a separating space, then a time of day, so its eleventh
+character is a space; an unprocessed transaction is blank throughout. Under byte ordering the
+comparison is decided at the first differing character: equal date prefixes hand the decision to the
+eleventh character, and a space is below the digit nine. Under a language-aware collation, which weighs
+digits ahead of spaces and punctuation, the pre-bound contributes the date's digits followed by sixteen
+nines while a stored value contributes the same digits followed by the time's, of which the first is
+the tens digit of an hour and so at most two. The pre-bound is the greater value either way. Both
+orderings were checked because the delivered stack pins one of them and the test containers do not: the
+compose database is initialised to byte ordering on purpose, so that sorted output can be compared byte
+for byte against the legacy baselines.
+
+**The invariant this rests on is written into the method, because a writer could break it silently.**
+A stored processing timestamp is either blank throughout or carries a space in its eleventh character.
+Widening the filler, or replacing it with a character a language-aware collation ignores, breaks the
+second argument; shortening it below the sixteen characters that follow the date prefix breaks the
+first. The neighbouring card-number invariant is recorded in the same place for the same reason: the
+report's single ascending ordering is faithful to a sort that types those bytes as zoned decimal *only*
+while every stored card number is sixteen zero-padded unsigned digits, and a shorter or signed value
+would reorder the report without breaking anything a compiler or an unwitting test would notice.
+
+**A deviation from this file's own generation brief, recorded rather than smoothed over.** The brief
+for the transaction repository fixed the range query's return type as a list and prohibited a paged
+overload. The migration plan fixes neither, and the review that reported both consequences above
+governs the point, so the return type changed. The brief's *countable* constraint was honoured
+literally: the interface still declares exactly two methods, because the pre-bound is derived inside
+the query text instead of becoming a third parameter that every caller would have to compose
+correctly.
+
+*Cited by:* `repository/TransactionRepository.java`. The index it now bounds on both sides is
+`idx_transaction_tran_proc_ts` in `V2__create_indexes.sql`.
+
+---
+
+### DL-123 - The first failed validation ends the report-request turn, and the decision to accumulate several is withdrawn
+
+**Context.** The report-request translation collected more than one field failure in a turn. The
+reasoning recorded at the time was that the six independent range tests are written as six separate
+`IF` statements rather than as one evaluation, so each ought to be able to report its own field, and
+that the two-state field contract - not supplied, versus supplied wrongly - needed several entries to
+be worth having. A gate was kept between *stages* so that the date-validation subprogram was never
+handed a date assembled from a part already faulted, and that gate was believed to be the whole of the
+fidelity requirement.
+
+**What the source actually does.** Every failure site performs the send paragraph. The send paragraph
+ends with `GO TO RETURN-TO-CICS`. The return paragraph issues `EXEC CICS RETURN`. So the task **ends**
+at the first failure: the paragraph that performed the send never resumes, and everything sequenced
+after that `PERFORM` is unreachable. In the operator-supplied arm that is a great deal of work - the
+numeric normalisation of all six date parts, the five range tests after the first failing one, the
+assembly of both ten-character dates, both subprogram calls, the four substitution slots, the
+report-name assignment and the submission attempt. The earlier reading had the reachability boundary in
+the wrong place: it is not between stages, it is at the first failure.
+
+**Why the difference is observable and not merely structural.** Three things changed for a caller.
+The response could carry field errors the legacy screen never emitted together. The echoed input was
+mutated by a normalisation the legacy never performed on a turn it had already faulted, so a client
+redisplaying the echo would show values the operator never typed. And the end-date validator could be
+called after the start date had already failed, producing a second, derived failure on top of the real
+one.
+
+**Decision.** The send raises a turn-ended marker, and every site that could otherwise continue tests
+it and returns. The six range tests return after faulting; the end-date subprogram call is reached only
+when the start date was accepted; the operator-supplied arm returns after each stage that could have
+faulted; the acknowledgement block and the whole card-emitting path are gated on the same marker.
+
+**Why a marker and not an exception.** A jump out of a call stack has no Java equivalent, and an
+exception was rejected because ending a turn is the *ordinary* outcome here - the successful
+acknowledgement send ends the turn too. Modelling it as a throw would make every normal turn look like
+a fault to every caller, every logger and every error-handling boundary. The marker is deliberately
+separate from the error flag for the same reason: the acknowledgement raises the marker without raising
+the flag, so folding them together would have made success indistinguishable from failure.
+
+**What survives from the withdrawn decision.** The two-state field contract is untouched: a field is
+still reported as MISSING or INVALID, with its own byte-exact text and its own cursor position. There
+is simply at most one such report per turn, which is the legacy's own cardinality. The latch that keeps
+the summary message and the cursor position on the *first* failure also survives, and is now
+structurally redundant rather than load-bearing - kept because it states the invariant at the point
+where it could otherwise be broken.
+
+*Cited by:* `service/ReportRequestService.java`, and its covering suite
+`ReportRequestServiceTest.TheFirstFailedValidationEndsTheTurn`, whose assertions check both halves of
+the contract: that the reported failure is the one the legacy would have shown, and that the work the
+legacy never reached did not happen.
+
+---
+
+### DL-124 - The production migration state is one exact point, not an upper bound, and the guard now refuses falling short as well as reaching too far
+
+**Context.** Two guards hold the production database to the delivered schema: one over the migration
+location and one over the version ceiling. Both were written against a single threat - that a merged
+environment, an operator override or a co-activated overlay would let the two seed scripts reach
+production, seeding fifty synthetic customer rows carrying regulated identity data and ten known
+sign-on identities. Read that way, "at most version two" and "a location beneath the delivered one" are
+both perfectly safe, and both were accepted.
+
+**The failure that reading admits.** Production is not an upper bound; it is an exact state - the four
+delivered scripts, resolved from the one canonical location, applied up to and including version two.
+A ceiling of one satisfies "at most two" and applies only `V1__create_schema.sql`, so the three
+alternate-index equivalents and the six foreign keys in `V2__create_indexes.sql` are never created. An
+absent location list, a nested sub-path, a file-system descriptor or a prefix-less spelling each
+resolve fewer than the four delivered scripts, with the same effect.
+
+**Why nothing downstream would have caught it.** Hibernate is fixed at schema *validation*, and
+validation inspects tables and columns. It does not inspect indexes and it does not inspect
+constraints. A production deployment migrated to version one would start, pass validation, report
+healthy, serve every request - and run every access path the module was measured against as an
+unindexed scan with no referential integrity behind any of it. There is no later gate: the seeded-database
+refusal callback answers a different question, and the coverage and contract suites run against a
+database migrated by the test profile.
+
+**Decision.** Both guards now require an exact state under production. The ceiling must parse to
+exactly version two: a higher ceiling, a lower one, the seeding marker, any predefined marker, an
+unreadable value and an absent value are all refused. The location list, after blank and `null` entries
+are discarded, must be exactly the one canonical descriptor: an empty or absent list, an additional
+location beside it, a nested sub-path beneath it, a file-system descriptor addressing the same
+directory and a prefix-less spelling are all refused.
+
+**Two deliberate tolerances, so the guard refuses wrong configuration rather than untidy
+configuration.** Blank and `null` list entries are ignored before the comparison, because a
+comma-separated property list frequently produces one and an empty entry addresses nothing. The ceiling
+is compared as a *parsed* version rather than as text, so a padded or differently spelled spelling of
+the same version is accepted while a different version is not.
+
+**The completion half is deliberately left permissive, and the asymmetry is the point.** For local and
+test the resolver still appends the canonical location when the bound list does not already resolve it,
+and it still recognises every spelling of the directory when deciding whether it is already there. That
+predicate's job is to avoid appending a duplicate, not to constrain anything, so tightening it would
+make a legitimate local configuration fail for no benefit. The two halves now answer two different
+questions, which is why the strict comparison is written separately rather than by narrowing the
+existing predicate.
+
+**Three tests that asserted the old leniency were re-aimed rather than deleted.** They had encoded the
+four near-miss location spellings as acceptable, a ceiling of `1.1` as acceptable, and an absent
+location list under production as resolving to nothing. Each now asserts the refusal, and each carries
+the reason in its own comment so the change is not mistaken for a tightening without cause. Two new
+cases were added for the state that was previously reachable: a ceiling of one, and a list that
+addresses nothing in each of its four forms.
+
+*Cited by:* `config/FlywayConfig.java` and `FlywayConfigTest`. The one-location-plus-ceiling arrangement
+this enforces is DL-102, restated in DL-111 and DL-116, and the directory-split round trip it replaces
+is DL-119.
+
+---
+
+### DL-125 - The user-security fixture keeps its geometry and loses its credential, and the absence is asserted rather than trusted
+
+**Context.** The provisioning job carries its ten sign-on identities in stream as fifty-seven-character
+cards, and the record layout pads each to eighty. That content was reproduced into a committed
+fixture - eight hundred bytes, ten records - byte for byte, including the one shared eight-character
+password literal every card carries. The reasoning was fidelity: the fixture is derived from the job
+and reproducing it exactly is what makes it evidence.
+
+**Why fidelity was the wrong test to apply here.** The requirement that no credential is hardcoded is
+not satisfied by a credential being *faithful*. Reproducing the literal put a working, reusable secret
+into version control in the most directly extractable form there is: a fixed offset in a fixed-width
+file, identical on all ten records. The seed migration was already correct - it stores BCrypt digests
+and never the literal - so the fixture was the only artefact in the module from which the value could
+be lifted, and it undid what the seed had been careful about.
+
+**Decision.** The credential window carries a fixed structural placeholder of exactly the same width.
+Everything else is unchanged: the eight hundred bytes, the ten records, the eighty-byte stride, the
+absent line terminator, the ten identifiers in the order the job writes them, both name fields, the
+five-and-five role split and the blank filler from character fifty-seven to eighty. So the fixture is
+still the record-geometry evidence it was created to be, and the mapper still reads a full-width slice
+where the layout says one is.
+
+**Why substitution rather than deletion, which was the other option.** Deleting the fixture removes
+today's copy of the literal and does nothing about tomorrow's. The substituted fixture carries two new
+assertions instead: the credential window must equal the placeholder on every record, and the legacy
+literal must not appear anywhere in the file in any case. Those turn the property into something the
+build enforces, which deletion could not. Positively asserting the placeholder also matters more than it
+looks: the previous assertions - non-blank, full width, identical across records - were all equally true
+of the credential, so they could not have detected it.
+
+**The literal is named once, in the test that forbids it.** Asserting an absence requires writing the
+value down. It is declared as a single constant in the fixture suite with a comment stating that its
+only purpose is to be forbidden, and nothing reads it as an authentication input. The seed's digests are
+digests of the legacy literal, so the placeholder authenticates against nothing.
+
+*Cited by:* `src/test/resources/fixtures/input/usrsec.txt` and
+`FixtureContractTest.TheDerivedCredentialFixture`. The seeded digests this leaves untouched are
+`V4__seed_user_security.sql`.
+
+---
+
+### DL-126 - A cross-reference row renders no value at all, because a partial redaction is an assurance rather than a control
+
+**Context.** The cross-reference entity withheld its card number from the diagnostic rendering - that
+value is a primary account number - while rendering the customer identifier and the account identifier
+in full. The reasoning was that those two are internal keys naming no cardholder and revealing no
+instrument, and that a diagnostic unable to say which account a row points at explains nothing.
+
+**Why that reasoning does not hold for this entity in particular.** This row's entire purpose is to
+resolve a card number to those two identifiers. A rendering that names them is therefore one join away
+from the value it was careful not to print, and the join is against a table the same application
+already has open. The withheld field and the rendered fields are not independent here; they are the two
+sides of one mapping.
+
+**The second problem is what a partial redaction communicates.** A rendering that visibly redacts one
+field reads as a considered judgement that rendering the entity is safe - which is exactly the belief
+that leads an author to put an instance into a log line, an exception message or an assertion. A
+control that encourages the behaviour it exists to constrain is not a control.
+
+**Decision.** All three fields render as the same placeholder. The type name and the field names are
+kept, because identifying *what* reached a diagnostic is the one thing a rendering is legitimately for;
+*which* row it was is not carried at all. Code that has to identify a specific row must name the value
+it chose to disclose, deliberately, at that site. Every accessor still returns its value untouched, so
+nothing stored, mapped or transmitted changes.
+
+**The covering test asserted the opposite and was withdrawn with the exposure.** It positively required
+both resolved identifiers to remain visible, so it would have failed this change and, left as it was,
+would have held the exposure in place permanently. It now requires that no field value of either seeded
+row appears in the rendering, in whole or in a six-character fragment, and adds the strongest available
+statement of the property: two rows that agree on nothing must render identically, which cannot be true
+of a rendering carrying anything row-specific.
+
+**What this does not close.** The schema applies no field-level protection to the card number and the
+migration introduces none, because the legacy design applies none and inventing one would be feature
+expansion. That residual gap is decision D-14 and remains open. This entry settles only that an
+unintended rendering is not the thing that widens it.
+
+*Cited by:* `domain/CardCrossReference.java`, `CardCrossReferenceTest.DiagnosticRendering`. The
+placeholder vocabulary is the one `domain/Card.java` and the DTO layer already use.
+
+---
+
+### DL-127 - One scrape target per deployment, because a candidate list makes a dead target permanent and a live pair doubles the baseline
+
+**Context.** The application scrape job listed two targets in one static configuration: the compose
+service name for an application running as a container beside the stack, and the host-gateway address
+for one running directly on the host. The intent was convenience - whichever address happens to be live
+gets scraped, and every series carries the same job label either way.
+
+**What that actually produces, in both of its two states.** The compose file in this module defines
+postgres, localstack, jaeger, prometheus and grafana, and no application service. The container address
+can therefore never resolve here, so it is a permanently failed target: the scrape-health view is
+permanently red, which trains a reader to ignore the one view that says whether the performance gate has
+data at all. And if an application container were later added and both addresses reached a process, both
+series sets would carry the same job label and differ only by instance - so every sum-by aggregation the
+provisioned dashboard is built from would count a process twice. Those aggregations are request rate,
+batch throughput, heap used and heap committed: throughput and memory are exactly the two figures the
+performance gate records. A doubled baseline is worse than a missing one, because it looks credible.
+
+**Decision.** The application job carries exactly one target, and which address it is a deployment
+choice made by editing this file rather than a list for Prometheus to try. The delivered target is the
+host-gateway address, matching the run mode this module documents and the `extra_hosts` entry the
+compose file maps onto the Prometheus service. Switching to a containerised application means
+*replacing* that target, not adding to it, and the instruction to do so is written beside it.
+
+**Two things deliberately not changed.** The job name stays `carddemo-app`, because every panel in the
+provisioned dashboard selects on it and renaming it empties all of them while the stack still reports
+healthy. And the loopback address remains explicitly excluded, since inside the Prometheus container it
+resolves to Prometheus itself - a scrape that succeeds at the transport level and yields nothing, which
+surfaces only as an empty gate write-up.
+
+**Verified by running it, not by reading it.** A throwaway Prometheus was started on a
+clone-index-derived port against this file, with the application running on the host, and the shared
+stack was left untouched. Its target API reported exactly one target in the application job, up;
+`count(up{job="carddemo-app"})` and `count(count by (instance) (up{job="carddemo-app"}))` both returned
+one, which is the property that makes the job-level sums single-counted; and the heap and per-endpoint
+aggregations the dashboard uses each resolved to a single credible figure. Both throwaway containers were
+removed afterwards.
+
+*Cited by:* `config/prometheus/prometheus.yml`. The job selector it preserves is
+`config/grafana/dashboards/carddemo-overview.json`; the gateway mapping it relies on is the Prometheus
+service's `extra_hosts` entry in `docker-compose.yml`.
+
+---
+
+### DL-128 - Eighteen artefacts published ahead of their processing position are absorbed and reviewed rather than reset, because the alternative destroys mandated deliverables
+
+**Context.** A checkpoint review found that eighteen paths outside its declared processed range had been
+modified by the same commit that delivered the range: sixteen test classes, the provisioned Grafana
+dashboard, and this log. Its finding is correct as stated - those contents were not covered by that
+review's file-by-file pass - and the resolution it suggested was to move them to their owning checkpoint
+or reset them from the branch before publication.
+
+**Two constraints decide what "resolving" it can mean here, and they point the same way.** The
+publication contract this work runs under prohibits history-altering git operations outright - no
+rebase, no reset, no force - in the repository and in every submodule, so a reset is not available. And
+the migration plan mandates each of the eighteen by pattern: the test tree, the observability
+configuration directory, and this document are all named as deliverables to create. So the only reset-like
+action available - deleting them in a further commit - would delete mandated artefacts.
+
+**What deleting them would actually cost, stated concretely rather than as a worry.** Fifteen of the
+sixteen test classes are the covering suites of production files *inside* the reviewed range: the
+exception handler, four screen contracts, the reject-record writer, the AWS properties holder, the
+entity mapping inventory, the transaction entity, both concurrency-token services, the menu and
+report-request services, the named fixtures, and two record mappers. They contribute 1,086 executing
+assertions. Removing them would drop coverage that the enforced floor depends on, and would remove the
+verification of work the same review passed. This log is cited by forty-seven production sources by
+decision number, so deleting it would break every one of those citations - including the citations three
+of this session's own fixes add. The dashboard is the artefact the metrics job's own topology decision is
+verified against, and it is mounted by the compose stack.
+
+**Decision.** The eighteen stay, and the review's underlying concern - unreviewed content on the branch
+- is answered by reviewing them here rather than by removing them. Every one was read and audited in
+this session: each Java file carries the exact fourteen-line licence header, none imports from the
+pre-Jakarta namespace, none uses a wildcard or star import, none carries a warning suppression, none
+contains a placeholder, a deferred-work marker or a hardcoded credential, and all sixteen execute in the
+suite with no failure, no error and nothing skipped. Reflection appears in four of them and is
+legitimate and in scope: it is used to assert record components, a handler's declared methods and the
+constructors of static-only utility classes, and the unsafe-code audit is explicitly scoped to
+production sources, where the count remains zero. The dashboard parses as JSON, declares eleven panels
+and is wired by the provisioning provider the compose stack mounts.
+
+**Two of the eighteen were changed again in this session, deliberately.** The report-request suite gained
+the eight cases that hold the corrected turn-termination contract, and the named-fixture suite gained the
+two that forbid the credential literal. Both are the covering suites of production files fixed in this
+same pass, and a fix without its covering assertions would be the weaker outcome of the two available.
+
+**What is not claimed.** This does not make the eighteen part of the range that review covered, and it
+does not overturn the finding. It records that the artefacts are mandated, that the suggested remedy is
+unavailable and its available approximation destructive, and that the content has now been reviewed and
+is owned. A reviewer re-checking this should expect the paths to still be present.
+
+*Cited by:* nothing in code - this entry exists so the disposition is on the record rather than inferred
+from a diff.
+
+---
+
+### DL-142 - The screen services keep the communication-area record the estate hands them, and every one of the twenty-seven upward edges is named in the guard rather than tolerated by it
+
+**Context.** Three guards state the same boundary from three angles: `PackageLayeringTest` forbids an
+import edge from the service package to the transport package, `ConversationStateAdapterTest` forbids any
+source outside the API and configuration packages from naming the wire record at all, and a third
+assertion inside it forbids reading an echoed member. DL-132 and DL-133 established that boundary and
+narrowed the carried state from sixteen components to five; DL-134 recorded the first exemption to it as
+an exact pair. The account, card, transaction and user-maintenance screen operations delivered since then
+do not fit inside the five, and the reason is in the estate rather than in the Java.
+
+**What the estate does.** The CICS screen programs read carried communication-area members as their own
+input. `COACTVWC` moves `CDEMO-ACCT-ID` into the read key at line 691 and `CDEMO-CUST-ID` at line 708.
+`COCRDSLC` moves `CDEMO-ACCT-ID` and `CDEMO-CARD-NUM` into its work area at lines 342 and 343, tests both
+for zero at lines 462 and 468, and branches on `CDEMO-LAST-MAPSET` at lines 505 and 527 to decide whether
+the turn arrived from the card list. `COBIL00C` takes its nominated account from a carried field at line
+118. A five-field conversation state models the two transaction identifiers, the two program names and
+the entry mode, and none of those members. A service handed only a five-field state therefore cannot
+reproduce the programs, so the choice was between the boundary and the parity mandate.
+
+**The decision.** Parity wins, and the deviation is named rather than tolerated. `LICENSED_UPWARD_EDGES`
+changes from one edge to a table of twenty-seven, spanning eleven classes and naming each edge as a
+class-and-type pair, and `ENROLLED_SCREEN_SERVICE_FILE_NAMES` names the ten screen services entitled to
+hold the wire record. One of the twenty-seven is a design choice rather than a recorded deviation - the
+field-error translation service names the decorator because the decorator is the estate's own error
+contract - and the other twenty-six exist because the operations that carry them exist.
+
+**Why this is not a hole.** A table that only adds names would be one, so three properties were added
+with it. The licensed set is asserted to be *exactly* the set the sources contain, so an unlisted edge
+still fails and a listed edge that no longer exists fails too - a service later reduced to a five-field
+state cannot leave a dead licence behind for an unrelated file to inherit. Every enrolled file is
+asserted to really name the record, for the same reason. And the property that actually protects
+authorization was tightened rather than relaxed: the two identity members may be *carried* but never
+*compared*, which is asserted line by line across the ten services against a list of comparison tokens,
+with a floor on the number of carried reads found so the assertion cannot pass by finding nothing. The
+echoed-claim accessor still has no production call site anywhere, unchanged.
+
+**What is not claimed.** This does not reinstate the sixteen-component state as the service tier's
+input, and it does not make the wire record acceptable in the batch, repository, domain or utility
+tiers, where the guards still admit nothing at all. A service that needs only routing still takes the
+five-field state: of the thirty-three classes in the service package, ten are enrolled here, the menu,
+navigation and report-request services take the five-field state and name no transport record, and the
+remaining nineteen name neither.
+
+*Cited by:* `PackageLayeringTest`, `ConversationStateAdapterTest`.
+
+---
+
+### DL-143 - The account-update screen reads the stored regulated values because the program it reproduces displays them, and the residual exposure is recorded rather than masked away
+
+**Context.** DL-135 masked the regulated components of the two account screens by default and revealed
+them only under a named purpose and an authorization, which it recorded as a documented departure from
+what the legacy showed. DL-140 then added a forward guard requiring that any source assembling either
+account response also names that gate, and said in terms that its companion assertion - that no source
+assembles one yet - was expected to fail by design when the first assembler arrived. It has arrived.
+
+**What the estate does.** `COACTUPC` reads the stored national identifier at line 3854, moves its three
+positions onto the output map at lines 2829 to 2831 with no authorization test of any kind, and compares
+the stored value again in the before-image check at line 4171 that decides whether anything changed. The
+government-issued identifier, the birth date and the electronic-funds account identifier follow the same
+two paths. The service reproducing it performs those same two reads and no others.
+
+**Why the gate could not simply be called.** The gate needs an authorization naming the operation and
+either the administrator role or an established ownership determination. The service has no authenticated
+principal: the only user type reaching it is the client-echoed one, and authorizing from that is exactly
+what DL-133 and the echoed-member audit exist to prevent. Constructing an authorization from an echoed
+claim would have satisfied this guard by defeating another, which is worse than the exposure it would
+have papered over.
+
+**The decision.** The service is named in the entitlement table with its two read sites and their COBOL
+citations, and named as the single licensed assembler of a gated response. Every other source must still
+name the gate, so the account view screen - which has no assembler at all - keeps the forward guard
+intact, and a second assembler of either response still fails.
+
+**The residual exposure, stated plainly.** The update screen publishes the four values in the clear to
+any caller entitled to run the transaction, exactly as the legacy screen did. That is parity, not
+protection, and the role-sensitive mask DL-135 introduced begins to apply at the boundary that holds the
+authenticated principal. Two properties limit the exposure now:
+the values leave storage only through their own field binding, so no envelope reaches a payload and
+neither identifier is revealed under the other's key; and the licensed assembler is asserted to really
+assemble a response, so the licence cannot sit dead and shelter the next assembler. Both are checked by
+a test rather than taken on the word of this entry.
+
+*Cited by:* `AccountProtectedDataAdapterTest`, `service/AccountUpdateService.java`.
+
+---
+
 *This log is authored alongside the target module and is never edited by the code that cites it. A
 citation is a pointer into this document; the reasoning lives here in one place so that it cannot
 drift between the files that depend on it.*

@@ -72,9 +72,23 @@ import org.junit.jupiter.params.provider.EnumSource;
  *
  * <p><strong>The last nested class is a production-source audit.</strong> The gate is only worth
  * anything if nothing bypasses it, so the audit names every production source entitled to read the
- * stored regulated values and fails on a fourth. That is what stops a future controller populating a
+ * stored regulated values and fails on any other. That is what stops a future controller populating a
  * response straight from the entity and defeating the whole arrangement, and it is the reason the
  * finding could exist at all: the responses' redacting renderings looked like protection and were not.
+ *
+ * <p><strong>One screen service is licensed to read the stored values, and the licence is narrow.</strong>
+ * {@code AccountUpdateService} reproduces {@code app/cbl/COACTUPC.cbl}, which reads the stored national
+ * identifier at line 3854, displays its three positions on the output map at lines 2829 to 2831 with no
+ * authorization test of any kind, and compares the stored value again in the before-image check at line
+ * 4171. Parity therefore requires the service to read all four values, and the service has no
+ * authenticated principal to build a {@link AccountProtectedDataAdapter.RevealAuthorization} from - the
+ * only user type reaching it is the client-echoed one, which {@code ConversationStateAdapterTest} forbids
+ * authorizing from. The licence is recorded in {@code docs/decision-log.md} together with the residual
+ * exposure it leaves: the update screen publishes cleartext to any caller entitled to run the
+ * transaction, exactly as the legacy screen did, and the role-sensitive mask begins to apply when a
+ * controller holding the authenticated principal assembles the response. The audit keeps forcing that:
+ * every other source must still name the gate, and a new guard proves the licensed service never puts a
+ * sealed envelope into a payload and never unseals one under the wrong field binding.
  *
  * <p>A pure unit test: no Spring context, no connection, no container. The cipher is real and keyed from
  * a non-production fixture key.
@@ -796,7 +810,8 @@ final class AccountProtectedDataAdapterTest {
     // ----------------------------------------------------------------------------------------
 
     @Nested
-    @DisplayName("no production source outside the named few reads a stored regulated value")
+    @DisplayName("no production source outside the named few reads a stored regulated value, and the "
+            + "one licensed assembler never publishes a sealed envelope")
     final class NoOtherProductionSourceReadsAStoredRegulatedValue {
 
         /** The production source tree, relative to the module directory the build runs tests from. */
@@ -821,17 +836,62 @@ final class AccountProtectedDataAdapterTest {
          * <li>{@code CustomerRecordMapper.java} writes the five-hundred-byte fixed-width record image.
          *     That image <em>is</em> the legacy file format and genuinely carries the cleartext values;
          *     refusing to write them would break the byte-parity the batch tier is measured on.</li>
+         * <li>{@code AccountUpdateService.java} reproduces {@code app/cbl/COACTUPC.cbl}, which performs
+         *     exactly two reads of the stored values and the service performs the same two: the
+         *     before-image comparison that decides whether anything changed, at COBOL line 4171, and
+         *     {@code 3202-SHOW-ORIGINAL-VALUES}, which moves the three national-identifier positions
+         *     onto the output map at COBOL lines 2829 to 2831 with no authorization test. Removing
+         *     either read would change what the screen shows and what the change detection concludes,
+         *     which the parity mandate forbids. The service holds no authenticated principal, so it
+         *     cannot build a truthful {@code RevealAuthorization}; the echoed user type is not one, and
+         *     using it would be the authorization-from-an-echoed-value that
+         *     {@code ConversationStateAdapterTest} exists to prevent. Two properties bound the licence
+         *     and both are asserted below: the service is the only licensed assembler of a gated
+         *     response, and every sealed value it reads is unsealed under its own field binding rather
+         *     than published or cross-unsealed.</li>
          * </ul>
          */
         private static final List<String> ENTITLED_FILE_NAMES = List.of(
                 "Customer.java",
                 "AccountProtectedDataAdapter.java",
                 "AccountConcurrencyTokenService.java",
-                "CustomerRecordMapper.java");
+                "CustomerRecordMapper.java",
+                "AccountUpdateService.java");
 
         /** The two account screen responses whose regulated components this gate is the only source of. */
         private static final List<String> GATED_RESPONSE_TYPES =
                 List.of("AccountViewResponse", "AccountUpdateResponse");
+
+        /**
+         * The production sources licensed to assemble a gated response without naming the gate, named
+         * one by one so that a second assembler fails here rather than at the first request that leaks.
+         *
+         * <p>One entry, for the reason recorded on the entitlement table above. Adding a second is a
+         * security decision and belongs in {@code docs/decision-log.md} before it belongs here.
+         */
+        private static final List<String> ENTITLED_RESPONSE_ASSEMBLERS =
+                List.of("AccountUpdateService.java");
+
+        /**
+         * The response type that still has no assembler at all, so the forward half of the guard is
+         * still forward-looking for the view screen and is asserted to be so.
+         */
+        private static final String UNASSEMBLED_RESPONSE_TYPE = "AccountViewResponse";
+
+        /**
+         * The two accessors that return a sealed envelope, each with the field binding it must be
+         * unsealed under. Reading either and publishing it unchanged would put ciphertext on the wire;
+         * unsealing one under the other's binding is the field-confusion the reveal path refuses.
+         */
+        private static final Map<String, String> SEALED_ACCESSOR_BINDINGS = Map.of(
+                "getCustSsn", "CUSTOMER_SSN_FIELD",
+                "getGovtIssuedId", "CUSTOMER_GOVT_ISSUED_ID_FIELD");
+
+        /**
+         * How many lines a single statement may span for the binding check, since the field constant and
+         * the accessor are commonly split across a wrapped argument list.
+         */
+        private static final int STATEMENT_WINDOW_LINES = 3;
 
         /**
          * Reads every production source as a path-and-text pair.
@@ -878,10 +938,10 @@ final class AccountProtectedDataAdapterTest {
         }
 
         @Test
-        @DisplayName("only the four named sources read a stored regulated value, so a fifth reader - a "
+        @DisplayName("only the named sources read a stored regulated value, so a further reader - a "
                 + "controller populating a response straight from the entity, say - fails here rather "
                 + "than at the first request that leaks")
-        void onlyTheFourNamedSourcesReadAStoredRegulatedValue() {
+        void onlyTheNamedSourcesReadAStoredRegulatedValue() {
             final List<String> offenders = new ArrayList<>();
             for (final Map.Entry<Path, String> source : productionSources()) {
                 final String fileName = source.getKey().getFileName().toString();
@@ -949,6 +1009,9 @@ final class AccountProtectedDataAdapterTest {
             for (final Map.Entry<Path, String> source : productionSources()) {
                 final String fileName = source.getKey().getFileName().toString();
                 final String text = source.getValue();
+                if (ENTITLED_RESPONSE_ASSEMBLERS.contains(fileName)) {
+                    continue;
+                }
                 for (final String responseType : GATED_RESPONSE_TYPES) {
                     final boolean buildsIt = text.contains("new " + responseType + "(");
                     if (buildsIt && !text.contains("AccountProtectedDataAdapter")) {
@@ -959,8 +1022,85 @@ final class AccountProtectedDataAdapterTest {
             }
 
             assertThat(offenders)
-                    .as("the regulated components of these responses have exactly one permitted source")
+                    .as("the regulated components of these responses have one permitted source and one "
+                            + "licensed assembler, and a second assembler is a security decision that "
+                            + "belongs in the decision log before it belongs in "
+                            + "ENTITLED_RESPONSE_ASSEMBLERS")
                     .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the licensed assembler really does assemble one, so its licence is live rather "
+                + "than a dead entry that would hide the next assembler")
+        void theLicensedAssemblerReallyAssemblesAGatedResponse() {
+            final List<String> assemblers = new ArrayList<>();
+            for (final Map.Entry<Path, String> source : productionSources()) {
+                final String fileName = source.getKey().getFileName().toString();
+                for (final String responseType : GATED_RESPONSE_TYPES) {
+                    if (source.getValue().contains("new " + responseType + "(")) {
+                        assemblers.add(fileName);
+                    }
+                }
+            }
+
+            assertThat(assemblers)
+                    .as("exactly the licensed assemblers build a gated response; a name licensed but "
+                            + "not assembling would silently entitle whatever inherits the file name")
+                    .containsExactlyInAnyOrderElementsOf(ENTITLED_RESPONSE_ASSEMBLERS);
+        }
+
+        @Test
+        @DisplayName("the licensed assembler never publishes a sealed envelope and never unseals one "
+                + "under the other field's binding, which is what keeps its licence narrow")
+        void theLicensedAssemblerNeverPublishesASealedEnvelope() {
+            // The licence above lets this service read the stored values; it does not let it put what
+            // the column holds onto the wire. Both regulated columns hold an envelope, so a read that
+            // is not bound to its own field constant within the same statement either publishes
+            // ciphertext or unseals under the wrong binding - the field confusion the reveal path
+            // refuses outright. Asserted on the statement window because a wrapped argument list
+            // routinely splits the constant from the accessor across lines.
+            final List<String> offenders = new ArrayList<>();
+            int boundReads = 0;
+            for (final Map.Entry<Path, String> source : productionSources()) {
+                final String fileName = source.getKey().getFileName().toString();
+                if (!ENTITLED_RESPONSE_ASSEMBLERS.contains(fileName)) {
+                    continue;
+                }
+                final String[] lines = source.getValue().split("\n", -1);
+                for (int index = 0; index < lines.length; index++) {
+                    for (final Map.Entry<String, String> binding : SEALED_ACCESSOR_BINDINGS.entrySet()) {
+                        if (!lines[index].contains("." + binding.getKey() + "()")) {
+                            continue;
+                        }
+                        boundReads++;
+                        if (!statementWindow(lines, index).contains(binding.getValue())) {
+                            offenders.add(fileName + " line " + (index + 1) + " reads ."
+                                    + binding.getKey() + "() without naming " + binding.getValue());
+                        }
+                    }
+                }
+            }
+
+            assertThat(boundReads)
+                    .as("the licensed assembler must really read the sealed columns, or this guard "
+                            + "would pass by finding nothing at all")
+                    .isGreaterThanOrEqualTo(SEALED_ACCESSOR_BINDINGS.size());
+            assertThat(offenders)
+                    .as("every sealed read is unsealed under its own field binding, so no envelope "
+                            + "reaches a payload and no value is revealed under the other field's key")
+                    .isEmpty();
+        }
+
+        /**
+         * Returns the statement a read sits in, approximated by the line and the two before it.
+         *
+         * @param  lines the whole file, split on newlines
+         * @param  index the zero-based index of the line holding the read
+         * @return the joined window ending at that line
+         */
+        private static String statementWindow(final String[] lines, final int index) {
+            final int from = Math.max(0, index - (STATEMENT_WINDOW_LINES - 1));
+            return String.join("\n", Arrays.asList(lines).subList(from, index + 1));
         }
 
         @Test
@@ -984,10 +1124,18 @@ final class AccountProtectedDataAdapterTest {
                             .startsWith("new ")
                             .endsWith("("));
             assertThat(productionSources())
-                    .as("no production source builds either response yet, so this finding's leak is "
-                            + "latent and the guard is established before any path can take it")
+                    .as("the view screen still has no assembler, so the guard remains forward-looking "
+                            + "for it and will fire on the first source that builds one")
                     .noneSatisfy(source -> assertThat(source.getValue())
-                            .containsAnyOf("new AccountViewResponse(", "new AccountUpdateResponse("));
+                            .contains("new " + UNASSEMBLED_RESPONSE_TYPE + "("));
+            assertThat(productionSources().stream()
+                    .filter(source -> source.getValue().contains("new AccountUpdateResponse("))
+                    .map(source -> source.getKey().getFileName().toString())
+                    .toList())
+                    .as("the needle matches real source rather than only this test's own text, since "
+                            + "the update screen now has an assembler, and that assembler is the one "
+                            + "licensed above and no other")
+                    .containsExactlyInAnyOrderElementsOf(ENTITLED_RESPONSE_ASSEMBLERS);
         }
     }
 }

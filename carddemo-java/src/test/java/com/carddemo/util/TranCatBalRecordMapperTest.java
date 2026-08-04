@@ -74,9 +74,30 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * zero at scale two and never rounds, because no arithmetic statement in the estate specifies rounding
  * and a COBOL store without a rounding clause truncates. This class names no rounding mode, rescales
  * nothing, and builds every expected balance from a decimal string literal rather than a binary
- * floating-point value. Negative zero is exercised because the shipped fixture is full of it: an
- * account with no activity in a category carries a positively signed zero, and the negative form is a
- * representable image whose value is still zero.
+ * floating-point value.
+ *
+ * <p><strong>The shipped fixture exercises exactly one of the twenty sign characters.</strong> All
+ * fifty seeded balances carry the positively signed all-zero image, so the seed alone proves nothing
+ * about the other nineteen forms. Every non-zero and negatively signed case below is therefore
+ * hand-built rather than drawn from the fixture: a positive form from the {@code A}-{@code I} range, a
+ * negative form from the {@code J}-{@code R} range, and the negative-zero form, which is a
+ * representable image whose arithmetic value is still zero.
+ *
+ * <p><strong>Two independent cluster attestations distinguish this key from its namesake.</strong> The
+ * provisioning job for this layout declares a seventeen-byte key at offset zero over a fixed
+ * fifty-byte record; the provisioning job for the transaction-category layout declares a six-byte key
+ * at offset zero. Both numbers are asserted here as literals - seventeen, and not six - and the sibling
+ * test file asserts six for its own layout. Because the key begins the record it <em>is</em> the
+ * leading substring of the record image, which is why the persistent identity is the legacy business
+ * key and <strong>no surrogate identifier exists anywhere</strong>: a generated identifier could not be
+ * recovered from the bytes, and the assertions below prove that this one always can be.
+ *
+ * <p><strong>The column prefixes inside this one record are deliberately inconsistent.</strong> The
+ * three key columns carry the compressed {@code trancat_} prefix while the balance column is the
+ * underscored {@code tran_cat_bal}, and the Java property names follow the same split -
+ * {@code trancatAcctId}, {@code trancatTypeCd} and {@code trancatCd} against {@code tranCatBal}. The
+ * copybook itself mixes the two spellings, both are transcribed exactly, and neither is harmonised:
+ * regularising either one would change a mapping that is validated against the migrated schema.
  *
  * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Layout authority is copybook
@@ -141,6 +162,121 @@ class TranCatBalRecordMapperTest {
      * layout, declared here so the assertion that the two are different is made against a literal.
      */
     private static final int UNRELATED_SIX_BYTE_KEY_WIDTH = 6;
+
+    /**
+     * Zero-based offset at which the transaction-category layout places its <em>type</em> code. Its
+     * key leads with that code, whereas this layout places the same code eleven bytes in, behind an
+     * account identifier the other key does not carry at all.
+     */
+    private static final int UNRELATED_OFFSET_TYPE_CD = 0;
+
+    /**
+     * Zero-based offset at which the transaction-category layout places its <em>category</em> code,
+     * against thirteen here. Two components, two different offsets, in two layouts whose key groups
+     * share a name: this is precisely why the six-byte key is not a prefix of the seventeen-byte one.
+     */
+    private static final int UNRELATED_OFFSET_CAT_CD = 2;
+
+    /**
+     * First number of this layout's cluster key declaration: the stored key length in bytes. Written
+     * as a literal so the assertion is against the provisioning job rather than against another
+     * constant of the mapper.
+     */
+    private static final int CLUSTER_DECLARED_KEY_LENGTH = 17;
+
+    /** Second number of this layout's cluster key declaration: the key's offset within the record. */
+    private static final int CLUSTER_DECLARED_KEY_OFFSET = 0;
+
+    /** First number of this layout's cluster record-size declaration, which is also its second. */
+    private static final int CLUSTER_DECLARED_RECORD_SIZE = 50;
+
+    // ------------------------------------------------------------------------------------------
+    // Byte-level constants. Every width and every filler check below is made in encoded bytes,
+    // because a record is measured in bytes and never in characters.
+    // ------------------------------------------------------------------------------------------
+
+    /** The byte this mapper writes across the filler run. */
+    private static final byte SPACE_BYTE = (byte) ' ';
+
+    /** The byte the shipped fixture writes across the filler run, which is a different byte. */
+    private static final byte ASCII_ZERO_BYTE = (byte) '0';
+
+    /** The record separator that closes every fixture row and is never record content. */
+    private static final byte LINE_FEED_BYTE = (byte) '\n';
+
+    // ------------------------------------------------------------------------------------------
+    // The first shipped row, transcribed by hand from the fixture's own bytes. These literals are
+    // the independent side of every fixture assertion: none of them is produced by the mapper.
+    // ------------------------------------------------------------------------------------------
+
+    /** Account identifier of the first seeded row. */
+    private static final String SEEDED_ACCT_ID = "00000000001";
+
+    /** Transaction type code of the first seeded row. */
+    private static final String SEEDED_TYPE_CD = "01";
+
+    /** Transaction category code of the first seeded row. */
+    private static final String SEEDED_CAT_CD = "0001";
+
+    /**
+     * Balance image of every seeded row: ten zero digits closed by the positive-zero overpunch. This
+     * is the only sign character the shipped fixture contains.
+     */
+    private static final String SEEDED_BALANCE_IMAGE = "0000000000{";
+
+    /**
+     * Value of {@link #SEEDED_BALANCE_IMAGE}, hand-derived at the scale the picture clause implies.
+     * Written as a decimal string literal, never from a binary floating-point value.
+     */
+    private static final BigDecimal SEEDED_BALANCE = new BigDecimal("0.00");
+
+    /**
+     * The twenty-eight-byte mapped prefix of the first seeded row, hand-assembled from the four field
+     * literals above in copybook order. Nothing beyond byte twenty-eight appears here, because
+     * nothing beyond byte twenty-eight is comparable.
+     */
+    private static final String SEEDED_MAPPED_PREFIX =
+            SEEDED_ACCT_ID + SEEDED_TYPE_CD + SEEDED_CAT_CD + SEEDED_BALANCE_IMAGE;
+
+    /**
+     * Balance image carrying a positive non-zero overpunch from the {@code A}-{@code I} range. The
+     * final byte {@code B} is the positive form of the digit two, so the eleven digits are
+     * {@code 00000000782}: nine integer digits {@code 000000007} and the two decimals {@code 82}.
+     */
+    private static final String POSITIVE_NON_ZERO_BALANCE_IMAGE = "0000000078B";
+
+    /** Value of {@link #POSITIVE_NON_ZERO_BALANCE_IMAGE}, hand-derived from its eleven digits. */
+    private static final BigDecimal POSITIVE_NON_ZERO_BALANCE = new BigDecimal("7.82");
+
+    /**
+     * Balance image carrying a negative overpunch from the {@code J}-{@code R} range. The final byte
+     * {@code M} is the negative form of the digit four, so the eleven digits are {@code 00000000784}
+     * and the sign is negative.
+     */
+    private static final String NEGATIVE_BALANCE_IMAGE = "0000000078M";
+
+    /** Value of {@link #NEGATIVE_BALANCE_IMAGE}, hand-derived from its eleven digits and its sign. */
+    private static final BigDecimal NEGATIVE_BALANCE = new BigDecimal("-7.84");
+
+    /**
+     * The same eleven digits as {@link #NEGATIVE_BALANCE_IMAGE} closed by the <em>positive</em> form of
+     * the digit four, {@code D}. Paired with that image so the sign convention can be checked as a
+     * pairing rather than as two unrelated decodes.
+     */
+    private static final String POSITIVE_PAIRED_BALANCE_IMAGE = "0000000078D";
+
+    /** Magnitude shared by {@link #NEGATIVE_BALANCE_IMAGE} and {@link #POSITIVE_PAIRED_BALANCE_IMAGE}. */
+    private static final BigDecimal NEGATIVE_BALANCE_MAGNITUDE = new BigDecimal("7.84");
+
+    /** Ten zero digits closed by the negative-zero overpunch: a representable image worth zero. */
+    private static final String NEGATIVE_ZERO_BALANCE_IMAGE = "0000000000}";
+
+    /**
+     * A two-byte type code outside any set the estate uses. The field is {@code PIC X(02)}, so it is
+     * character data carried verbatim rather than a value gated by a lookup, and the mapper must
+     * accept it unchanged.
+     */
+    private static final String OUT_OF_SET_TYPE_CD = "ZZ";
 
     // ------------------------------------------------------------------------------------------
     // Hand-authored reference rows. Each is declared as its significant field values plus an
@@ -215,10 +351,12 @@ class TranCatBalRecordMapperTest {
      * @return the value at exactly {@code width} characters
      */
     private static String alphanumeric(final String value, final int width) {
-        assertThat(value.length())
+        // Measured in encoded bytes, never in characters: a record's geometry is a byte geometry.
+        final int encoded = encodedWidth(value);
+        assertThat(encoded)
                 .as("the hand-transcribed value '%s' cannot exceed its %d-byte field", value, width)
                 .isLessThanOrEqualTo(width);
-        return value + " ".repeat(width - value.length());
+        return value + " ".repeat(width - encoded);
     }
 
     /**
@@ -229,10 +367,12 @@ class TranCatBalRecordMapperTest {
      * @return the value at exactly {@code width} characters
      */
     private static String numeric(final String value, final int width) {
-        assertThat(value.length())
+        // Measured in encoded bytes, never in characters: a record's geometry is a byte geometry.
+        final int encoded = encodedWidth(value);
+        assertThat(encoded)
                 .as("the hand-transcribed value '%s' cannot exceed its %d-byte field", value, width)
                 .isLessThanOrEqualTo(width);
-        return "0".repeat(width - value.length()) + value;
+        return "0".repeat(width - encoded) + value;
     }
 
     /**
@@ -293,31 +433,95 @@ class TranCatBalRecordMapperTest {
     }
 
     /**
-     * Reads the shipped reference fixture and splits it into records on its own stride.
+     * Reads the shipped reference fixture as raw bytes and checks its measured size.
      *
-     * @return the fixture's records, each exactly {@value #RECORD_WIDTH} characters and terminator-free
+     * <p>The expected size is the product of two hand-transcribed numbers - fifty records at a
+     * fifty-one byte stride - so a fixture that has been edited, re-terminated or re-encoded fails
+     * here rather than producing plausible records that no longer match the shipped dataset.
+     *
+     * @return the fixture's complete byte content
      * @throws IOException if the fixture cannot be read
      */
-    private static List<String> fixtureRecords() throws IOException {
+    private static byte[] fixtureContent() throws IOException {
         final byte[] content;
         try (InputStream stream = TranCatBalRecordMapperTest.class.getResourceAsStream(FIXTURE)) {
             assertThat(stream).as("%s must be on the test classpath", FIXTURE).isNotNull();
             content = stream.readAllBytes();
         }
 
-        assertThat(content.length % FIXTURE_STRIDE)
-                .as("the stride must divide the fixture exactly, or no record boundary is recoverable")
-                .isZero();
+        assertThat(content.length)
+                .as("the fixture measures %d records at a %d-byte stride", FIXTURE_RECORD_COUNT,
+                        FIXTURE_STRIDE)
+                .isEqualTo(FIXTURE_RECORD_COUNT * FIXTURE_STRIDE);
+        return content;
+    }
 
+    /**
+     * Reads the shipped reference fixture and splits it into records on its own stride.
+     *
+     * <p>Boundaries are taken in the byte domain and the terminator is verified as a byte, so the
+     * split cannot be fooled by a multi-byte character sneaking into the dataset.
+     *
+     * @return the fixture's records, each exactly {@value #RECORD_WIDTH} bytes and terminator-free
+     * @throws IOException if the fixture cannot be read
+     */
+    private static List<String> fixtureRecords() throws IOException {
+        final byte[] content = fixtureContent();
         final List<String> records = new ArrayList<>();
-        final String whole = new String(content, StandardCharsets.US_ASCII);
-        for (int start = 0; start < whole.length(); start += FIXTURE_STRIDE) {
-            assertThat(whole.charAt(start + RECORD_WIDTH))
+        for (int start = 0; start < content.length; start += FIXTURE_STRIDE) {
+            assertThat(content[start + RECORD_WIDTH])
                     .as("every fixture record must be closed by one line feed")
-                    .isEqualTo('\n');
-            records.add(whole.substring(start, start + RECORD_WIDTH));
+                    .isEqualTo(LINE_FEED_BYTE);
+            records.add(new String(content, start, RECORD_WIDTH, StandardCharsets.US_ASCII));
         }
         return records;
+    }
+
+    /**
+     * Extracts one shipped record as raw bytes, leaving its terminator behind.
+     *
+     * <p>Used wherever a comparison must be made byte for byte rather than through a string, which is
+     * the only form in which a filler-byte claim can be settled.
+     *
+     * @param  index zero-based record index within the fixture
+     * @return exactly {@value #RECORD_WIDTH} bytes
+     * @throws IOException if the fixture cannot be read
+     */
+    private static byte[] fixtureRecordBytes(final int index) throws IOException {
+        final byte[] content = fixtureContent();
+        final byte[] record = new byte[RECORD_WIDTH];
+        System.arraycopy(content, index * FIXTURE_STRIDE, record, 0, RECORD_WIDTH);
+        return record;
+    }
+
+    /**
+     * Copies a byte range out of an image, so a comparison can be bounded without going through a
+     * string and without any risk of a trimming or padding step creeping in.
+     *
+     * @param  image the source bytes
+     * @param  from  zero-based inclusive start
+     * @param  to    zero-based exclusive end
+     * @return a fresh array holding exactly the requested range
+     */
+    private static byte[] range(final byte[] image, final int from, final int to) {
+        final byte[] slice = new byte[to - from];
+        System.arraycopy(image, from, slice, 0, to - from);
+        return slice;
+    }
+
+    /**
+     * Builds a run of one repeated byte, for comparing a filler run against its expected content.
+     *
+     * @param  value the byte to repeat
+     * @param  count how many times to repeat it
+     * @return a fresh array of {@code count} copies of {@code value}
+     */
+    private static byte[] runOf(final byte value, final int count) {
+        final byte[] run = new byte[count];
+        for (int index = 0; index < count; index++) {
+            run[index] = value;
+        }
+        return run;
     }
 
     @Nested
@@ -358,6 +562,29 @@ class TranCatBalRecordMapperTest {
                     .isEqualTo(RECORD_WIDTH);
             assertThat(TranCatBalRecordMapper.RECORD_LENGTH).isEqualTo(RECORD_WIDTH);
             assertThat(TranCatBalRecordMapper.MAPPED_PREFIX_LENGTH).isEqualTo(MAPPED_PREFIX_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the three arithmetic identities of this layout hold: 11 + 2 + 4 = 17 for the key, "
+                + "17 + 11 = 28 for the mapped prefix, and 28 + 22 = 50 for the whole record")
+        void theThreeArithmeticIdentitiesHold() {
+            assertThat(WIDTH_ACCT_ID + WIDTH_TYPE_CD + WIDTH_CAT_CD)
+                    .as("eleven plus two plus four is the seventeen-byte composite key")
+                    .isEqualTo(KEY_WIDTH);
+            assertThat(KEY_WIDTH + WIDTH_BALANCE)
+                    .as("seventeen plus eleven is the twenty-eight-byte mapped prefix")
+                    .isEqualTo(MAPPED_PREFIX_WIDTH);
+            assertThat(MAPPED_PREFIX_WIDTH + WIDTH_FILLER)
+                    .as("twenty-eight plus twenty-two is the fifty-byte record")
+                    .isEqualTo(RECORD_WIDTH);
+
+            // The mapper's own constants must land on the same three numbers, each of which was
+            // derived above from the copybook's declared widths rather than from another constant.
+            assertThat(TranCatBalRecordMapper.ACCOUNT_TYPE_AND_CATEGORY_KEY_WIDTH)
+                    .isEqualTo(KEY_WIDTH);
+            assertThat(TranCatBalRecordMapper.MAPPED_PREFIX_LENGTH).isEqualTo(MAPPED_PREFIX_WIDTH);
+            assertThat(TranCatBalRecordMapper.RECORD_LENGTH).isEqualTo(RECORD_WIDTH);
+            assertThat(TranCatBalRecordMapper.FILLER_LENGTH).isEqualTo(WIDTH_FILLER);
         }
 
         @Test
@@ -424,6 +651,149 @@ class TranCatBalRecordMapperTest {
     }
 
     @Nested
+    @DisplayName("the TRAN-CAT-KEY name collision, and the cluster attestation that settles it")
+    class TheTranCatKeyNameCollision {
+
+        @Test
+        @DisplayName("THE TRAN-CAT-KEY NAME COLLISION: the group named TRAN-CAT-KEY in this copybook "
+                + "is 17 bytes and is NOT the 6-byte TRAN-CAT-KEY of the transaction-category "
+                + "copybook, and the 6-byte key is not a prefix of this one")
+        void theTranCatKeyNameCollisionIsSettledByWidthAndOffset() {
+            // Width. Seventeen here, six there, asserted against literals on both sides so neither
+            // figure can drift into agreement with the other.
+            assertThat(TranCatBalRecordMapper.ACCOUNT_TYPE_AND_CATEGORY_KEY_WIDTH)
+                    .as("this key is the account identifier, the type code and the category code")
+                    .isEqualTo(KEY_WIDTH)
+                    .isEqualTo(WIDTH_ACCT_ID + WIDTH_TYPE_CD + WIDTH_CAT_CD)
+                    .isNotEqualTo(UNRELATED_SIX_BYTE_KEY_WIDTH);
+
+            // Composition. The six-byte key holds only the last two of these three components, so it
+            // cannot be a prefix of a key whose first eleven bytes are an account identifier.
+            assertThat(WIDTH_TYPE_CD + WIDTH_CAT_CD)
+                    .as("the two shared components alone are the whole of the unrelated six-byte key")
+                    .isEqualTo(UNRELATED_SIX_BYTE_KEY_WIDTH);
+            assertThat(KEY_WIDTH - UNRELATED_SIX_BYTE_KEY_WIDTH)
+                    .as("the eleven bytes this key leads with are absent from the other key entirely")
+                    .isEqualTo(WIDTH_ACCT_ID);
+
+            // Offsets. Here the type and category codes sit at eleven and thirteen; there they sit at
+            // zero and two. Two layouts, one group name, and no offset at which the two align.
+            assertThat(TranCatBalRecordMapper.TRANCAT_TYPE_CD_OFFSET)
+                    .as("the type code sits eleven bytes in here, not at the head of the key")
+                    .isEqualTo(OFFSET_TYPE_CD)
+                    .isNotEqualTo(UNRELATED_OFFSET_TYPE_CD);
+            assertThat(TranCatBalRecordMapper.TRANCAT_CD_OFFSET)
+                    .as("the category code sits thirteen bytes in here, not two")
+                    .isEqualTo(OFFSET_CAT_CD)
+                    .isNotEqualTo(UNRELATED_OFFSET_CAT_CD);
+        }
+
+        @Test
+        @DisplayName("a six-byte read against this layout would return the leading digits of an account "
+                + "identifier rather than a type and category pair, which is why no constant, helper "
+                + "or identifier class is shared between the two layouts")
+        void aSixByteReadAgainstThisLayoutWouldReturnTheWrongBytes() throws IOException {
+            final String record = fixtureRecords().get(0);
+
+            // What a caller reusing the sibling layout's six-byte key would actually get.
+            final String misreadKey = record.substring(UNRELATED_OFFSET_TYPE_CD,
+                    UNRELATED_OFFSET_TYPE_CD + UNRELATED_SIX_BYTE_KEY_WIDTH);
+            // What this layout's type-and-category pair really is, at its own two offsets.
+            final String typeAndCategory =
+                    record.substring(OFFSET_TYPE_CD, OFFSET_TYPE_CD + WIDTH_TYPE_CD)
+                            + record.substring(OFFSET_CAT_CD, OFFSET_CAT_CD + WIDTH_CAT_CD);
+
+            assertThat(misreadKey)
+                    .as("six bytes at offset zero are account digits, not a classification pair")
+                    .isEqualTo(SEEDED_ACCT_ID.substring(0, UNRELATED_SIX_BYTE_KEY_WIDTH))
+                    .isNotEqualTo(typeAndCategory);
+            assertThat(typeAndCategory)
+                    .as("the real pair is the type code then the category code, at eleven and thirteen")
+                    .isEqualTo(SEEDED_TYPE_CD + SEEDED_CAT_CD);
+            assertThat(encodedWidth(typeAndCategory)).isEqualTo(UNRELATED_SIX_BYTE_KEY_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the cluster declaration corroborates the layout independently: a key length of 17 "
+                + "at an offset of 0 over a fixed 50-byte record, against the sibling layout's key "
+                + "length of 6 at the same offset")
+        void theClusterDeclarationCorroboratesTheLayout() {
+            // KEYS takes a length then an offset. Both numbers are asserted, because a plan that
+            // checked only the length would not notice a key that had moved off the head of the
+            // record - and the sibling layout's declaration carries the same offset with a different
+            // length, so the offset alone distinguishes nothing.
+            assertThat(TranCatBalRecordMapper.ACCOUNT_TYPE_AND_CATEGORY_KEY_WIDTH)
+                    .as("the declared stored key length")
+                    .isEqualTo(CLUSTER_DECLARED_KEY_LENGTH);
+            assertThat(TranCatBalRecordMapper.TRANCAT_ACCT_ID_OFFSET)
+                    .as("the declared key offset, which is why the key begins the record image")
+                    .isEqualTo(CLUSTER_DECLARED_KEY_OFFSET)
+                    .isZero();
+            assertThat(TranCatBalRecordMapper.RECORD_LENGTH)
+                    .as("the declared record size, stated twice in the job as its own minimum and "
+                            + "maximum, which is what makes the record fixed length")
+                    .isEqualTo(CLUSTER_DECLARED_RECORD_SIZE);
+
+            // The sibling layout's own provisioning job declares six at the same offset. That number
+            // is asserted in the sibling test file against the sibling mapper; it appears here only
+            // as the value this key must differ from.
+            assertThat(CLUSTER_DECLARED_KEY_LENGTH).isNotEqualTo(UNRELATED_SIX_BYTE_KEY_WIDTH);
+        }
+
+        @Test
+        @DisplayName("identity is the legacy business key and there is no surrogate primary key: the "
+                + "whole of it is recoverable from the record bytes, and two rows sharing those bytes "
+                + "are the same row whatever their balances")
+        void identityIsTheBusinessKeyAndNoSurrogateExists() throws IOException {
+            final String record = fixtureRecords().get(0);
+
+            // Recoverable from the bytes. A generated identifier could not be, because nothing in the
+            // record image would carry it; this one is reconstructed from three hand-written literals.
+            final TransactionCategoryBalanceId handBuilt =
+                    new TransactionCategoryBalanceId(SEEDED_ACCT_ID, SEEDED_TYPE_CD, SEEDED_CAT_CD);
+            assertThat(TranCatBalRecordMapper.keyFromRecord(record)).isEqualTo(handBuilt);
+
+            // Determined by the key alone. Two entities differing only in balance are the same row,
+            // which is what it means for the key rather than a surrogate to carry identity.
+            final TransactionCategoryBalance zeroBalance = new TransactionCategoryBalance(
+                    SEEDED_ACCT_ID, SEEDED_TYPE_CD, SEEDED_CAT_CD, SEEDED_BALANCE);
+            final TransactionCategoryBalance otherBalance = new TransactionCategoryBalance(
+                    SEEDED_ACCT_ID, SEEDED_TYPE_CD, SEEDED_CAT_CD, POSITIVE_NON_ZERO_BALANCE);
+            assertThat(otherBalance).isEqualTo(zeroBalance).hasSameHashCodeAs(zeroBalance);
+
+            // And sensitive to each of the three components, so no component is decorative.
+            assertThat(new TransactionCategoryBalance("00000000002", SEEDED_TYPE_CD, SEEDED_CAT_CD,
+                    SEEDED_BALANCE)).isNotEqualTo(zeroBalance);
+            assertThat(new TransactionCategoryBalance(SEEDED_ACCT_ID, "02", SEEDED_CAT_CD,
+                    SEEDED_BALANCE)).isNotEqualTo(zeroBalance);
+            assertThat(new TransactionCategoryBalance(SEEDED_ACCT_ID, SEEDED_TYPE_CD, "0002",
+                    SEEDED_BALANCE)).isNotEqualTo(zeroBalance);
+        }
+
+        @Test
+        @DisplayName("the key projections are distinctly named for all three components they carry, and "
+                + "the rendered key is exactly seventeen encoded bytes so it can never be mistaken "
+                + "for the unrelated six-byte key")
+        void theKeyProjectionsAreDistinctlyNamedAndSeventeenBytesWide() {
+            // The width constant is named for the three components it contains rather than for the
+            // group name the two copybooks share, which is what stops a caller reaching for the wrong
+            // one. Both projections are likewise named for this layout and not for the group.
+            final String renderedKey =
+                    TranCatBalRecordMapper.accountTypeAndCategoryKeyImage(firstEntity());
+
+            assertThat(encodedWidth(renderedKey))
+                    .as("seventeen encoded bytes, measured as bytes rather than as characters")
+                    .isEqualTo(KEY_WIDTH)
+                    .isNotEqualTo(UNRELATED_SIX_BYTE_KEY_WIDTH);
+            assertThat(TranCatBalRecordMapper.KEY_ARTEFACT)
+                    .as("a diagnostic naming only the shared group name could not distinguish the two")
+                    .contains("TRAN-CAT-KEY")
+                    .contains(String.valueOf(KEY_WIDTH))
+                    .doesNotContain("TRAN-TYPE-CD");
+        }
+    }
+
+    @Nested
     @DisplayName("reading a record image")
     class ReadingARecordImage {
 
@@ -473,7 +843,29 @@ class TranCatBalRecordMapperTest {
         }
 
         @Test
-        @DisplayName("the three reading entry points produce equal entities from the same bytes")
+        @DisplayName("the type code is a raw two-byte string carried verbatim, with no enum or lookup "
+                + "translation, so a value outside every set the estate uses is still accepted")
+        void theTypeCodeIsARawTwoByteStringWithNoTranslation() {
+            final TransactionCategoryBalance mapped = TranCatBalRecordMapper.fromRecord(
+                    recordImage(FIRST_ACCT_ID, OUT_OF_SET_TYPE_CD, FIRST_CAT_CD,
+                            FIRST_BALANCE_IMAGE, ' '));
+
+            // Character data under PIC X(02): the mapper hands back the two bytes it read, unchanged
+            // and unvalidated. An out-of-set code is a data question for the schema and the service
+            // layer, never a reason for a mapper to refuse a well-formed record.
+            assertThat(mapped.getTrancatTypeCd()).isEqualTo(OUT_OF_SET_TYPE_CD);
+            assertThat(encodedWidth(mapped.getTrancatTypeCd())).isEqualTo(WIDTH_TYPE_CD);
+
+            // And it survives the return journey byte for byte, so nothing normalises it on the way
+            // out either.
+            assertThat(TranCatBalRecordMapper.toRecord(mapped)
+                    .substring(OFFSET_TYPE_CD, OFFSET_TYPE_CD + WIDTH_TYPE_CD))
+                    .isEqualTo(OUT_OF_SET_TYPE_CD);
+        }
+
+        @Test
+        @DisplayName("the three reading entry points produce equal entities from the same bytes, "
+                + "agreeing on all four mapped properties and not merely on identity")
         void theThreeEntryPointsProduceEqualEntities() {
             final String image = firstImage();
             final byte[] bytes = image.getBytes(StandardCharsets.US_ASCII);
@@ -483,10 +875,27 @@ class TranCatBalRecordMapperTest {
             final TransactionCategoryBalance fromRange =
                     TranCatBalRecordMapper.fromRecord(bytes, 0);
 
-            assertThat(TranCatBalRecordMapper.toRecord(fromBytes))
-                    .isEqualTo(TranCatBalRecordMapper.toRecord(fromString));
-            assertThat(TranCatBalRecordMapper.toRecord(fromRange))
-                    .isEqualTo(TranCatBalRecordMapper.toRecord(fromString));
+            // Entity equality is defined over the primary key alone, so it is asserted first and then
+            // reinforced field by field - including the balance, which identity deliberately ignores.
+            assertThat(fromBytes).isEqualTo(fromString).hasSameHashCodeAs(fromString);
+            assertThat(fromRange).isEqualTo(fromString).hasSameHashCodeAs(fromString);
+
+            for (final TransactionCategoryBalance mapped : List.of(fromBytes, fromRange)) {
+                assertThat(mapped.getTrancatAcctId()).isEqualTo(fromString.getTrancatAcctId());
+                assertThat(mapped.getTrancatTypeCd()).isEqualTo(fromString.getTrancatTypeCd());
+                assertThat(mapped.getTrancatCd()).isEqualTo(fromString.getTrancatCd());
+                assertThat(mapped.getTranCatBal()).isEqualTo(fromString.getTranCatBal());
+            }
+
+            // Each overload independently reaches the hand-derived values, so agreement is not three
+            // entry points sharing one mistake.
+            for (final TransactionCategoryBalance mapped
+                    : List.of(fromString, fromBytes, fromRange)) {
+                assertThat(mapped.getTrancatAcctId()).isEqualTo(FIRST_ACCT_ID);
+                assertThat(mapped.getTrancatTypeCd()).isEqualTo(FIRST_TYPE_CD);
+                assertThat(mapped.getTrancatCd()).isEqualTo(FIRST_CAT_CD);
+                assertThat(mapped.getTranCatBal()).isEqualTo(FIRST_BALANCE);
+            }
         }
 
         @Test
@@ -627,27 +1036,78 @@ class TranCatBalRecordMapperTest {
         }
 
         @Test
-        @DisplayName("a positively signed all-zero image is zero at scale two, which is the state every "
-                + "seeded row carries for a category with no activity")
+        @DisplayName("the seeded image - ten zero digits closed by the positive-zero overpunch - decodes "
+                + "to exactly 0.00 at scale two, which is the only sign the shipped fixture contains")
         void aPositivelySignedAllZeroImageIsZero() {
             final BigDecimal balance =
-                    TranCatBalRecordMapper.fromRecord(imageWithBalance("0000000000{"))
+                    TranCatBalRecordMapper.fromRecord(imageWithBalance(SEEDED_BALANCE_IMAGE))
                             .getTranCatBal();
 
-            assertThat(balance).isEqualByComparingTo(BigDecimal.ZERO);
-            assertThat(balance.scale()).isEqualTo(ZonedDecimalCodec.MONETARY_SCALE);
+            // Compared scale and all, not merely by value: a zero at scale zero would satisfy a
+            // numeric comparison and would still be the wrong decimal for a two-decimal column.
+            assertThat(balance).isEqualTo(SEEDED_BALANCE).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(balance.scale()).isEqualTo(ZonedDecimalCodec.MONETARY_SCALE).isEqualTo(2);
+            assertThat(balance.signum()).isZero();
         }
 
         @Test
-        @DisplayName("a negatively signed all-zero image also decodes to zero, because negative zero is "
-                + "a representable image whose value is still zero")
+        @DisplayName("a negatively signed all-zero image also decodes to exactly 0.00 at scale two, "
+                + "because negative zero is a representable image whose value is still zero")
         void aNegativelySignedAllZeroImageIsAlsoZero() {
             final BigDecimal balance =
-                    TranCatBalRecordMapper.fromRecord(imageWithBalance("0000000000}"))
+                    TranCatBalRecordMapper.fromRecord(imageWithBalance(NEGATIVE_ZERO_BALANCE_IMAGE))
                             .getTranCatBal();
 
-            assertThat(balance).isEqualByComparingTo(BigDecimal.ZERO);
-            assertThat(balance.scale()).isEqualTo(ZonedDecimalCodec.MONETARY_SCALE);
+            assertThat(NEGATIVE_ZERO_BALANCE_IMAGE)
+                    .as("the image really does carry the negative-zero overpunch")
+                    .endsWith("}");
+            assertThat(balance).isEqualTo(SEEDED_BALANCE).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(balance.scale()).isEqualTo(ZonedDecimalCodec.MONETARY_SCALE).isEqualTo(2);
+            assertThat(balance.signum()).isZero();
+        }
+
+        @Test
+        @DisplayName("a positive non-zero overpunch from the A-to-I range decodes to its hand-derived "
+                + "value at scale exactly two, a case the shipped fixture never exercises")
+        void aPositiveNonZeroOverpunchDecodesAtScaleTwo() {
+            assertThat(POSITIVE_NON_ZERO_BALANCE_IMAGE)
+                    .as("the terminator must come from the positive non-zero range")
+                    .endsWith("B");
+            assertThat(encodedWidth(POSITIVE_NON_ZERO_BALANCE_IMAGE)).isEqualTo(WIDTH_BALANCE);
+
+            final BigDecimal balance = TranCatBalRecordMapper
+                    .fromRecord(imageWithBalance(POSITIVE_NON_ZERO_BALANCE_IMAGE))
+                    .getTranCatBal();
+
+            assertThat(balance).isEqualTo(POSITIVE_NON_ZERO_BALANCE).isPositive();
+            assertThat(balance.scale()).isEqualTo(ZonedDecimalCodec.MONETARY_SCALE).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("a negative overpunch from the J-to-R range decodes to its hand-derived negative "
+                + "value at scale exactly two, so a credit is never read as a large positive amount")
+        void aNegativeOverpunchFromTheJtoRRangeDecodesAtScaleTwo() {
+            assertThat(NEGATIVE_BALANCE_IMAGE)
+                    .as("the terminator must come from the negative non-zero range")
+                    .endsWith("M");
+            assertThat(encodedWidth(NEGATIVE_BALANCE_IMAGE)).isEqualTo(WIDTH_BALANCE);
+
+            final BigDecimal balance = TranCatBalRecordMapper
+                    .fromRecord(imageWithBalance(NEGATIVE_BALANCE_IMAGE))
+                    .getTranCatBal();
+
+            assertThat(balance).isEqualTo(NEGATIVE_BALANCE).isNegative();
+            assertThat(balance.scale()).isEqualTo(ZonedDecimalCodec.MONETARY_SCALE).isEqualTo(2);
+
+            // The paired positive form of the same digit differs in the sign only: identical leading
+            // digits, identical magnitude, opposite sign. That pairing is what a sign-blind decoder
+            // would break, and it is asserted against hand-written literals on both sides.
+            final BigDecimal pairedPositive = TranCatBalRecordMapper
+                    .fromRecord(imageWithBalance(POSITIVE_PAIRED_BALANCE_IMAGE))
+                    .getTranCatBal();
+
+            assertThat(pairedPositive).isEqualTo(NEGATIVE_BALANCE_MAGNITUDE).isPositive();
+            assertThat(balance.abs()).isEqualTo(NEGATIVE_BALANCE_MAGNITUDE);
         }
 
         @Test
@@ -736,7 +1196,74 @@ class TranCatBalRecordMapperTest {
         @DisplayName("an entity built through the public four-argument constructor emits the authored "
                 + "image, so the encoding path does not depend on having decoded first")
         void anEntityBuiltThroughThePublicConstructorEmitsTheAuthoredImage() {
+            // Built from four arguments in copybook order - account, type, category, balance - and no
+            // identifier object is constructed or assigned anywhere: the entity carries its three key
+            // components directly, so there is nothing of that kind to set.
             assertThat(TranCatBalRecordMapper.toRecord(firstEntity())).isEqualTo(firstImage());
+        }
+
+        @Test
+        @DisplayName("the four-argument constructor's parameter order is the copybook's own order, "
+                + "proved by each argument landing at its own offset in the emitted image")
+        void theFourArgumentConstructorFollowsCopybookOrder() {
+            // Four deliberately distinguishable values, so an argument placed in the wrong position
+            // would land at the wrong offset instead of coincidentally matching.
+            final TransactionCategoryBalance entity = new TransactionCategoryBalance(
+                    SEEDED_ACCT_ID, OUT_OF_SET_TYPE_CD, "0009", NEGATIVE_BALANCE);
+            final String emitted = TranCatBalRecordMapper.toRecord(entity);
+
+            assertThat(emitted.substring(OFFSET_ACCT_ID, OFFSET_ACCT_ID + WIDTH_ACCT_ID))
+                    .isEqualTo(SEEDED_ACCT_ID);
+            assertThat(emitted.substring(OFFSET_TYPE_CD, OFFSET_TYPE_CD + WIDTH_TYPE_CD))
+                    .isEqualTo(OUT_OF_SET_TYPE_CD);
+            assertThat(emitted.substring(OFFSET_CAT_CD, OFFSET_CAT_CD + WIDTH_CAT_CD))
+                    .isEqualTo("0009");
+            assertThat(emitted.substring(OFFSET_BALANCE, OFFSET_BALANCE + WIDTH_BALANCE))
+                    .isEqualTo(NEGATIVE_BALANCE_IMAGE);
+            assertThat(encodedWidth(emitted)).isEqualTo(RECORD_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the mapped data prefix [0, 28) is reproduced byte for byte as bytes under "
+                + "US-ASCII, which is the exact and only bound at which a fixture comparison is valid")
+        void theMappedPrefixIsReproducedByteForByteAsBytes() throws IOException {
+            final byte[] shipped = fixtureRecordBytes(0);
+            final byte[] emitted = TranCatBalRecordMapper
+                    .toRecordBytes(TranCatBalRecordMapper.fromRecord(shipped));
+
+            // Compared as byte arrays rather than as strings, and bounded strictly below twenty-eight.
+            assertThat(range(emitted, 0, MAPPED_PREFIX_WIDTH))
+                    .as("the twenty-eight mapped bytes must survive the round trip unchanged")
+                    .isEqualTo(range(shipped, 0, MAPPED_PREFIX_WIDTH));
+
+            // And against this class's own hand-assembled prefix, so the shipped bytes and the
+            // transcribed literals agree independently of the mapper.
+            assertThat(range(emitted, 0, MAPPED_PREFIX_WIDTH))
+                    .isEqualTo(SEEDED_MAPPED_PREFIX.getBytes(StandardCharsets.US_ASCII));
+            assertThat(encodedWidth(SEEDED_MAPPED_PREFIX)).isEqualTo(MAPPED_PREFIX_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the emitted image is exactly 50 encoded bytes and its filler bytes 28 through 49 "
+                + "are every one of them 0x20, the module-wide filler byte")
+        void theEmittedImageIsFiftyBytesWithSpaceFiller() {
+            final byte[] emitted = TranCatBalRecordMapper.toRecordBytes(firstEntity());
+
+            assertThat(emitted)
+                    .as("the width is guaranteed by construction on the byte-emitting entry point")
+                    .hasSize(RECORD_WIDTH);
+            assertThat(range(emitted, OFFSET_FILLER, RECORD_WIDTH))
+                    .as("twenty-two bytes of 0x20, stated as bytes because that is what filler is")
+                    .isEqualTo(runOf(SPACE_BYTE, WIDTH_FILLER));
+            for (int index = OFFSET_FILLER; index < RECORD_WIDTH; index++) {
+                assertThat(emitted[index])
+                        .as("filler byte at zero-based index %d", index)
+                        .isEqualTo(SPACE_BYTE);
+            }
+
+            // The string entry point must agree with the byte entry point at the same encoded width.
+            assertThat(encodedWidth(TranCatBalRecordMapper.toRecord(firstEntity())))
+                    .isEqualTo(RECORD_WIDTH);
         }
 
         @Test
@@ -893,10 +1420,55 @@ class TranCatBalRecordMapperTest {
             final TransactionCategoryBalance mapped =
                     TranCatBalRecordMapper.fromRecord(fixtureRecords().get(0));
 
-            assertThat(mapped.getTrancatAcctId()).isEqualTo("00000000001");
-            assertThat(mapped.getTrancatTypeCd()).isEqualTo("01");
-            assertThat(mapped.getTrancatCd()).isEqualTo("0001");
-            assertThat(mapped.getTranCatBal()).isEqualByComparingTo(BigDecimal.ZERO);
+            // Four hand-transcribed expectations, one per mapped property, all four at their declared
+            // widths and none of them produced by the code under test.
+            assertThat(mapped.getTrancatAcctId()).isEqualTo(SEEDED_ACCT_ID);
+            assertThat(mapped.getTrancatTypeCd()).isEqualTo(SEEDED_TYPE_CD);
+            assertThat(mapped.getTrancatCd()).isEqualTo(SEEDED_CAT_CD);
+            assertThat(mapped.getTranCatBal()).isEqualTo(SEEDED_BALANCE);
+
+            assertThat(encodedWidth(mapped.getTrancatAcctId())).isEqualTo(WIDTH_ACCT_ID);
+            assertThat(encodedWidth(mapped.getTrancatTypeCd())).isEqualTo(WIDTH_TYPE_CD);
+            assertThat(encodedWidth(mapped.getTrancatCd())).isEqualTo(WIDTH_CAT_CD);
+            assertThat(mapped.getTranCatBal().scale())
+                    .isEqualTo(ZonedDecimalCodec.MONETARY_SCALE);
+        }
+
+        @Test
+        @DisplayName("DELIBERATE DIVERGENCE, NOT A DEFECT: the shipped fixture's 22 filler bytes are "
+                + "ASCII zero 0x30 while this mapper emits 0x20 spaces, which is exactly why a "
+                + "whole-record 50-byte comparison against the fixture must never be attempted")
+        void theFixtureFillerIsAsciiZeroWhileTheEmittedFillerIsSpace() throws IOException {
+            final byte[] shipped = fixtureRecordBytes(0);
+            final byte[] emitted = TranCatBalRecordMapper
+                    .toRecordBytes(TranCatBalRecordMapper.fromRecord(shipped));
+
+            // The shipped side. COBOL filler carries no initialising clause, so its bytes are
+            // undefined by the source and this file records what the shipped dataset actually holds
+            // rather than correcting it. This layout is one of four reference-table fixtures that use
+            // ASCII zero; the four master fixtures use space, and the cross-reference layout has no
+            // filler at all.
+            assertThat(range(shipped, OFFSET_FILLER, RECORD_WIDTH))
+                    .as("all twenty-two shipped filler bytes are ASCII zero")
+                    .isEqualTo(runOf(ASCII_ZERO_BYTE, WIDTH_FILLER));
+
+            // The emitted side. Space is the module-wide default and the mapper states it explicitly.
+            assertThat(range(emitted, OFFSET_FILLER, RECORD_WIDTH))
+                    .as("all twenty-two emitted filler bytes are spaces")
+                    .isEqualTo(runOf(SPACE_BYTE, WIDTH_FILLER));
+
+            // The two bytes differ, and so therefore do the two whole records. That difference is the
+            // whole reason the mapper publishes a mapped-prefix bound.
+            assertThat(SPACE_BYTE).isNotEqualTo(ASCII_ZERO_BYTE);
+            assertThat(range(emitted, OFFSET_FILLER, RECORD_WIDTH))
+                    .as("a whole-record comparison would fail here, on the filler and nothing else")
+                    .isNotEqualTo(range(shipped, OFFSET_FILLER, RECORD_WIDTH));
+            assertThat(emitted).isNotEqualTo(shipped);
+
+            // Everything the mapper is actually responsible for is identical, which is what proves the
+            // difference above is a filler artefact rather than a mapping fault.
+            assertThat(range(emitted, 0, MAPPED_PREFIX_WIDTH))
+                    .isEqualTo(range(shipped, 0, MAPPED_PREFIX_WIDTH));
         }
 
         @Test

@@ -92,6 +92,17 @@ import com.carddemo.util.SqsNamingRules;
  * name is reasoned in {@code docs/decision-log.md} DL-092 and the queue-not-found refusal strategy in
  * DL-093.
  *
+ * <p>The typed settings over the {@code carddemo.aws} namespace validate these same two key paths
+ * before this class is constructed, so a deployment that omits the queue or the message group, blanks
+ * one of them, or supplies a name that is not a first-in-first-out name is refused at start-up. This
+ * class nevertheless binds the two paths it needs directly, by key, because the layering does not
+ * permit a service to depend on the configuration layer - a service may depend on the repository,
+ * domain, utility and exception layers and on nothing above them. The two paths are therefore stated
+ * in two places by necessity, and they are held to each other by a test that starts this class
+ * against an environment carrying only the paths the settings type publishes: a path that drifted
+ * here would leave the binding unresolved and construction would refuse it, so the agreement is a
+ * checked invariant rather than a convention.
+ *
  * <p>Message deduplication is an addition forced by the target technology: a first-in-first-out queue
  * requires either content-based deduplication or an explicit identifier per message, and the legacy
  * queue had no such concept. The identifier is the submission's identity plus the one-based card

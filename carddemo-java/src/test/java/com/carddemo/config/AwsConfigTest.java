@@ -17,19 +17,30 @@
 package com.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.carddemo.service.JobSubmissionService;
+import io.awspring.cloud.autoconfigure.s3.S3ClientCustomizer;
+import io.awspring.cloud.autoconfigure.sns.SnsClientCustomizer;
 import io.awspring.cloud.autoconfigure.sqs.SqsAsyncClientCustomizer;
 import io.awspring.cloud.sqs.operations.SqsOperations;
+import java.net.URI;
 import java.util.Arrays;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import software.amazon.awssdk.awscore.client.builder.AwsClientBuilder;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.core.client.config.SdkAdvancedClientOption;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3ClientBuilder;
+import software.amazon.awssdk.services.sns.SnsClientBuilder;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.SqsAsyncClientBuilder;
 
@@ -85,6 +96,14 @@ class AwsConfigTest {
     private static final String REGION = "us-east-1";
 
     /**
+     * An emulator edge endpoint, standing in for whatever a local or test profile declares.
+     *
+     * <p>It is a loopback address and a port, and it is not a credential of anything: nothing
+     * authenticates against it and it never leaves this test.</p>
+     */
+    private static final String EMULATOR_ENDPOINT = "http://127.0.0.1:4566";
+
+    /**
      * Every key path the registered settings require, at the values the shared baseline declares.
      *
      * <p>Each entry names its key path through the settings type's own published constant rather than
@@ -111,6 +130,34 @@ class AwsConfigTest {
             .withUserConfiguration(AwsConfig.class)
             .withPropertyValues(REQUIRED_SETTINGS);
 
+    /**
+     * Builds the class under test over settings that declare no endpoint redirection.
+     *
+     * <p>This is the shape a production deployment has, and it is the shape every attempt-count
+     * assertion wants: the customizer then applies only the region, so nothing it does to a builder can
+     * be confused with a redirection.</p>
+     *
+     * @return the configuration, over settings carrying no endpoint redirection
+     */
+    private static AwsConfig configuration() {
+        return new AwsConfig(settings(null));
+    }
+
+    /**
+     * Builds the bound settings at the values the shipped configuration documents declare.
+     *
+     * @param endpointOverride an endpoint redirection to declare, or {@code null} or blank for none
+     * @return settings naming the four canonical resources and the canonical region
+     */
+    private static AwsProperties settings(final String endpointOverride) {
+        return new AwsProperties(
+                REGION,
+                endpointOverride,
+                new AwsProperties.S3(BUCKET),
+                new AwsProperties.Sqs(QUEUE, MESSAGE_GROUP),
+                new AwsProperties.Sns(TOPIC));
+    }
+
     @Nested
     @DisplayName("The publish attempt count")
     class PublishAttemptCount {
@@ -120,7 +167,7 @@ class AwsConfigTest {
         void isReducedToASingleAttempt() {
             SqsAsyncClientBuilder builder = SqsAsyncClient.builder();
 
-            new AwsConfig().singleAttemptSqsClientCustomizer().customize(builder);
+            configuration().singleAttemptSqsClientCustomizer().customize(builder);
 
             assertThat(builder.overrideConfiguration().retryStrategy())
                     .as("an unset strategy leaves the client on its own default, which retries")
@@ -141,7 +188,7 @@ class AwsConfigTest {
                                     SEEDED_USER_AGENT)
                             .build());
 
-            new AwsConfig().singleAttemptSqsClientCustomizer().customize(builder);
+            configuration().singleAttemptSqsClientCustomizer().customize(builder);
 
             ClientOverrideConfiguration configuration = builder.overrideConfiguration();
             assertThat(configuration.advancedOption(SdkAdvancedClientOption.USER_AGENT_PREFIX))
@@ -160,7 +207,7 @@ class AwsConfigTest {
         @DisplayName("is applied idempotently, so ordering among customizers cannot change it")
         void isAppliedIdempotently() {
             SqsAsyncClientBuilder builder = SqsAsyncClient.builder();
-            SqsAsyncClientCustomizer customizer = new AwsConfig().singleAttemptSqsClientCustomizer();
+            SqsAsyncClientCustomizer customizer = configuration().singleAttemptSqsClientCustomizer();
 
             customizer.customize(builder);
             customizer.customize(builder);
@@ -178,12 +225,17 @@ class AwsConfigTest {
     class ContainerWiring {
 
         @Test
-        @DisplayName("contributes the customizer under the queue-client customizer type, which is how "
-                + "the auto-configuration finds it")
-        void contributesTheCustomizerUnderTheTypeTheAutoConfigurationCollects() {
+        @DisplayName("contributes one customizer per client, each under the type the "
+                + "auto-configuration collects")
+        void contributesOneCustomizerPerClientUnderTheTypesTheAutoConfigurationCollects() {
             runner.run(context -> assertThat(context)
+                    .as("each of the three clients is aimed by the customizer type its own "
+                            + "auto-configuration collects; a customizer registered under any other "
+                            + "type is never applied and fails silently")
                     .hasNotFailed()
-                    .hasSingleBean(SqsAsyncClientCustomizer.class));
+                    .hasSingleBean(S3ClientCustomizer.class)
+                    .hasSingleBean(SqsAsyncClientCustomizer.class)
+                    .hasSingleBean(SnsClientCustomizer.class));
         }
 
         @Test
@@ -199,19 +251,121 @@ class AwsConfigTest {
         }
 
         @Test
-        @DisplayName("builds no client, resolves no region and reads no credential, leaving the "
-                + "client itself auto-configured")
+        @DisplayName("builds no client and reads no credential, leaving the client itself "
+                + "auto-configured and its credentials to the provider chain")
         void buildsNoClientOfItsOwn() {
             runner.run(context -> {
                 assertThat(context).hasNotFailed();
                 assertThat(context.getBeansOfType(SqsAsyncClient.class))
                         .as("this class customizes the auto-configured client; publishing one of its "
-                                + "own would take over region, endpoint and credential resolution")
+                                + "own would take over credential resolution and the object store's "
+                                + "addressing style from the integration's own settings, leaving two "
+                                + "sources of truth for one setting")
                         .isEmpty();
                 assertThat(context.getBeanDefinitionNames())
-                        .as("exactly one contribution, so nothing else has crept into this class")
-                        .containsOnlyOnce("singleAttemptSqsClientCustomizer");
+                        .as("three contributions, one per client, and nothing else has crept in")
+                        .containsOnlyOnce("batchStagingS3ClientCustomizer")
+                        .containsOnlyOnce("singleAttemptSqsClientCustomizer")
+                        .containsOnlyOnce("jobNotificationSnsClientCustomizer");
             });
+        }
+    }
+
+    @Nested
+    @DisplayName("Where the three clients are aimed")
+    class ClientAiming {
+
+        @Test
+        @DisplayName("is the configured region, on every one of the three clients, always")
+        void appliesTheConfiguredRegionToEveryClient() {
+            S3ClientBuilder objectStore = mock(S3ClientBuilder.class);
+            SqsAsyncClientBuilder queue = mock(SqsAsyncClientBuilder.class);
+            SnsClientBuilder notifications = mock(SnsClientBuilder.class);
+
+            AwsConfig configuration = configuration();
+            configuration.batchStagingS3ClientCustomizer().customize(objectStore);
+            configuration.jobNotificationSnsClientCustomizer().customize(notifications);
+            aimQueueClient(configuration, queue);
+
+            for (AwsClientBuilder<?, ?> builder
+                    : new AwsClientBuilder<?, ?>[] {objectStore, queue, notifications}) {
+                verify(builder).region(Region.of(REGION));
+            }
+        }
+
+        @Test
+        @DisplayName("is redirected away from that region's endpoint on every client when a "
+                + "redirection is configured")
+        void appliesAConfiguredRedirectionToEveryClient() {
+            S3ClientBuilder objectStore = mock(S3ClientBuilder.class);
+            SqsAsyncClientBuilder queue = mock(SqsAsyncClientBuilder.class);
+            SnsClientBuilder notifications = mock(SnsClientBuilder.class);
+
+            AwsConfig configuration = new AwsConfig(settings(EMULATOR_ENDPOINT));
+            configuration.batchStagingS3ClientCustomizer().customize(objectStore);
+            configuration.jobNotificationSnsClientCustomizer().customize(notifications);
+            aimQueueClient(configuration, queue);
+
+            URI expected = URI.create(EMULATOR_ENDPOINT);
+            for (AwsClientBuilder<?, ?> builder
+                    : new AwsClientBuilder<?, ?>[] {objectStore, queue, notifications}) {
+                verify(builder).endpointOverride(expected);
+            }
+        }
+
+        @Test
+        @DisplayName("is that region's own endpoint when no redirection is configured, which is the "
+                + "state of a deployment")
+        void appliesNoRedirectionWhenNoneIsConfigured() {
+            assertNoRedirectionIsApplied(null);
+        }
+
+        @Test
+        @DisplayName("is that region's own endpoint when the redirection is blank, because a blank "
+                + "value is an absent one rather than a malformed address")
+        void appliesNoRedirectionWhenTheConfiguredValueIsBlank() {
+            assertNoRedirectionIsApplied("   ");
+        }
+
+        /**
+         * Requires that no client is redirected, while every client is still given its region.
+         *
+         * <p>The paired region assertion is what stops this from passing vacuously: a customizer that
+         * did nothing at all would satisfy the redirection half on its own.</p>
+         *
+         * @param endpointOverride the redirection to configure, expected to be treated as absent
+         */
+        private void assertNoRedirectionIsApplied(final String endpointOverride) {
+            S3ClientBuilder objectStore = mock(S3ClientBuilder.class);
+            SqsAsyncClientBuilder queue = mock(SqsAsyncClientBuilder.class);
+            SnsClientBuilder notifications = mock(SnsClientBuilder.class);
+
+            AwsConfig configuration = new AwsConfig(settings(endpointOverride));
+            configuration.batchStagingS3ClientCustomizer().customize(objectStore);
+            configuration.jobNotificationSnsClientCustomizer().customize(notifications);
+            aimQueueClient(configuration, queue);
+
+            for (AwsClientBuilder<?, ?> builder
+                    : new AwsClientBuilder<?, ?>[] {objectStore, queue, notifications}) {
+                verify(builder).region(Region.of(REGION));
+                verify(builder, never()).endpointOverride(any());
+            }
+        }
+
+        /**
+         * Applies the queue customizer to a builder that reports an override configuration.
+         *
+         * <p>The queue customizer reads the builder's current override configuration before extending
+         * it, so a bare double would hand it {@code null}. Seeding an empty configuration lets the
+         * aiming assertions above observe the queue client on the same terms as the other two.</p>
+         *
+         * @param configuration the class under test
+         * @param queue         a double for the queue client builder
+         */
+        private void aimQueueClient(final AwsConfig configuration, final SqsAsyncClientBuilder queue) {
+            when(queue.overrideConfiguration())
+                    .thenReturn(ClientOverrideConfiguration.builder().build());
+            configuration.singleAttemptSqsClientCustomizer().customize(queue);
         }
     }
 
