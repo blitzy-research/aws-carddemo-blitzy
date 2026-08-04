@@ -171,11 +171,17 @@ class CardListResponseTest {
     /** Fictional sixteen-character card number carried on a row. */
     private static final String ROW_CARD = "4222222222222222";
 
-    /** Fictional backward-restart browse key: a card number followed by an account identifier. */
-    private static final String PREVIOUS_KEY = "422222222222222200000000022";
+    /**
+     * Fictional backward-restart browse key: the card number alone, sixteen characters.
+     *
+     * <p>The card-list program declares a twenty-seven-character composite of a card number followed by
+     * an account identifier, but only the card-number half ever reaches the browse key - the companion
+     * move of the account half is commented out at every one of its four repositioning sites.
+     */
+    private static final String PREVIOUS_KEY = "4222222222222299";
 
     /** Fictional forward-restart browse key, same composition. */
-    private static final String NEXT_KEY = "433333333333333300000000033";
+    private static final String NEXT_KEY = "4333333333333333";
 
     /** The stand-in the production renderings emit in place of each withheld value. */
     private static final String WITHHELD = "***REDACTED***";
@@ -1171,7 +1177,7 @@ class CardListResponseTest {
         @Test
         @DisplayName("both opaque browse keys come back unchanged, leading zeros included")
         void bothBrowseKeysComeBackUnchanged() {
-            String zeroLed = "0000000000000001" + "00000000001";
+            String zeroLed = "0000000000000001";
             PageMetadata metadata = PageMetadata.forward(
                     PageMetadata.CARD_LIST_PAGE_SIZE, zeroLed, NEXT_KEY, true, false,
                     PAGE_INDICATOR);

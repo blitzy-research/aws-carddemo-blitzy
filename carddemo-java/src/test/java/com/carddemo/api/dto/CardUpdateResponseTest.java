@@ -18,7 +18,6 @@ package com.carddemo.api.dto;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 
@@ -44,65 +43,160 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Unit tests for {@link CardUpdateResponse}, the response body of legacy transaction {@code CCUP}.
- * Field inventory and widths come from the fifteen modelled items of the output redefinition in
- * {@code app/cpy-bms/COCRDUP.CPY}; protection attributes from {@code app/bms/COCRDUP.bms}; behaviour
- * and every message literal from {@code app/cbl/COCRDUPC.cbl}; the two-state field-error contract
- * from {@code app/cpy/CSSETATY.cpy}; and the persisted values from the 150-byte card record
- * {@code app/cpy/CVACT02Y.cpy}.
+ * Unit tests for {@link CardUpdateResponse}, the response body of legacy CICS transaction
+ * {@code CCUP}.
  *
- * <p><strong>The message block is the contract, and it is deliberately inconsistent.</strong>
- * Several texts look like source defects and must nevertheless survive byte for byte: the file-error
- * prefix ends in a space, one confirmation text has no space after its full stop while the
- * structurally identical failure text does, the exit text carries fourteen trailing pad spaces, one
- * text runs to four full stops, the concurrency text spells a pronoun as two words, and the
- * expiry-month text names its bounds without zero padding. Normalising any of them breaks an external
- * interface contract, so each is asserted individually by name as well as in the round-trip table. A
- * case difference is contract rather than defect and is never harmonised: these texts are mixed case
- * whereas the card <em>list</em> program declares its texts in upper case, and two filter texts on
- * this very screen are themselves upper case among mixed-case neighbours.
+ * <p>This is a pure unit test. It starts no application context, opens no connection, launches no
+ * container and reads no property file: it constructs the type directly and, where the wire shape is
+ * itself the thing under test, serialises it with a mapper built locally in this file to carry the
+ * settings the module declares in {@code carddemo-java/src/main/resources/application.yml}. The
+ * mapper is built here rather than borrowed from a helper so that this file states, in one place,
+ * exactly which settings its wire assertions depend on. Nothing here shares mutable state with any
+ * other test.
  *
- * <p><strong>Absences are asserted as deliberately as presences.</strong> No function-key legend and
- * no 3270 rendering artefact of any kind reaches a client, and no <em>readable</em> version marker,
- * entity tag, row version, timestamp, before-image or cursor position appears: the lock and
- * concurrency texts reach a client as text, never as a version token, and the provider's version
- * marker lives on the persistent card entity. The opaque sealed proof the type does carry is a
- * different thing and is asserted present because decision {@code DL-109} of
- * {@code docs/decision-log.md} requires it - the legacy program carried the fetched image itself,
- * returned it with the screen and compared against it on the confirming turn.
+ * <p><strong>Everything asserted about the type is asserted without inspecting it.</strong> No
+ * runtime type inspection of any kind is used: the component inventory is proved by calling the
+ * canonical constructor with its full positional argument list, so the compiler itself rejects a
+ * component that is added, removed, renamed, reordered or retyped, and the wire inventory is proved
+ * by reading the serialised key set. Immutability is proved by construction - the type has no
+ * mutator to call, and the two collection tests show that neither the caller's list nor the exposed
+ * list can reach inside a built instance.
  *
- * <p>A pure unit test: nothing is started, opened or launched. Expectations are restated from the
- * program rather than read out of the class under test, the component inventory is proved by calling
- * the canonical constructor positionally so the compiler rejects any change of shape, the wire
- * inventory by reading the serialised key set, and immutability by construction. The mapper is built
- * locally here so this file states in one place which settings its wire assertions depend on.
+ * <p><strong>Where the facts come from.</strong> The field inventory and every width come from the
+ * generated symbolic map {@code app/cpy-bms/COCRDUP.CPY}, whose output redefinition begins at line
+ * 121 and declares the fifteen modelled items at lines 128, 134, 140, 146, 152, 158, 164, 170, 176,
+ * 182, 188, 194, 200, 206 and 212. Two further items in that redefinition, at lines 218 and 224, are
+ * function-key legend furniture and are deliberately absent from the response; their absence is
+ * asserted rather than trusted. The protection attributes come from the mapset
+ * {@code app/bms/COCRDUP.bms}, where the account identifier is protected at line 84 and the expiry
+ * day is dark, field-set and protected at line 142. The behaviour and every message literal come
+ * from {@code app/cbl/COCRDUPC.cbl}, 1,560 lines across 45 paragraphs. The two-state field-error
+ * contract comes from the parameterized decoration macro {@code app/cpy/CSSETATY.cpy}, whose
+ * re-entry gate is at line 20. The persisted layout behind the card values is the 150-byte card
+ * record {@code app/cpy/CVACT02Y.cpy}.
+ *
+ * <p><strong>The message block is the contract, and it is deliberately inconsistent.</strong> Every
+ * expected text below is restated from the program independently of the class under test, which is
+ * the whole point: a table that read its expectations out of the class it is testing would assert
+ * nothing. Several of the texts look like source defects and must nevertheless survive byte for
+ * byte - the file-error prefix ends in a space, one confirmation text has no space after its full
+ * stop while the structurally identical failure text does, the exit text carries fourteen trailing
+ * pad spaces, one text runs to four full stops, the concurrency text spells a pronoun as two words,
+ * and the expiry-month text names its bounds without zero padding. Normalising any of them breaks
+ * the external interface contract, so each is asserted individually and by name in addition to the
+ * exhaustive round-trip table.
+ *
+ * <p>A further case difference is contract rather than defect and is therefore never harmonised:
+ * these texts are <em>mixed case</em>, whereas the card <em>list</em> program declares its operator
+ * texts in <em>upper case</em>. Two texts on this very screen - the two filter texts the program
+ * declares at its lines 745 and 789 - are themselves upper case where every neighbouring text is
+ * mixed case. Both spellings are reproduced exactly as declared.
+ *
+ * <p><strong>Absences are asserted as deliberately as presences.</strong> No function-key legend, no
+ * 3270 rendering artefact of any kind - no control-byte family, no terminal-buffer prefix, no map
+ * coordinate, no attribute or colour value, no edited screen mask - and no <em>readable</em> version
+ * number, entity tag, row version, timestamp, before-image snapshot or cursor position appears
+ * anywhere in the contract. The lock text the program declares at line 206 and the concurrency text
+ * it declares at line 208 reach a client as <em>text</em> and never as a version token; the
+ * provider's version marker lives on the persistent card entity, not here.
+ *
+ * <p>The opaque sealed proof the type does carry is a different thing from a readable version
+ * marker, and it is asserted present because the production contract declares it under decision
+ * {@code DL-109} of {@code docs/decision-log.md}: the legacy program carried the fetched image
+ * itself, returned it with the screen and compared against it on the confirming turn, so the
+ * migrated screen has to hand out an equivalent. What is asserted about it is that it round-trips
+ * untouched, that it reaches the wire, and that a diagnostic rendering never discloses it - never
+ * that it has any readable structure, because it has none and nothing may be parsed out of it.
+ *
+ * <p>Provenance of every citation in this file: checkout SHA
+ * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Cited in this documentation only and never
+ * declared as a value: the stamp is not universal across the estate, so a constant asserting it
+ * would be wrong for the members that carry a different one. No statement of the legacy source is
+ * transcribed here - widths, offsets, counts, line numbers, member names and contract literals are
+ * metadata about it, not extracts from it.
  */
 @DisplayName("CardUpdateResponse :: card-update response contract of legacy transaction CCUP")
 class CardUpdateResponseTest {
+
+    /**
+     * The declared width of the error line on this map: 80.
+     *
+     * <p>Restated here so that the width assertions do not read their expectation out of the class
+     * under test. Thirteen of the seventeen symbolic maps in the estate declare 78 for the same
+     * screen role; this map and the card-detail map declare 80, and the divergence is reproduced
+     * rather than reconciled.
+     */
     private static final int MAP_ERROR_MESSAGE_WIDTH = 80;
 
+    /**
+     * The declared width of the information line on this map: 40.
+     *
+     * <p>The account-view and account-update maps declare 45 for the same screen role. As with the
+     * error line, the divergence is honoured and never normalised.
+     */
     private static final int MAP_INFORMATION_MESSAGE_WIDTH = 40;
 
+    /** The width the other thirteen maps use for the error line, which this map must never adopt. */
     private static final int OTHER_MAPS_ERROR_MESSAGE_WIDTH = 78;
 
+    /** The width the account maps use for the information line, which this map must never adopt. */
     private static final int OTHER_MAPS_INFORMATION_MESSAGE_WIDTH = 45;
 
+    /**
+     * An account identifier at the full declared width of eleven whose leading zeros are the whole
+     * point: a value that survives as characters and would be destroyed by an integral type.
+     */
     private static final String LEADING_ZERO_ACCOUNT_ID = "00000000001";
 
+    /**
+     * A fictional card number at the full declared width of sixteen, chosen so that fifteen of its
+     * sixteen characters are leading zeros. It is not a number in any issuer range and cannot be a
+     * real primary account number.
+     */
     private static final String LEADING_ZERO_CARD_NUMBER = "0000000000000001";
 
+    /**
+     * A second fictional card number at the full declared width, visibly distinct from the
+     * leading-zero one so that a disclosure assertion cannot pass by coincidence.
+     */
     private static final String FICTIONAL_CARD_NUMBER = "9999000011112222";
 
+    /**
+     * A mixed-case embossed name at exactly the declared width of fifty.
+     *
+     * <p>Mixed case on purpose. The program upper-folds the embossed name in place through a strict
+     * 26-character table at its lines 1356 and 1499, and that fold belongs to the service; this
+     * response must hand back whatever it was given, letter case included. The embedded spaces are
+     * also deliberate: the legacy alphabetic check blanks every letter and then measures what is
+     * left, so an interior space passes, which is exactly what the program's own rule text says.
+     */
     private static final String MIXED_CASE_EMBOSSED_NAME =
             "Mary Ann de la Cruz-O'Brien Smithson Jones      xy";
 
+    /** The screen field identifier of the expiry month, used as the focus hint. */
     private static final String SCREEN_FIELD_EXPIRY_MONTH = "EXPMON";
 
+    /** The screen field identifier of the embossed name. */
     private static final String SCREEN_FIELD_CARD_NAME = "CRDNAME";
 
+    /** The screen field identifier of the active-status code. */
     private static final String SCREEN_FIELD_CARD_STATUS = "CRDSTCD";
 
+    /**
+     * A declarative next-route label. It carries no account identifier and no card number, because a
+     * route that embedded a regulated value would carry it into every diagnostic rendering of this
+     * response no matter what the response itself withholds.
+     */
     private static final String NEXT_ROUTE = "/api/cards/update";
+
+    /**
+     * A stand-in for a minted concurrency proof, deliberately an arbitrary opaque string rather than
+     * anything a real minting service would produce: this type neither reads, parses, validates nor
+     * bounds the proof, so a realistic value would exercise the minting service instead of this
+     * contract. Its characters are visibly not a card value.
+     */
+    private static final String SEALED_PROOF_STAND_IN = "ccup-sealed-proof-stand-in";
 
     /** The five properties RFC 7807 would introduce, none of which this response may expose. */
     private static final List<String> PROBLEM_DETAIL_PROPERTIES =
@@ -115,7 +209,7 @@ class CardUpdateResponseTest {
      * this list proves the whole component inventory without inspecting the type at runtime: a
      * component that was added would appear as an extra key, and one that was removed would be a
      * missing key. It is therefore also the proof that the two function-key legend items, every 3270
-     * rendering artefact and every version marker, readable or opaque, are absent.
+     * rendering artefact and every readable version marker are absent.
      */
     private static final List<String> EXPECTED_WIRE_KEYS = List.of(
             "transactionName",
@@ -137,8 +231,21 @@ class CardUpdateResponseTest {
             "fieldErrors",
             "focusScreenFieldId",
             "nextRoute",
-            "navigationContext");
+            "navigationContext",
+            "concurrencyToken");
 
+    /**
+     * Keys that must never appear in the serialised contract, each with a reason.
+     *
+     * <p>{@code fkeys} and {@code fkeysc} are the two function-key legend items the map carries and
+     * this contract deliberately drops. {@code crdstp} is the screen-furniture family this contract
+     * has no member of. {@code version}, {@code rowVersion}, {@code etag}, {@code timestamp},
+     * {@code beforeImage} and {@code cursor} are readable concurrency or rendering state a client
+     * could assert for itself - the concurrent-change condition reaches a client as the text the
+     * program declares at line 208 and in no other form. {@code cvv} and {@code securityCode} are
+     * values the legacy design never carried on this screen, so introducing either would be feature
+     * expansion.
+     */
     private static final List<String> FORBIDDEN_WIRE_KEYS = List.of(
             "fkeys",
             "fkeysc",
@@ -152,6 +259,17 @@ class CardUpdateResponseTest {
             "cvv",
             "securityCode");
 
+    /**
+     * Builds a mapper carrying the settings the module declares for its own mapper.
+     *
+     * <p>Built here rather than shared, so this file states exactly which settings its wire
+     * assertions rest on: absent properties are omitted rather than emitted as null, dates are not
+     * written as timestamps, an unknown incoming property is tolerated rather than rejected, and a
+     * decimal is written in plain notation. A payload asserted through this mapper is the payload
+     * this type produces <em>under those settings</em>.
+     *
+     * @return a mapper carrying the module's declared serialisation settings
+     */
     private static ObjectMapper moduleEquivalentMapper() {
         return JsonMapper.builder()
                 .defaultPropertyInclusion(JsonInclude.Value.construct(
@@ -162,23 +280,61 @@ class CardUpdateResponseTest {
                 .build();
     }
 
+    /**
+     * Serialises a response and parses the result back into a tree, so the wire shape can be
+     * inspected key by key.
+     *
+     * @param response the response to serialise
+     * @return the parsed payload
+     * @throws JsonProcessingException if the payload cannot be produced or parsed, which is itself a
+     *                                 contract failure and is therefore never caught here
+     */
     private static JsonNode payloadOf(CardUpdateResponse response) throws JsonProcessingException {
         ObjectMapper mapper = moduleEquivalentMapper();
         return mapper.readTree(mapper.writeValueAsString(response));
     }
 
+    /**
+     * Serialises a response and reads it back, so that a value can be shown to survive the wire
+     * unchanged.
+     *
+     * @param response the response to round-trip
+     * @return the revived response
+     * @throws JsonProcessingException if the payload cannot be produced or parsed
+     */
     private static CardUpdateResponse wireRoundTrip(CardUpdateResponse response)
             throws JsonProcessingException {
         ObjectMapper mapper = moduleEquivalentMapper();
         return mapper.readValue(mapper.writeValueAsString(response), CardUpdateResponse.class);
     }
 
+    /**
+     * Collects the key names of a JSON object in the order the payload declares them.
+     *
+     * @param payload the parsed payload
+     * @return the key names, in payload order
+     */
     private static List<String> keysOf(JsonNode payload) {
         List<String> keys = new ArrayList<>();
         payload.fieldNames().forEachRemaining(keys::add);
         return List.copyOf(keys);
     }
 
+    /**
+     * Builds the fully populated response through the canonical constructor with every one of its
+     * twenty-one positional arguments supplied.
+     *
+     * <p>This call is itself the inventory assertion: the compiler rejects it if a component is
+     * added, removed, renamed, reordered or retyped, which is how the component set is pinned
+     * without inspecting the type at runtime.
+     *
+     * @param informationMessage the information line, or {@code null}
+     * @param errorMessage       the error line, or {@code null}
+     * @param generalError       whether the submission failed as a whole
+     * @param fieldErrors        the per-field errors, or {@code null} for none
+     * @param focusScreenFieldId the focus hint, or {@code null}
+     * @return the fully populated response
+     */
     private static CardUpdateResponse fullyPopulated(String informationMessage,
                                                      String errorMessage,
                                                      boolean generalError,
@@ -204,9 +360,17 @@ class CardUpdateResponseTest {
                 fieldErrors,
                 focusScreenFieldId,
                 NEXT_ROUTE,
-                populatedNavigationContext());
+                populatedNavigationContext(),
+                SEALED_PROOF_STAND_IN);
     }
 
+    /**
+     * Builds the first-submission shape through the seventeen-argument convenience constructor: the
+     * fetched card values, one information line, and no error of either kind.
+     *
+     * @param informationMessage the information line, or {@code null}
+     * @return the informational response
+     */
     private static CardUpdateResponse firstSubmission(String informationMessage) {
         return new CardUpdateResponse(
                 "CCUP",
@@ -224,9 +388,17 @@ class CardUpdateResponseTest {
                 "31",
                 informationMessage,
                 NEXT_ROUTE,
-                populatedNavigationContext().withFirstEntry());
+                populatedNavigationContext().withFirstEntry(),
+                SEALED_PROOF_STAND_IN);
     }
 
+    /**
+     * Builds the re-submission shape: one summary error text, the explicit failure flag, and the
+     * supplied per-field errors.
+     *
+     * @param fieldErrors the per-field errors, or {@code null} for none
+     * @return the re-entry response
+     */
     private static CardUpdateResponse reSubmission(List<ErrorResponse.FieldError> fieldErrors) {
         return new CardUpdateResponse(
                 "CCUP",
@@ -248,9 +420,16 @@ class CardUpdateResponseTest {
                 fieldErrors,
                 SCREEN_FIELD_EXPIRY_MONTH,
                 NEXT_ROUTE,
-                populatedNavigationContext().withReEntry());
+                populatedNavigationContext().withReEntry(),
+                SEALED_PROOF_STAND_IN);
     }
 
+    /**
+     * Builds an echoed navigation state whose identifiers all carry leading zeros, so that the
+     * carried-not-reimplemented assertion has something significant to preserve.
+     *
+     * @return the populated navigation state
+     */
     private static NavigationContext populatedNavigationContext() {
         return new NavigationContext(
                 "CCUP",
@@ -271,6 +450,7 @@ class CardUpdateResponseTest {
                 "COCRDUP");
     }
 
+    /** The invalid-value state of the expiry month: filled in, but the value failed its edit. */
     private static ErrorResponse.FieldError expiryMonthInvalid() {
         return new ErrorResponse.FieldError(
                 "expiryMonth",
@@ -279,6 +459,7 @@ class CardUpdateResponseTest {
                 CardUpdateResponse.Messages.CARD_EXPIRY_MONTH_NOT_VALID);
     }
 
+    /** The blank state of the embossed name: left empty when a value was needed. */
     private static ErrorResponse.FieldError embossedNameMissing() {
         return new ErrorResponse.FieldError(
                 "embossedName",
@@ -287,6 +468,7 @@ class CardUpdateResponseTest {
                 CardUpdateResponse.Messages.PROMPT_FOR_NAME);
     }
 
+    /** The invalid-value state of the active-status code. */
     private static ErrorResponse.FieldError activeStatusInvalid() {
         return new ErrorResponse.FieldError(
                 "activeStatus",
@@ -295,15 +477,44 @@ class CardUpdateResponseTest {
                 CardUpdateResponse.Messages.CARD_STATUS_MUST_BE_YES_NO);
     }
 
+    /**
+     * Which of the two message rows a text belongs on.
+     *
+     * <p>The program keeps two separate work fields and each text belongs to exactly one of them:
+     * six texts belong to the 40-character information field and the rest to the 75-character return
+     * field that feeds the 80-character error row. The distinction is behavioural - it decides which
+     * screen row an operator reads the text on - so it is reproduced rather than flattened.
+     */
     private enum MessageRow {
+
+        /** The information row, fed by the program's 40-character information work field. */
         INFORMATION,
 
+        /** The error row, fed by the program's 75-character return work field. */
         ERROR
     }
 
+    /**
+     * One declared operator text, with the program line that declares it, its exact character count
+     * and the screen row it belongs on.
+     *
+     * @param programLine the line of {@code app/cbl/COCRDUPC.cbl} that declares the text
+     * @param text        the exact characters, restated independently of the class under test
+     * @param length      the exact character count, restated so a silent trim cannot pass
+     * @param row         the screen row the program routes the text to
+     */
     private record DeclaredMessage(int programLine, String text, int length, MessageRow row) {
     }
 
+    /**
+     * The fifteen texts this contract must carry, each with the program line that declares it, its
+     * measured length and its screen row.
+     *
+     * <p>Every value is restated from {@code app/cbl/COCRDUPC.cbl} rather than read from
+     * {@link CardUpdateResponse.Messages}, so that the table is an independent oracle. The lengths
+     * are stated as well as the characters, because a length assertion is what catches a trim that a
+     * character assertion on a trimmed value would miss.
+     */
     private static List<DeclaredMessage> declaredMessages() {
         return List.of(
                 new DeclaredMessage(135, "File Error: ", 12, MessageRow.ERROR),
@@ -333,6 +544,12 @@ class CardUpdateResponseTest {
                 new DeclaredMessage(214, "Looks Good.... so far", 21, MessageRow.ERROR));
     }
 
+    /**
+     * Puts a text on the row the program routes it to and returns the response that carries it.
+     *
+     * @param declared the text and its row
+     * @return a response carrying the text on its own row and nothing on the other
+     */
     private static CardUpdateResponse carrying(DeclaredMessage declared) {
         return switch (declared.row()) {
             case INFORMATION -> fullyPopulated(declared.text(), null, false, List.of(), null);
@@ -340,6 +557,13 @@ class CardUpdateResponseTest {
         };
     }
 
+    /**
+     * Reads back whichever row a text was placed on.
+     *
+     * @param response the response carrying the text
+     * @param declared the text and its row
+     * @return the value read back from that row
+     */
     private static String carriedText(CardUpdateResponse response, DeclaredMessage declared) {
         return switch (declared.row()) {
             case INFORMATION -> response.informationMessage();
@@ -350,6 +574,7 @@ class CardUpdateResponseTest {
     @Nested
     @DisplayName("The fifteen declared operator texts")
     class MessageLiteralContract {
+
         @Test
         @DisplayName("each text the program declares is carried on its own screen row, survives a "
                 + "wire round trip and reads back byte for byte at its exact length")
@@ -583,6 +808,7 @@ class CardUpdateResponseTest {
     @Nested
     @DisplayName("The two message widths unique to the card maps")
     class MessageWidthContract {
+
         @Test
         @DisplayName("this map's message widths are eighty and forty, deliberately not the "
                 + "seventy-eight and forty-five the other maps declare")
@@ -725,6 +951,7 @@ class CardUpdateResponseTest {
     @Nested
     @DisplayName("The two-state field-error surface and the single summary text")
     class FieldErrorContract {
+
         @Test
         @DisplayName("per-field errors carry exactly two states, the two are never conflated, and "
                 + "several independent field errors coexist")
@@ -937,6 +1164,7 @@ class CardUpdateResponseTest {
     @Nested
     @DisplayName("The echoed card values")
     class EchoedValueContract {
+
         @Test
         @DisplayName("every echoed value reads back byte for byte at its full declared width, with "
                 + "nothing shortened, space-filled, re-cased or re-rendered")
@@ -1000,7 +1228,8 @@ class CardUpdateResponseTest {
                     "3",
                     null,
                     NEXT_ROUTE,
-                    NavigationContext.empty());
+                    NavigationContext.empty(),
+                    SEALED_PROOF_STAND_IN);
 
             assertThat(response.accountId())
                     .as("a bound reports an over-long value and never pads a short one")
@@ -1072,7 +1301,8 @@ class CardUpdateResponseTest {
                     asProduced.expiryDay(),
                     asProduced.informationMessage(),
                     asProduced.nextRoute(),
-                    asProduced.navigationContext());
+                    asProduced.navigationContext(),
+                    asProduced.concurrencyToken());
 
             assertThat(recased.embossedName()).isNotEqualTo(asProduced.embossedName());
             assertThat(recased).isNotEqualTo(asProduced);
@@ -1197,7 +1427,8 @@ class CardUpdateResponseTest {
                     "31",
                     null,
                     NEXT_ROUTE,
-                    NavigationContext.empty());
+                    NavigationContext.empty(),
+                    SEALED_PROOF_STAND_IN);
 
             JsonNode payload = payloadOf(response);
 
@@ -1221,6 +1452,7 @@ class CardUpdateResponseTest {
     @Nested
     @DisplayName("The status vocabulary the raw active-status character belongs to")
     class ActiveStatusVocabularyContract {
+
         @Test
         @DisplayName("the vocabulary has exactly two constants, and neither a synthetic fallback nor "
                 + "any catch-all constant exists")
@@ -1278,6 +1510,9 @@ class CardUpdateResponseTest {
                 + "and the field-error one is a member of the response contract rather than a "
                 + "tenth member of the domain vocabulary set")
         void theStatusAndFieldErrorVocabulariesAreSeparate() {
+            // ErrorResponse.FieldState is reached here as a nested member of the response contract.
+            // That reference compiling at all is the proof that it is not a member of the domain
+            // vocabulary package: were it declared there, this qualification would not resolve.
             assertThat(ErrorResponse.FieldState.values()).hasSize(2);
             assertThat(CardStatus.values()).hasSize(2);
 
@@ -1332,7 +1567,8 @@ class CardUpdateResponseTest {
                     "31",
                     null,
                     NEXT_ROUTE,
-                    NavigationContext.empty());
+                    NavigationContext.empty(),
+                    SEALED_PROOF_STAND_IN);
 
             assertThat(outOfVocabulary.activeStatus()).isEqualTo("X").hasSize(1);
             assertThat(CardStatus.fromCode(outOfVocabulary.activeStatus())).isEmpty();
@@ -1360,6 +1596,7 @@ class CardUpdateResponseTest {
     @Nested
     @DisplayName("The echoed navigation state")
     class NavigationStateContract {
+
         @Test
         @DisplayName("the navigation state is carried whole, and every identifier in it round-trips "
                 + "unchanged including the leading zeros")
@@ -1421,7 +1658,8 @@ class CardUpdateResponseTest {
                     "31",
                     null,
                     NEXT_ROUTE,
-                    null);
+                    null,
+                    SEALED_PROOF_STAND_IN);
 
             assertThat(response.navigationContext()).isNull();
             assertThat(payloadOf(response).has("navigationContext")).isFalse();
@@ -1454,6 +1692,7 @@ class CardUpdateResponseTest {
     @Nested
     @DisplayName("The declared bounds and what they may and may not do")
     class DeclaredBoundContract {
+
         @Test
         @DisplayName("a response whose every component is absent reports no violation at all, "
                 + "because the only rule the contract declares is a maximum length")
@@ -1475,6 +1714,7 @@ class CardUpdateResponseTest {
                     null,
                     null,
                     false,
+                    null,
                     null,
                     null,
                     null,
@@ -1510,6 +1750,7 @@ class CardUpdateResponseTest {
             assertThat(empty.focusScreenFieldId()).isNull();
             assertThat(empty.nextRoute()).isNull();
             assertThat(empty.navigationContext()).isNull();
+            assertThat(empty.concurrencyToken()).isNull();
         }
 
         @Test
@@ -1532,7 +1773,8 @@ class CardUpdateResponseTest {
                     "  ",
                     " ".repeat(MAP_INFORMATION_MESSAGE_WIDTH),
                     NEXT_ROUTE,
-                    NavigationContext.empty());
+                    NavigationContext.empty(),
+                    SEALED_PROOF_STAND_IN);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(blanks))
@@ -1566,7 +1808,8 @@ class CardUpdateResponseTest {
                     "31",
                     null,
                     NEXT_ROUTE,
-                    NavigationContext.empty());
+                    NavigationContext.empty(),
+                    SEALED_PROOF_STAND_IN);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 Set<ConstraintViolation<CardUpdateResponse>> violations =
@@ -1581,8 +1824,9 @@ class CardUpdateResponseTest {
         }
 
         @Test
-        @DisplayName("the route carries no width rule, because it is not a fixed-width screen field")
-        void theRouteCarriesNoWidthRule() {
+        @DisplayName("the route and the sealed proof carry no width rule, because neither is a "
+                + "fixed-width screen field")
+        void theRouteAndTheSealedProofCarryNoWidthRule() {
             String farLongerThanAnyScreenField = "x".repeat(4096);
             CardUpdateResponse response = new CardUpdateResponse(
                     "CCUP",
@@ -1600,7 +1844,8 @@ class CardUpdateResponseTest {
                     "31",
                     null,
                     "/api/cards/" + farLongerThanAnyScreenField,
-                    NavigationContext.empty());
+                    NavigationContext.empty(),
+                    farLongerThanAnyScreenField);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(response))
@@ -1609,15 +1854,18 @@ class CardUpdateResponseTest {
                         .isEmpty();
             }
 
-            assertThat(response.nextRoute())
-                    .as("the route is an opaque label, not a screen field, so no width rule binds it")
-                    .hasSize(4107);
+            assertThat(response.concurrencyToken())
+                    .isEqualTo(farLongerThanAnyScreenField)
+                    .hasSize(4096);
+            assertThat(response.nextRoute()).hasSize(4107);
         }
     }
 
     @Nested
     @DisplayName("The wire contract, and everything deliberately absent from it")
     class WireContract {
+
+        /** A response with every one of the twenty-one components supplied. */
         private CardUpdateResponse whollyPopulated() {
             return fullyPopulated(
                     CardUpdateResponse.Messages.PROMPT_FOR_CONFIRMATION,
@@ -1628,16 +1876,16 @@ class CardUpdateResponseTest {
         }
 
         @Test
-        @DisplayName("the serialised contract carries exactly the twenty keys the type declares, "
+        @DisplayName("the serialised contract carries exactly the twenty-one keys the type declares, "
                 + "which is what proves nothing has been added and nothing dropped")
         void theSerialisedContractCarriesExactlyTheDeclaredKeys() throws JsonProcessingException {
             List<String> keys = keysOf(payloadOf(whollyPopulated()));
 
             assertThat(keys)
                     .containsExactlyInAnyOrderElementsOf(EXPECTED_WIRE_KEYS)
-                    .hasSize(20);
+                    .hasSize(21);
             assertThat(keys).startsWith("transactionName");
-            assertThat(keys).endsWith("navigationContext");
+            assertThat(keys).endsWith("concurrencyToken");
         }
 
         @Test
@@ -1755,6 +2003,7 @@ class CardUpdateResponseTest {
             assertThat(revived.fieldErrors()).isNotNull().isEmpty();
             assertThat(revived.errorMessage()).isNull();
             assertThat(revived.navigationContext()).isNull();
+            assertThat(revived.concurrencyToken()).isNull();
         }
 
         @Test
@@ -1800,53 +2049,58 @@ class CardUpdateResponseTest {
                     "31",
                     null,
                     null,
-                    NavigationContext.empty());
+                    NavigationContext.empty(),
+                    SEALED_PROOF_STAND_IN);
 
             assertThat(response.nextRoute()).isNull();
             assertThat(payloadOf(response).has("nextRoute")).isFalse();
         }
 
-        /**
-         * No optimistic-lock, version, entity-tag or row-version value reaches the wire.
-         *
-         * <p>The legacy program detected a concurrent change by comparing the image it had fetched when
-         * the screen was built against the record it re-read under lock, then abandoned the write. That
-         * mechanism is reproduced by JPA {@code @Version} on the card entity, which is an entity and
-         * service concern. The client learns of a conflict from one thing only - the operator text at
-         * program line 208 - and never from a token it would have to store and echo. Asserting the
-         * property set exactly, rather than merely naming a few forbidden spellings, is what makes a
-         * reintroduction by any spelling fail here.</p>
-         */
         @Test
-        @DisplayName("no concurrency, version, entity-tag or row-version property reaches the wire, "
-                + "because a conflict is reported as operator text and nothing else")
-        void noConcurrencyOrVersionPropertyReachesTheWire() throws JsonProcessingException {
+        @DisplayName("the sealed proof reaches the wire, survives a round trip byte for byte, and is "
+                + "omitted entirely when a shape presents no card to confirm")
+        void theSealedProofReachesTheWireAndIsOmittedWhenAbsent() throws JsonProcessingException {
             CardUpdateResponse presenting =
                     firstSubmission(CardUpdateResponse.Messages.FOUND_CARDS_FOR_ACCOUNT);
 
-            List<String> emitted = new ArrayList<>();
-            payloadOf(presenting).fieldNames().forEachRemaining(emitted::add);
+            assertThat(payloadOf(presenting).get("concurrencyToken").asText())
+                    .isEqualTo(SEALED_PROOF_STAND_IN);
 
-            assertThat(emitted)
-                    .as("the emitted property set carries no revision value under any spelling")
-                    .noneSatisfy(name -> assertThat(name.toLowerCase(Locale.ROOT))
-                            .containsAnyOf("concurrency", "version", "etag", "rowversion",
-                                    "revision", "token", "lock", "stamp"));
+            CardUpdateResponse revived = wireRoundTrip(presenting);
 
-            assertThat(wireRoundTrip(presenting))
-                    .as("the round trip is lossless precisely because no such value exists to lose")
-                    .isEqualTo(presenting);
+            assertThat(revived.concurrencyToken()).isEqualTo(SEALED_PROOF_STAND_IN);
+            assertThat(revived).isEqualTo(presenting);
 
-            assertThat(CardUpdateResponse.Messages.DATA_WAS_CHANGED)
-                    .as("the conflict surfaces as this text, which is the whole of the contract")
-                    .isEqualTo("Record changed by some one else. Please review")
-                    .hasSize(46);
+            CardUpdateResponse noCardPresented = new CardUpdateResponse(
+                    "CCUP",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    CardUpdateResponse.Messages.PROMPT_FOR_SEARCH_KEYS,
+                    NEXT_ROUTE,
+                    NavigationContext.empty().withFirstEntry(),
+                    null);
+
+            assertThat(noCardPresented.concurrencyToken()).isNull();
+            assertThat(payloadOf(noCardPresented).has("concurrencyToken")).isFalse();
+            assertThat(noCardPresented.informationMessage())
+                    .isEqualTo("Please enter Account and Card Number");
         }
     }
 
     @Nested
     @DisplayName("Value semantics, immutability and the diagnostic rendering")
     class ValueSemanticsContract {
+
         @Test
         @DisplayName("two responses built from the same values are equal and share a hash code, "
                 + "because the contract is a value and not an identity")
@@ -1909,9 +2163,9 @@ class CardUpdateResponseTest {
         }
 
         @Test
-        @DisplayName("two responses differing in one echoed value are not equal, so no component is "
-                + "excluded from the record's value semantics")
-        void aDifferentEchoedValueYieldsADifferentResponse() {
+        @DisplayName("two responses differing only in their sealed proof are not equal, so a proof "
+                + "cannot be swapped between responses without changing the value")
+        void aDifferentSealedProofYieldsADifferentResponse() {
             CardUpdateResponse first = firstSubmission(null);
             CardUpdateResponse second = new CardUpdateResponse(
                     first.transactionName(),
@@ -1927,17 +2181,18 @@ class CardUpdateResponseTest {
                     first.expiryMonth(),
                     first.expiryYear(),
                     first.expiryDay(),
-                    CardUpdateResponse.Messages.PROMPT_FOR_CONFIRMATION,
+                    first.informationMessage(),
                     first.nextRoute(),
-                    first.navigationContext());
+                    first.navigationContext(),
+                    SEALED_PROOF_STAND_IN + "-other");
 
             assertThat(second).isNotEqualTo(first);
-            assertThat(second.informationMessage()).isNotEqualTo(first.informationMessage());
+            assertThat(second.concurrencyToken()).isNotEqualTo(first.concurrencyToken());
         }
 
         @Test
-        @DisplayName("the diagnostic rendering withholds the card values while the payload still "
-                + "carries every one of them in full")
+        @DisplayName("the diagnostic rendering withholds the card values and the sealed proof while "
+                + "the payload still carries every one of them in full")
         void theDiagnosticRenderingWithholdsWhileThePayloadDoesNot()
                 throws JsonProcessingException {
             CardUpdateResponse response =
@@ -1947,11 +2202,10 @@ class CardUpdateResponseTest {
 
             assertThat(rendered)
                     .doesNotContain(LEADING_ZERO_CARD_NUMBER)
-                    .doesNotContain(MIXED_CASE_EMBOSSED_NAME);
+                    .doesNotContain(MIXED_CASE_EMBOSSED_NAME)
+                    .doesNotContain(SEALED_PROOF_STAND_IN);
             assertThat(rendered).contains("CardUpdateResponse");
-            assertThat(rendered)
-                    .as("no revision value is rendered, because none is declared")
-                    .doesNotContain("concurrencyToken");
+            assertThat(rendered).contains("concurrencyToken=***REDACTED***");
             assertThat(rendered).contains("expiryMonth=***REDACTED***",
                     "expiryYear=***REDACTED***", "expiryDay=***REDACTED***");
             assertThat(rendered)
@@ -1965,6 +2219,7 @@ class CardUpdateResponseTest {
             assertThat(payload.get("accountId").asText()).isEqualTo(LEADING_ZERO_ACCOUNT_ID);
             assertThat(payload.get("cardNumber").asText()).isEqualTo(LEADING_ZERO_CARD_NUMBER);
             assertThat(payload.get("embossedName").asText()).isEqualTo(MIXED_CASE_EMBOSSED_NAME);
+            assertThat(payload.get("concurrencyToken").asText()).isEqualTo(SEALED_PROOF_STAND_IN);
             assertThat(payload.toString()).doesNotContain("REDACTED");
         }
 
@@ -2017,6 +2272,7 @@ class CardUpdateResponseTest {
             assertThat(response.focusScreenFieldId()).isEqualTo(SCREEN_FIELD_EXPIRY_MONTH);
             assertThat(response.nextRoute()).isEqualTo(NEXT_ROUTE);
             assertThat(response.navigationContext()).isEqualTo(populatedNavigationContext());
+            assertThat(response.concurrencyToken()).isEqualTo(SEALED_PROOF_STAND_IN);
             assertThat(response.hasFieldErrors()).isTrue();
         }
 

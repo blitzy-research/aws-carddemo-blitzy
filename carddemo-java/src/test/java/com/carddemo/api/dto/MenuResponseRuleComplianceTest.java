@@ -21,7 +21,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import com.carddemo.config.MenuOptionCatalog;
+import com.carddemo.service.MenuOptionCatalog;
 import com.carddemo.service.MessageCatalogService;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -83,7 +83,7 @@ class MenuResponseRuleComplianceTest {
      *
      * The response contract deliberately declares no title text and no option catalogue: the titles
      * are owned by com.carddemo.service.MessageCatalogService and the rows by
-     * com.carddemo.config.MenuOptionCatalog, and a second declaration anywhere would be a second
+     * com.carddemo.service.MenuOptionCatalog, and a second declaration anywhere would be a second
      * authority that can drift from the first. This suite therefore takes its expectations from those
      * owners, which is what makes an assertion here evidence about the module rather than evidence
      * about a copy of it. A test may read any layer; the contract under test may not.

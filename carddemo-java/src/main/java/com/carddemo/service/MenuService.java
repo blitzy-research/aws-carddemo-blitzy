@@ -29,9 +29,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import com.carddemo.api.dto.MenuResponse;
-import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.config.MenuOptionCatalog;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.domain.enums.UserType;
 import com.carddemo.exception.AbendException;
@@ -182,16 +179,16 @@ public final class MenuService {
      *                         may be {@code null}, in which case no gate trips
      * @return the route, navigation state, message and rows for the client to render
      */
-    public MenuResponse userMenu(final NavigationContext inboundContext,
+    public MenuScreen userMenu(final ConversationState inboundContext,
                                  final KeyAction keyAction,
                                  final String submittedOption,
                                  final UserType signedOnUserType) {
-        if (navigationService.isNavigationContextAbsent(inboundContext)) {
-            final NavigationContext nominated =
-                    withOriginatingProgram(NavigationContext.empty(), SIGN_ON_PROGRAM_NAME);
+        if (navigationService.isConversationStateAbsent(inboundContext)) {
+            final ConversationState nominated =
+                    withOriginatingProgram(ConversationState.empty(), SIGN_ON_PROGRAM_NAME);
             LOG.debug("User menu entered with no prior navigation state: transaction={}",
                     USER_MENU_TRANSACTION_ID);
-            return userMenuTransfer(returnToSignOnScreen(nominated), NavigationContext.empty());
+            return userMenuTransfer(returnToSignOnScreen(nominated), ConversationState.empty());
         }
         if (inboundContext.firstEntry()) {
             return sendUserMenuScreen(null, null, null, false, inboundContext.withReEntry());
@@ -201,13 +198,13 @@ public final class MenuService {
             return processUserMenuEnterKey(optionField, inboundContext, signedOnUserType);
         }
         if (navigationService.isBackNavigationKey(keyAction)) {
-            final NavigationContext nominated =
+            final ConversationState nominated =
                     withNominatedProgram(inboundContext, SIGN_ON_PROGRAM_NAME);
-            return userMenuTransfer(returnToSignOnScreen(nominated), NavigationContext.empty());
+            return userMenuTransfer(returnToSignOnScreen(nominated), ConversationState.empty());
         }
         LOG.debug("User menu received an unmapped attention key: keyAction={}", keyAction);
         return sendUserMenuScreen(null, messageCatalogService.invalidKeyMessage(),
-                MenuResponse.MessageSeverity.ERROR, true, inboundContext);
+                MessageSeverity.ERROR, true, inboundContext);
     }
 
     /**
@@ -219,15 +216,15 @@ public final class MenuService {
      * @param submittedOption the raw two-character option field, normalised before it is read
      * @return the route, navigation state, message and rows for the client to render
      */
-    public MenuResponse adminMenu(final NavigationContext inboundContext,
+    public MenuScreen adminMenu(final ConversationState inboundContext,
                                   final KeyAction keyAction,
                                   final String submittedOption) {
-        if (navigationService.isNavigationContextAbsent(inboundContext)) {
-            final NavigationContext nominated =
-                    withOriginatingProgram(NavigationContext.empty(), SIGN_ON_PROGRAM_NAME);
+        if (navigationService.isConversationStateAbsent(inboundContext)) {
+            final ConversationState nominated =
+                    withOriginatingProgram(ConversationState.empty(), SIGN_ON_PROGRAM_NAME);
             LOG.debug("Administrator menu entered with no prior navigation state: transaction={}",
                     ADMIN_MENU_TRANSACTION_ID);
-            return adminMenuTransfer(returnToSignOnScreen(nominated), NavigationContext.empty());
+            return adminMenuTransfer(returnToSignOnScreen(nominated), ConversationState.empty());
         }
         if (inboundContext.firstEntry()) {
             return sendAdminMenuScreen(null, null, null, false, inboundContext.withReEntry());
@@ -237,17 +234,17 @@ public final class MenuService {
             return processAdminMenuEnterKey(optionField, inboundContext);
         }
         if (navigationService.isBackNavigationKey(keyAction)) {
-            final NavigationContext nominated =
+            final ConversationState nominated =
                     withNominatedProgram(inboundContext, SIGN_ON_PROGRAM_NAME);
-            return adminMenuTransfer(returnToSignOnScreen(nominated), NavigationContext.empty());
+            return adminMenuTransfer(returnToSignOnScreen(nominated), ConversationState.empty());
         }
         LOG.debug("Administrator menu received an unmapped attention key: keyAction={}", keyAction);
         return sendAdminMenuScreen(null, messageCatalogService.invalidKeyMessage(),
-                MenuResponse.MessageSeverity.ERROR, true, inboundContext);
+                MessageSeverity.ERROR, true, inboundContext);
     }
 
-    private MenuResponse processUserMenuEnterKey(final String optionField,
-                                                 final NavigationContext context,
+    private MenuScreen processUserMenuEnterKey(final String optionField,
+                                                 final ConversationState context,
                                                  final UserType signedOnUserType) {
         final int lastNonBlankPosition = scanLastNonBlankPosition(optionField);
         final String receivedPrefix = receivedOptionPrefix(optionField, lastNonBlankPosition);
@@ -261,7 +258,7 @@ public final class MenuService {
             LOG.debug("User menu rejected an option entry: declaredCount={} numeric={}",
                     declaredCount, optionNumber.isPresent());
             return sendUserMenuScreen(echoedOption, INVALID_OPTION_MESSAGE,
-                    MenuResponse.MessageSeverity.ERROR, true, context);
+                    MessageSeverity.ERROR, true, context);
         }
         final int selectedNumber = optionNumber.getAsInt();
         final MenuOptionCatalog.UserMenuOption selected = menuOptionCatalog
@@ -271,18 +268,18 @@ public final class MenuService {
             LOG.warn("User menu denied an administrator-only option: option={} userType={}",
                     selectedNumber, signedOnUserType);
             return sendUserMenuScreen(echoedOption, ADMIN_ONLY_OPTION_MESSAGE,
-                    MenuResponse.MessageSeverity.ERROR, true, context);
+                    MessageSeverity.ERROR, true, context);
         }
         if (!navigationService.isDispatchSuppressed(selected.programName())) {
             return dispatchFromUserMenu(selected, context, signedOnUserType);
         }
         LOG.debug("User menu option has no program behind it: option={}", selectedNumber);
         return sendUserMenuScreen(echoedOption, userMenuPlaceholderMessage(selected),
-                MenuResponse.MessageSeverity.INFORMATIONAL, false, context);
+                MessageSeverity.INFORMATIONAL, false, context);
     }
 
-    private MenuResponse processAdminMenuEnterKey(final String optionField,
-                                                  final NavigationContext context) {
+    private MenuScreen processAdminMenuEnterKey(final String optionField,
+                                                  final ConversationState context) {
         final int lastNonBlankPosition = scanLastNonBlankPosition(optionField);
         final String receivedPrefix = receivedOptionPrefix(optionField, lastNonBlankPosition);
         final String optionLexeme =
@@ -295,7 +292,7 @@ public final class MenuService {
             LOG.debug("Administrator menu rejected an option entry: declaredCount={} numeric={}",
                     declaredCount, optionNumber.isPresent());
             return sendAdminMenuScreen(echoedOption, INVALID_OPTION_MESSAGE,
-                    MenuResponse.MessageSeverity.ERROR, true, context);
+                    MessageSeverity.ERROR, true, context);
         }
         final int selectedNumber = optionNumber.getAsInt();
         final MenuOptionCatalog.AdminMenuOption selected = menuOptionCatalog
@@ -306,13 +303,13 @@ public final class MenuService {
         }
         LOG.debug("Administrator menu option has no program behind it: option={}", selectedNumber);
         return sendAdminMenuScreen(echoedOption, adminMenuPlaceholderMessage(),
-                MenuResponse.MessageSeverity.INFORMATIONAL, false, context);
+                MessageSeverity.INFORMATIONAL, false, context);
     }
 
-    private MenuResponse dispatchFromUserMenu(final MenuOptionCatalog.UserMenuOption selected,
-                                              final NavigationContext context,
+    private MenuScreen dispatchFromUserMenu(final MenuOptionCatalog.UserMenuOption selected,
+                                              final ConversationState context,
                                               final UserType signedOnUserType) {
-        final NavigationContext handOff = withOriginatingIdentity(context,
+        final ConversationState handOff = withOriginatingIdentity(context,
                 USER_MENU_TRANSACTION_ID, USER_MENU_PROGRAM_NAME);
         final NavigationService.Route target = navigationService
                 .resolveMenuDispatch(signedOnUserType, selected.userType(), selected.programName())
@@ -322,9 +319,9 @@ public final class MenuService {
         return userMenuTransfer(target, handOff);
     }
 
-    private MenuResponse dispatchFromAdminMenu(final MenuOptionCatalog.AdminMenuOption selected,
-                                               final NavigationContext context) {
-        final NavigationContext handOff = withOriginatingIdentity(context,
+    private MenuScreen dispatchFromAdminMenu(final MenuOptionCatalog.AdminMenuOption selected,
+                                               final ConversationState context) {
+        final ConversationState handOff = withOriginatingIdentity(context,
                 ADMIN_MENU_TRANSACTION_ID, ADMIN_MENU_PROGRAM_NAME);
         final NavigationService.Route target = navigationService
                 .resolveAdminMenuDispatch(selected.programName())
@@ -334,49 +331,49 @@ public final class MenuService {
         return adminMenuTransfer(target, handOff);
     }
 
-    private NavigationService.Route returnToSignOnScreen(final NavigationContext context) {
+    private NavigationService.Route returnToSignOnScreen(final ConversationState context) {
         final NavigationService.Route target = navigationService.resolveSignOffRoute(context);
         LOG.debug("Menu exit resolved: defaultProgram={} route={}", SIGN_ON_PROGRAM_NAME,
                 target.getRouteValue());
         return target;
     }
 
-    private MenuResponse sendUserMenuScreen(final String echoedOption,
+    private MenuScreen sendUserMenuScreen(final String echoedOption,
                                             final String message,
-                                            final MenuResponse.MessageSeverity severity,
+                                            final MessageSeverity severity,
                                             final boolean errorFlag,
-                                            final NavigationContext context) {
+                                            final ConversationState context) {
         final ScreenHeader header = populateHeaderInfo();
-        return MenuResponse.forUserMenu(messageCatalogService.screenTitle01(),
+        return new MenuScreen(MenuKind.USER_MENU, messageCatalogService.screenTitle01(),
                 messageCatalogService.screenTitle02(),
                 header.currentDate(), header.currentTime(),
                 buildUserMenuOptions(), echoedOption, message, severity, errorFlag,
                 OPTION_SCREEN_FIELD_ID, NavigationService.Route.USER_MENU.getRouteValue(), context);
     }
 
-    private MenuResponse sendAdminMenuScreen(final String echoedOption,
+    private MenuScreen sendAdminMenuScreen(final String echoedOption,
                                              final String message,
-                                             final MenuResponse.MessageSeverity severity,
+                                             final MessageSeverity severity,
                                              final boolean errorFlag,
-                                             final NavigationContext context) {
+                                             final ConversationState context) {
         final ScreenHeader header = populateHeaderInfo();
-        return MenuResponse.forAdminMenu(messageCatalogService.screenTitle01(),
+        return new MenuScreen(MenuKind.ADMIN_MENU, messageCatalogService.screenTitle01(),
                 messageCatalogService.screenTitle02(),
                 header.currentDate(), header.currentTime(),
                 buildAdminMenuOptions(), echoedOption, message, severity, errorFlag,
                 OPTION_SCREEN_FIELD_ID, NavigationService.Route.ADMIN_MENU.getRouteValue(), context);
     }
 
-    private MenuResponse userMenuTransfer(final NavigationService.Route target,
-                                          final NavigationContext context) {
-        return MenuResponse.forUserMenu(null, null, null, null, buildUserMenuOptions(), null, null,
-                null, false, null, target.getRouteValue(), context);
+    private MenuScreen userMenuTransfer(final NavigationService.Route target,
+                                          final ConversationState context) {
+        return new MenuScreen(MenuKind.USER_MENU, null, null, null, null, buildUserMenuOptions(),
+                null, null, null, false, null, target.getRouteValue(), context);
     }
 
-    private MenuResponse adminMenuTransfer(final NavigationService.Route target,
-                                           final NavigationContext context) {
-        return MenuResponse.forAdminMenu(null, null, null, null, buildAdminMenuOptions(), null, null,
-                null, false, null, target.getRouteValue(), context);
+    private MenuScreen adminMenuTransfer(final NavigationService.Route target,
+                                           final ConversationState context) {
+        return new MenuScreen(MenuKind.ADMIN_MENU, null, null, null, null, buildAdminMenuOptions(),
+                null, null, null, false, null, target.getRouteValue(), context);
     }
 
     private String receiveUserMenuScreen(final String submittedOption) {
@@ -392,22 +389,22 @@ public final class MenuService {
         return new ScreenHeader(HEADER_DATE_FORMAT.format(taken), HEADER_TIME_FORMAT.format(taken));
     }
 
-    private List<MenuResponse.UserMenuOption> buildUserMenuOptions() {
+    private List<MenuRow> buildUserMenuOptions() {
         final List<MenuOptionCatalog.UserMenuOption> catalogued = menuOptionCatalog.userMenuOptions();
-        final List<MenuResponse.UserMenuOption> rows = new ArrayList<>(catalogued.size());
+        final List<MenuRow> rows = new ArrayList<>(catalogued.size());
         for (final MenuOptionCatalog.UserMenuOption option : catalogued) {
-            rows.add(new MenuResponse.UserMenuOption(option.number(), option.label()));
+            rows.add(new MenuRow(option.number(), option.label()));
         }
-        return rows;
+        return List.copyOf(rows);
     }
 
-    private List<MenuResponse.AdminMenuOption> buildAdminMenuOptions() {
+    private List<MenuRow> buildAdminMenuOptions() {
         final List<MenuOptionCatalog.AdminMenuOption> catalogued = menuOptionCatalog.adminMenuOptions();
-        final List<MenuResponse.AdminMenuOption> rows = new ArrayList<>(catalogued.size());
+        final List<MenuRow> rows = new ArrayList<>(catalogued.size());
         for (final MenuOptionCatalog.AdminMenuOption option : catalogued) {
-            rows.add(new MenuResponse.AdminMenuOption(option.number(), option.label()));
+            rows.add(new MenuRow(option.number(), option.label()));
         }
-        return rows;
+        return List.copyOf(rows);
     }
 
     private static String optionFieldImage(final String submittedOption) {
@@ -475,48 +472,31 @@ public final class MenuService {
         return new String(word);
     }
 
-    private static NavigationContext withOriginatingProgram(final NavigationContext context,
+    /*
+     * The three routing derivations below were once one shared helper that rebuilt the whole
+     * sixteen-field communication-area record, copying the echoed user identifier and type, the
+     * customer identifier and three name parts, the account identifier and status and the primary
+     * account number straight through. That copy was the reason a client-supplied identity could
+     * survive a turn and reach the response as though the server had asserted it. The carried state
+     * this service now works in holds none of those values, so the derivations reduce to the routing
+     * change each one actually intends, and the identity members are reconciled against the
+     * authenticated principal by the adapter at the API boundary instead.
+     */
+
+    private static ConversationState withOriginatingProgram(final ConversationState context,
                                                             final String programName) {
-        return withRouting(context, context.fromTransactionId(), programName,
-                context.toTransactionId(), context.toProgram(), context.programContext());
+        return context.withOriginatingProgram(programName);
     }
 
-    private static NavigationContext withNominatedProgram(final NavigationContext context,
+    private static ConversationState withNominatedProgram(final ConversationState context,
                                                           final String programName) {
-        return withRouting(context, context.fromTransactionId(), context.fromProgram(),
-                context.toTransactionId(), programName, context.programContext());
+        return context.withNominatedProgram(programName);
     }
 
-    private static NavigationContext withOriginatingIdentity(final NavigationContext context,
+    private static ConversationState withOriginatingIdentity(final ConversationState context,
                                                              final String transactionId,
                                                              final String programName) {
-        return withRouting(context, transactionId, programName, context.toTransactionId(),
-                context.toProgram(), NavigationContext.ProgramContext.ENTER);
-    }
-
-    private static NavigationContext withRouting(final NavigationContext context,
-                                                 final String fromTransactionId,
-                                                 final String fromProgram,
-                                                 final String toTransactionId,
-                                                 final String toProgram,
-                                                 final NavigationContext.ProgramContext programContext) {
-        return new NavigationContext(
-                fromTransactionId,
-                fromProgram,
-                toTransactionId,
-                toProgram,
-                context.userId(),
-                context.userType(),
-                programContext,
-                context.customerId(),
-                context.customerFirstName(),
-                context.customerMiddleName(),
-                context.customerLastName(),
-                context.accountId(),
-                context.accountStatus(),
-                context.cardNumber(),
-                context.lastMap(),
-                context.lastMapset());
+        return context.withOrigin(transactionId, programName);
     }
 
     private static AbendException optionTableAbend(final String culprit, final int optionNumber) {
@@ -532,5 +512,117 @@ public final class MenuService {
     }
 
     private record ScreenHeader(String currentDate, String currentTime) {
+    }
+
+    /**
+     * Which of the two menus a result describes.
+     *
+     * <p>The two menus are separate transactions reading separate catalogs, and this is what lets one
+     * result type serve both without either becoming a special case of the other. The adapter at the
+     * API boundary reads it to choose which response shape to build.
+     */
+    public enum MenuKind {
+
+        /** The main menu a regular user reaches, legacy transaction {@code CM00}. */
+        USER_MENU,
+
+        /** The menu an administrator reaches instead, legacy transaction {@code CA00}. */
+        ADMIN_MENU
+    }
+
+    /**
+     * How a message is to be presented, mirroring the two ways the legacy screens carry one.
+     *
+     * <p>Deliberately separate from the transport contract's own severity enumeration: the API layer
+     * maps between them so that this service names no transport type. The two constants exist because
+     * the legacy screens distinguish an informational line from an error line, and the error indicator
+     * is its own fact carried beside the message rather than inferred from it.
+     */
+    public enum MessageSeverity {
+
+        /** A message that reports a state rather than a failure. */
+        INFORMATIONAL,
+
+        /** A message that reports a failure. */
+        ERROR
+    }
+
+    /**
+     * One presentable menu row: the option number the operator types and the label beside it.
+     *
+     * <p>Both legacy catalogs reduce to this pair at the point of presentation, which is why one row
+     * type serves both menus even though {@code MenuOptionCatalog} deliberately keeps two entry shapes
+     * apart. The distinction that justifies two catalog types - a user entry carries a one-character
+     * user-type code and an administrator entry has no such component - is a dispatch concern that this
+     * service has already applied by the time a row is built, and it is not presented to the operator.
+     *
+     * @param number the option number as the catalog declares it
+     * @param label the option label, carried verbatim because it is the external screen contract
+     */
+    public record MenuRow(int number, String label) {
+    }
+
+    /**
+     * The outcome of one menu turn, expressed entirely in types this service owns.
+     *
+     * <p>This is what replaces returning the REST response record directly. A service that returned the
+     * transport type depended upward on the API package, inverting the specification's layering rule;
+     * the adapter in the API layer now maps this record onto that response, so the mapping happens once,
+     * at the boundary, and is testable on its own.
+     *
+     * <p>The carried state is the five-field service-tier form. The eleven identity and cardholder
+     * members of the communication-area contract are not present and are not this service's to supply:
+     * the adapter merges the routing change recorded here back onto the record the client echoed and
+     * reconciles the identity members against the authenticated principal.
+     *
+     * @param kind which menu this result describes, never {@code null}
+     * @param title01 the first screen title, or {@code null} on a transfer that renders nothing
+     * @param title02 the second screen title, or {@code null} on a transfer
+     * @param currentDate the header date, or {@code null} on a transfer
+     * @param currentTime the header time, or {@code null} on a transfer
+     * @param rows the presentable option rows, never {@code null} and never mutable
+     * @param echoedOption the normalised option field echoed back, or {@code null}
+     * @param message the summary message, or {@code null} when the turn reports nothing
+     * @param severity how that message is to be presented, or {@code null} when there is none
+     * @param errorFlag the error indicator, carried as its own fact beside the message
+     * @param focusScreenFieldId the field input focus belongs on, or {@code null}
+     * @param nextRoute the route the client is to call next, never {@code null}
+     * @param conversationState the carry-over for the next turn, never {@code null}
+     */
+    public record MenuScreen(
+            MenuKind kind,
+            String title01,
+            String title02,
+            String currentDate,
+            String currentTime,
+            List<MenuRow> rows,
+            String echoedOption,
+            String message,
+            MessageSeverity severity,
+            boolean errorFlag,
+            String focusScreenFieldId,
+            String nextRoute,
+            ConversationState conversationState) {
+
+        /**
+         * Normalizes the row collection so the component is never {@code null} and never mutable.
+         *
+         * <p>A {@code null} collection becomes the empty immutable list and a supplied one is
+         * defensively copied, which detaches it from the producer and rejects a {@code null} element.
+         * Order and length are preserved exactly: the rows are in catalog order and that order is the
+         * order the screen presents them in.
+         */
+        public MenuScreen {
+            rows = (rows == null) ? List.of() : List.copyOf(rows);
+        }
+
+        /**
+         * Reports whether this result describes the administrator menu.
+         *
+         * @return {@code true} for the administrator menu
+         */
+        public boolean adminMenu() {
+            return kind == MenuKind.ADMIN_MENU;
+        }
     }
 }

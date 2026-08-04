@@ -64,11 +64,10 @@ import java.util.Objects;
  * messages per screen.
  *
  * <p><strong>A boundary cursor is a record key, so it crosses the wire and stays out of
- * diagnostics.</strong> The card-list cursor is a primary account number followed by an account
- * identifier, which makes both cursor components cardholder data even though the client must receive
- * them to resume the browse. The two obligations are separated by scope rather than traded off: the
- * accessors and the JSON wire form carry both cursors byte for byte, and {@link #toString()} withholds
- * both (decision log DL-081).
+ * diagnostics.</strong> The card-list cursor is a primary account number in full, which makes both
+ * cursor components cardholder data even though the client must receive them to resume the browse. The
+ * two obligations are separated by scope rather than traded off: the accessors and the JSON wire form
+ * carry both cursors byte for byte, and {@link #toString()} withholds both (decision log DL-081).
  *
  * @param pageSize the number of screen rows this page carries, supplied by the caller. The
  *     legacy antecedent is the per-screen row count proven above — the card-list table of seven
@@ -83,8 +82,8 @@ import java.util.Objects;
  *     construction remains unchecked and nothing is ever clamped.
  * @param previousCursorKey the opaque record key at which a <em>backward</em> browse restarts: the
  *     key of the first row on this page, which is what the legacy programs retain as their FIRST
- *     field and reposition on when the operator asks for the preceding page — the card composite
- *     key, the transaction identifier or the user identifier cited above. It is opaque to the
+ *     field and reposition on when the operator asks for the preceding page — the card number, the
+ *     transaction identifier or the user identifier cited above. It is opaque to the
  *     client and is never interpreted as a row number. It is {@code null} when there is no
  *     preceding page to walk back to, which is where the legacy leaves its FIRST field unusable and
  *     reports the top-of-browse condition instead.
@@ -177,12 +176,24 @@ public record PageMetadata(
     public static final int LARGEST_SCREEN_PAGE_SIZE = 10;
 
     /**
-     * Width in characters of the widest browse key any of the three screens retains: 27.
+     * Width in characters of the widest browse key any of the three screens retains: 16.
      *
      * <p>One bound governs both keys because every screen declares its first-key and last-key fields at
      * identical widths, so a per-key bound would be two names for one number.
+     *
+     * <p><strong>The widest key is the sixteen-character card number, and not a twenty-seven-character
+     * composite.</strong> The three retained keys are the user identifier at eight characters
+     * ({@code app/cbl/COUSR00C.cbl}), the transaction identifier at sixteen
+     * ({@code app/cbl/COTRN00C.cbl}) and the card number at sixteen ({@code app/cbl/COCRDLIC.cbl}). The
+     * card-list program does <em>declare</em> a twenty-seven-character work field - a sixteen-character
+     * card number followed by an eleven-digit account identifier - but at every one of its four browse
+     * repositioning sites, covering the backward key on the first page, the return from a detail screen,
+     * the page-down key and the page-up key, only the card-number half is moved into the browse key and
+     * the companion move of the account half is commented out in the source. The account identifier is
+     * therefore never part of the resumption key on any turn, and a bound of twenty-seven would admit a
+     * cursor no screen can produce.
      */
-    public static final int CURSOR_KEY_MAX_LENGTH = 27;
+    public static final int CURSOR_KEY_MAX_LENGTH = 16;
 
     /**
      * Bound on the displayed page indicator: the widest such field across the three maps. All three are
@@ -194,10 +205,9 @@ public record PageMetadata(
     /**
      * Fixed stand-in emitted by {@link #toString()} in place of each boundary cursor. A constant rather
      * than any transformation of the value, so neither the length nor a prefix nor a digest of a
-     * redacted cursor survives into a stringified instance. A partial mask was rejected deliberately:
-     * the leading characters of a card cursor are a primary account number in full and the trailing
-     * ones an account identifier, so every fragment is still regulated data, and a digest of a
-     * fixed-width numeric key is reversible by enumeration.
+     * redacted cursor survives into a stringified instance. A partial mask was rejected deliberately: a
+     * card cursor is a primary account number in full, so every fragment of it is still regulated data,
+     * and a digest of a fixed-width numeric key is reversible by enumeration.
      */
     private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
 
@@ -290,9 +300,9 @@ public record PageMetadata(
      * Returns a diagnostic representation carrying the paging state and withholding both boundary
      * cursors. The generated record rendering could not stand: it prints every component, and two of
      * them are record keys taken straight from the cluster being browsed - the card-list cursor is a
-     * card number followed by an account identifier - while metadata of this type accompanies every page
-     * of every browse, so a generated rendering would have written cardholder data into any log line or
-     * diagnostic dump that touched an instance.
+     * card number - while metadata of this type accompanies every page of every browse, so a generated
+     * rendering would have written cardholder data into any log line or diagnostic dump that touched an
+     * instance.
      *
      * <p>Retained are the five components that describe the paging state and name no record: the row
      * count, the direction, the two availability flags and the displayed page indicator, which is the

@@ -16,6 +16,7 @@
  */
 package com.carddemo.api.dto;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
@@ -77,14 +78,6 @@ class UserRequestRuleComplianceTest {
 
     /** A representative eight-character user identifier drawn from the seeded fixture range. */
     private static final String USER_ID = "ADMIN001";
-
-    /**
-     * A synthetic eight-character credential, never the value the estate's own seed data carries.
-     *
-     * <p>A credential literal in a test is a credential in source control, so the value exercised here
-     * is invented for the purpose and matches nothing the migrated database holds.</p>
-     */
-    private static final String SYNTHETIC_CREDENTIAL = "ABCD1234";
 
     /** The redaction placeholder the record's own rendering substitutes. */
     private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
@@ -239,20 +232,27 @@ class UserRequestRuleComplianceTest {
         }
 
         @Test
-        @DisplayName("no selection count and no row count is published here, because the number of "
-                + "positions the screen offers is stated once by the paging contract")
-        void noRowCountIsPublishedHere() {
+        @DisplayName("the selection count is declared exactly once and agrees with the row count the "
+                + "paging contract publishes for this screen")
+        void theSelectionCountEqualsTheRowCount() {
+            assertThat(UserRequest.ROW_SELECTION_COUNT)
+                    .as("one selection position belongs to each rendered row")
+                    .isEqualTo(PageMetadata.USER_LIST_PAGE_SIZE)
+                    .isEqualTo(10);
+
+            // The figure is published once and once only. An earlier revision declared it twice, under
+            // two names with two separate justifications, and that duplication was the stated reason a
+            // later revision dropped the cap altogether. Asserting singularity here is what stops the
+            // same argument being available again.
             assertThat(Arrays.stream(UserRequest.class.getDeclaredFields())
-                    .filter(field -> Modifier.isPublic(field.getModifiers()))
-                    .filter(field -> Modifier.isStatic(field.getModifiers()))
-                    .map(java.lang.reflect.Field::getName)
-                    .toList())
-                    .describedAs("PageMetadata already states this screen's size as %d; a second "
-                            + "declaration on the request would be a competing source of truth that "
-                            + "a client could read a screen dimension from",
-                            PageMetadata.USER_LIST_PAGE_SIZE)
-                    .isNotEmpty()
-                    .allMatch(name -> name.endsWith("_LENGTH"));
+                            .filter(field -> Modifier.isStatic(field.getModifiers()))
+                            .filter(field -> !field.isSynthetic())
+                            .map(Field::getName)
+                            .filter(name -> name.contains("ROW_COUNT")
+                                    || name.contains("ROW_SELECTION_COUNT"))
+                            .toList())
+                    .as("exactly one constant states how many selection positions the screen offers")
+                    .containsExactly("ROW_SELECTION_COUNT");
         }
 
         @ParameterizedTest
@@ -514,36 +514,30 @@ class UserRequestRuleComplianceTest {
         }
 
         /**
-         * The rendering is the only channel that withholds the credential.
+         * The rendering is not the accessor, and the outbound payload is not the inbound one.
          *
-         * <p>Three channels carry this record. The accessor returns the credential exactly as supplied,
-         * because the service has to hash it. The wire form carries it in both directions, because a
-         * one-directional binding would strip it from every body that was deserialized and
-         * re-serialized and an operation that cannot re-emit what it bound cannot be validated or
-         * retried. The rendering withholds it, because a log record must not carry it. Asserting all
-         * three together is what proves the withholding is confined to the rendering path rather than
-         * having damaged the value or narrowed the wire contract. Outbound disclosure is closed
-         * structurally instead, by every response type in this package declaring no credential
-         * component at all.</p>
+         * <p>Three channels carry this record and each one carries a different amount. The accessor
+         * returns the credential exactly as supplied, because the service has to hash it. The rendering
+         * withholds it, because a log record must not carry it. The outbound payload omits it entirely,
+         * because the component is bound write-only: it is accepted from a submission and never emitted
+         * back. Asserting all three together is what proves the withholding is confined to the
+         * rendering path rather than having damaged the value itself.</p>
          */
         @Test
-        @DisplayName("the accessor and the wire form both carry the credential while the rendering "
-                + "alone withholds it, which confines the redaction to one channel")
-        void theRenderingIsTheOnlyChannelThatWithholdsTheCredential()
+        @DisplayName("the accessor carries the credential, the rendering withholds it and the outbound "
+                + "payload omits it, because the component is bound write-only")
+        void theRenderingIsNotTheAccessorAndTheOutboundPayloadIsNeither()
                 throws JsonProcessingException {
-            final UserRequest request = aRequest(USER_ID, SYNTHETIC_CREDENTIAL, List.of(),
-                    KeyAction.ENTER, null);
+            final UserRequest request = aRequest(USER_ID, "PASSWORD", List.of(), KeyAction.ENTER,
+                    null);
 
             assertThat(request.password())
                     .as("the accessor returns the component exactly as supplied")
-                    .isEqualTo(SYNTHETIC_CREDENTIAL);
-            assertThat(payloadOf(request).get("password").asText())
-                    .as("the wire form carries it, so a re-serialized body keeps what it bound")
-                    .isEqualTo(SYNTHETIC_CREDENTIAL);
-            assertThat(request.toString())
-                    .as("the rendering alone withholds it, and that is the only control this type "
-                            + "applies")
-                    .doesNotContain(SYNTHETIC_CREDENTIAL);
+                    .isEqualTo("PASSWORD");
+            assertThat(request.toString()).doesNotContain("PASSWORD");
+            assertThat(payloadOf(request).has("password"))
+                    .as("write-only means the credential is never emitted outbound")
+                    .isFalse();
         }
     }
 
@@ -785,41 +779,48 @@ class UserRequestRuleComplianceTest {
         }
 
         /**
-         * No component is bound in one direction, so the round trip is lossless.
+         * Two components are bound in one direction each, and the round trip loses exactly those two.
          *
-         * <p>Neither of the two components that might plausibly have carried a directional binding
-         * does. The credential is emitted as well as accepted, because a write-only binding would strip
-         * it from every body that was deserialized and re-serialized; the stored value is a one-way
-         * digest and no reply echoes it, but that is a property of the response contract, which declares
-         * no credential member, rather than of a directive on this request. The displayed page number is
-         * accepted as well as emitted: the server computes it from a counter it retains, so a submitted
-         * value never influenced a page, but disregarding one belongs to
-         * {@code UserManagementService}, where that counter lives.</p>
+         * <p>The credential is write-only: it is accepted from a submission and never emitted, because
+         * the stored value is a one-way digest and no reply can echo it. The displayed page number is
+         * read-only in the opposite sense: it is emitted so a client can be told which page it is
+         * looking at, and discarded on the way in because the server computes it and a submitted value
+         * could only be a client asserting a page it was not given. Equality across a round trip
+         * therefore cannot hold, and asserting that it does would require reopening one of the two
+         * directions.</p>
          *
-         * <p>Full equality across the round trip is therefore the stronger assertion: it fails the
-         * moment any component silently acquires a directional binding, whereas an assertion naming
-         * permitted losses would quietly accept a new one.</p>
+         * <p>What is asserted instead is that the loss is precisely those two components and that
+         * everything else survives, selection order included. That is stronger than equality would have
+         * been, because it names what may change and would fail if a third component silently acquired
+         * a directional binding.</p>
          */
         @Test
-        @DisplayName("a request round trips losslessly with the selection order preserved, because no "
-                + "component is bound in one direction only")
-        void aRequestRoundTripsLosslessly() throws JsonProcessingException {
+        @DisplayName("a request round trips with exactly the write-only credential and the read-only "
+                + "page number dropped, the selection order preserved")
+        void aRequestRoundTripsWithoutItsDirectionallyBoundComponents()
+                throws JsonProcessingException {
             final ObjectMapper mapper = moduleEquivalentMapper();
-            final UserRequest original = aRequest(USER_ID, SYNTHETIC_CREDENTIAL, List.of("U", "D"),
+            final UserRequest original = aRequest(USER_ID, "PASSWORD", List.of("U", "D"),
                     KeyAction.PFK05, NavigationContext.empty().withReEntry());
             final UserRequest restored = mapper.readValue(mapper.writeValueAsString(original),
                     UserRequest.class);
 
             assertThat(restored)
-                    .as("no directional binding exists, so equality holds and a future one fails here")
-                    .isEqualTo(original);
+                    .as("two directional bindings mean equality cannot hold across a round trip")
+                    .isNotEqualTo(original);
             assertThat(restored.password())
-                    .as("the credential is emitted as well as accepted")
-                    .isEqualTo(SYNTHETIC_CREDENTIAL);
+                    .as("the credential is never emitted, so nothing came back to bind")
+                    .isNull();
             assertThat(restored.displayedPageNumber())
-                    .as("the page number is accepted as well as emitted; disregarding a submitted "
-                            + "value is the service's decision, not this carrier's")
-                    .isEqualTo(original.displayedPageNumber());
+                    .as("the page number is emitted but never bound inbound")
+                    .isNull();
+            assertThat(restored)
+                    .as("everything else survives, so the loss is exactly those two")
+                    .isEqualTo(new UserRequest(original.userId(), original.searchUserId(),
+                            original.firstName(), original.lastName(), null, original.userType(),
+                            original.rowSelections(), null, original.firstUserIdOnPage(),
+                            original.lastUserIdOnPage(), original.keyAction(),
+                            original.navigationContext()));
             assertThat(restored.rowSelections()).containsExactly("U", "D");
         }
     }

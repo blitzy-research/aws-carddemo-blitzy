@@ -21,6 +21,8 @@ import java.util.Objects;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 
@@ -70,6 +72,23 @@ import jakarta.persistence.Version;
 @Table(name = "card")
 public class Card {
     /**
+     * Width of the card number in characters: 16, from the copybook's own picture clause and from the cluster
+     * key definition that keys the base cluster at width 16 and offset 0.
+     *
+     * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
+     * than two copies of it.
+     */
+    static final int CARD_NUM_WIDTH = 16;
+
+    /**
+     * Width of the owning-account identifier in characters: 11, declared by the copybook as eleven digits.
+     *
+     * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
+     * than two copies of it.
+     */
+    static final int CARD_ACCT_ID_WIDTH = 11;
+
+    /**
      * Fixed stand-in emitted by {@link #toString()} in place of the card number: a constant rather
      * than any transformation of the value, so neither the length nor a fragment nor a digest of the
      * withheld number can be recovered from a rendered instance. It matches the placeholder the
@@ -78,10 +97,10 @@ public class Card {
     private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
 
     @Id
-    @Column(name = "card_num", length = 16, nullable = false)
+    @Column(name = "card_num", length = CARD_NUM_WIDTH, nullable = false)
     private String cardNum;
 
-    @Column(name = "card_acct_id", length = 11, nullable = false)
+    @Column(name = "card_acct_id", length = CARD_ACCT_ID_WIDTH, nullable = false)
     private String cardAcctId;
 
     @Column(name = "card_cvv_cd", length = 3, nullable = false)
@@ -167,6 +186,39 @@ public class Card {
 
     public long getVersion() {
         return version;
+    }
+
+    /**
+     * Refuses a card number that is not exactly sixteen characters, or an owning-account identifier that is
+     * not exactly eleven ASCII digits, immediately before the row is inserted or updated.
+     *
+     * <p><strong>The two checks differ on purpose.</strong> The copybook declares the card number as
+     * sixteen <em>alphanumeric</em> characters and the account identifier as eleven <em>digits</em>, so a
+     * digit class is contractual on one and not on the other; applying it to both would reject a card
+     * number the legacy field could legitimately have held.
+     *
+     * <p>The card number's width carries a second obligation beyond identity. The legacy statement job
+     * sorts these bytes typed as character while the report procedure sorts the same bytes typed as zoned
+     * decimal, and the two orderings coincide only while every stored value is exactly sixteen characters.
+     * A short value would silently reorder one of those jobs.
+     *
+     * <p><strong>Why a callback rather than the constructor or the setter.</strong> The persistence
+     * provider hydrates a row by instantiating the entity and assigning its fields directly, so a
+     * constructor guard is bypassed on every read while a callback sits on the one path every insert and
+     * every update must take. It also leaves an instance built for an assertion, a fixture or an
+     * intermediate calculation unrestricted - only one about to become a row is checked.
+     *
+     * <p>{@code V1__create_schema.sql} carries the same key rules a second time as check constraints, so
+     * a bulk load or a migration script that never constructs an entity is refused as well.
+     *
+     * @throws IllegalArgumentException if an identifier is absent or is not exactly the width its layout
+     *         declares
+     */
+    @PrePersist
+    @PreUpdate
+    void normalizeAndValidateBeforeWrite() {
+        StoredValueRules.requireFixedWidth(cardNum, CARD_NUM_WIDTH, "cardNum");
+        StoredValueRules.requireFixedWidthDigits(cardAcctId, CARD_ACCT_ID_WIDTH, "cardAcctId");
     }
 
     @Override

@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 /**
  * Unit tests for {@link Transaction}, the 350-byte posted-transaction record.
@@ -906,6 +907,101 @@ class TransactionTest {
             assertThat(record.getTranId()).isNotNull();
             assertThat(record.getTranProcTs()).isNotNull();
             assertThat(record).isEqualTo(postedTransaction());
+        }
+    }
+
+    /**
+     * The persistence-time identifier guard: the one rule this entity enforces on its own way to a row.
+     *
+     * <h2>Why it is here and not in the constructor</h2>
+     *
+     * <p>The persistence provider hydrates a row by instantiating the entity and assigning its fields
+     * directly, so a constructor guard is bypassed on every read while a lifecycle callback sits on the
+     * one path every insert and every update must take. That placement is what these assertions
+     * establish: an instance built for an assertion or an intermediate calculation is unrestricted, and
+     * only one about to become a row is checked.
+     *
+     * <h2>Why the digit class is contractual even though the picture clause is alphanumeric</h2>
+     *
+     * <p>Identifiers are minted by taking the current <em>character</em> maximum and adding one, with no
+     * sequence anywhere in the schema, and a character maximum coincides with a numeric maximum only
+     * while every stored value is sixteen zero-padded digits. A single value of any other shape sorts
+     * above every well-formed identifier and silently freezes allocation, which is a defect that breaks
+     * no compilation and fails no test that is not looking for it - so it is looked for here.
+     */
+    @Nested
+    @DisplayName("the persistence-time identifier guard and amount normalisation")
+    class PersistenceTimeIdentifierGuard {
+
+        @Test
+        @DisplayName("a well-formed sixteen-digit identifier passes, leading zeros included")
+        void aWellFormedIdentifierPasses() {
+            Transaction record = postedTransaction();
+
+            assertThat(record.getTranId()).hasSize(16);
+            record.normalizeAndValidateBeforeWrite();
+        }
+
+        @Test
+        @DisplayName("a short identifier is refused before the write, because a value that short could "
+                + "not have been sliced from a valid record image and would split one identity in two")
+        void aShortIdentifierIsRefused() {
+            Transaction record = postedTransaction();
+            record.setTranId("42");
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(record::normalizeAndValidateBeforeWrite)
+                    .withMessageContaining("tranId")
+                    .withMessageContaining("exactly 16 characters");
+        }
+
+        @Test
+        @DisplayName("a sixteen-character identifier carrying a non-digit is refused, because the "
+                + "allocation ordering is only valid across zero-padded digits")
+        void aNonDigitIdentifierIsRefused() {
+            Transaction record = postedTransaction();
+            record.setTranId("00000000000000X1");
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(record::normalizeAndValidateBeforeWrite)
+                    .withMessageContaining("tranId")
+                    .withMessageContaining("digits");
+        }
+
+        @Test
+        @DisplayName("an absent identifier is refused, naming the attribute rather than surfacing a bare "
+                + "null failure from somewhere deeper")
+        void anAbsentIdentifierIsRefused() {
+            Transaction record = postedTransaction();
+            record.setTranId(null);
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(record::normalizeAndValidateBeforeWrite)
+                    .withMessageContaining("tranId")
+                    .withMessageContaining("must be present");
+        }
+
+        @Test
+        @DisplayName("the guard is bound to both write callbacks, so an update is checked as well as an "
+                + "insert - a row whose identifier was edited in place is the same hazard")
+        void theGuardIsBoundToBothWriteCallbacks() throws NoSuchMethodException {
+            java.lang.reflect.Method guard =
+                    Transaction.class.getDeclaredMethod("normalizeAndValidateBeforeWrite");
+
+            assertThat(guard.isAnnotationPresent(jakarta.persistence.PrePersist.class)).isTrue();
+            assertThat(guard.isAnnotationPresent(jakarta.persistence.PreUpdate.class)).isTrue();
+        }
+
+        @Test
+        @DisplayName("an instance that is never written is never checked, so a fixture or an "
+                + "intermediate value is not refused by a rule that governs rows")
+        void anInstanceThatIsNeverWrittenIsNeverChecked() {
+            Transaction record = postedTransaction();
+            record.setTranId("not-a-key");
+
+            assertThat(record.getTranId())
+                    .as("construction and assignment stay unchecked on purpose")
+                    .isEqualTo("not-a-key");
         }
     }
 }

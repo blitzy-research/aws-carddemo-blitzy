@@ -95,7 +95,7 @@ import java.util.List;
  *
  * <p><strong>One authority per piece of legacy text, and it is never this type.</strong> Two bodies of
  * legacy text appear on a menu screen and both are owned elsewhere. The option rows are owned by
- * {@code com.carddemo.config.MenuOptionCatalog}, which holds every item of every entry - the number,
+ * {@code com.carddemo.service.MenuOptionCatalog}, which holds every item of every entry - the number,
  * the label, the target program name and, on the user rows, the one-character user-type code. The
  * screen titles are owned by {@code com.carddemo.service.MessageCatalogService}, which publishes them
  * at their full declared width and keeps the forty-character acknowledgement of
@@ -164,7 +164,7 @@ import java.util.List;
  * would tell a client which internal program answers a row and which role gates it, and would invite a
  * client to send back a target of its own choosing. The requirement that every copybook field be mapped
  * is discharged where those fields are actually used, in the configuration-layer catalog
- * {@code com.carddemo.config.MenuOptionCatalog}, which declares both option shapes in full with all
+ * {@code com.carddemo.service.MenuOptionCatalog}, which declares both option shapes in full with all
  * fourteen program names and the shared user-type code. That duplication is deliberate: this package
  * may not depend on the configuration layer, so the wire shape and the server-side shape are declared
  * independently and only the wire shape is narrowed.
@@ -239,7 +239,7 @@ import java.util.List;
  * @param userMenuOptions    the populated user-menu options in copybook order, or {@code null} when
  *                           this response is an administrative-menu response. Never blank-entry
  *                           filler and never dimensioned to the table capacity. Projected by the
- *                           producer from {@code com.carddemo.config.MenuOptionCatalog}, which owns
+ *                           producer from {@code com.carddemo.service.MenuOptionCatalog}, which owns
  *                           the rows, down to the number and label the screen renders. When present it
  *                           holds exactly {@link #USER_MENU_OPTION_COUNT} entries, which construction
  *                           enforces. Defensively copied on construction and always immutable when
@@ -567,7 +567,7 @@ public record MenuResponse(
      * <p><strong>The two title lines and the option rows are supplied by the caller, never defaulted
      * here.</strong> Both are legacy text owned elsewhere - the titles by
      * {@code com.carddemo.service.MessageCatalogService} and the rows by
-     * {@code com.carddemo.config.MenuOptionCatalog} - and a factory that quietly substituted its own
+     * {@code com.carddemo.service.MenuOptionCatalog} - and a factory that quietly substituted its own
      * copy would make this contract a second authority for that text, which is the failure mode this
      * type is written to avoid. Passing them in keeps a single owner for each and keeps the producer
      * honest: {@code com.carddemo.service.MenuService} reads both owners, narrows a catalog row to the
@@ -635,7 +635,7 @@ public record MenuResponse(
      * <p>The two title lines and the option rows are supplied by the caller here too, and for the
      * reason given on {@link #forUserMenu}: their owners are
      * {@code com.carddemo.service.MessageCatalogService} and
-     * {@code com.carddemo.config.MenuOptionCatalog}, and this contract is not a second one. The titles
+     * {@code com.carddemo.service.MenuOptionCatalog}, and this contract is not a second one. The titles
      * happen to be the same two values the user menu shows, which is a property of the source text
      * rather than a reason for this type to hold a copy of it.
      *
@@ -759,7 +759,7 @@ public record MenuResponse(
      * to, and the user-type code is the input to the authorization comparison the program makes
      * <em>before</em> it dispatches, at {@code app/cbl/COMEN01C.cbl} lines 136 to 143. Neither is ever
      * displayed and neither is needed to select a row, because selection is by number. Both remain
-     * where they belong, on {@code com.carddemo.config.MenuOptionCatalog}, which carries all four
+     * where they belong, on {@code com.carddemo.service.MenuOptionCatalog}, which carries all four
      * items of every entry and is where row three of the migration's construct-mapping table is
      * discharged. Publishing them here would hand a client the means to name a dispatch target and
      * would let it read an authorization rule it has no use for.
@@ -801,7 +801,7 @@ public record MenuResponse(
      * {@code OPTN001} onward at {@code app/cpy-bms/COADM01.CPY} line 60 and following, with the number
      * and the label; the program name the copybook also declares is the dispatch target
      * {@code app/cbl/COADM01C.cbl} transfers control to and is never displayed. It stays on
-     * {@code com.carddemo.config.MenuOptionCatalog}.
+     * {@code com.carddemo.service.MenuOptionCatalog}.
      *
      * <p><strong>There is no user-type component here and none may be added.</strong> The
      * administrative table view declares no such item, giving a forty-five-byte entry against the user

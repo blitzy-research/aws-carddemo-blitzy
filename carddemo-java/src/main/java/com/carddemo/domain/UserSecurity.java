@@ -19,6 +19,8 @@ package com.carddemo.domain;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 
 import java.util.Objects;
@@ -89,7 +91,8 @@ import java.util.Objects;
  * one - routes to the main menu without raising anything. Storing the raw character preserves that
  * tolerance exactly; an enumerated attribute would reject at the persistence boundary a value the
  * legacy system silently accepted and routed. Translation belongs to the service layer, which must
- * model an unrecognised code as an absent value rather than throw. That single character is nonetheless the sole authority
+ * model an unrecognised code as an absent value rather than throw. That single character is nonetheless the
+ * sole authority
  * for the estate's authorization split, so whatever component gates the administrative routes must
  * derive them from it.
  *
@@ -231,6 +234,15 @@ import java.util.Objects;
 public class UserSecurity {
 
     /**
+     * Width of the sign-on identifier in characters: 8, declared by the copybook as eight alphanumeric
+     * characters at offset 0.
+     *
+     * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
+     * than two copies of it.
+     */
+    static final int SEC_USR_ID_WIDTH = 8;
+
+    /**
      * Exact character length of a BCrypt digest: a seven-character prefix of the form
      * {@code $2x$nn$} followed by a 53-character radix-64 tail carrying the salt and the hash.
      * A value of any other length is not a digest.
@@ -265,7 +277,7 @@ public class UserSecurity {
      * no trimming, padding or case folding is applied anywhere in this class.
      */
     @Id
-    @Column(name = "sec_usr_id", length = 8, nullable = false)
+    @Column(name = "sec_usr_id", length = SEC_USR_ID_WIDTH, nullable = false)
     private String secUsrId;
 
     /** Given name; record offset 8, width 20. */
@@ -464,6 +476,34 @@ public class UserSecurity {
      */
     public void setSecUsrType(String secUsrType) {
         this.secUsrType = secUsrType;
+    }
+
+    /**
+     * Refuses a sign-on identifier that is not exactly eight characters, immediately before the row is
+     * inserted or updated.
+     *
+     * <p>No digit class applies: the copybook declares the field as eight <em>alphanumeric</em>
+     * characters, and every seeded identity carries letters. Nothing here touches the credential, which
+     * has its own rule - the entity refuses a value that is not a digest of the expected form - and that
+     * rule is deliberately applied on assignment rather than here, because a credential must never reach
+     * an instance in clear even briefly.
+     *
+     * <p><strong>Why a callback rather than the constructor or the setter.</strong> The persistence
+     * provider hydrates a row by instantiating the entity and assigning its fields directly, so a
+     * constructor guard is bypassed on every read while a callback sits on the one path every insert and
+     * every update must take. It also leaves an instance built for an assertion, a fixture or an
+     * intermediate calculation unrestricted - only one about to become a row is checked.
+     *
+     * <p>{@code V1__create_schema.sql} carries the same key rules a second time as check constraints, so
+     * a bulk load or a migration script that never constructs an entity is refused as well.
+     *
+     * @throws IllegalArgumentException if an identifier is absent or is not exactly the width its layout
+     *         declares
+     */
+    @PrePersist
+    @PreUpdate
+    void normalizeAndValidateBeforeWrite() {
+        StoredValueRules.requireFixedWidth(secUsrId, SEC_USR_ID_WIDTH, "secUsrId");
     }
 
     /**

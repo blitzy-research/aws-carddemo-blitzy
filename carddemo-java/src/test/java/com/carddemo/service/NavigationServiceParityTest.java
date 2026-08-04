@@ -23,8 +23,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.api.dto.NavigationContext.ProgramContext;
 import com.carddemo.exception.AbendException;
 import com.carddemo.service.NavigationService.Route;
 
@@ -89,15 +87,13 @@ class NavigationServiceParityTest {
      * constructor, and the record declares no compact constructor. An overlong name is therefore
      * constructible here, which is precisely the untrusted-input case the service must survive.</p>
      */
-    private static NavigationContext contextFrom(String fromProgram) {
-        return new NavigationContext("CAVW", fromProgram, null, null, "ADMIN001", "A",
-                ProgramContext.ENTER, null, null, null, null, null, null, null, null, null);
+    private static ConversationState contextFrom(String fromProgram) {
+        return new ConversationState("CAVW", fromProgram, null, null, ConversationState.EntryMode.FIRST_ENTRY);
     }
 
     /** Builds a context nominating {@code toProgram} as its destination. */
-    private static NavigationContext contextTo(String toProgram) {
-        return new NavigationContext("CAVW", "COACTVWC", "CAUP", toProgram, "ADMIN001", "A",
-                ProgramContext.ENTER, null, null, null, null, null, null, null, null, null);
+    private static ConversationState contextTo(String toProgram) {
+        return new ConversationState("CAVW", "COACTVWC", "CAUP", toProgram, ConversationState.EntryMode.FIRST_ENTRY);
     }
 
     @Nested
@@ -189,7 +185,7 @@ class NavigationServiceParityTest {
         @DisplayName("back navigation to an unknown program abends rather than applying the "
                 + "caller's default")
         void backNavigationToAnUnknownProgramAbends() {
-            NavigationContext context = contextFrom("CONOSUCH");
+            ConversationState context = contextFrom("CONOSUCH");
 
             assertThatExceptionOfType(AbendException.class)
                     .isThrownBy(() -> navigationService.resolveBackNavigation(context,
@@ -200,7 +196,7 @@ class NavigationServiceParityTest {
         @DisplayName("a nominated destination naming an unknown program abends rather than applying "
                 + "the caller's default")
         void aNominatedDestinationNamingAnUnknownProgramAbends() {
-            NavigationContext context = contextTo("CONOSUCH");
+            ConversationState context = contextTo("CONOSUCH");
 
             assertThatExceptionOfType(AbendException.class)
                     .isThrownBy(() -> navigationService.resolveNominatedDestination(context,
@@ -211,7 +207,7 @@ class NavigationServiceParityTest {
         @DisplayName("the abend carries the online abend code, the offending program as its culprit "
                 + "and an unresolvable-program reason")
         void theAbendCarriesTheOffendingProgram() {
-            NavigationContext context = contextFrom("CONOSUCH");
+            ConversationState context = contextFrom("CONOSUCH");
 
             AbendException abend = catchAbend(
                     () -> navigationService.resolveBackNavigation(context, CALLER_DEFAULT));
@@ -239,7 +235,7 @@ class NavigationServiceParityTest {
         @DisplayName("the date-validation subprogram is not navigable, so nominating it abends - the "
                 + "invented destination is unreachable by name as well as absent from the vocabulary")
         void nominatingTheDateValidationSubprogramAbends() {
-            NavigationContext context = contextFrom(DATE_VALIDATION_SUBPROGRAM);
+            ConversationState context = contextFrom(DATE_VALIDATION_SUBPROGRAM);
 
             assertThatExceptionOfType(AbendException.class)
                     .isThrownBy(() -> navigationService.resolveBackNavigation(context,
@@ -265,7 +261,7 @@ class NavigationServiceParityTest {
         @DisplayName("truncation bounds the diagnostic and never the outcome: a name whose leading "
                 + "eight bytes do name a destination still abends, because the whole name did not")
         void truncationDoesNotRescueAnUnresolvableName() {
-            NavigationContext context = contextFrom(KNOWN_PROGRAM + "TRAILING");
+            ConversationState context = contextFrom(KNOWN_PROGRAM + "TRAILING");
 
             assertThatExceptionOfType(AbendException.class)
                     .isThrownBy(() -> navigationService.resolveBackNavigation(context,

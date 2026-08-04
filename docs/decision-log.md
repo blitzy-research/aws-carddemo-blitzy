@@ -3770,6 +3770,437 @@ is owned. A reviewer re-checking this should expect the paths to still be presen
 *Cited by:* nothing in code - this entry exists so the disposition is on the record rather than inferred
 from a diff.
 
+### DL-130 - The reporting period travels as the three screen selectors it is entered on, in both directions, and the single resolved enumeration is kept beside them rather than replaced by them
+
+**Context.** The report-request screen presents three independent one-character selectors -
+`MONTHLYI`, `YEARLYI` and `CUSTOMI` of `app/cpy-bms/CORPT00.CPY` - and the operator marks one. The
+request contract collapsed all three into a single enumerated `reportPeriod` component while the
+service kept three raw selectors and its own ordered evaluation, so the two halves of one turn
+disagreed about what a reporting period is.
+
+**Why the collapse cannot be repaired by keeping the enumeration.** Three separate positions admit
+states a single enumeration cannot name. Nothing on the screen prevents an operator marking two, or
+marking one with a character other than the expected one, and the program has defined behaviour for
+both: `app/cbl/CORPT00C.cbl` tests the three in order at lines 214, 240 and 256 and falls through to a
+catch-all at line 437 that raises the select-a-type message against the monthly field. A multiply
+marked screen therefore resolves to the *first* marked position, and a screen marked with an
+unexpected character is still marked. Collapsing to an enumeration discards the distinction between
+"unmarked" and "marked with something unexpected", and discards which position won, so the ordered
+evaluation the program performs has nothing left to evaluate.
+
+**Decision, inbound.** `ReportRequest` declares `monthlySelection`, `yearlySelection` and
+`customSelection`, each bounded at one character and carrying no presence rule, no pattern and no
+mutual-exclusivity rule. The vocabulary is *produced* by the service's ordered evaluation, not
+*supplied* by the contract, which is what lets a multiply marked or oddly marked screen cross the
+boundary and be resolved exactly as the program resolves it.
+
+**Decision, outbound.** The same three selectors are added to `ReportResponse`, and the resolved
+`reportPeriod` is *kept beside them*. They are not duplicates of each other. The three markers are
+what the operator sees still standing in the fields they typed; the resolved period is what the
+service concluded. `INITIALIZE-ALL-FIELDS` at `app/cbl/CORPT00C.cbl:L633-L646` blanks all three
+selectors along with the six date parts and the confirmation flag, so a successful submission and a
+declined confirmation both return a *cleared* screen, while every error path returns the transmitted
+marks still standing. An error turn can therefore present three marks while no period was resolved at
+all - a state that cannot be expressed if the response carries only one of the two.
+
+**What this cost.** One hundred and eleven construction sites across seven test files were rewritten,
+and eight test methods that positively asserted the collapsed shape were inverted to assert the
+restored one. Those assertions were not wrong when written; they pinned a contract that the service
+never agreed with.
+
+*Cited by:* `api/dto/ReportRequest.java`, `api/dto/ReportResponse.java`,
+`api/ReportContractAdapter.java`, `service/ReportRequestService.java`.
+
+---
+
+### DL-131 - The menu option catalog moves from the configuration package into the service package, because the cycle it created was real and the direction of the fix is not a matter of taste
+
+**Context.** `MenuService` imported `config.MenuOptionCatalog` while `config.FlywayConfig` imported
+`service.SensitiveFieldEncryptionService`, so the service and configuration packages depended on each
+other. The module's layering permits configuration to depend on every layer beneath it and permits
+nothing to depend on configuration, so exactly one of those two edges had to go.
+
+**Why the catalog is the one that moves.** The catalog is not configuration. It holds the ten user
+menu options of `app/cpy/COMEN02Y.cpy` and the four administrative options of
+`app/cpy/COADM02Y.cpy` - the option numbers, their labels and the program each dispatches to. That is
+estate data with behaviour attached, which is what the service layer is for, and two of its immediate
+neighbours are already there: `ValidationLookupService` holds the externalised lookup tables and
+`MessageCatalogService` holds the shared screen literals. `FlywayConfig`'s dependency, by contrast, is
+genuinely configuration reaching downward to seal seeded values, which is the permitted direction.
+
+**Decision.** `MenuOptionCatalog` moves to `com.carddemo.service` and is annotated `@Service`,
+matching the two neighbours it now sits beside. Its 1243-line test moves with it. Fifteen textual
+references were requalified. The `service → config` edge count is now zero, asserted by a guard test
+rather than left to review.
+
+*Cited by:* `service/MenuOptionCatalog.java`, `service/MenuService.java`, `PackageLayeringTest`.
+
+---
+
+### DL-132 - Services stop naming transport records and answer with results of their own, and the wire records they used to return are assembled by adapters at the boundary
+
+**Context.** Three services named types from `com.carddemo.api.dto`: `MenuService` returned
+`MenuResponse` outright, and `NavigationService` and `ReportRequestService` accepted and returned
+`NavigationContext`. The layering forbids a service depending on the transport, and the practical
+consequence was worse than the structural one: a service returning a wire record has to fill every
+component of it, including the eleven that carry client-echoed identity and personal detail, so the
+services were copying echoed values forward as a matter of course.
+
+**Decision.** Three things, in the order they depend on each other.
+
+First, `service/ConversationState` is introduced as the service-owned carried state. It models five
+fields - the originating transaction and program, the nominated destination transaction and program,
+and the entry mode - and none of the eleven echoed members. A service that needs carried routing takes
+this; there is no longer a type in the service layer through which an echoed identity could arrive.
+
+Second, each affected service gains result types of its own: `MenuService` declares `MenuKind`,
+`MessageSeverity`, `MenuRow` and `MenuScreen`; `ReportRequestService` already had `ReportScreenInput`,
+`ScreenFields` and `ReportRequestResult`. The three `withRouting` helpers that existed only to copy
+personal detail from an inbound record to an outbound one are gone, because there is no longer an
+inbound record to copy from.
+
+Third, three adapters are added in `com.carddemo.api`: `ConversationStateAdapter`,
+`MenuResponseAdapter` and `ReportContractAdapter`. The first is the trust boundary and is the subject
+of DL-133.
+
+**One consequence worth stating, because it is easy to read as an oversight.**
+`NavigationContext.empty()` leaves `programContext` null, and `ConversationStateAdapter` always writes
+it explicitly. The legacy field is `CDEMO-PGM-CONTEXT PIC 9(01)` with condition names valued zero and
+one, so a single-digit numeric item cannot be absent - the estate cannot produce a third, unset state.
+The flag gates field-level error decoration on the destination screen, so leaving it to be inferred
+would make a screen's error display depend on an absence the mainframe never had. It is therefore
+always written, and the normalisation of an absent entry mode to first entry follows the same
+reasoning. That normalisation makes `empty().withFirstEntry()` the identity, which corrected a
+`NavigationServiceTest` assertion that had depended on a nullable third state with no legacy
+counterpart.
+
+*Cited by:* `service/ConversationState.java`, `service/MenuService.java`,
+`service/NavigationService.java`, `service/ReportRequestService.java`,
+`api/ConversationStateAdapter.java`, `api/MenuResponseAdapter.java`, `api/ReportContractAdapter.java`.
+
+---
+
+### DL-133 - Identity is derived from the authenticated principal and the echoed copy is reconciled rather than trusted, and the client's carried state shrinks from sixteen components to five
+
+**Context.** `CARDDEMO-COMMAREA` of `app/cpy/COCOM01Y.cpy` carried sixteen fields between
+pseudo-conversational turns, and its Java counterpart is echoed by the client. Eleven of those
+sixteen are identity or personal detail: the user identifier and type, the customer identifier and
+three name parts, the account identifier and status, the card number, and the two map names. Services
+were reading them and returning them, and the record's own `agreesWith` and `reconciledWith` helpers
+were never invoked anywhere.
+
+**Why an echoed value cannot be an authority.** On the mainframe the communication area was held by
+the region and a terminal could not alter it. Over HTTP the client holds it, so every one of those
+eleven is caller-controlled. Reading an identity from it and then selecting a record by that identity
+is the whole of the vulnerability, and it does not require any single line to look wrong.
+
+**Decision.** Inbound, `ConversationStateAdapter` drops all eleven and hands the service only the five
+routing and mode fields. Outbound, the eleven survive unchanged - the screen contract declares them and
+a client that echoed them gets them back - but the identity components are replaced by the
+*authenticated principal's* values, never the echoed ones. The mismatch check `reconciledWith` is
+invoked, and it **reports rather than refuses**: a disagreeing echo and an agreeing echo produce the
+same outbound record, differing only in what is logged. Refusing would turn a stale browser tab into a
+failed request, which the legacy system never did.
+
+**What makes this checkable rather than asserted.** Two audits. No source outside the API and
+configuration packages names `NavigationContext` at all, so no service, batch, repository, domain or
+utility class has a receiver an echoed member could be read from. And among the sources that do name
+it, only the boundary reads one. The second audit is scoped to files that name the record because a
+member accessor name can be a homonym - `MenuOptionCatalog.UserMenuOption` declares its own
+`userType()`, which is the option's required role from `app/cpy/COMEN02Y.cpy` and not an echoed claim,
+and the menu authorization reads an explicit authenticated parameter instead.
+
+*Cited by:* `api/ConversationStateAdapter.java`, `api/dto/NavigationContext.java`,
+`ConversationStateAdapterTest`.
+
+---
+
+### DL-134 - The two transport records that a service still names stay where the plan put them, and the exemption is written into the layering guard as an exact pair
+
+**Context.** The layering work of DL-132 removed every upward edge from the service layer except one:
+`FieldErrorTranslationService` imports `api.dto.FieldErrorDecorator`. A review finding proposed
+relocating both that type and `NavigationContext` out of the transport package.
+
+**Why the relocation was declined, and on what authority.** The migration plan freezes the package of
+both types: they are named in the target structure and in the file-by-file mapping as members of
+`com.carddemo.api.dto`. The plan is the agreed source of truth and code is aligned to it rather than
+the reverse. Separately, the platform's own instruction for the account-update service explicitly
+licenses a service to import `com.carddemo.api.dto` types that it *returns*, which is exactly what
+this edge is. The decision therefore rests on plan precedence and on an explicit licence, not on the
+relocation being difficult - the move itself would be mechanical.
+
+**Decision.** Both types stay in `api.dto`. The one remaining upward edge is written into
+`PackageLayeringTest` as an exact class-and-type pair rather than as a package-level allowance, so a
+second such edge fails even though the first is permitted, and the permitted one failing to exist also
+fails. The guard holds the whole direction table, carries floors on the number of sources and edges it
+must see so it cannot pass vacuously, and was proven non-vacuous by injecting four separate violations.
+
+*Cited by:* `PackageLayeringTest`, `service/FieldErrorTranslationService.java`.
+
+---
+
+### DL-135 - The regulated components of the two account screens are masked by default and revealed only under a named purpose and an authorization, which is a documented departure from what the legacy showed
+
+**Context.** The account view and update responses declare the operator's national identifier, date
+of birth, government-issued identifier and electronic-funds account identifier - four components on the
+view screen and eight on the update screen, where the identifier and the date arrive as separate
+positions. The `Customer` entity accepts only sealed envelopes for two of those columns, so a direct
+mapping from entity to response either throws or emits ciphertext, and there was no adapter between
+them. Both records redact all four in `toString`.
+
+**Why a redacting rendering is not a control.** The serializer writes the components, not the
+rendering. A value placed on one of those components in the clear crosses to the client in the clear
+however thoroughly the rendering hides it. The redaction protects a log line and nothing else, and it
+is easy to mistake for protection precisely because it is thorough.
+
+**What the legacy did, so the departure is visible.** Any signed-on operator saw the full identifier.
+`app/cbl/COACTVWC.cbl:L495-L504` composes it from its three parts into the twelve-character
+`ACSTSSNI` field of `app/cpy-bms/COACTVW.CPY:L132`, and the update screen presents the three parts
+separately at `app/cpy-bms/COACTUP.CPY:L168`, `L174` and `L180`. There is no role test and no masking
+anywhere on that path. Masking by default is therefore a *divergence*, and it is licensed on the same
+grounds as credential hashing: a regulated-data constraint compels it. The estate's wider gap - that
+the card primary account number and the verification code have no field-level protection at all - is
+recorded and deliberately not closed, because nothing requires it and closing it would be unrequested
+work.
+
+**Decision.** `api/AccountProtectedDataAdapter` is the only permitted source of those values. It
+names a purpose - and only the two account transactions the estate declares are nameable, so a caller
+with no account operation has no constant to pass - and an authorization that permits a reveal for the
+administrator role or for an established ownership determination. Anything else is masked, at the same
+widths, from length alone and never from content, retaining only the final four digits. Both the view
+mask and the update mask expose the same final four so that neither is a route around the other. Two
+refusals guard the reveal: a stored value the cipher does not recognise as sealed is refused, because
+it reached the column by a route that bypassed the seal; and a revealed value that still carries the
+envelope shape is refused, because the cipher returned its input.
+
+**Ownership is a caller-asserted flag, not an invented model.** `app/cpy/CSUSR01Y.cpy` carries no
+account linkage and no program in the estate checks one, so there is no legacy ownership relation to
+reproduce. Inventing one would be a new business rule. The flag is therefore supplied by the caller
+that established it, and the authorization carries no identifier of its own, so it can neither be
+transmitted nor built from a client-echoed value.
+
+*Cited by:* `api/AccountProtectedDataAdapter.java`, `api/dto/AccountViewResponse.java`,
+`api/dto/AccountUpdateResponse.java`, `domain/Customer.java`.
+
+---
+
+### DL-136 - A version conflict the persistence provider detects answers the same conflict the module's own detection answers, and three type families are named because no narrower cover exists
+
+**Context.** The account and card entities carry a version attribute, and the provider enforces it at
+flush time rather than module code doing so. Only the module's own conflict carrier was mapped to a
+conflict status, so a provider-raised conflict fell through to the terminal handler and became a server
+error carrying the abend literal. That told a client the server had broken when in fact its screen was
+merely stale: wrong status, wrong text, and a condition the legacy system had a specific message for.
+
+**Decision.** A single arm answers all three shapes with the conflict status and the verbatim legacy
+record-changed text, so a client cannot tell which layer noticed the staleness. That is the point: the
+legacy write paths detected it by re-reading the record and comparing it against the image they had
+presented, and answered with one text that does not vary by entity.
+
+**Why three declarations and not one.** The lattice was computed rather than assumed. None of the three
+covers another. Their nearest common ancestor is the framework's general runtime failure type, which the
+advice deliberately refuses to declare because a handler at that level would sit between the named
+carriers and the terminal handler for no purpose. One supertype does cover two of the three - the
+specification's general persistence failure - and it is rejected because it also covers a missing
+entity, a rolled-back commit and an empty result, none of which is a conflict; declaring it would map
+all of them onto the record-changed text. The third of the three descends from that supertype rather
+than from the specification's optimistic type, so naming the other two does not reach it.
+
+**The entity is named on the diagnostic channel only.** Each family carries it differently - as a
+persistent class name, as an entity name, or as the entity instance - so each is asked in its own terms,
+with a placeholder when a shape carries none. Nothing there is reflective: every accessor named is
+declared on the type being asked. None of it reaches the response body, and the diagnostic naming is
+total, so it can never change what a client sees.
+
+**Pessimistic lock-acquisition failures are deliberately excluded.** They are a different condition
+with a different legacy message, and no write path in this module produces one; mapping them
+speculatively would put text on a response for a state the module cannot reach. The exclusion is
+asserted so it cannot be quietly reversed.
+
+**What makes the fix real rather than apparent.** Invoking the arm proves its body is right. Because a
+terminal handler exists, every failure is handled by *something*, so only resolution proves the
+container would reach this arm - which is the original defect restated. The test therefore emulates
+most-specific-match resolution and requires all five concrete shapes to resolve here, and a separate
+integration test drives a genuine version conflict against a real server and hands the *actually
+thrown* exception to a real handler, because a unit test cannot establish that the provider raises one
+of the declared types at all.
+
+*Cited by:* `api/GlobalExceptionHandler.java`, `domain/Account.java`, `domain/Card.java`,
+`ProviderOptimisticLockConflictIT`.
+
+---
+
+### DL-137 - The cryptography package that is not part of the Jakarta rename stays, and it is recorded here so a later audit does not correct it
+
+**Context.** The module is held to Jakarta EE package names throughout, and an audit for the older
+namespace returns twelve matches in the token provider and the field codec.
+
+**Decision.** They stay, and nothing needs changing. Those twelve are fully qualified references to the
+JDK's own cryptography and key-specification packages, which were never part of the Jakarta rename and
+have no Jakarta equivalent. There are zero import statements in that namespace anywhere in the module,
+so the rule as written is satisfied literally as well as in substance. This entry exists because the
+raw count is alarming and the correct response to it is to do nothing.
+
+*Cited by:* `config/JwtTokenProvider.java`, `util/SensitiveFieldCodec.java`.
+
+---
+### DL-138 - The sign-on transaction is delivered with its four subtle behaviours intact, and each one would have compiled cleanly if got wrong
+
+**Context.** The sign-on screen is transaction `CC00`, `app/cbl/COSGN00C.cbl`, and it is the first
+operation in the module to reach a repository. Four of its behaviours are not visible from the shape of
+the program and each has a plausible wrong answer.
+
+**Both fields are folded to upper case, not just the identifier.** Line 130 folds the identifier and
+line 134 folds the *secret*, and the comparison at line 223 is against the folded secret. A lower-case
+secret therefore authenticates on the mainframe, and it has to authenticate here. Folding uses the
+estate's ASCII-only fold rather than the locale-sensitive intrinsic, for the reason recorded against
+every other fold: the intrinsic transforms characters a fixed-width field cannot hold.
+
+**The failed comparison leaves the error flag lowered.** Every other rejection moves the flag; the
+wrong-secret branch at lines 240 to 245 does not, and neither does the exit key at lines 88 to 90. The
+flag guards only whether the credential read is attempted, so omitting it changes nothing on that turn -
+but it is externally visible state, and the response contract's own documentation already recorded both
+`false` cases before this service existed. They are reproduced, and the flag is carried as an explicit
+value rather than derived from whether a message is present.
+
+**The catch-all arm is narrowed to the one cause that remains reachable.** The legacy arm covered every
+response code other than success and not-found, most of which were transport-level failures that are now
+raised as exceptions rather than returned as codes. What remains is a stored user type outside the
+declared two, and admitting an operator whose role cannot be resolved would be the one genuinely unsafe
+outcome. A malformed stored digest cannot reach it, because the digest verifier answers false for
+anything that is not a digest and the entity refuses a non-digest at construction.
+
+**Every outcome answers success, rejections included.** All seven are screens the legacy program
+composed and sent; the transaction completed on the mainframe in every case, so it completes here and
+the outcome is read from the body exactly as an operator read it from the screen. Answering a rejected
+sign-on with a client or server error would change an externally observable contract, and it would also
+leak which rejection occurred to anything that inspects only the status line. Input wider than the map's
+own fields is a different matter and is refused before the service runs.
+
+**The credential comparison is a digest verification.** The legacy record holds an eight-character
+cleartext password and compares it directly. Storing a cleartext credential is prohibited, so the
+comparison is delegated to the digest service. Which credentials are admitted, and what the operator is
+told when one is not, are unchanged; only the stored representation differs.
+
+*Cited by:* `service/AuthenticationService.java`, `api/SignOnContractAdapter.java`,
+`api/AuthController.java`.
+
+---
+
+### DL-139 - The session-issuing capability is declared where the boundary can name it, and the route constant moves to the controller so the layering is not inverted to accommodate either
+
+**Context.** Delivering the sign-on route needed two things from the configuration package: the
+component that mints a session, and the path constant the security rules exempt from authentication.
+The layering permits configuration to depend on the boundary and forbids the reverse, so the controller
+could name neither.
+
+**Decision, the session.** `service/SessionTokenIssuer` declares the one capability the boundary
+actually needs, and the token provider implements it. Moving key material downward or inverting the
+layering were both rejected. The interface is deliberately one method wide: verifying a presented token,
+reading a claim from one and reporting the configured lifetime all belong to the filter chain and to
+configuration, and nothing at the boundary has a use for them. Keeping the surface at exactly the
+issuing operation means the sign-on route cannot reach the verification path by accident, and a test of
+that route can supply a stub without standing up key material.
+
+**Decision, the route constant.** Its declaring site moves to the controller and the security
+configuration reads it from there. The constant's own documentation already required that the mapping
+and the exemption name one authority - a controller mapped to any other path is caught by the catch-all
+authentication rule and fails closed, which is the safe direction for that mistake - and the only
+question was which of the two declares it. The permitted dependency direction settles it. The
+configuration field stays published because the security rules and their tests are written in terms of
+it.
+
+**The session travels in a response header, not in the body.** The sign-on screen contract declares
+fifteen components and none of them is a credential, so a token in the body would add a sixteenth to a
+contract frozen against the symbolic map. It is issued as a standard bearer credential in the response
+header instead, and only for an admitted turn - the service's own invariant guarantees that an admitted
+turn names both the operator and the resolved role, and that a turn which did not admit names neither,
+so the presence of the header follows from the outcome rather than from a separate decision that could
+drift.
+
+*Cited by:* `service/SessionTokenIssuer.java`, `config/JwtTokenProvider.java`,
+`api/AuthController.java`, `config/SecurityConfig.java`.
+
+---
+
+### DL-140 - Two structural audits were widened by one entitlement each, and both entitlements were earned by a test rather than granted
+
+**Context.** Two of the guards written during this work search production sources for an accessor name
+and assert the result is empty. Both fired on a later, legitimate reader, because a name-based search
+cannot see what the accessor was read *from*.
+
+**The regulated-value audit.** Four production sources are entitled to read a stored regulated value,
+each for a stated reason: the entity declares them; the protected-data adapter is the gate and reading
+them is its job; the account concurrency service folds them into a sealed, opaque proof from which
+nothing can be read back out; and the customer record mapper writes the five-hundred-byte fixed-width
+image, which *is* the legacy file format and genuinely carries the cleartext, so refusing to write them
+would break the byte parity the batch tier is measured on.
+
+**The echoed-member audit.** The sign-on projection reads two of the eleven echoed names, and reads
+them off the *service's* result rather than off a wire record. Those two values are the identity the
+credential master yielded, which is the opposite of an echoed claim: sign-on is the turn that
+establishes identity, so there is nothing to echo it from. This is the second homonym the audit has hit,
+the first being the menu catalog's own `userType()`.
+
+**Why these are not simply widenings.** An entitlement that only adds a name is a hole. Each was
+therefore paired with a test that establishes the property the name is standing in for. The sign-on
+projection is proven to *construct* a wire record and to accept one in no position at all - checked in
+five positional forms - so it has no receiver an echoed member could be read from. The regulated-value
+audit is paired with a non-vacuity test proving the gate really does read all four accessors, and with a
+test that every entitled name matches a real file so a rename cannot silently widen the entitlement into
+a name that matches nothing.
+
+**A forward guard was added rather than a present-tense one.** No production source constructs either
+account response yet, so the exposure the regulated-value finding describes is *latent*: the components
+exist on the wire contract and nothing fills them. The guard requires that any source which builds
+either response also names the gate, so the first controller to assemble one has to obtain those values
+from it. Its companion assertion records that no source builds one today, and that companion is expected
+to fail - by design - when the first account controller arrives, at which point it is replaced by the
+requirement the first guard already states.
+
+*Cited by:* `AccountProtectedDataAdapterTest`, `ConversationStateAdapterTest`,
+`api/SignOnContractAdapter.java`.
+
+---
+
+### DL-141 - What remains unbuilt is recorded here, because a delivered first operation is easy to mistake for a delivered surface
+
+**Context.** This work delivered the sign-on operation and the first repository-backed path. It did not
+deliver the rest of the online tier, and the boundary of what exists should not have to be inferred from
+what does not.
+
+**What exists.** Two classes carry a controller annotation: the failure adapter and the sign-on
+controller. One service names a repository: the authentication service, over the credential master. The
+published document therefore describes exactly one operation.
+
+**What does not, and what each needs.** Sixteen further screen groups have their service or their
+contract but no route: the two menus, account view and update, card list, detail and update,
+transaction list, view and add, the report request, bill payment, and the four administrative user
+operations. Ten repositories are unwired - account, card, customer, cross-reference, transaction, daily
+transaction, category balance, disclosure group, transaction type and transaction category. The nine
+batch job configurations the plan names are likewise not built.
+
+**Four documentation deliverables the plan names are also absent**, and they are listed here for the
+same reason: `docs/gate-evidence.md`, `docs/traceability-matrix.md` with its five hundred and
+forty-four rows, `docs/architecture.md` and `docs/onboarding-guide.md`. None of them is referenced from
+the documentation site's navigation, so nothing is broken by their absence, but one comment in the
+metrics scrape configuration already points at the gate-evidence file as the place measured figures are
+written up. That pointer is left standing rather than removed, because the file is intended to exist and
+the comment states where its content belongs.
+
+**Two obligations attach to each one when it is built**, and both are already enforced rather than
+merely written down. Any source assembling an account response must obtain the regulated components from
+the protected-data gate, which the forward guard of DL-140 requires. And every operation that reads a
+record by a caller-supplied key must establish that the caller is entitled to it. For sign-on that
+second obligation holds by construction rather than by an ownership model - the key of the record read
+*is* the identity being asserted, and it is admitted only if the secret stored under that same key
+verifies - and it is asserted as an interaction, so a later unkeyed read such as a list, a projection or
+a scan fails rather than quietly returning something the caller never proved a claim to. No other
+operation can rely on that argument, because no other operation's key is the caller's own identity.
+
+*Cited by:* `api/AuthController.java`, `service/AuthenticationService.java`,
+`AccountProtectedDataAdapterTest`.
+
 ---
 
 *This log is authored alongside the target module and is never edited by the code that cites it. A

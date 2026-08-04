@@ -34,7 +34,6 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
-import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.domain.enums.UserType;
 import com.carddemo.exception.AbendException;
@@ -215,9 +214,8 @@ class NavigationServiceRuleComplianceTest {
      * @param fromProgram the originating-program name; may be {@code null}
      * @return a context whose other fifteen components are absent
      */
-    private static NavigationContext contextFromProgram(final String fromProgram) {
-        return new NavigationContext(null, fromProgram, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null);
+    private static ConversationState contextFromProgram(final String fromProgram) {
+        return new ConversationState(null, fromProgram, null, null, null);
     }
 
     /**
@@ -227,9 +225,8 @@ class NavigationServiceRuleComplianceTest {
      * @param toProgram the destination-program name; may be {@code null}
      * @return a context whose other fifteen components are absent
      */
-    private static NavigationContext contextToProgram(final String toProgram) {
-        return new NavigationContext(null, null, null, toProgram, null, null, null, null,
-                null, null, null, null, null, null, null, null);
+    private static ConversationState contextToProgram(final String toProgram) {
+        return new ConversationState(null, null, null, toProgram, null);
     }
 
     /**
@@ -240,10 +237,9 @@ class NavigationServiceRuleComplianceTest {
      * @param toProgram   the destination-program name; may be {@code null}
      * @return a context whose other fourteen components are absent
      */
-    private static NavigationContext contextWithBothPrograms(final String fromProgram,
+    private static ConversationState contextWithBothPrograms(final String fromProgram,
             final String toProgram) {
-        return new NavigationContext(null, fromProgram, null, toProgram, null, null, null, null,
-                null, null, null, null, null, null, null, null);
+        return new ConversationState(null, fromProgram, null, toProgram, null);
     }
 
     /**
@@ -723,7 +719,7 @@ class NavigationServiceRuleComplianceTest {
         @Test
         @DisplayName("an absent context carries no prior state")
         void anAbsentContextCarriesNoPriorState() {
-            assertThat(NavigationServiceRuleComplianceTest.this.service.isNavigationContextAbsent(null)).isTrue();
+            assertThat(NavigationServiceRuleComplianceTest.this.service.isConversationStateAbsent(null)).isTrue();
         }
 
         @Test
@@ -731,16 +727,16 @@ class NavigationServiceRuleComplianceTest {
                 + "communication area describes")
         void theWhollyEmptyContextCarriesNoPriorState() {
             assertThat(NavigationServiceRuleComplianceTest.this.service
-                    .isNavigationContextAbsent(NavigationContext.empty())).isTrue();
+                    .isConversationStateAbsent(ConversationState.empty())).isTrue();
         }
 
         @Test
         @DisplayName("a context carrying any component does carry prior state")
         void aContextCarryingAnyComponentCarriesPriorState() {
             assertThat(NavigationServiceRuleComplianceTest.this.service
-                    .isNavigationContextAbsent(contextFromProgram(BILL_PAYMENT_PROGRAM))).isFalse();
+                    .isConversationStateAbsent(contextFromProgram(BILL_PAYMENT_PROGRAM))).isFalse();
             assertThat(NavigationServiceRuleComplianceTest.this.service
-                    .isNavigationContextAbsent(contextToProgram(SIGN_ON_PROGRAM))).isFalse();
+                    .isConversationStateAbsent(contextToProgram(SIGN_ON_PROGRAM))).isFalse();
         }
 
         @Test
@@ -748,7 +744,7 @@ class NavigationServiceRuleComplianceTest {
                 + "because it is not the empty instance")
         void aContextOfEmptyStringsCarriesPriorState() {
             assertThat(NavigationServiceRuleComplianceTest.this.service
-                    .isNavigationContextAbsent(contextFromProgram(""))).isFalse();
+                    .isConversationStateAbsent(contextFromProgram(""))).isFalse();
         }
 
         @Test
@@ -856,7 +852,7 @@ class NavigationServiceRuleComplianceTest {
         @DisplayName("the bill-payment screen's verified default is the user main menu")
         void theBillPaymentDefaultIsTheUserMainMenu() {
             assertThat(NavigationServiceRuleComplianceTest.this.service.resolveBackNavigation(
-                    NavigationContext.empty(), Route.USER_MENU))
+                    ConversationState.empty(), Route.USER_MENU))
                     .as("app/cbl/COBIL00C.cbl line 130")
                     .isEqualTo(Route.USER_MENU);
         }
@@ -916,7 +912,7 @@ class NavigationServiceRuleComplianceTest {
                                     Route.USER_MENU))
                     .withMessageContaining("RULE back-navigation");
             assertThat(NavigationServiceRuleComplianceTest.this.service.resolveBackNavigation(
-                    NavigationContext.empty(), Route.USER_MENU))
+                    ConversationState.empty(), Route.USER_MENU))
                     .as("the caller's default is reached by the blank arm, and only by it")
                     .isEqualTo(Route.USER_MENU);
         }
@@ -936,14 +932,14 @@ class NavigationServiceRuleComplianceTest {
         void anAbsentCallerDefaultIsRejected() {
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> NavigationServiceRuleComplianceTest.this.service
-                            .resolveBackNavigation(NavigationContext.empty(), null))
+                            .resolveBackNavigation(ConversationState.empty(), null))
                     .withMessage("callerDefault must not be null");
         }
 
         @Test
         @DisplayName("back navigation reads the originating-program field and never the destination one")
         void backNavigationReadsTheOriginatingProgramField() {
-            final NavigationContext context =
+            final ConversationState context =
                     contextWithBothPrograms(BILL_PAYMENT_PROGRAM, USER_LIST_PROGRAM);
 
             assertThat(NavigationServiceRuleComplianceTest.this.service
@@ -973,7 +969,7 @@ class NavigationServiceRuleComplianceTest {
                 + "nothing")
         void theThirdProgramFunctionKeyYieldsTheCallerDefaultWhenNothingIsNominated() {
             assertThat(NavigationServiceRuleComplianceTest.this.service.resolveAttentionKeyRoute(
-                    KeyAction.PFK03, NavigationContext.empty(), Route.USER_MENU))
+                    KeyAction.PFK03, ConversationState.empty(), Route.USER_MENU))
                     .contains(Route.USER_MENU);
         }
 
@@ -992,7 +988,7 @@ class NavigationServiceRuleComplianceTest {
         @DisplayName("an undecoded action yields no destination")
         void anUndecodedActionYieldsNoDestination() {
             assertThat(NavigationServiceRuleComplianceTest.this.service.resolveAttentionKeyRoute(
-                    null, NavigationContext.empty(), Route.SIGN_ON))
+                    null, ConversationState.empty(), Route.SIGN_ON))
                     .isEmpty();
         }
 
@@ -1006,7 +1002,7 @@ class NavigationServiceRuleComplianceTest {
                     .withMessage("context must not be null");
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> NavigationServiceRuleComplianceTest.this.service
-                            .resolveAttentionKeyRoute(KeyAction.ENTER, NavigationContext.empty(), null))
+                            .resolveAttentionKeyRoute(KeyAction.ENTER, ConversationState.empty(), null))
                     .withMessage("callerDefault must not be null");
         }
     }
@@ -1082,7 +1078,7 @@ class NavigationServiceRuleComplianceTest {
         @DisplayName("nominated-destination resolution reads the destination field and never the "
                 + "originating one")
         void nominatedResolutionReadsTheDestinationField() {
-            final NavigationContext context =
+            final ConversationState context =
                     contextWithBothPrograms(BILL_PAYMENT_PROGRAM, USER_LIST_PROGRAM);
 
             assertThat(NavigationServiceRuleComplianceTest.this.service
@@ -1094,7 +1090,7 @@ class NavigationServiceRuleComplianceTest {
         @DisplayName("the two nomination rules read different fields of the same context, which is the "
                 + "whole reason they are separate rules")
         void theTwoNominationRulesReadDifferentFields() {
-            final NavigationContext context =
+            final ConversationState context =
                     contextWithBothPrograms(BILL_PAYMENT_PROGRAM, ACCOUNT_VIEW_PROGRAM);
 
             assertThat(NavigationServiceRuleComplianceTest.this.service
@@ -1117,7 +1113,7 @@ class NavigationServiceRuleComplianceTest {
                     .withMessage("context must not be null");
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> NavigationServiceRuleComplianceTest.this.service
-                            .resolveNominatedDestination(NavigationContext.empty(), null))
+                            .resolveNominatedDestination(ConversationState.empty(), null))
                     .withMessage("callerDefault must not be null");
         }
 
@@ -1164,7 +1160,7 @@ class NavigationServiceRuleComplianceTest {
         @DisplayName("sign-off with an absent destination field falls back to sign-on")
         void signOffWithAnAbsentFieldFallsBackToSignOn() {
             assertThat(NavigationServiceRuleComplianceTest.this.service
-                    .resolveSignOffRoute(NavigationContext.empty()))
+                    .resolveSignOffRoute(ConversationState.empty()))
                     .isEqualTo(Route.SIGN_ON);
         }
 
@@ -1783,7 +1779,7 @@ class NavigationServiceRuleComplianceTest {
                 + "at all, because there is none to mention")
         void theBlankNominationArmMentionsNoValue() {
             NavigationServiceRuleComplianceTest.this.service.resolveBackNavigation(
-                    NavigationContext.empty(), Route.USER_MENU);
+                    ConversationState.empty(), Route.USER_MENU);
 
             assertThat(theRecordContaining("Nomination empty"))
                     .contains("rule=back-navigation")

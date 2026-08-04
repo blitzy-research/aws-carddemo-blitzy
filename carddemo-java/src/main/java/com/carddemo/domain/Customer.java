@@ -21,6 +21,8 @@ import java.util.Objects;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 
 /**
@@ -175,6 +177,14 @@ import jakarta.persistence.Table;
 public class Customer {
 
     /**
+     * Width of the customer identifier in characters: 9, declared by the copybook as nine digits.
+     *
+     * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
+     * than two copies of it.
+     */
+    static final int CUST_ID_WIDTH = 9;
+
+    /**
      * Structural marker that opens every protected value this entity accepts. Declared authoritatively by
      * the utility-layer codec and duplicated here because the domain layer may not depend on that layer;
      * the duplication is held in step by a unit test that seals a value with the codec and requires this
@@ -189,7 +199,7 @@ public class Customer {
     private static final int PROTECTED_VALUE_MINIMUM_BYTES = 28;
 
     @Id
-    @Column(name = "cust_id", length = 9, nullable = false)
+    @Column(name = "cust_id", length = CUST_ID_WIDTH, nullable = false)
     private String custId;
 
     /**
@@ -570,6 +580,32 @@ public class Customer {
 
     public void setFicoCreditScore(String ficoCreditScore) {
         this.ficoCreditScore = ficoCreditScore;
+    }
+
+    /**
+     * Refuses a customer identifier that is not exactly nine ASCII digits, immediately before the row is
+     * inserted or updated.
+     *
+     * <p>Only the identifier is checked. The protected fields this record carries are governed by their
+     * own envelope rules, and the remaining fields are not keys: several of them are legitimately blank or
+     * short in the reference data, so a width rule over them would reject data the legacy system stored.
+     *
+     * <p><strong>Why a callback rather than the constructor or the setter.</strong> The persistence
+     * provider hydrates a row by instantiating the entity and assigning its fields directly, so a
+     * constructor guard is bypassed on every read while a callback sits on the one path every insert and
+     * every update must take. It also leaves an instance built for an assertion, a fixture or an
+     * intermediate calculation unrestricted - only one about to become a row is checked.
+     *
+     * <p>{@code V1__create_schema.sql} carries the same key rules a second time as check constraints, so
+     * a bulk load or a migration script that never constructs an entity is refused as well.
+     *
+     * @throws IllegalArgumentException if an identifier is absent or is not exactly the width its layout
+     *         declares
+     */
+    @PrePersist
+    @PreUpdate
+    void normalizeAndValidateBeforeWrite() {
+        StoredValueRules.requireFixedWidthDigits(custId, CUST_ID_WIDTH, "custId");
     }
 
     /**

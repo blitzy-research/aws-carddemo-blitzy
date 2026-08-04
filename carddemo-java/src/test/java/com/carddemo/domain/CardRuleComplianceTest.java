@@ -331,8 +331,11 @@ class CardRuleComplianceTest {
             }
 
             assertThat(constants)
-                    .as("the only static the entity declares is the rendering placeholder")
-                    .containsExactly("REDACTION_PLACEHOLDER");
+                    .as("the statics the entity declares are the rendering placeholder and the two "
+                            + "record-layout widths the column declarations and the persistence-time "
+                            + "rule both read, so neither figure is written down twice")
+                    .containsExactlyInAnyOrder("REDACTION_PLACEHOLDER", "CARD_NUM_WIDTH",
+                            "CARD_ACCT_ID_WIDTH");
             assertThat(names).containsExactlyInAnyOrder("cardNum",
                     "cardAcctId",
                     "cardCvvCd",

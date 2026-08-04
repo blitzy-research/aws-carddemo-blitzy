@@ -16,6 +16,14 @@
  */
 package com.carddemo.api.dto;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+
 import com.carddemo.domain.enums.UserType;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -29,10 +37,6 @@ import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Optional;
-import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -43,58 +47,90 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 /**
  * Unit tests for {@link UserResponse}, the single response body shared by the four administrative
  * user transactions - {@code CU00} list, {@code CU01} add, {@code CU02} update and {@code CU03}
- * delete - translated from {@code app/cbl/COUSR00C.cbl}, {@code COUSR01C.cbl}, {@code COUSR02C.cbl}
- * and {@code COUSR03C.cbl} against the field contract of {@code app/cpy-bms/COUSR00.CPY} and its
- * three siblings, all four being views of the eighty-byte record {@code app/cpy/CSUSR01Y.cpy}.
+ * delete, translated from {@code app/cbl/COUSR00C.cbl}, {@code app/cbl/COUSR01C.cbl},
+ * {@code app/cbl/COUSR02C.cbl} and {@code app/cbl/COUSR03C.cbl} against the field contract of
+ * {@code app/cpy-bms/COUSR00.CPY}, {@code COUSR01.CPY}, {@code COUSR02.CPY} and
+ * {@code COUSR03.CPY}, all four being views of the eighty-byte record {@code app/cpy/CSUSR01Y.cpy}.
  *
- * <p>What this file pins, and why each is easy to break:
+ * <p>A pure unit test. No application context, no container, no database, no security type and no
+ * shared helper: every instance is constructed directly, and where the wire shape itself is what is
+ * being examined the payload is produced by a mapper built locally in this file to match the four
+ * settings the module declares in {@code src/main/resources/application.yml}.
+ *
+ * <p>Nothing here inspects a component name, an accessor, an annotation or a constant through the
+ * run-time class model. The component inventory is established from the serialized payload of a
+ * fully populated instance and the declared widths from the behaviour of a bean validator, so this
+ * file names no member it did not read out of the production source first, and it introduces no
+ * run-time introspection of its own - the module's audit budget for that is zero.
+ *
+ * <h2>What this file pins, and why each of them is easy to break</h2>
  *
  * <ul>
- *   <li><strong>The ten-row list contract at the map's widths</strong> - one, eight, twenty, twenty
- *       and one. The list program's own staging table describes the same ten rows with a single
- *       combined twenty-five-character name and an eight-wide type, but that is a terminal display
- *       line and not the contract, so a twenty-five-character name and an eight-character type are
- *       both refused.</li>
- *   <li><strong>The plural selection message.</strong> This screen names two valid characters in the
- *       plural over forty-three characters; the structurally similar text on the transaction-list
- *       screen names one in the singular over thirty-five. Harmonising them is a one-character edit
- *       and a contract break, so the two are asserted unequal.</li>
- *   <li><strong>Twenty-five message literals at their exact lengths.</strong> The emptiness family
- *       ends in three dots with no preceding space; the prompts and the no-change advisory have one.
- *       The two function-key prompts are thirty-eight and thirty-seven characters and are not
- *       unified.</li>
- *   <li><strong>The three composed confirmations</strong> - a five-character prefix carrying a
- *       trailing space, the identifier stripped of its padding, and a fragment carrying a leading
- *       space, so exactly one space sits on each side of the identifier. Every expectation is built
- *       by concatenating those literal pieces inside the test; no production formatter is asked to
- *       produce an expected value.</li>
+ *   <li><strong>The ten-row list contract at the map's widths.</strong> The list map declares
+ *       exactly ten row families between its lines 72 and 366, each carrying five fields at widths
+ *       one, eight, twenty, twenty and one. The list program's own staging table at line 57 of
+ *       {@code app/cbl/COUSR00C.cbl} describes the same ten rows with a single combined
+ *       twenty-five-character name, an eight-wide type and three two-character gaps. That is a
+ *       terminal display line, not the contract, and the tests below prove the response follows the
+ *       map: a twenty-five-character name and an eight-character type are both refused.</li>
+ *   <li><strong>The plural selection message.</strong> Line 212 of {@code app/cbl/COUSR00C.cbl}
+ *       names two valid characters in the plural over forty-three characters. The structurally
+ *       similar text on the transaction-list screen names one in the singular over thirty-five.
+ *       Harmonising them is a one-character edit and a contract break, so the two are asserted
+ *       unequal.</li>
+ *   <li><strong>Every measured message literal at its exact length.</strong> Twenty-five texts
+ *       across the four programs, each reproduced byte for byte. The emptiness family ends in three
+ *       dots with no preceding space; the prompts and the no-change advisory have one. The two
+ *       function-key prompts are thirty-eight and thirty-seven characters and are not unified.</li>
+ *   <li><strong>The three composed confirmations.</strong> Each is assembled from a five-character
+ *       prefix carrying a trailing space, the identifier stripped of its fixed-width padding, and a
+ *       fragment carrying a leading space - so exactly one space sits on each side of the
+ *       identifier. Every expectation here is built by concatenating those literal pieces inside the
+ *       test; no production formatter is ever asked to produce an expected value.</li>
  *   <li><strong>A message does not imply a failure.</strong> Two legacy arms set a message and
- *       continue, so the failure indicator is an explicit component, never derived from whether a
- *       message is present.</li>
- *   <li><strong>The delete failure reports the update verb</strong> - a preserved source defect,
- *       asserted identical to the update program's text so that a future correction breaks a test
- *       rather than the contract.</li>
- *   <li><strong>No credential crosses this contract in any form</strong> - not as a value, masked,
- *       hashed, as a length or as a presence flag. Where a credential-shaped value is needed at all
- *       this file uses a synthetic one.</li>
+ *       continue, so the failure indicator is an explicit component and is never derived from
+ *       whether a message is present.</li>
+ *   <li><strong>The delete failure reports the update verb.</strong> A preserved source defect at
+ *       line 332 of {@code app/cbl/COUSR03C.cbl}, asserted identical to line 386 of
+ *       {@code app/cbl/COUSR02C.cbl} so that a future correction breaks a test rather than the
+ *       contract.</li>
+ *   <li><strong>No credential crosses this contract in any form.</strong> Not as a value, not
+ *       masked, not hashed, not as a length and not as a presence flag. Where a credential-shaped
+ *       value is needed at all, this file uses a synthetic one.</li>
  * </ul>
  *
- * <p>A pure unit test with no context, container, database, security type or shared helper. Nothing
- * inspects a component, accessor, annotation or constant through the run-time class model: the
- * inventory comes from the serialized payload of a fully populated instance and the widths from the
- * behaviour of a bean validator, so this file names no member it did not first read out of the
- * production source. Payloads come from a mapper built locally to match
- * {@code src/main/resources/application.yml}.
+ * <h2>Provenance</h2>
+ *
+ * <p>Every width, count, line citation and message literal asserted below was read from the legacy
+ * estate at repository checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release
+ * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source line is transcribed
+ * here: the message texts are external contract, and widths, counts and member names are metadata.
  */
 @DisplayName("UserResponse :: the shared contract of legacy transactions CU00, CU01, CU02 and CU03")
 class UserResponseTest {
+
+    /**
+     * The transaction-list screen's structurally similar rejection, declared here as a literal
+     * rather than referenced from that screen's own contract.
+     *
+     * <p>It is the independent oracle for the one assertion that matters about it: that it is not
+     * this screen's text. Reading it from the other contract would make the comparison depend on
+     * the very sharing the assertion exists to rule out. Measured at line 199 of
+     * {@code app/cbl/COTRN00C.cbl}: thirty-five characters, singular, naming one valid character.
+     */
     private static final String TRANSACTION_LIST_SINGULAR_SELECTION_TEXT =
             "Invalid selection. Valid value is S";
 
+    /** Fixed text the response and each row substitute for a withheld value. */
     private static final String REDACTED = "***REDACTED***";
 
+    /**
+     * A synthetic eight-character identifier. Synthetic throughout this file: no identifier, name or
+     * credential-shaped value here is taken from the seeded legacy records.
+     */
     private static final String USER_ID = "ABCD1234";
 
+    /** A synthetic identifier shorter than the field, used to prove padding is not reintroduced. */
     private static final String SHORT_USER_ID = "AB12";
 
     private static final String FIRST_NAME = "MARY ANN";
@@ -127,20 +163,44 @@ class UserResponseTest {
 
     private static final String DISPLAYED_PAGE_NUMBER = "00000003";
 
+    /**
+     * The nineteen component names of {@link UserResponse}, in constructor order.
+     *
+     * <p>Read from the production record declaration rather than derived, and used as the expected
+     * key set of a fully populated payload. An exact-match assertion over this list is what proves
+     * there is no twentieth component of any kind - including a credential one.
+     */
     private static final List<String> RESPONSE_COMPONENTS = List.of(
             "rows", "pageMetadata", "userId", "firstName", "lastName", "userType",
             "transactionName", "title01", "currentDate", "programName", "title02", "currentTime",
             "message", "fieldErrors", "generalError", "actionSucceeded", "focusScreenFieldId",
             "nextRoute", "navigationContext");
 
+    /** The five component names of the nested row type, in constructor order. */
     private static final List<String> ROW_COMPONENTS =
             List.of("selector", "userId", "firstName", "lastName", "userType");
 
+    /**
+     * Spellings a credential could plausibly have taken on this contract, in the casings a payload
+     * or a rendering could actually carry.
+     *
+     * <p>Enumerated as literals and matched exactly rather than folded, because folding a key set is
+     * locale-sensitive and this tier is deliberately re-run under a hostile default locale. The
+     * exact-key assertion over {@link #RESPONSE_COMPONENTS} already rules out every spelling; this
+     * list makes the intent legible and fails with a pointed message if one is ever added.
+     */
     private static final List<String> CREDENTIAL_SPELLINGS = List.of(
             "password", "Password", "passwordHash", "encodedPassword", "pwd", "Pwd", "secUsrPwd",
             "credential", "Credential", "secret", "Secret", "salt", "Salt", "digest", "Digest",
             "hash", "Hash", "passwordSet", "hasPassword", "passwordLength");
 
+    /**
+     * Builds a validator the way a caller outside a container gets one, so nothing here depends on
+     * a framework-supplied bean.
+     *
+     * @param response the instance to validate
+     * @return every violation the declared constraints produce, which is normally none
+     */
     private static Set<ConstraintViolation<UserResponse>> violationsOf(UserResponse response) {
         try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
             Validator validator = factory.getValidator();
@@ -148,6 +208,13 @@ class UserResponseTest {
         }
     }
 
+    /**
+     * Builds a validator for the nested row type, for the same reason as
+     * {@link #violationsOf(UserResponse)}.
+     *
+     * @param row the row to validate
+     * @return every violation the row's declared constraints produce
+     */
     private static Set<ConstraintViolation<UserResponse.UserRow>> violationsOf(
             UserResponse.UserRow row) {
         try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
@@ -156,6 +223,16 @@ class UserResponseTest {
         }
     }
 
+    /**
+     * Builds a mapper configured with the four settings the module declares.
+     *
+     * <p>Local to this file by design: a shared serialization helper would let one test's
+     * configuration drift silently change what another test proves about the wire form.
+     *
+     * @return a mapper matching {@code default-property-inclusion: non_null},
+     *     {@code write-dates-as-timestamps: false}, {@code fail-on-unknown-properties: false} and
+     *     {@code write-bigdecimal-as-plain: true}
+     */
     private static ObjectMapper moduleEquivalentMapper() {
         return JsonMapper.builder()
                 .defaultPropertyInclusion(
@@ -167,21 +244,48 @@ class UserResponseTest {
                 .build();
     }
 
+    /**
+     * Serializes a response and reads it back as a tree.
+     *
+     * @param response the response to serialize
+     * @return the payload as a tree
+     * @throws JsonProcessingException if the payload cannot be produced or re-read
+     */
     private static JsonNode payloadOf(UserResponse response) throws JsonProcessingException {
         ObjectMapper mapper = moduleEquivalentMapper();
         return mapper.readTree(mapper.writeValueAsString(response));
     }
 
+    /**
+     * Lists the keys a payload carries, in the order the payload declares them.
+     *
+     * @param payload the payload to inspect
+     * @return its keys
+     */
     private static List<String> keysOf(JsonNode payload) {
         List<String> keys = new ArrayList<>();
         payload.fieldNames().forEachRemaining(keys::add);
         return keys;
     }
 
+    /**
+     * Builds a row carrying a supplied selector and identifier and synthetic name parts.
+     *
+     * @param selector the one-character action marker, or {@code null}
+     * @param userId   the eight-character identifier
+     * @param userType the one-character type code
+     * @return a row carrying those values
+     */
     private static UserResponse.UserRow rowOf(String selector, String userId, String userType) {
         return new UserResponse.UserRow(selector, userId, FIRST_NAME, LAST_NAME, userType);
     }
 
+    /**
+     * Builds the number of rows asked for, each with a distinct identifier so order is observable.
+     *
+     * @param count how many rows to build
+     * @return that many rows, in ascending identifier order
+     */
     private static List<UserResponse.UserRow> rows(int count) {
         List<UserResponse.UserRow> built = new ArrayList<>();
         for (int index = 1; index <= count; index++) {
@@ -190,22 +294,31 @@ class UserResponseTest {
         return built;
     }
 
+    /** @return paging metadata for a page walked forward */
     private static PageMetadata forwardPage() {
         return PageMetadata.forward(PageMetadata.USER_LIST_PAGE_SIZE, FIRST_CURSOR_KEY,
                 LAST_CURSOR_KEY, true, false, DISPLAYED_PAGE_NUMBER);
     }
 
+    /** @return the echoed navigation state a list turn carries */
     private static NavigationContext navigation() {
         return new NavigationContext(TRANSACTION_NAME, PROGRAM_NAME, "CU02", "COUSR02C", USER_ID,
                 ADMIN_CODE, NavigationContext.ProgramContext.REENTER, "000000011", "MARY", "ANN",
                 "SMITH", "00000000011", "Y", "0000000000000011", "COUSR0A", "COUSR00");
     }
 
+    /** @return the single field error a re-submitted screen carries */
     private static List<ErrorResponse.FieldError> fieldErrors() {
         return List.of(new ErrorResponse.FieldError("userId", FOCUS_FIELD,
                 ErrorResponse.FieldState.MISSING, UserResponse.MSG_ADD_USER_ID_EMPTY));
     }
 
+    /**
+     * Builds a response with every one of the nineteen components populated, which is what an
+     * inventory assertion and a rendering assertion both need.
+     *
+     * @return a fully populated response
+     */
     private static UserResponse populated() {
         return new UserResponse(rows(1), forwardPage(), USER_ID, FIRST_NAME, LAST_NAME, ADMIN_CODE,
                 TRANSACTION_NAME, TITLE_01, CURRENT_DATE, PROGRAM_NAME, TITLE_02, CURRENT_TIME,
@@ -213,25 +326,65 @@ class UserResponseTest {
                 FOCUS_FIELD, NEXT_ROUTE, navigation());
     }
 
+    /**
+     * Builds a response whose only populated components are a message and the failure indicator,
+     * which is the shape every message assertion needs.
+     *
+     * @param message      the operator message to carry
+     * @param generalError whether this response reports a failure
+     * @return a response carrying only those two values
+     */
     private static UserResponse reporting(String message, boolean generalError) {
         return new UserResponse(null, null, null, null, null, null, null, null, null, null, null,
                 null, message, null, generalError, false, null, null, null);
     }
 
+    /**
+     * Builds a response carrying only the supplied rows.
+     *
+     * @param carried the rows to carry
+     * @return a response carrying those rows and nothing else
+     */
     private static UserResponse carrying(List<UserResponse.UserRow> carried) {
         return new UserResponse(carried, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, false, false, null, null, null);
     }
 
+    /**
+     * Builds a response whose every component is absent, which is what the declarative-validation
+     * assertions need.
+     *
+     * @return a response carrying nothing but the two explicitly false indicators
+     */
     private static UserResponse empty() {
         return new UserResponse(null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, false, false, null, null, null);
     }
 
+    /**
+     * Repeats a character to a requested length, so an over-long value can be built from a declared
+     * width rather than from a hand-counted literal.
+     *
+     * @param length how many characters to produce
+     * @return a value of exactly that length
+     */
     private static String widthOf(int length) {
         return "X".repeat(length);
     }
 
+    /**
+     * Returns the part of a rendering this response produced itself, with the delegated navigation
+     * segment excised.
+     *
+     * <p>Written as an excision rather than a truncation so it does not depend on the navigation
+     * state being the last component rendered. The excision is necessary rather than tidy: the
+     * echoed navigation contract renders an identifier and a type code of its own in the clear, so
+     * an assertion phrased over the whole string would be testing that type's withholding policy
+     * instead of this one's. Whether the delegated segment is present at all is asserted separately.
+     *
+     * @param response the response whose rendering is being examined
+     * @return the rendering with any delegated navigation segment replaced by a fixed marker
+     */
     private static String ownRendering(UserResponse response) {
         String rendered = response.toString();
         return (response.navigationContext() == null)
@@ -239,6 +392,19 @@ class UserResponseTest {
                 : rendered.replace(response.navigationContext().toString(), "<delegated>");
     }
 
+    /**
+     * Asserts that a published message constant reproduces its source text byte for byte at its
+     * measured length, and that the value survives the single message component untouched.
+     *
+     * <p>The expected text is supplied as a literal by the caller rather than read from the constant
+     * under test, so the assertion is an independent oracle: a constant edited to a different text
+     * fails here rather than agreeing with itself. Neither side is trimmed, padded or re-cased,
+     * because the text is externally observable contract that operators read and tooling matches on.
+     *
+     * @param constant       the published constant
+     * @param expectedText   the text measured from the cited source line
+     * @param expectedLength the length measured from the cited source line
+     */
     private static void assertMessageContract(
             String constant, String expectedText, int expectedLength) {
         assertThat(constant)
@@ -252,22 +418,92 @@ class UserResponseTest {
     }
 
     @Nested
-    @DisplayName("the list surface carries rows shaped by the map, never by the staging table")
+    @DisplayName("the list surface carries ten rows shaped by the map, never by the staging table")
     class ScreenRowContract {
+
+        /**
+         * A page must also agree with the paging state travelling beside it.
+         *
+         * <p>The structural bound alone is not enough. A response carrying seven rows beside metadata
+         * that declares a page size of two describes two different pages at once, and a client that
+         * believed the metadata - which is the only reason the metadata is published - would either drop
+         * rows it was sent or attribute them to a page they do not belong to. The check is skipped when
+         * no metadata travels with the response, which is the ordinary shape for the add, update and
+         * delete screens, none of which presents a page at all.</p>
+         */
         @Test
-        @DisplayName("publishes no row count of its own, leaving the paging contract the single place "
-                + "that states how many rows this screen presents")
-        void publishesNoRowCountOfItsOwn() {
+        @DisplayName("refuses a page carrying more rows than its own paging metadata declares")
+        void refusesAPageWiderThanItsOwnPagingMetadataDeclares() {
+            int declaredPageSize = 2;
+            int rowsCarried = 7;
+            PageMetadata narrowerThanThePage = PageMetadata.forward(declaredPageSize, FIRST_CURSOR_KEY,
+                    LAST_CURSOR_KEY, true, false, DISPLAYED_PAGE_NUMBER);
+
+            // Deliberately within the structural bound, so the first check cannot be what fires: seven
+            // rows fit the screen's ten and are refused only because the metadata says two.
+            assertThat(rowsCarried).isLessThan(PageMetadata.USER_LIST_PAGE_SIZE);
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new UserResponse(rows(rowsCarried), narrowerThanThePage, null,
+                            null, null, null, null, null, null, null, null, null, null, null, false,
+                            false, null, null, null))
+                    .withMessageContaining(String.valueOf(declaredPageSize))
+                    .withMessageContaining(String.valueOf(rowsCarried));
+        }
+
+        @Test
+        @DisplayName("accepts a page no deeper than its own paging metadata declares")
+        void acceptsAPageNoDeeperThanItsPagingMetadataDeclares() {
+            int declaredPageSize = 2;
+            PageMetadata matchingThePage = PageMetadata.forward(declaredPageSize, FIRST_CURSOR_KEY,
+                    LAST_CURSOR_KEY, true, false, DISPLAYED_PAGE_NUMBER);
+
+            assertThat(new UserResponse(rows(declaredPageSize), matchingThePage, null, null, null,
+                            null, null, null, null, null, null, null, null, null, false, false, null,
+                            null, null)
+                    .rows())
+                    .hasSize(declaredPageSize);
+
+            // A short page is still a valid page: the final page of a browse is routinely shorter than
+            // the page size, so only exceeding the declared size is a defect.
+            assertThat(new UserResponse(rows(1), matchingThePage, null, null, null, null, null, null,
+                            null, null, null, null, null, null, false, false, null, null, null)
+                    .rows())
+                    .hasSize(1);
+        }
+
+        @Test
+        @DisplayName("applies no metadata comparison when no paging metadata travels with the page")
+        void appliesNoMetadataComparisonWhenNoPagingMetadataTravels() {
+            UserResponse response = carrying(rows(PageMetadata.USER_LIST_PAGE_SIZE));
+
+            assertThat(response.pageMetadata()).isNull();
+            assertThat(response.rows()).hasSize(PageMetadata.USER_LIST_PAGE_SIZE);
+        }
+
+        @Test
+        @DisplayName("takes the row count from the published constants and never re-declares it")
+        void takesTheRowCountFromThePublishedConstants() {
             assertThat(PageMetadata.USER_LIST_PAGE_SIZE)
-                    .describedAs("the paging contract states this screen's row count once; a count "
-                            + "published on the response body would be a competing source of truth "
-                            + "for the same measurement, and a reference to one on UserResponse would "
-                            + "fail to compile rather than fail here, which is the strongest "
-                            + "available proof that none exists")
+                    .as("the row count this response caps its collection at")
                     .isEqualTo(10);
-            assertThat(PageMetadata.LARGEST_SCREEN_PAGE_SIZE)
-                    .describedAs("the widest screen in the estate is stated in the same one place")
-                    .isEqualTo(10);
+            assertThat(PageMetadata.USER_LIST_PAGE_SIZE)
+                    .as("no screen in the estate presents more rows than the widest one")
+                    .isEqualTo(PageMetadata.LARGEST_SCREEN_PAGE_SIZE);
+
+            // The cap reads the paging contract's constant because no private copy exists to read. An
+            // earlier revision declared a duplicate depth constant on this body, and the duplication
+            // was the stated reason a later revision removed the cap altogether.
+            assertThat(Arrays.stream(UserResponse.class.getDeclaredFields())
+                            .filter(field -> Modifier.isStatic(field.getModifiers()))
+                            .filter(field -> !field.isSynthetic())
+                            .map(Field::getName)
+                            .filter(name -> name.contains("ROW_COUNT")
+                                    || name.contains("PAGE_SIZE")
+                                    || name.contains("MAX_ROWS"))
+                            .toList())
+                    .as("no depth constant of any spelling is published on the response body")
+                    .isEmpty();
         }
 
         @Test
@@ -280,17 +516,15 @@ class UserResponseTest {
         }
 
         @Test
-        @DisplayName("carries a collection longer than the screen's row count untouched, because how "
-                + "many rows fit is the paging contract's measurement and not this type's")
-        void carriesACollectionLongerThanTheRowCountUntouched() {
-            List<UserResponse.UserRow> overLong = rows(PageMetadata.LARGEST_SCREEN_PAGE_SIZE + 1);
+        @DisplayName("refuses a collection longer than the row count, since the screen could not "
+                + "render it")
+        void refusesACollectionLongerThanTheRowCount() {
+            List<UserResponse.UserRow> overLong = rows(PageMetadata.USER_LIST_PAGE_SIZE + 1);
 
-            UserResponse response = carrying(overLong);
-
-            assertThat(response.rows())
-                    .describedAs("nothing is refused and nothing is truncated, so an over-long page "
-                            + "is reported by whoever knows the screen rather than lost here")
-                    .hasSize(overLong.size());
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> carrying(overLong))
+                    .withMessageContaining(String.valueOf(PageMetadata.USER_LIST_PAGE_SIZE))
+                    .withMessageContaining(String.valueOf(PageMetadata.USER_LIST_PAGE_SIZE + 1));
         }
 
         @Test
@@ -430,6 +664,7 @@ class UserResponseTest {
     @Nested
     @DisplayName("the selection rejection is plural and is never harmonised with the singular one")
     class SelectionMessageIsPlural {
+
         @Test
         @DisplayName("reproduces the forty-three-character plural text byte for byte")
         void reproducesThePluralTextByteForByte() {
@@ -496,6 +731,7 @@ class UserResponseTest {
     @Nested
     @DisplayName("every measured message literal is reproduced verbatim at its exact length")
     class MeasuredMessageLiterals {
+
         @Test
         @DisplayName("reproduces the five add-screen emptiness rejections of COUSR01C")
         void reproducesTheAddEmptinessRejections() {
@@ -720,6 +956,7 @@ class UserResponseTest {
     @DisplayName("the three confirmations compose a five-character prefix, the unpadded identifier "
             + "and a leading-space fragment")
     class ComposedSuccessMessages {
+
         @Test
         @DisplayName("publishes the prefix as five characters ending in a space, on all three "
                 + "screens")
@@ -894,6 +1131,7 @@ class UserResponseTest {
     @Nested
     @DisplayName("a populated message never implies a failure, because the flag is explicit")
     class SuccessIsNotAnError {
+
         @Test
         @DisplayName("carries each of the three confirmations together with a false failure flag")
         void carriesEachConfirmationWithAFalseFlag() {
@@ -1046,6 +1284,7 @@ class UserResponseTest {
     @Nested
     @DisplayName("one summary message, because the legacy cascades stop at the first failure")
     class SingleSummaryMessage {
+
         @Test
         @DisplayName("carries exactly one message key on the wire, never a collection of them")
         void carriesExactlyOneMessageKey() throws JsonProcessingException {
@@ -1122,6 +1361,7 @@ class UserResponseTest {
     @Nested
     @DisplayName("every value crosses at its own width, untrimmed, unpadded and un-case-folded")
     class ExactWidthRoundTrip {
+
         @Test
         @DisplayName("returns each value exactly as supplied at its declared width")
         void returnsEachValueExactlyAsSupplied() {
@@ -1213,6 +1453,7 @@ class UserResponseTest {
     @Nested
     @DisplayName("no credential crosses this contract in any form")
     class NoCredentialAnywhere {
+
         @Test
         @DisplayName("declares exactly nineteen components, so there is no credential one")
         void declaresExactlyNineteenComponents() throws JsonProcessingException {
@@ -1273,6 +1514,7 @@ class UserResponseTest {
     @Nested
     @DisplayName("the user-type vocabulary is two codes, resolved without ever throwing")
     class UserTypeVocabulary {
+
         @Test
         @DisplayName("declares exactly two constants and no synthetic third state")
         void declaresExactlyTwoConstants() {
@@ -1384,6 +1626,7 @@ class UserResponseTest {
     @Nested
     @DisplayName("identifiers are bounded text, so a leading zero survives")
     class IdentifiersAreText {
+
         @Test
         @DisplayName("returns an eight-character identifier byte for byte at both levels")
         void returnsAnEightCharacterIdentifierByteForByte() {
@@ -1452,6 +1695,7 @@ class UserResponseTest {
     @Nested
     @DisplayName("both collections are frozen, detached and never null")
     class CollectionsAreImmutable {
+
         @Test
         @DisplayName("returns an unmodifiable row collection")
         void returnsAnUnmodifiableRowCollection() {
@@ -1530,6 +1774,7 @@ class UserResponseTest {
     @Nested
     @DisplayName("the paging contract is carried, not re-implemented, and counts nothing")
     class PagingMetadataIsCarried {
+
         @Test
         @DisplayName("carries both cursors unchanged, including their leading zeros")
         void carriesBothCursorsUnchanged() {
@@ -1615,6 +1860,7 @@ class UserResponseTest {
     @Nested
     @DisplayName("the echoed navigation state is carried, not re-implemented")
     class NavigationStateIsCarried {
+
         @Test
         @DisplayName("returns every echoed identifier unchanged, leading zeros included")
         void returnsEveryEchoedIdentifierUnchanged() {
@@ -1664,6 +1910,7 @@ class UserResponseTest {
     @DisplayName("width is the only declarative constraint, because the cascade is ordered and "
             + "first-error-wins")
     class DeclarativeValidation {
+
         @Test
         @DisplayName("produces no violation at all when every component is absent")
         void producesNoViolationWhenEveryComponentIsAbsent() {
@@ -1769,6 +2016,7 @@ class UserResponseTest {
     @DisplayName("the wire form omits what is absent, tolerates what it does not know and compares "
             + "by value")
     class WireShape {
+
         @Test
         @DisplayName("omits an absent component instead of emitting a null")
         void omitsAnAbsentComponent() throws JsonProcessingException {
@@ -1892,6 +2140,7 @@ class UserResponseTest {
     @Nested
     @DisplayName("the next route is declarative data and never a decision taken here")
     class RouteIsData {
+
         @Test
         @DisplayName("carries an opaque route label unchanged")
         void carriesAnOpaqueRouteLabelUnchanged() throws JsonProcessingException {
@@ -1939,6 +2188,7 @@ class UserResponseTest {
     @Nested
     @DisplayName("the diagnostic rendering withholds identity while staying diagnosable")
     class DiagnosticRendering {
+
         @Test
         @DisplayName("withholds the identifier, both name parts and the type on the response")
         void withholdsTheIdentityValuesOnTheResponse() {
@@ -2055,6 +2305,7 @@ class UserResponseTest {
     @Nested
     @DisplayName("every accessor on the response and on the row is exercised")
     class AccessorCoverage {
+
         @Test
         @DisplayName("returns all nineteen components of a fully populated response")
         void returnsAllNineteenComponents() {

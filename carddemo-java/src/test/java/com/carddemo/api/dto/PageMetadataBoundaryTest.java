@@ -256,7 +256,7 @@ class PageMetadataBoundaryTest {
 
                 assertThat(size).as("component %s", name).isNotNull();
                 assertThat(size.max()).as("component %s", name)
-                        .isEqualTo(PageMetadata.CURSOR_KEY_MAX_LENGTH).isEqualTo(27);
+                        .isEqualTo(PageMetadata.CURSOR_KEY_MAX_LENGTH).isEqualTo(16);
                 assertThat(size.min()).as("component %s", name).isZero();
             }
         }
@@ -357,7 +357,8 @@ class PageMetadataBoundaryTest {
                     " ".repeat(PageMetadata.DISPLAYED_PAGE_NUMBER_MAX_LENGTH));
 
             assertThat(violationsOf(blanks)).isEmpty();
-            assertThat(blanks.previousCursorKey()).hasSize(27).isBlank();
+            assertThat(blanks.previousCursorKey())
+                    .hasSize(PageMetadata.CURSOR_KEY_MAX_LENGTH).hasSize(16).isBlank();
         }
     }
 }

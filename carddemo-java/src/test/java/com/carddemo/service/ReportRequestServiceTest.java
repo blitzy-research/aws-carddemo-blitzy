@@ -19,7 +19,6 @@ package com.carddemo.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
-import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.domain.enums.ReportPeriod;
 import com.carddemo.exception.ValidationException;
@@ -321,25 +320,23 @@ class ReportRequestServiceTest {
     }
 
     /** A turn carrying navigation state that has already been through one entry. */
-    private static NavigationContext returningContext() {
-        return signedOnState(NavigationContext.ProgramContext.REENTER);
+    private static ConversationState returningContext() {
+        return signedOnState(ConversationState.EntryMode.RE_ENTRY);
     }
 
     /**
      * Builds a signed-on navigation state.
      *
-     * <p>A context equal to {@link NavigationContext#empty()} is what the service reads as an absent
+     * <p>A context equal to {@link ConversationState#empty()} is what the service reads as an absent
      * communication area, so a turn that is present but has not yet been through the screen must
      * carry real state with its program context still on first entry.
      *
-     * @param programContext whether this turn is a first entry or a re-entry
+     * @param entryMode whether this turn is a first entry or a re-entry
      * @return the assembled navigation state
      */
-    private static NavigationContext signedOnState(
-            final NavigationContext.ProgramContext programContext) {
-        return new NavigationContext("CR00", "COSGN00C", null, null, "USER0001", "U",
-                programContext, "000000042", "MARY", null, "SMITH", "00000000042", "Y",
-                "4111111111111111", "CORPT0A", "CORPT00");
+    private static ConversationState signedOnState(
+            final ConversationState.EntryMode entryMode) {
+        return new ConversationState("CR00", "COSGN00C", null, null, entryMode);
     }
 
     /**
@@ -355,7 +352,7 @@ class ReportRequestServiceTest {
      */
     private static ReportRequestService.ReportScreenInput input(final String monthly,
             final String yearly, final String custom, final String confirm, final KeyAction key,
-            final NavigationContext context) {
+            final ConversationState context) {
         return new ReportRequestService.ReportScreenInput(monthly, yearly, custom,
                 null, null, null, null, null, null, confirm, key, context);
     }
@@ -453,7 +450,7 @@ class ReportRequestServiceTest {
             final ReportRequestService.ReportRequestResult result =
                     serviceWith(publisher).processReportRequest(
                             input(null, null, null, null, KeyAction.ENTER,
-                                    signedOnState(NavigationContext.ProgramContext.ENTER)));
+                                    signedOnState(ConversationState.EntryMode.FIRST_ENTRY)));
 
             assertThat(result.focusField()).isEqualTo("MONTHLY");
             assertThat(result.cardsPublished()).isZero();
@@ -470,7 +467,7 @@ class ReportRequestServiceTest {
             final ReportRequestService.ReportRequestResult result =
                     serviceWith(publishingEveryCard()).processReportRequest(
                             input(null, null, null, null, KeyAction.ENTER,
-                                    signedOnState(NavigationContext.ProgramContext.ENTER)));
+                                    signedOnState(ConversationState.EntryMode.FIRST_ENTRY)));
 
             assertThat(result.header().title01()).isEqualTo(EXPECTED_TITLE_01);
             assertThat(result.header().title02()).isEqualTo(EXPECTED_TITLE_02);

@@ -17,6 +17,7 @@
 package com.carddemo.config;
 
 import com.carddemo.domain.enums.UserType;
+import com.carddemo.service.SessionTokenIssuer;
 import com.nimbusds.jose.jwk.source.ImmutableSecret;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
@@ -91,7 +92,7 @@ import org.springframework.stereotype.Component;
  * accessor are reasoned in {@code docs/decision-log.md} DL-097.
  */
 @Component
-public class JwtTokenProvider {
+public class JwtTokenProvider implements SessionTokenIssuer {
 
     /**
      * Claim name under which a token carries the user type.
@@ -221,6 +222,7 @@ public class JwtTokenProvider {
      * @return the compact serialized token
      * @throws NullPointerException if either argument is {@code null}
      */
+    @Override
     public String issue(final String userId, final UserType userType) {
         Objects.requireNonNull(userId, "userId must not be null");
         Objects.requireNonNull(userType, "userType must not be null");

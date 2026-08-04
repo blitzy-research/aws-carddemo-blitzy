@@ -28,8 +28,11 @@ import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -667,23 +670,102 @@ class TransactionListResponseTest {
      * shape of the screen &mdash; how many lines an operator sees &mdash; and the module asserts no
      * numeric performance or capacity target of any kind.</p>
      *
-     * <p>The figure is read from {@link PageMetadata#TRANSACTION_LIST_PAGE_SIZE} throughout, so
-     * neither this file nor the response body it exercises restates a screen shape of its own.</p>
+     * <p>The figure is read from {@link PageMetadata#TRANSACTION_LIST_PAGE_SIZE} throughout, so this
+     * file restates no screen shape of its own.</p>
      */
     @Nested
     @DisplayName("the screen row count is ten, established from loop bounds with no row table")
     class ScreenRowCount {
 
+        /**
+         * A page must also agree with the paging state travelling beside it.
+         *
+         * <p>The structural bound alone is not enough. A response carrying eight rows beside metadata
+         * that declares a page size of three describes two different pages at once, and a client that
+         * believed the metadata - which is the whole reason the metadata is published - would either
+         * drop rows it was sent or attribute them to a page they do not belong to. The disagreement is
+         * a producer defect and is reported where it can still be corrected. The check is skipped
+         * entirely when no metadata travels with the response, which is the ordinary shape for an error
+         * or first-entry screen that presents no page at all.</p>
+         */
         @Test
-        @DisplayName("is published by the paging contract alone, this response body declaring no "
-                + "count of its own")
-        void isPublishedByThePagingContractAlone() {
+        @DisplayName("refuses a page carrying more rows than its own paging metadata declares")
+        void refusesAPageWiderThanItsOwnPagingMetadataDeclares() {
+            int declaredPageSize = 3;
+            int rowsCarried = 8;
+            PageMetadata narrowerThanThePage = PageMetadata.forward(declaredPageSize,
+                    PREVIOUS_CURSOR_KEY, NEXT_CURSOR_KEY, true, false, PAGE_INDICATOR);
+
+            // Deliberately within the structural bound, so the first check cannot be what fires: eight
+            // rows fit the screen's ten slots and are refused only because the metadata says three.
+            assertThat(rowsCarried).isLessThan(PageMetadata.TRANSACTION_LIST_PAGE_SIZE);
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new TransactionListResponse(rows(rowsCarried),
+                            narrowerThanThePage, navigation(), NEXT_ROUTE, TRANSACTION_ID_LOWER,
+                            PAGE_INDICATOR, null, false, FOCUS_FIELD, TITLE_ONE, TITLE_TWO,
+                            CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME))
+                    .withMessageContaining(String.valueOf(declaredPageSize))
+                    .withMessageContaining(String.valueOf(rowsCarried));
+        }
+
+        @Test
+        @DisplayName("accepts a page exactly as deep as its own paging metadata declares")
+        void acceptsAPageExactlyAsDeepAsItsPagingMetadataDeclares() {
+            int declaredPageSize = 3;
+            PageMetadata matchingThePage = PageMetadata.forward(declaredPageSize, PREVIOUS_CURSOR_KEY,
+                    NEXT_CURSOR_KEY, true, false, PAGE_INDICATOR);
+
+            TransactionListResponse response = new TransactionListResponse(rows(declaredPageSize),
+                    matchingThePage, navigation(), NEXT_ROUTE, TRANSACTION_ID_LOWER, PAGE_INDICATOR,
+                    null, false, FOCUS_FIELD, TITLE_ONE, TITLE_TWO, CURRENT_DATE, CURRENT_TIME,
+                    TRANSACTION_NAME, PROGRAM_NAME);
+
+            assertThat(response.rows()).hasSize(declaredPageSize);
+
+            // A short page is still a valid page: the final page of a browse is routinely shorter than
+            // the page size, so only exceeding the declared size is a defect.
+            assertThat(new TransactionListResponse(rows(1), matchingThePage, navigation(), NEXT_ROUTE,
+                            TRANSACTION_ID_LOWER, PAGE_INDICATOR, null, false, FOCUS_FIELD, TITLE_ONE,
+                            TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME)
+                    .rows())
+                    .hasSize(1);
+        }
+
+        @Test
+        @DisplayName("applies no metadata comparison when no paging metadata travels with the page")
+        void appliesNoMetadataComparisonWhenNoPagingMetadataTravels() {
+            TransactionListResponse response = new TransactionListResponse(
+                    rows(PageMetadata.TRANSACTION_LIST_PAGE_SIZE), null, navigation(), NEXT_ROUTE,
+                    TRANSACTION_ID_LOWER, PAGE_INDICATOR, null, false, FOCUS_FIELD, TITLE_ONE,
+                    TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME);
+
+            assertThat(response.pageMetadata()).isNull();
+            assertThat(response.rows()).hasSize(PageMetadata.TRANSACTION_LIST_PAGE_SIZE);
+        }
+
+        @Test
+        @DisplayName("reads the count from the paging contract and restates it nowhere of its own")
+        void agreesWithThePagingContract() {
             assertThat(PageMetadata.TRANSACTION_LIST_PAGE_SIZE)
-                    .as("the screen depth is stated once for the whole module; a count published on "
-                            + "this response body would be a competing source of truth for the same "
-                            + "measurement, and a reference to one on TransactionListResponse would "
-                            + "fail to compile rather than fail here")
+                    .as("the paging contract is the single place this screen's depth is stated")
                     .isEqualTo(10);
+
+            // The cap is proved to read that constant rather than a private copy by the refusal test
+            // below, which names the published figure in the message. What this test adds is that no
+            // private copy exists to read: an earlier revision declared a duplicate depth constant on
+            // this body, and the duplication was the stated reason a later revision removed the cap
+            // altogether, so singularity is what stops the same argument being available again.
+            assertThat(Arrays.stream(TransactionListResponse.class.getDeclaredFields())
+                            .filter(field -> Modifier.isStatic(field.getModifiers()))
+                            .filter(field -> !field.isSynthetic())
+                            .map(Field::getName)
+                            .filter(name -> name.contains("ROW_COUNT")
+                                    || name.contains("PAGE_SIZE")
+                                    || name.contains("MAX_ROWS"))
+                            .toList())
+                    .as("no depth constant of any spelling is published on the response body")
+                    .isEmpty();
         }
 
         @Test
@@ -705,21 +787,15 @@ class TransactionListResponseTest {
         }
 
         @Test
-        @DisplayName("carries one row more than the screen has lines rather than discarding or "
-                + "refusing it, leaving the fit to the service that assembled the page")
-        void carriesOneRowMoreThanTheScreenHasLines() {
+        @DisplayName("refuses one row more than the screen has lines, rather than discarding it")
+        void refusesOneRowMoreThanTheScreenHasLines() {
             List<TransactionListResponse.TransactionRow> overfull =
                     rows(PageMetadata.TRANSACTION_LIST_PAGE_SIZE + 1);
 
-            TransactionListResponse subject =
-                    response(overfull, TransactionListResponse.MESSAGE_AT_TOP);
-
-            assertThat(subject.rows())
-                    .as("discarding a row the browse returned would hide the defect, and refusing it "
-                            + "would require this body to publish the depth it refused against - a "
-                            + "measurement the paging contract already states once for the module")
-                    .hasSize(PageMetadata.TRANSACTION_LIST_PAGE_SIZE + 1)
-                    .containsExactlyElementsOf(overfull);
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> response(overfull, TransactionListResponse.MESSAGE_AT_TOP))
+                    .withMessageContaining(String.valueOf(PageMetadata.TRANSACTION_LIST_PAGE_SIZE))
+                    .withMessageContaining(String.valueOf(PageMetadata.TRANSACTION_LIST_PAGE_SIZE + 1));
         }
 
         @Test

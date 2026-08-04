@@ -23,7 +23,6 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
-import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.exception.AbendException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -125,9 +124,8 @@ class NavigationServiceSecurityTest {
      * @param fromProgram the nomination to place in the originating-program field
      * @return a context carrying that nomination and nothing else of interest
      */
-    private static NavigationContext contextFrom(final String fromProgram) {
-        return new NavigationContext("CC00", fromProgram, null, null, null, null, null,
-                null, null, null, null, null, null, null, null, null);
+    private static ConversationState contextFrom(final String fromProgram) {
+        return new ConversationState("CC00", fromProgram, null, null, null);
     }
 
     /**
@@ -136,9 +134,8 @@ class NavigationServiceSecurityTest {
      * @param toProgram the nomination to place in the destination-program field
      * @return a context carrying that nomination and nothing else of interest
      */
-    private static NavigationContext contextTo(final String toProgram) {
-        return new NavigationContext("CC00", null, "CM00", toProgram, null, null, null,
-                null, null, null, null, null, null, null, null, null);
+    private static ConversationState contextTo(final String toProgram) {
+        return new ConversationState("CC00", null, "CM00", toProgram, null);
     }
 
     /** Asserts that every recorded message is a single safe line that does not echo the payload. */

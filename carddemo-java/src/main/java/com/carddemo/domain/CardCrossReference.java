@@ -19,6 +19,8 @@ package com.carddemo.domain;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import java.util.Objects;
 
@@ -56,14 +58,41 @@ import java.util.Objects;
 @Entity
 @Table(name = "card_cross_reference")
 public class CardCrossReference {
+
+    /**
+     * Width of the card number in characters: 16, declared by the copybook as sixteen alphanumeric characters
+     * at offset 0.
+     *
+     * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
+     * than two copies of it.
+     */
+    static final int XREF_CARD_NUM_WIDTH = 16;
+
+    /**
+     * Width of the customer identifier in characters: 9, declared by the copybook as nine digits at offset
+     * 16.
+     *
+     * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
+     * than two copies of it.
+     */
+    static final int XREF_CUST_ID_WIDTH = 9;
+
+    /**
+     * Width of the account identifier in characters: 11, declared by the copybook as eleven digits at offset
+     * 25.
+     *
+     * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
+     * than two copies of it.
+     */
+    static final int XREF_ACCT_ID_WIDTH = 11;
     @Id
-    @Column(name = "xref_card_num", length = 16, nullable = false)
+    @Column(name = "xref_card_num", length = XREF_CARD_NUM_WIDTH, nullable = false)
     private String xrefCardNum;
 
-    @Column(name = "xref_cust_id", length = 9, nullable = false)
+    @Column(name = "xref_cust_id", length = XREF_CUST_ID_WIDTH, nullable = false)
     private String xrefCustId;
 
-    @Column(name = "xref_acct_id", length = 11, nullable = false)
+    @Column(name = "xref_acct_id", length = XREF_ACCT_ID_WIDTH, nullable = false)
     private String xrefAcctId;
 
     /**
@@ -82,14 +111,22 @@ public class CardCrossReference {
      * after constructing an instance and the schema's own not-null constraints are what require a value
      * to be present.
      *
-     * <p><strong>Why nothing else is rejected, deliberately.</strong> No width check, no digit-class
-     * check, no trimming and no padding. The three attributes carry a 16-byte card number, a 9-digit
-     * customer identifier and an 11-digit account identifier sliced out of fixed-width record images by
-     * the utility layer's mappers, and the legacy tier accepted whatever those images held. Enforcing a
-     * width or a character class here would reject data the legacy system stored and would break the
-     * byte-level correspondence between a record image and a stored row - a behavioral regression
-     * dressed as rigour. The persisted widths and nullability are enforced by the schema, where they
-     * belong.
+     * <p><strong>Why nothing else is rejected <em>here</em>.</strong> No width check, no digit-class
+     * check, no trimming and no padding on <em>assignment</em>. This guard runs from the constructor and
+     * from each setter, which is to say on every instance however it came to exist, including one built
+     * for an assertion or an intermediate calculation; a value that will never become a row is not the
+     * schema's business. Nothing is trimmed or padded anywhere, on assignment or on write, because
+     * either would invent or destroy an identity rather than report a defect.
+     *
+     * <p><strong>Width and digit class are enforced on the way to a row, by
+     * {@link #normalizeAndValidateBeforeWrite()}.</strong> An earlier version of this text argued that
+     * such a rule would reject data the legacy system stored, and that argument does not survive
+     * inspection: all three attributes are slices of a fixed-width record image, so every value the
+     * legacy system stored is exactly the declared width, and what a rule rejects is a value no image
+     * could have produced. Leaving it to a bounded column was not equivalent either - a bounded column
+     * states a maximum, and it is the <em>short</em> value that splits one record's identity between the
+     * relational key and the bytes it is written back into. {@code V1__create_schema.sql} carries the
+     * same rules as check constraints for a writer that never constructs an entity at all.
      *
      * <p><strong>Why a control character is the exception.</strong> It is not data in any legacy record:
      * every one of the nine ASCII fixtures is printable fixed-width text, so no legitimate value can
@@ -223,6 +260,40 @@ public class CardCrossReference {
      */
     public void setXrefAcctId(final String xrefAcctId) {
         this.xrefAcctId = withoutControlCharacters(xrefAcctId, "xrefAcctId");
+    }
+
+    /**
+     * Refuses any of the three identifiers that is not exactly the width its record layout declares, and the
+     * two numeric ones that carry a character outside the ASCII digits, immediately before the row is
+     * inserted or updated.
+     *
+     * <p><strong>This supersedes the reasoning the class documentation above once carried.</strong> That
+     * text argued against a width rule on the grounds that it would reject data the legacy system stored,
+     * and the argument does not survive inspection: all three fields are slices of a fixed-width record
+     * image, so every value the legacy system stored is exactly the declared width. What a width rule
+     * rejects is a value that no record image could have produced - and this is the record that resolves a
+     * card to an account, so a short identifier here mis-resolves an entire relationship rather than
+     * merely mis-keying one row. The control-character rule the constructor already applies stays where it
+     * is: it guards a value on its way in from anywhere, while this guards one on its way to a row.
+     *
+     * <p><strong>Why a callback rather than the constructor or the setter.</strong> The persistence
+     * provider hydrates a row by instantiating the entity and assigning its fields directly, so a
+     * constructor guard is bypassed on every read while a callback sits on the one path every insert and
+     * every update must take. It also leaves an instance built for an assertion, a fixture or an
+     * intermediate calculation unrestricted - only one about to become a row is checked.
+     *
+     * <p>{@code V1__create_schema.sql} carries the same key rules a second time as check constraints, so
+     * a bulk load or a migration script that never constructs an entity is refused as well.
+     *
+     * @throws IllegalArgumentException if an identifier is absent or is not exactly the width its layout
+     *         declares
+     */
+    @PrePersist
+    @PreUpdate
+    void normalizeAndValidateBeforeWrite() {
+        StoredValueRules.requireFixedWidth(xrefCardNum, XREF_CARD_NUM_WIDTH, "xrefCardNum");
+        StoredValueRules.requireFixedWidthDigits(xrefCustId, XREF_CUST_ID_WIDTH, "xrefCustId");
+        StoredValueRules.requireFixedWidthDigits(xrefAcctId, XREF_ACCT_ID_WIDTH, "xrefAcctId");
     }
 
     @Override

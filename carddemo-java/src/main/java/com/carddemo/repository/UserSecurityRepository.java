@@ -16,9 +16,11 @@
  */
 package com.carddemo.repository;
 
+import java.util.List;
 import java.util.Optional;
 
 import com.carddemo.domain.UserSecurity;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.repository.Repository;
@@ -288,10 +290,66 @@ public interface UserSecurityRepository extends Repository<UserSecurity, String>
      * at a time and fills backwards as well as forwards, so imposing either here would break one of the
      * two directions.
      *
+     * <p><strong>This serves the opening page of a browse only.</strong> The legacy screen computes no
+     * row number: it retains the first and last identifier it displayed - two eight-character commarea
+     * fields - and repositions on one of them, so every page after the first is a keyset read through
+     * {@link #findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(String, Limit)} or
+     * {@link #findBySecUsrIdLessThanOrderBySecUsrIdDesc(String, Limit)}. Paging deeper through this
+     * method would ask the database to count and discard every earlier row on each turn, and would let a
+     * row added or removed between two turns shift the window so that an identity is listed twice or
+     * skipped. At page zero there is nothing to discard, which is why the opening page legitimately
+     * arrives here.
+     *
      * @param pageable the page, size and sort the caller requires; never {@code null}
      * @return one page of projections, empty when the page lies beyond the last row
      */
     Page<AdminEntry> findAllProjectedBy(Pageable pageable);
+
+    /**
+     * Reads the sign-on identities that follow a boundary identifier, in ascending identifier order,
+     * limited to the number of rows the caller asks for, as projections that carry no credential.
+     *
+     * <p>The forward half of the administrative keyset browse. The cursor is the identifier of the last
+     * row the previous page displayed, and the comparison is strict so that row is not listed twice. The
+     * identifier is the primary key and therefore unique, which makes the single-column cursor total.
+     *
+     * <p><strong>Ask for one row more than the screen holds.</strong> The legacy program discovers that a
+     * further page exists by attempting one more read rather than by counting, so requesting eleven rows
+     * for a ten-row screen reproduces that exactly and the eleventh row is discarded once it has answered
+     * the question.
+     *
+     * <p>The return type is the same closed projection the paged form returns, so the credential column is
+     * not selected on this path either. That is the reason the keyset methods are declared here rather
+     * than being left to a caller composing a specification: a specification would have returned entities.
+     *
+     * @param secUsrId the exclusive lower bound - the last identifier already displayed - matched exactly
+     *                 as supplied and never trimmed or folded
+     * @param limit    the maximum number of rows to read, which the caller sets to the screen's row count
+     *                 plus one
+     * @return the matching projections in ascending identifier order, at most {@code limit} of them,
+     *         possibly empty and never {@code null}
+     */
+    List<AdminEntry> findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(String secUsrId, Limit limit);
+
+    /**
+     * Reads the sign-on identities that precede a boundary identifier, in descending identifier order,
+     * limited to the number of rows the caller asks for, as projections that carry no credential.
+     *
+     * <p>The backward half of the administrative keyset browse. The cursor is the identifier of the first
+     * row the previous page displayed, and the comparison is strict so that row is not repeated.
+     *
+     * <p><strong>Descending is the read order and not the presentation order.</strong> The legacy backward
+     * path fills its bottom screen slot first and works upward, so the page the operator sees ascends
+     * exactly like a forward page; the calling service reverses these rows before building the response.
+     *
+     * @param secUsrId the exclusive upper bound - the first identifier already displayed - matched exactly
+     *                 as supplied and never trimmed or folded
+     * @param limit    the maximum number of rows to read, which the caller sets to the screen's row count
+     *                 plus one
+     * @return the matching projections in descending identifier order, at most {@code limit} of them,
+     *         possibly empty and never {@code null}
+     */
+    List<AdminEntry> findBySecUsrIdLessThanOrderBySecUsrIdDesc(String secUsrId, Limit limit);
 
     /**
      * Stores one sign-on identity, inserting it or updating it in place.

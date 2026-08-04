@@ -1653,26 +1653,31 @@ class UserResponseCoverageTest {
          * An over-deep page is refused rather than truncated or carried.
          *
          * <p>Three responses were available and only one of them states the invariant where it can
-         * still be acted on. Truncating would discard returned data silently, so the collection crosses
-         * intact. Reporting an over-deep page needs the screen's row count, and that figure is stated
-         * once by the paging contract rather than twice here, so the report belongs to the layer that
-         * already holds the dimension - which is also the layer that assembled the page.</p>
+         * still be acted on. Truncating is not one of them: it would discard returned data silently.
+         * Carrying an over-deep page was once argued for on the grounds that reporting it needs the
+         * screen's row count, and that publishing the figure here would state twice what the paging
+         * contract states once - but reporting it needs only to <em>read</em>
+         * {@link PageMetadata#USER_LIST_PAGE_SIZE}, not to republish it, which is why the sibling
+         * assertion that this body declares no page-size constant still holds. A twelfth row corresponds
+         * to no row the list screen ever rendered, so it is a producer defect, and refusing it at
+         * construction is what stops it reaching a client as a page no screen can present.</p>
          */
         @Test
-        @DisplayName("carries an over-deep page untouched, leaving the screen's depth to the contract "
-                + "that measures it")
-        void anOverDeepPageIsCarriedUntouched() {
+        @DisplayName("refuses an over-deep page, reading the screen's depth from the contract that "
+                + "measures it")
+        void anOverDeepPageIsRefused() {
             List<UserResponse.UserRow> twelve = new ArrayList<>(tenAscendingRows());
             twelve.add(row(" ", "USER0011", "First11", "Last11", "U"));
             twelve.add(row(" ", "USER0012", "First12", "Last12", "A"));
 
-            assertThat(build(Map.of(), twelve, null, null, false, false, null).rows())
-                    .as("truncating would discard returned data silently, so the collection crosses "
-                            + "intact and whoever knows the screen depth reports it")
-                    .hasSize(12);
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("a page deeper than the screen is a producer defect, reported not published")
+                    .isThrownBy(() -> build(Map.of(), twelve, null, null, false, false, null))
+                    .withMessageContaining(String.valueOf(PageMetadata.USER_LIST_PAGE_SIZE))
+                    .withMessageContaining("12");
 
             assertThat(build(Map.of(), tenAscendingRows(), null, null, false, false, null).rows())
-                    .as("a page at exactly the screen's depth crosses unchanged too")
+                    .as("a page at exactly the screen's depth crosses unchanged")
                     .hasSize(PageMetadata.USER_LIST_PAGE_SIZE);
         }
 

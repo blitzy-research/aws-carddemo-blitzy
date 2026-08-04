@@ -29,7 +29,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.AbendException;
 import com.carddemo.domain.enums.UserType;
@@ -104,13 +103,13 @@ import com.carddemo.domain.enums.UserType;
  * <ul>
  *   <li>the sign-on role split - {@link #resolveSignOnRoute(UserType)} and
  *       {@link #resolveSignOnRouteForUserTypeCode(String)};</li>
- *   <li>entry with no prior state - {@link #isNavigationContextAbsent(NavigationContext)} and
+ *   <li>entry with no prior state - {@link #isConversationStateAbsent(ConversationState)} and
  *       {@link #resolveAbsentContextRoute()};</li>
- *   <li>return to the previous screen - {@link #resolveBackNavigation(NavigationContext, Route)},
- *       reached through {@link #resolveAttentionKeyRoute(KeyAction, NavigationContext, Route)};</li>
+ *   <li>return to the previous screen - {@link #resolveBackNavigation(ConversationState, Route)},
+ *       reached through {@link #resolveAttentionKeyRoute(KeyAction, ConversationState, Route)};</li>
  *   <li>return to an already nominated destination -
- *       {@link #resolveNominatedDestination(NavigationContext, Route)} and its sign-off special case
- *       {@link #resolveSignOffRoute(NavigationContext)};</li>
+ *       {@link #resolveNominatedDestination(ConversationState, Route)} and its sign-off special case
+ *       {@link #resolveSignOffRoute(ConversationState)};</li>
  *   <li>forward dispatch from a menu - {@link #resolveMenuDispatch(UserType, String, String)} and
  *       {@link #resolveAdminMenuDispatch(String)}.</li>
  * </ul>
@@ -194,7 +193,7 @@ import com.carddemo.domain.enums.UserType;
  * matter most are the unconditional alternative in the sign-on split, which routes an undeclared user
  * type to the main menu rather than rejecting it; the two documented-unreachable menu branches, which
  * are preserved rather than deleted or corrected; and the treatment of an unrecognised program name,
- * described on {@link #resolveBackNavigation(NavigationContext, Route)}.
+ * described on {@link #resolveBackNavigation(ConversationState, Route)}.
  */
 @Service
 public final class NavigationService {
@@ -598,8 +597,8 @@ public final class NavigationService {
      * signed-on user, no selection and no previous screen &mdash; exactly what a zero-length communication
      * area describes.
      */
-    public boolean isNavigationContextAbsent(final NavigationContext context) {
-        return context == null || NavigationContext.empty().equals(context);
+    public boolean isConversationStateAbsent(final ConversationState context) {
+        return context == null || context.absent();
     }
 
     /**
@@ -669,7 +668,7 @@ public final class NavigationService {
      *
      * @param context       the navigation state echoed by the client; must not be {@code null}. Entry
      *                      carrying no state at all is a different rule - see
-     *                      {@link #isNavigationContextAbsent(NavigationContext)} - and is resolved
+     *                      {@link #isConversationStateAbsent(ConversationState)} - and is resolved
      *                      before this one is reached
      * @param callerDefault the calling screen's own default destination, applied when the originating
      *                      program field nominates nothing usable; must not be {@code null}
@@ -679,7 +678,7 @@ public final class NavigationService {
      * @throws AbendException       if the originating-program field names a destination that cannot be
      *                              resolved, reproducing the abend the legacy transfer would have raised
      */
-    public Route resolveBackNavigation(final NavigationContext context, final Route callerDefault) {
+    public Route resolveBackNavigation(final ConversationState context, final Route callerDefault) {
         Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(callerDefault, "callerDefault must not be null");
         return resolveNominatedProgram(context.fromProgram(), callerDefault, "back-navigation");
@@ -697,7 +696,7 @@ public final class NavigationService {
      * emitted by the owning online service.
      */
     public Optional<Route> resolveAttentionKeyRoute(final KeyAction keyAction,
-            final NavigationContext context, final Route callerDefault) {
+            final ConversationState context, final Route callerDefault) {
         Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(callerDefault, "callerDefault must not be null");
         if (!isBackNavigationKey(keyAction)) {
@@ -723,7 +722,7 @@ public final class NavigationService {
      *
      * <p>The fallback is a parameter for the same reason it is on back-navigation: the default is per
      * screen. The unresolvable-nomination failure documented on
-     * {@link #resolveBackNavigation(NavigationContext, Route)} applies identically here.
+     * {@link #resolveBackNavigation(ConversationState, Route)} applies identically here.
      *
      * @param context       the navigation state echoed by the client; must not be {@code null}
      * @param callerDefault the destination to use when nothing is nominated; must not be {@code null}
@@ -733,7 +732,7 @@ public final class NavigationService {
      * @throws AbendException       if the destination-program field names a destination that cannot be
      *                              resolved, reproducing the abend the legacy transfer would have raised
      */
-    public Route resolveNominatedDestination(final NavigationContext context, final Route callerDefault) {
+    public Route resolveNominatedDestination(final ConversationState context, final Route callerDefault) {
         Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(callerDefault, "callerDefault must not be null");
         return resolveNominatedProgram(context.toProgram(), callerDefault, "nominated-destination");
@@ -741,15 +740,15 @@ public final class NavigationService {
 
     /**
      * Resolves the destination a sign-off leads to, defaulting to sign-on &mdash; the verified special case
-     * of {@link #resolveNominatedDestination(NavigationContext, Route)} for the two menu programs, each of
+     * of {@link #resolveNominatedDestination(ConversationState, Route)} for the two menu programs, each of
      * which nominates the sign-on program on its exit key and defaults to sign-on when nothing is
      * nominated, at {@code app/cbl/COMEN01C.cbl:L97, L173} and {@code app/cbl/COADM01C.cbl:L97, L163}.
      *
      * <p>This method fixes the fallback because the source fixes it for these two programs and for them
      * only. It is <strong>not</strong> a global default: any other screen must supply its own through
-     * {@link #resolveNominatedDestination(NavigationContext, Route)}.
+     * {@link #resolveNominatedDestination(ConversationState, Route)}.
      */
-    public Route resolveSignOffRoute(final NavigationContext context) {
+    public Route resolveSignOffRoute(final ConversationState context) {
         return resolveNominatedDestination(context, Route.SIGN_ON);
     }
 

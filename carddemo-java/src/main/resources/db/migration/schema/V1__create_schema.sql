@@ -128,7 +128,15 @@ CREATE TABLE account (
     acct_addr_zip               VARCHAR(10)     NOT NULL,   -- offset 102, width 10
     acct_group_id               VARCHAR(10)     NOT NULL,   -- offset 112, width 10
     version                     BIGINT          NOT NULL DEFAULT 0,
-    CONSTRAINT pk_account PRIMARY KEY (acct_id)
+    CONSTRAINT pk_account PRIMARY KEY (acct_id),
+    -- Every natural key here is a field of a fixed-width record image, so a value sliced from a valid
+    -- image is always exactly the declared width - never shorter. A bounded variable-length column
+    -- states only a maximum, and a shorter value is not a harmless near-miss: '1' and '00000000001'
+    -- are different rows claiming the same eleven bytes of one record. The entities enforce the same
+    -- rules before the write; these constraints catch a bulk load, a migration script or any future
+    -- writer that never constructs one. The digit class is applied only where the legacy picture
+    -- clause is numeric.
+    CONSTRAINT ck_account_acct_id_digits CHECK (acct_id ~ '^[0-9]{11}$')
 );
 -- Mapped bytes end at offset 122; the remaining 178 bytes are trailing filler and are not columns.
 
@@ -152,7 +160,19 @@ CREATE TABLE card (
     card_expiration_date        VARCHAR(10)     NOT NULL,   -- offset  80, width 10, see ANOMALY
     card_active_status          VARCHAR(1)      NOT NULL,   -- offset  90, width  1
     version                     BIGINT          NOT NULL DEFAULT 0,
-    CONSTRAINT pk_card PRIMARY KEY (card_num)
+    CONSTRAINT pk_card PRIMARY KEY (card_num),
+    -- Every natural key here is a field of a fixed-width record image, so a value sliced from a valid
+    -- image is always exactly the declared width - never shorter. A bounded variable-length column
+    -- states only a maximum, and a shorter value is not a harmless near-miss: '1' and '00000000001'
+    -- are different rows claiming the same eleven bytes of one record. The entities enforce the same
+    -- rules before the write; these constraints catch a bulk load, a migration script or any future
+    -- writer that never constructs one. The digit class is applied only where the legacy picture
+    -- clause is numeric.
+    -- The card number is declared alphanumeric, so only its width is contractual; the owning-account
+    -- identifier is declared numeric. Applying a digit class to the card number would reject a value
+    -- the legacy field could legitimately have held.
+    CONSTRAINT ck_card_card_num_width CHECK (char_length(card_num) = 16),
+    CONSTRAINT ck_card_card_acct_id_digits CHECK (card_acct_id ~ '^[0-9]{11}$')
 );
 -- Mapped bytes end at offset 91; the remaining 59 bytes are trailing filler and are not columns.
 
@@ -239,7 +259,15 @@ CREATE TABLE customer (
     eft_account_id              VARCHAR(10)     NOT NULL,   -- offset 318, width 10
     pri_card_holder_ind         VARCHAR(1)      NOT NULL,   -- offset 328, width  1
     fico_credit_score           VARCHAR(3)      NOT NULL,   -- offset 329, width  3
-    CONSTRAINT pk_customer PRIMARY KEY (cust_id)
+    CONSTRAINT pk_customer PRIMARY KEY (cust_id),
+    -- Every natural key here is a field of a fixed-width record image, so a value sliced from a valid
+    -- image is always exactly the declared width - never shorter. A bounded variable-length column
+    -- states only a maximum, and a shorter value is not a harmless near-miss: '1' and '00000000001'
+    -- are different rows claiming the same eleven bytes of one record. The entities enforce the same
+    -- rules before the write; these constraints catch a bulk load, a migration script or any future
+    -- writer that never constructs one. The digit class is applied only where the legacy picture
+    -- clause is numeric.
+    CONSTRAINT ck_customer_cust_id_digits CHECK (cust_id ~ '^[0-9]{9}$')
 );
 
 
@@ -256,7 +284,19 @@ CREATE TABLE card_cross_reference (
     xref_card_num               VARCHAR(16)     NOT NULL,   -- offset   0, width 16, business key
     xref_cust_id                VARCHAR(9)      NOT NULL,   -- offset  16, width  9
     xref_acct_id                VARCHAR(11)     NOT NULL,   -- offset  25, width 11
-    CONSTRAINT pk_card_cross_reference PRIMARY KEY (xref_card_num)
+    CONSTRAINT pk_card_cross_reference PRIMARY KEY (xref_card_num),
+    -- Every natural key here is a field of a fixed-width record image, so a value sliced from a valid
+    -- image is always exactly the declared width - never shorter. A bounded variable-length column
+    -- states only a maximum, and a shorter value is not a harmless near-miss: '1' and '00000000001'
+    -- are different rows claiming the same eleven bytes of one record. The entities enforce the same
+    -- rules before the write; these constraints catch a bulk load, a migration script or any future
+    -- writer that never constructs one. The digit class is applied only where the legacy picture
+    -- clause is numeric.
+    -- This row is what resolves a card to an account, so a short identifier here mis-resolves a whole
+    -- relationship rather than merely mis-keying one row.
+    CONSTRAINT ck_card_xref_card_num_width CHECK (char_length(xref_card_num) = 16),
+    CONSTRAINT ck_card_xref_cust_id_digits CHECK (xref_cust_id ~ '^[0-9]{9}$'),
+    CONSTRAINT ck_card_xref_acct_id_digits CHECK (xref_acct_id ~ '^[0-9]{11}$')
 );
 -- Mapped bytes end at offset 36; the remaining 14 bytes are trailing filler and are not columns.
 
@@ -286,7 +326,17 @@ CREATE TABLE transaction (
     tran_card_num               VARCHAR(16)     NOT NULL,   -- offset 262, width 16, sort key field
     tran_orig_ts                VARCHAR(26)     NOT NULL,   -- offset 278, width 26
     tran_proc_ts                VARCHAR(26)     NOT NULL,   -- offset 304, width 26, index key field
-    CONSTRAINT pk_transaction PRIMARY KEY (tran_id)
+    CONSTRAINT pk_transaction PRIMARY KEY (tran_id),
+    -- The identifier is minted by taking the current CHARACTER maximum and adding one, with no
+    -- sequence anywhere in this schema. That maximum equals the numeric maximum only while every
+    -- stored value is exactly sixteen zero-padded digits: a single value of any other shape - '9', or
+    -- one carrying a letter - would sort above every well-formed identifier and silently freeze
+    -- allocation. Both writers satisfy the rule (the online payment path moves a sixteen-digit numeric
+    -- work field into the key; the interest run concatenates a ten-character all-digit run date with a
+    -- six-digit counter), so the constraint refuses only values no legitimate writer produces. The
+    -- entity enforces the same rule before the write; this catches a bulk load or a migration script
+    -- that never constructs one.
+    CONSTRAINT ck_transaction_tran_id_digits CHECK (tran_id ~ '^[0-9]{16}$')
 );
 -- Mapped bytes end at offset 330; the remaining 20 bytes are trailing filler and are not columns.
 
@@ -420,6 +470,15 @@ CREATE TABLE user_security (
     sec_usr_pwd                 VARCHAR(60)     NOT NULL,   -- offset  48, width  8 in the record;
                                                             -- 60 here for a digest, see above
     sec_usr_type                VARCHAR(1)      NOT NULL,   -- offset  56, width  1
-    CONSTRAINT pk_user_security PRIMARY KEY (sec_usr_id)
+    CONSTRAINT pk_user_security PRIMARY KEY (sec_usr_id),
+    -- Every natural key here is a field of a fixed-width record image, so a value sliced from a valid
+    -- image is always exactly the declared width - never shorter. A bounded variable-length column
+    -- states only a maximum, and a shorter value is not a harmless near-miss: '1' and '00000000001'
+    -- are different rows claiming the same eleven bytes of one record. The entities enforce the same
+    -- rules before the write; these constraints catch a bulk load, a migration script or any future
+    -- writer that never constructs one. The digit class is applied only where the legacy picture
+    -- clause is numeric.
+    -- Alphanumeric by declaration, and every seeded identity carries letters, so width alone applies.
+    CONSTRAINT ck_user_security_sec_usr_id_width CHECK (char_length(sec_usr_id) = 8)
 );
 -- Mapped bytes end at offset 57; the remaining 23 bytes are trailing filler and are not a column.

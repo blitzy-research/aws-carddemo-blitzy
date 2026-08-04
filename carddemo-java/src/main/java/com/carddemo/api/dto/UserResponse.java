@@ -24,8 +24,9 @@ import java.util.List;
  * and message-level contract of their four legacy screens as one payload. One type serves all four
  * because all four are views of the same eighty-byte user-security record
  * ({@code app/cpy/CSUSR01Y.cpy}) and differ only in the subset they present; only the list screen
- * returns rows, so the row list is empty for the other three. Authorisation is not modelled here - the
- * route-to-role table belongs to the security configuration.
+ * returns rows, so the row list is empty for the other three. A row list longer than the ten rows that
+ * screen presents is refused at construction rather than published. Authorisation is not modelled
+ * here - the route-to-role table belongs to the security configuration.
  *
  * <p>Two failure arms deliberately carry a message without raising the error flag, because the legacy
  * programs emit the text and leave the switch clear; a caller must therefore treat message and flag as
@@ -176,9 +177,49 @@ public record UserResponse(
 
     public static final String MSG_DELETE_UNABLE_TO_UPDATE_USER = "Unable to Update User...";
 
+    /**
+     * Normalizes the two collections and refuses a page longer than the list screen can present.
+     *
+     * <p>Each {@code null} collection becomes the empty immutable list, and each non-{@code null} one
+     * is defensively copied with {@link List#copyOf(java.util.Collection)}, which detaches it from the
+     * caller and rejects a {@code null} element. Order, length and content are otherwise preserved:
+     * nothing is re-sorted, filtered, de-duplicated or padded, and the three non-list operations
+     * legitimately carry no rows at all.
+     *
+     * <p><strong>Two independent bounds are checked on the row list, and they are not the same
+     * bound.</strong> The first is structural: {@link PageMetadata#USER_LIST_PAGE_SIZE} is the number
+     * of rows the list screen presents, declared by the ten-occurrence table at
+     * {@code app/cbl/COUSR00C.cbl} line 57 and by the ten per-row item groups the list map carries, so
+     * an eleventh row corresponds to no slot the legacy screen ever rendered. The figure is taken from
+     * the named constant rather than restated here, and it is deliberately a different constant from
+     * the card list's seven even where two screens happen to agree. The second compares the page
+     * against the paging metadata actually travelling with it: a response whose row count exceeds the
+     * page size its own metadata declares describes two different pages at once, and a client that
+     * trusted the metadata would silently drop rows or mis-attribute them. That check is skipped when
+     * no metadata accompanies the response, which is the ordinary shape for the add, update and delete
+     * screens and for an error screen that presents no page.
+     *
+     * <p>Both bounds refuse rather than truncate, so a producer defect is reported at construction
+     * instead of reaching a client as a short page that looks deliberate.
+     *
+     * @throws NullPointerException if either collection contains a {@code null} element, which
+     *     {@link List#copyOf(java.util.Collection)} does not admit
+     * @throws IllegalArgumentException if the row list holds more entries than the list screen has
+     *     rows, or more entries than the accompanying paging metadata declares as its page size
+     */
     public UserResponse {
         rows = (rows == null) ? List.of() : List.copyOf(rows);
         fieldErrors = (fieldErrors == null) ? List.of() : List.copyOf(fieldErrors);
+        if (rows.size() > PageMetadata.USER_LIST_PAGE_SIZE) {
+            throw new IllegalArgumentException("rows may hold at most "
+                    + PageMetadata.USER_LIST_PAGE_SIZE + " entries, because that is how many rows the"
+                    + " user-list screen presents, but it holds " + rows.size());
+        }
+        if (pageMetadata != null && rows.size() > pageMetadata.pageSize()) {
+            throw new IllegalArgumentException("rows may hold at most the " + pageMetadata.pageSize()
+                    + " entries the accompanying paging metadata declares as its page size, but it"
+                    + " holds " + rows.size());
+        }
     }
 
     public boolean hasRows() {

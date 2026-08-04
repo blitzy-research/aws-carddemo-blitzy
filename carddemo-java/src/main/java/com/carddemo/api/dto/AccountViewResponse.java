@@ -48,6 +48,20 @@ import java.util.Optional;
  * redaction of what may be rendered or logged is applied where a value is rendered, and no diagnostic
  * detail reaches this payload.
  *
+ * <p><strong>Four of the components are regulated, and this record is not what protects them.</strong>
+ * The national identifier, the date of birth, the government-issued identifier and the
+ * electronic-funds account identifier are gated by
+ * {@code com.carddemo.api.AccountProtectedDataAdapter}, which reveals them only under an authorization
+ * naming the account operation being served and either the administrator role or an established
+ * ownership determination, and masks them otherwise. <em>That adapter is the only permitted source of
+ * those four values.</em> The reason the rule sits there and not here is worth stating, because the
+ * generated rendering below makes it easy to assume otherwise: this record's {@code toString} does
+ * redact all four, but a redacting {@code toString} protects a log line and nothing else &mdash; Jackson
+ * serialises the components, not the rendering, so a value placed here in the clear crosses to the
+ * client in the clear however thoroughly the rendering hides it. Populating any of the four from an
+ * entity accessor rather than from the adapter's result therefore defeats the protection completely,
+ * which is why a production-source audit forbids any other reader of those stored values.
+ *
  * <p>A source anomaly is recorded for traceability: the legacy program declares the same exit
  * paragraph label twice ({@code app/cbl/COACTVWC.cbl} L408 and L411). The two collapse to one method
  * in the service and the defect is entered in {@code docs/decision-log.md}; nothing in this record

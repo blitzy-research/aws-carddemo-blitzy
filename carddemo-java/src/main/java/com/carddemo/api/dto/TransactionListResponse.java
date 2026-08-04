@@ -23,9 +23,17 @@ import java.util.List;
 /**
  * Immutable response for the transaction-list screen, legacy transaction {@code CT00}.
  *
- * <p>Nothing is validated, defaulted or normalised on the way out; the screen's ten rows arrive in
- * the order the browse produced them, and a backward page fills those rows in descending order, so
- * the row list must be published in fill order rather than re-sorted.
+ * <p>Values are not defaulted or normalised on the way out; the rows arrive in the order they are to
+ * be presented. <strong>The one thing refused is a page longer than the screen</strong>: the map
+ * declares ten row slots, so an eleventh row corresponds to no slot the legacy screen ever rendered
+ * and is reported to the producer at construction rather than published to a client.
+ *
+ * <p><strong>Row order is screen order, ascending, on both directions of travel.</strong> A forward
+ * page is read ascending and presented ascending. A backward page is read descending, because the
+ * legacy browse fills the bottom row first and works upward, and the service reverses that read order
+ * before building this response so the page still presents ascending - which is what the legacy
+ * screen showed once the fill completed. This type performs no reordering of its own; it publishes
+ * what it is given, and what it is given is already in presentation order.
  *
  * <p>Row amounts are exact decimals at the scale the transaction record's picture clause declares.
  * The row's canonical constructor <em>refuses</em> a value at any other scale rather than re-scaling
@@ -94,8 +102,48 @@ public record TransactionListResponse(
 
     public static final String MESSAGE_REACHED_TOP = "You have reached the top of the page...";
 
+    /**
+     * Normalizes the row collection and refuses a page longer than the screen can present.
+     *
+     * <p>A {@code null} collection becomes the empty immutable list, and a non-{@code null} one is
+     * defensively copied with {@link List#copyOf(java.util.Collection)}, which detaches it from the
+     * caller and rejects a {@code null} element. Order, length and content are otherwise preserved
+     * exactly: the rows are already in presentation order when they arrive and nothing here re-sorts,
+     * filters, de-duplicates or pads them.
+     *
+     * <p><strong>Two independent bounds are checked, and they are not the same bound.</strong> The
+     * first is structural: {@link PageMetadata#TRANSACTION_LIST_PAGE_SIZE} is the number of row slots
+     * {@code app/cbl/COTRN00C.cbl} fills, established by its loop bounds at lines 290 and 297 rather
+     * than by any {@code OCCURS} clause, and no submission of the legacy screen could ever have
+     * produced an eleventh row. The figure is taken from the named constant rather than restated here,
+     * so the screen's shape is declared in one place. The second compares the page against the paging
+     * metadata actually travelling with it: a response whose row count exceeds the page size its own
+     * metadata declares describes two different pages at once, and a client that trusted the metadata
+     * would silently drop rows or mis-attribute them to the wrong page. That check is skipped when no
+     * metadata accompanies the response, which is the ordinary shape for an error or first-entry
+     * screen that presents no page at all.
+     *
+     * <p>Both bounds refuse rather than truncate. Truncating would discard a row the producer believed
+     * it had published and would make an internal defect look like a short page to every client.
+     *
+     * @throws NullPointerException if the row list contains a {@code null} element, which
+     *     {@link List#copyOf(java.util.Collection)} does not admit; a row is either present or the
+     *     list is shorter
+     * @throws IllegalArgumentException if the row list holds more entries than the screen has row
+     *     slots, or more entries than the accompanying paging metadata declares as its page size
+     */
     public TransactionListResponse {
         rows = (rows == null) ? List.of() : List.copyOf(rows);
+        if (rows.size() > PageMetadata.TRANSACTION_LIST_PAGE_SIZE) {
+            throw new IllegalArgumentException("rows may hold at most "
+                    + PageMetadata.TRANSACTION_LIST_PAGE_SIZE + " entries, because that is how many"
+                    + " row slots the transaction-list screen has, but it holds " + rows.size());
+        }
+        if (pageMetadata != null && rows.size() > pageMetadata.pageSize()) {
+            throw new IllegalArgumentException("rows may hold at most the " + pageMetadata.pageSize()
+                    + " entries the accompanying paging metadata declares as its page size, but it"
+                    + " holds " + rows.size());
+        }
     }
 
     /**

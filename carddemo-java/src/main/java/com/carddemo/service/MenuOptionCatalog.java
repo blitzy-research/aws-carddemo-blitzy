@@ -14,19 +14,39 @@
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
  */
-package com.carddemo.config;
+package com.carddemo.service;
 
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
-import org.springframework.context.annotation.Configuration;
+import org.springframework.stereotype.Service;
 
 /**
  * Immutable catalog of the ten CardDemo user-menu options and the four administrator-menu options,
  * declared by {@code app/cpy/COMEN02Y.cpy} and {@code app/cpy/COADM02Y.cpy}. The menu label text is the
  * only content carried across verbatim, because it is the external screen contract rather than
  * implementation detail.
+ *
+ * <p><strong>Why this bean lives in the service package and not the configuration package.</strong> The
+ * technical specification lists it under {@code config}, and an earlier revision declared it there as a
+ * {@code @Configuration}. That placement made {@code MenuService} import from {@code config} while
+ * {@code config} already imports from {@code service} - {@code FlywayConfig} and
+ * {@code SeededIdentifierSealingCallback} both depend on {@code SensitiveFieldEncryptionService} - which
+ * closed a package cycle between the two. Those two configuration classes are a composition root reaching
+ * downward, which is the legitimate direction; the single upward edge from {@code MenuService} was the one
+ * that had to go, and removing it leaves {@code config} depending downward only.
+ *
+ * <p>The specification's own layering rule is the tie-breaker: it states that no package may depend
+ * upward, and that rule is stronger than a suggested file location, so the location moves and the rule
+ * holds. The service package is also where this module already keeps immutable reference-data catalogs of
+ * exactly this kind - {@code ValidationLookupService} holds the area-code, state and state-plus-ZIP tables
+ * and {@code MessageCatalogService} holds the common message text, both annotated {@code @Service} - so
+ * this is the established convention rather than a new one. The utility package was rejected because it
+ * declares no Spring stereotype anywhere and hosts no injected bean, and the domain package was rejected
+ * because it imports no Spring type beyond the persistence annotations. The class name and both nested
+ * record names are unchanged, so every consumer sees the same type it always did. Recorded in
+ * {@code docs/decision-log.md}.
  *
  * <p><strong>Populated count, never table capacity.</strong> The legacy tables are declared larger than
  * they are filled &mdash; capacity twelve and nine against populations of ten and four &mdash; and the
@@ -84,7 +104,7 @@ import org.springframework.context.annotation.Configuration;
  * and {@code String}, and there is no setter and no lazily populated field, so the singleton is safe for
  * unsynchronised concurrent use and the published lists cannot be modified by a caller.
  */
-@Configuration(proxyBeanMethods = false)
+@Service
 public final class MenuOptionCatalog {
 
     /**

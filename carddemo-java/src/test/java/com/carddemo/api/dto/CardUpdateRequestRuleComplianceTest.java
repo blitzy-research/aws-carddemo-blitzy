@@ -109,13 +109,21 @@ class CardUpdateRequestRuleComplianceTest {
     private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
 
     /**
+     * A sealed description of the card as it stood when the screen was sent.
+     *
+     * <p>Opaque here on purpose. The value is the service's to mint and to verify, and this contract
+     * only has to carry it back unchanged, so the fixture asserts nothing about its interior.
+     */
+    private static final String CONCURRENCY_TOKEN = "v1.Y2FyZDo0MTExMTExMTExMTExMTEx.c2lnbmF0dXJl";
+
+    /**
      * Builds a fully populated request, every component at or inside its screen width.
      *
      * @return the populated request
      */
     private static CardUpdateRequest aRequest() {
         return new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER, "JOHN Q PUBLIC", "Y", "12", "2025",
-                "31", KeyAction.ENTER, NavigationContext.empty());
+                "31", KeyAction.ENTER, NavigationContext.empty(), CONCURRENCY_TOKEN);
     }
 
     /**
@@ -144,26 +152,26 @@ class CardUpdateRequestRuleComplianceTest {
          *
          * <p>The concurrency token is the sealed counterpart of the program work area
          * {@code app/cbl/COCRDUPC.cbl} carries across the pseudo-conversational turn at line 550. It is
-         * declared in screen order, then the two control components. Order is asserted rather than
-         * assumed, because inserting anything among the map fields would silently reorder the
+         * declared last, after the whole screen, precisely because it is not part of the screen: nothing
+         * on the mapset renders it and no operator types it. Its position is asserted rather than
+         * assumed, because inserting it anywhere among the map fields would silently reorder the
          * positional constructor that every fixture here uses.
          */
         @Test
-        @DisplayName("the request declares nine components - the seven map fields in screen order, "
-                + "then the attention key and the echoed navigation state")
-        void theRequestDeclaresNineComponentsInScreenOrder() {
+        @DisplayName("the request declares ten components - the nine map fields in screen order, then "
+                + "the concurrency token, which is not a map field")
+        void theRequestDeclaresTenComponentsInScreenOrder() {
             final List<String> declared =
                     Arrays.stream(CardUpdateRequest.class.getRecordComponents())
                             .map(RecordComponent::getName).toList();
 
             assertThat(declared).containsExactly("accountId", "cardNumber", "embossedName",
                     "activeStatus", "expiryMonth", "expiryYear", "expiryDay", "keyAction",
-                    "navigationContext");
-            assertThat(declared).hasSize(9);
+                    "navigationContext", "concurrencyToken");
+            assertThat(declared).hasSize(10);
             assertThat(declared).last()
-                    .as("the echoed navigation state closes the contract; no concurrency value "
-                            + "follows it, because locking belongs to the entity and the service")
-                    .isEqualTo("navigationContext");
+                    .as("the token follows the whole screen, because it is not part of it")
+                    .isEqualTo("concurrencyToken");
         }
 
         @Test
@@ -189,6 +197,7 @@ class CardUpdateRequestRuleComplianceTest {
             assertThat(request.expiryDay()).isEqualTo("31");
             assertThat(request.keyAction()).isEqualTo(KeyAction.ENTER);
             assertThat(request.navigationContext()).isEqualTo(NavigationContext.empty());
+            assertThat(request.concurrencyToken()).isEqualTo(CONCURRENCY_TOKEN);
         }
 
         @Test
@@ -196,14 +205,13 @@ class CardUpdateRequestRuleComplianceTest {
                 + "to the screen arrives in")
         void anEmptyRequestIsConstructible() {
             final CardUpdateRequest empty = new CardUpdateRequest(null, null, null, null, null, null,
-                    null, null, null);
+                    null, null, null, null);
 
             assertThat(empty.accountId()).isNull();
             assertThat(empty.cardNumber()).isNull();
             assertThat(empty.keyAction()).isNull();
-            assertThat(empty.navigationContext())
-                    .as("every component tolerates absence, which is the shape a first entry to the "
-                            + "screen arrives in")
+            assertThat(empty.concurrencyToken())
+                    .as("an absent token is a conflict for the service to report, not a binding failure")
                     .isNull();
         }
     }
@@ -246,7 +254,7 @@ class CardUpdateRequestRuleComplianceTest {
                 + "constrains it at this layer")
         void anExpiryDayOfAnyLengthPassesValidation(final String expiryDay) {
             final CardUpdateRequest request = new CardUpdateRequest(null, null, null, null, null,
-                    null, expiryDay, null, null);
+                    null, expiryDay, null, null, null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(request)).isEmpty();
@@ -266,7 +274,7 @@ class CardUpdateRequestRuleComplianceTest {
                 + "nothing about presence")
         void anEmptyRequestPassesValidation() {
             final CardUpdateRequest empty = new CardUpdateRequest(null, null, null, null, null, null,
-                    null, null, null);
+                    null, null, null, null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(empty)).isEmpty();
@@ -304,17 +312,17 @@ class CardUpdateRequestRuleComplianceTest {
         private CardUpdateRequest requestWith(final String componentName, final String value) {
             return switch (componentName) {
                 case "accountId" -> new CardUpdateRequest(value, null, null, null, null, null, null,
-                        null, null);
+                        null, null, null);
                 case "cardNumber" -> new CardUpdateRequest(null, value, null, null, null, null, null,
-                        null, null);
+                        null, null, null);
                 case "embossedName" -> new CardUpdateRequest(null, null, value, null, null, null,
-                        null, null, null);
+                        null, null, null, null);
                 case "activeStatus" -> new CardUpdateRequest(null, null, null, value, null, null,
-                        null, null, null);
+                        null, null, null, null);
                 case "expiryMonth" -> new CardUpdateRequest(null, null, null, null, value, null,
-                        null, null, null);
+                        null, null, null, null);
                 case "expiryYear" -> new CardUpdateRequest(null, null, null, null, null, value, null,
-                        null, null);
+                        null, null, null);
                 default -> throw new IllegalArgumentException(
                         "the fixture names no such component: " + componentName);
             };
@@ -335,7 +343,7 @@ class CardUpdateRequestRuleComplianceTest {
                 throws JsonProcessingException {
 
             final CardUpdateRequest request = new CardUpdateRequest(null, null, null, null, null,
-                    null, null, keyAction, null);
+                    null, null, keyAction, null, null);
 
             assertThat(request.keyAction()).isEqualTo(keyAction);
             assertThat(payloadOf(request).get("keyAction").asText()).isEqualTo(keyAction.name());
@@ -346,7 +354,7 @@ class CardUpdateRequestRuleComplianceTest {
                 + "pressing nothing sends no key")
         void anAbsentKeyActionIsCarriedAsAbsent() throws JsonProcessingException {
             final CardUpdateRequest request = new CardUpdateRequest(ACCOUNT_ID, null, null, null,
-                    null, null, null, null, null);
+                    null, null, null, null, null, null);
 
             assertThat(request.keyAction()).isNull();
             assertThat(payloadOf(request).has("keyAction")).isFalse();
@@ -370,12 +378,12 @@ class CardUpdateRequestRuleComplianceTest {
         void aDifferenceInOneComponentMakesTwoRequestsUnequal() {
             assertThat(aRequest()).isNotEqualTo(new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER,
                     "JOHN Q PUBLIC", "N", "12", "2025", "31", KeyAction.ENTER,
-                    NavigationContext.empty()));
+                    NavigationContext.empty(), CONCURRENCY_TOKEN));
             assertThat(aRequest())
-                    .as("the hidden carry-through participates in value semantics like every other "
-                            + "component, because nothing here is excluded from equality")
+                    .as("a differing token describes a different card state and is a difference too")
                     .isNotEqualTo(new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER, "JOHN Q PUBLIC",
-                            "Y", "12", "2025", "30", KeyAction.ENTER, NavigationContext.empty()));
+                            "Y", "12", "2025", "31", KeyAction.ENTER, NavigationContext.empty(),
+                            "v1.b3RoZXI=.c2lnbmF0dXJl"));
         }
 
         /**
@@ -396,7 +404,8 @@ class CardUpdateRequestRuleComplianceTest {
 
             assertThat(populated).isEqualTo("CardUpdateRequest[" + REDACTION_PLACEHOLDER + "]");
             assertThat(populated).doesNotContain(CARD_NUMBER, ACCOUNT_ID, "JOHN Q PUBLIC", "2025");
-            assertThat(new CardUpdateRequest(null, null, null, null, null, null, null, null, null).toString())
+            assertThat(new CardUpdateRequest(null, null, null, null, null, null, null, null, null,
+                    null).toString())
                     .as("an empty request renders exactly as a populated one does")
                     .isEqualTo(populated);
         }
@@ -419,7 +428,7 @@ class CardUpdateRequestRuleComplianceTest {
         @DisplayName("an absent component is omitted from the payload")
         void anAbsentComponentIsOmittedFromThePayload() throws JsonProcessingException {
             final JsonNode payload = payloadOf(new CardUpdateRequest(ACCOUNT_ID, null, null, null,
-                    null, null, null, null, null));
+                    null, null, null, null, null, null));
 
             assertThat(payload.get("accountId").asText()).isEqualTo(ACCOUNT_ID);
             assertThat(payload.has("cardNumber")).isFalse();
@@ -435,29 +444,32 @@ class CardUpdateRequestRuleComplianceTest {
          * and ignored inbound for that reason, which makes it the one component a round trip does not
          * carry.</p>
          *
-         * <p>Asserting full equality is the stronger claim: it fails the moment any component acquires a
-         * directional binding, whereas an assertion naming a permitted loss would quietly accept a new
-         * one. No component here is bound in one direction - not even the hidden carry-through, whose
-         * protection is that {@code CardUpdateService} assembles the stored expiry date from the day it
-         * captured itself rather than from this body.</p>
+         * <p>Asserting equality against a rebuilt original with that slot emptied says exactly one component
+         * is lost and every other survives, which is a claim a plain inequality check could not make. It
+         * also states which one, so a second component acquiring a directional binding would be caught here
+         * rather than wherever it happened to matter.</p>
          */
         @Test
-        @DisplayName("a round trip carries every component, because none is bound in one direction only")
-        void aRequestRoundTripsWithEveryComponentIntact() throws JsonProcessingException {
+        @DisplayName("a round trip carries every component except the outbound-only expiry day, which the "
+                + "screen derives rather than accepting from the operator")
+        void aRequestRoundTripsWithoutItsReadOnlyExpiryDay() throws JsonProcessingException {
             final ObjectMapper mapper = moduleEquivalentMapper();
             final CardUpdateRequest original = aRequest();
 
             final CardUpdateRequest restored = mapper.readValue(
                     mapper.writeValueAsString(original), CardUpdateRequest.class);
 
-            assertThat(restored)
-                    .as("no component is lost in either direction, so the record compares equal to "
-                            + "the one it was written from")
-                    .isEqualTo(original);
+            assertThat(restored).isNotEqualTo(original);
             assertThat(restored.expiryDay())
-                    .as("the hidden carry-through is written and read alike; the service, not a "
-                            + "binding directive, is what keeps the wire out of the stored record")
-                    .isEqualTo(original.expiryDay());
+                    .as("the day is derived for display and never bound from the client")
+                    .isNull();
+            assertThat(restored)
+                    .as("exactly one component is lost, and it is that one")
+                    .isEqualTo(new CardUpdateRequest(original.accountId(), original.cardNumber(),
+                            original.embossedName(), original.activeStatus(),
+                            original.expiryMonth(), original.expiryYear(), null,
+                            original.keyAction(), original.navigationContext(),
+                            original.concurrencyToken()));
         }
 
         @Test

@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.junit.jupiter.api.Assertions.assertAll;
 
+import java.util.Arrays;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -40,8 +41,6 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.api.dto.NavigationContext.ProgramContext;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.domain.enums.UserType;
 import com.carddemo.exception.AbendException;
@@ -315,9 +314,8 @@ final class NavigationServiceTest {
      * @param fromProgram the originating-program nomination, which may be {@code null}
      * @return state carrying that nomination and no other component
      */
-    private static NavigationContext nominatingOriginatingProgram(final String fromProgram) {
-        return new NavigationContext(null, fromProgram, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null);
+    private static ConversationState nominatingOriginatingProgram(final String fromProgram) {
+        return new ConversationState(null, fromProgram, null, null, null);
     }
 
     /**
@@ -327,9 +325,8 @@ final class NavigationServiceTest {
      * @param toProgram the destination-program nomination, which may be {@code null}
      * @return state carrying that nomination and no other component
      */
-    private static NavigationContext nominatingDestinationProgram(final String toProgram) {
-        return new NavigationContext(null, null, null, toProgram, null, null, null, null,
-                null, null, null, null, null, null, null, null);
+    private static ConversationState nominatingDestinationProgram(final String toProgram) {
+        return new ConversationState(null, null, null, toProgram, null);
     }
 
     /**
@@ -344,11 +341,8 @@ final class NavigationServiceTest {
      *
      * @return fully populated navigation state
      */
-    private static NavigationContext fullyEchoedState() {
-        return new NavigationContext(
-                "CB00", "COBIL00C", "CM00", "COMEN01C", "OPERATR1", STANDARD_USER_TYPE_CODE,
-                ProgramContext.REENTER, "000000042", "MARY ANN", "JO", "SMITH", "00000000042",
-                "Y", "0000000000000042", "COBIL0A", "COBIL00");
+    private static ConversationState fullyEchoedState() {
+        return new ConversationState("CB00", "COBIL00C", "CM00", "COMEN01C", ConversationState.EntryMode.RE_ENTRY);
     }
 
     /**
@@ -464,35 +458,61 @@ final class NavigationServiceTest {
         @Test
         @DisplayName("no state at all is a stateless turn")
         void noStateAtAllIsAStatelessTurn() {
-            assertThat(subject.isNavigationContextAbsent(null)).isTrue();
+            assertThat(subject.isConversationStateAbsent(null)).isTrue();
         }
 
         @Test
         @DisplayName("wholly empty state is a stateless turn, because it carries no signed-on user, "
                 + "no selection and no previous screen")
         void whollyEmptyStateIsAStatelessTurn() {
-            assertThat(subject.isNavigationContextAbsent(NavigationContext.empty())).isTrue();
+            assertThat(subject.isConversationStateAbsent(ConversationState.empty())).isTrue();
         }
 
         @Test
         @DisplayName("state carrying even one component is not a stateless turn")
         void stateCarryingOneComponentIsNotAStatelessTurn() {
-            assertThat(subject.isNavigationContextAbsent(nominatingOriginatingProgram("COBIL00C")))
+            assertThat(subject.isConversationStateAbsent(nominatingOriginatingProgram("COBIL00C")))
                     .isFalse();
         }
 
         @Test
-        @DisplayName("empty state marked as a first entry is no longer wholly empty, so it is not a "
-                + "stateless turn")
-        void emptyStateMarkedAsAFirstEntryIsNotAStatelessTurn() {
-            assertThat(subject.isNavigationContextAbsent(NavigationContext.empty().withFirstEntry()))
+        @DisplayName("empty state marked as a first entry is still a stateless turn, because a "
+                + "zero-initialised communication area is what first entry means")
+        void emptyStateMarkedAsAFirstEntryIsStillAStatelessTurn() {
+            // The legacy entry mode is CDEMO-PGM-CONTEXT PIC 9(01) at [app/cpy/COCOM01Y.cpy:L29-L31],
+            // whose only two condition names are CDEMO-PGM-ENTER VALUE 0 and CDEMO-PGM-REENTER VALUE 1.
+            // A single-digit numeric item cannot be absent, so the zero it holds in a freshly
+            // initialised communication area already means first entry - and every program tests only
+            // IF NOT CDEMO-PGM-REENTER, as at [app/cbl/COBIL00C.cbl:L112]. Marking an empty state as a
+            // first entry therefore changes nothing about it, and the stateless test must still fire.
+            //
+            // An earlier revision of this rule carried the entry mode as a nullable value, which let an
+            // "unset" mode exist alongside first entry and re-entry. That third state has no legacy
+            // counterpart, and this assertion previously depended on it. ConversationState normalises a
+            // null entry mode to first entry in its compact constructor for exactly that reason.
+            assertThat(ConversationState.empty().withFirstEntry())
+                    .as("marking an empty state as a first entry is the identity, because that is "
+                            + "already what an empty state carries")
+                    .isEqualTo(ConversationState.empty());
+            assertThat(ConversationState.empty().firstEntry()).isTrue();
+            assertThat(subject.isConversationStateAbsent(ConversationState.empty().withFirstEntry()))
+                    .as("a zero-length communication area takes the sign-on branch at "
+                            + "[app/cbl/COBIL00C.cbl:L107-L108] whatever its entry mode is said to be")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("empty state marked as a re-entry is not a stateless turn, because re-entry is a "
+                + "value a zero-initialised communication area cannot hold")
+        void emptyStateMarkedAsAReEntryIsNotAStatelessTurn() {
+            assertThat(subject.isConversationStateAbsent(ConversationState.empty().withReEntry()))
                     .isFalse();
         }
 
         @Test
         @DisplayName("fully echoed state is not a stateless turn")
         void fullyEchoedStateIsNotAStatelessTurn() {
-            assertThat(subject.isNavigationContextAbsent(fullyEchoedState())).isFalse();
+            assertThat(subject.isConversationStateAbsent(fullyEchoedState())).isFalse();
         }
 
         @Test
@@ -603,7 +623,7 @@ final class NavigationServiceTest {
                                     DISCRIMINATING_CALLER_DEFAULT)),
                     () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
                             () -> subject.resolveAttentionKeyRoute(KeyAction.ENTER,
-                                    NavigationContext.empty(), null)));
+                                    ConversationState.empty(), null)));
         }
     }
 
@@ -1207,7 +1227,7 @@ final class NavigationServiceTest {
         @DisplayName("the fallback is the calling screen's own and never a global one, so the payment "
                 + "screen falls back to the main menu while a menu falls back to sign-on")
         void theFallbackIsPerScreenAndNeverGlobal() {
-            final NavigationContext nothingNominated = nominatingOriginatingProgram("        ");
+            final ConversationState nothingNominated = nominatingOriginatingProgram("        ");
 
             assertAll(
                     () -> assertThat(subject.resolveBackNavigation(nothingNominated,
@@ -1336,12 +1356,12 @@ final class NavigationServiceTest {
                     () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
                             () -> subject.resolveBackNavigation(null, DISCRIMINATING_CALLER_DEFAULT)),
                     () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                            () -> subject.resolveBackNavigation(NavigationContext.empty(), null)),
+                            () -> subject.resolveBackNavigation(ConversationState.empty(), null)),
                     () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
                             () -> subject.resolveNominatedDestination(null,
                                     DISCRIMINATING_CALLER_DEFAULT)),
                     () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                            () -> subject.resolveNominatedDestination(NavigationContext.empty(),
+                            () -> subject.resolveNominatedDestination(ConversationState.empty(),
                                     null)),
                     () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
                             () -> subject.resolveSignOffRoute(null)));
@@ -1356,13 +1376,13 @@ final class NavigationServiceTest {
     @Nested
     @DisplayName("the client-echoed navigation state is read and handed back untouched, because the "
             + "legacy communication area is echoed rather than held on the server")
-    final class TheEchoedNavigationContext {
+    final class TheEchoedConversationState {
 
         @Test
         @DisplayName("the originating field drives back-navigation and the destination field drives "
                 + "nomination, so a state where the two differ resolves to two different destinations")
         void theTwoProgramFieldsDriveTwoDifferentRules() {
-            final NavigationContext echoed = fullyEchoedState();
+            final ConversationState echoed = fullyEchoedState();
 
             assertAll(
                     () -> assertThat(subject.resolveBackNavigation(echoed,
@@ -1379,10 +1399,10 @@ final class NavigationServiceTest {
         @DisplayName("no rule alters the state it was handed, so every one of the sixteen echoed "
                 + "components survives a full pass over the navigation rules")
         void noRuleAltersTheStateItWasHanded() {
-            final NavigationContext echoed = fullyEchoedState();
-            final NavigationContext pristine = fullyEchoedState();
+            final ConversationState echoed = fullyEchoedState();
+            final ConversationState pristine = fullyEchoedState();
 
-            subject.isNavigationContextAbsent(echoed);
+            subject.isConversationStateAbsent(echoed);
             subject.resolveBackNavigation(echoed, DISCRIMINATING_CALLER_DEFAULT);
             subject.resolveNominatedDestination(echoed, DISCRIMINATING_CALLER_DEFAULT);
             subject.resolveSignOffRoute(echoed);
@@ -1397,10 +1417,10 @@ final class NavigationServiceTest {
         }
 
         @Test
-        @DisplayName("not one echoed component is dropped: the state still reports every value it was "
+        @DisplayName("not one carried component is dropped: the state still reports every value it was "
                 + "built with after the rules have read it")
         void notOneEchoedComponentIsDropped() {
-            final NavigationContext echoed = fullyEchoedState();
+            final ConversationState echoed = fullyEchoedState();
 
             subject.resolveBackNavigation(echoed, DISCRIMINATING_CALLER_DEFAULT);
 
@@ -1409,26 +1429,24 @@ final class NavigationServiceTest {
                     () -> assertThat(echoed.fromProgram()).isEqualTo("COBIL00C"),
                     () -> assertThat(echoed.toTransactionId()).isEqualTo("CM00"),
                     () -> assertThat(echoed.toProgram()).isEqualTo("COMEN01C"),
-                    () -> assertThat(echoed.userId()).isEqualTo("OPERATR1"),
-                    () -> assertThat(echoed.userType()).isEqualTo(STANDARD_USER_TYPE_CODE),
-                    () -> assertThat(echoed.programContext()).isSameAs(ProgramContext.REENTER),
-                    () -> assertThat(echoed.customerId()).isEqualTo("000000042"),
-                    () -> assertThat(echoed.customerFirstName()).isEqualTo("MARY ANN"),
-                    () -> assertThat(echoed.customerMiddleName()).isEqualTo("JO"),
-                    () -> assertThat(echoed.customerLastName()).isEqualTo("SMITH"),
-                    () -> assertThat(echoed.accountId()).isEqualTo("00000000042"),
-                    () -> assertThat(echoed.accountStatus()).isEqualTo("Y"),
-                    () -> assertThat(echoed.cardNumber()).isEqualTo("0000000000000042"),
-                    () -> assertThat(echoed.lastMap()).isEqualTo("COBIL0A"),
-                    () -> assertThat(echoed.lastMapset()).isEqualTo("COBIL00"));
+                    () -> assertThat(echoed.entryMode())
+                            .isSameAs(ConversationState.EntryMode.RE_ENTRY),
+                    () -> assertThat(echoed.reEntry()).isTrue());
+
+            // The identity and cardholder members of the communication-area contract are not part of
+            // the state these rules are handed, so there is nothing here for them to drop. Their
+            // survival across a turn is asserted where it now happens, on the API-boundary adapter.
+            assertThat(ConversationState.class.getRecordComponents())
+                    .as("five routing and entry members, and no identifier or cardholder value")
+                    .hasSize(5);
         }
 
         @Test
         @DisplayName("the re-entry state is carried alongside the routing fields and does not change "
                 + "which destination a rule selects, because it gates field errors and not navigation")
         void theReEntryStateDoesNotChangeTheSelectedDestination() {
-            final NavigationContext onFirstEntry = fullyEchoedState().withFirstEntry();
-            final NavigationContext onReEntry = fullyEchoedState().withReEntry();
+            final ConversationState onFirstEntry = fullyEchoedState().withFirstEntry();
+            final ConversationState onReEntry = fullyEchoedState().withReEntry();
 
             assertAll(
                     () -> assertThat(onFirstEntry.firstEntry()).isTrue(),
@@ -1447,7 +1465,7 @@ final class NavigationServiceTest {
         @DisplayName("marking the state as a first entry or a re-entry leaves both routing fields "
                 + "untouched, so the routing decision cannot drift with the field-error gate")
         void markingTheEntryStateLeavesBothRoutingFieldsUntouched() {
-            final NavigationContext echoed = fullyEchoedState();
+            final ConversationState echoed = fullyEchoedState();
 
             assertAll(
                     () -> assertThat(echoed.withReEntry().fromProgram())
@@ -1460,16 +1478,23 @@ final class NavigationServiceTest {
         }
 
         @Test
-        @DisplayName("the echoed user-type code drives the sign-on split through the same rule the raw "
-                + "code does, so a state carrying the administrator code reaches the administrative menu")
-        void theEchoedUserTypeCodeDrivesTheSignOnSplit() {
-            final NavigationContext asStandardUser = fullyEchoedState();
-
+        @DisplayName("the sign-on split is driven by a user-type code passed in explicitly, never by one "
+                + "read out of carried state, so an echoed code cannot choose the administrative menu")
+        void theSignOnSplitIsDrivenByAnExplicitUserTypeCode() {
             assertAll(
                     () -> assertThat(subject.resolveSignOnRouteForUserTypeCode(
-                            asStandardUser.userType())).isSameAs(Route.USER_MENU),
+                            STANDARD_USER_TYPE_CODE)).isSameAs(Route.USER_MENU),
                     () -> assertThat(subject.resolveSignOnRouteForUserTypeCode(
                             ADMIN_USER_TYPE_CODE)).isSameAs(Route.ADMIN_MENU));
+
+            // The code has to be supplied by the caller because the carried state does not carry one.
+            // That is the point: a route with administrative reach can only be chosen from an identity
+            // the caller established, never from a value a client echoed back.
+            assertThat(Arrays.stream(ConversationState.class.getRecordComponents())
+                            .map(java.lang.reflect.RecordComponent::getName)
+                            .toList())
+                    .as("no identity member exists in carried state for a route decision to read")
+                    .doesNotContain("userId", "userType");
         }
     }
 
@@ -1496,12 +1521,12 @@ final class NavigationServiceTest {
         @DisplayName("a full pass over every navigation rule leaves the echoed state untouched and the "
                 + "service holds nothing it could have entered or asked for message text")
         void aFullPassOverEveryRuleEntersNothingDownstream() {
-            final NavigationContext echoed = fullyEchoedState();
-            final NavigationContext handedOver = fullyEchoedState();
+            final ConversationState echoed = fullyEchoedState();
+            final ConversationState handedOver = fullyEchoedState();
 
             subject.resolveSignOnRoute(UserType.ADMIN);
             subject.resolveSignOnRouteForUserTypeCode(STANDARD_USER_TYPE_CODE);
-            subject.isNavigationContextAbsent(echoed);
+            subject.isConversationStateAbsent(echoed);
             subject.resolveAbsentContextRoute();
             subject.isBackNavigationKey(KeyAction.PFK03);
             subject.resolveBackNavigation(echoed, DISCRIMINATING_CALLER_DEFAULT);
@@ -1530,7 +1555,7 @@ final class NavigationServiceTest {
         @DisplayName("the exit key hands back a route value rather than transferring, and composes no "
                 + "message text here, because the common message catalogue owns that text")
         void theExitKeyHandsBackARouteValueAndComposesNoMessageText() {
-            final NavigationContext echoed = nominatingOriginatingProgram("COSGN00C");
+            final ConversationState echoed = nominatingOriginatingProgram("COSGN00C");
 
             final Optional<Route> resolved = subject.resolveAttentionKeyRoute(KeyAction.PFK03,
                     echoed, DISCRIMINATING_CALLER_DEFAULT);
@@ -1552,7 +1577,7 @@ final class NavigationServiceTest {
         @DisplayName("an unmapped key changes no route and composes no message text here, so the "
                 + "screen is re-presented by its owning service and not by this one")
         void anUnmappedKeyChangesNoRouteAndComposesNoMessageText() {
-            final NavigationContext echoed = nominatingOriginatingProgram("COSGN00C");
+            final ConversationState echoed = nominatingOriginatingProgram("COSGN00C");
 
             final Optional<Route> resolved = subject.resolveAttentionKeyRoute(KeyAction.PFK07,
                     echoed, DISCRIMINATING_CALLER_DEFAULT);
@@ -1575,7 +1600,7 @@ final class NavigationServiceTest {
         @DisplayName("every rule that selects a destination hands back a value, so a caller places the "
                 + "route in its own response payload and the client drives the next call")
         void everySelectingRuleHandsBackAValue() {
-            final NavigationContext echoed = fullyEchoedState();
+            final ConversationState echoed = fullyEchoedState();
 
             assertAll(
                     () -> assertThat(subject.resolveSignOnRoute(UserType.ADMIN)).isNotNull(),

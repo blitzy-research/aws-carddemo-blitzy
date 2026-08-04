@@ -67,21 +67,31 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <h2>Seed tolerance</h2>
  *
- * <p>Every row this test creates carries an account identifier in a reserved {@code IT} prefixed
+ * <p>Every row this test creates carries an account identifier in a reserved {@code 999} prefixed
  * range, and only that range is removed afterwards. Nothing seeded is inserted, updated or deleted, so
  * the class can run against a database another test has already migrated.</p>
+ *
+ * <p>The prefix is digits rather than letters because the account identifier is declared as eleven
+ * <em>digits</em>: the entity refuses anything else before a write and the schema carries the matching
+ * check constraint, so a letter-prefixed identifier is a value no legacy record image could have held.
+ * The reserved range sits above every seeded identifier, which run from 1 to 50.</p>
  */
 @DisplayName("disclosure rate lookup - which accrual branches the seed actually reaches")
 class DisclosureRateLookupReachabilityIT extends AbstractPostgresIT {
 
-    /** The reserved account-identifier prefix, so cleanup can never touch a seeded row. */
-    private static final String RESERVED_PREFIX = "IT";
+    /**
+     * The reserved account-identifier prefix, so cleanup can never touch a seeded row.
+     *
+     * <p>Digits, not letters: the identifier is declared as eleven digits, so the entity and the schema
+     * both refuse a letter-prefixed value. The range sits above every seeded identifier.
+     */
+    private static final String RESERVED_PREFIX = "999";
 
-    /** A constructed account naming the zero-rate group, 11 characters as the key requires. */
-    private static final String ZERO_RATE_ACCOUNT = "ITZEROAPR01";
+    /** A constructed account naming the zero-rate group, 11 digits as the key requires. */
+    private static final String ZERO_RATE_ACCOUNT = "99900000001";
 
-    /** A constructed account naming the explicitly keyed group. */
-    private static final String DIRECT_HIT_ACCOUNT = "ITDIRECT001";
+    /** A constructed account naming the explicitly keyed group, likewise 11 digits. */
+    private static final String DIRECT_HIT_ACCOUNT = "99900000002";
 
     /** The fallback key: a seven-character literal moved into a ten-character field. */
     private static final String FALLBACK_GROUP = "DEFAULT   ";

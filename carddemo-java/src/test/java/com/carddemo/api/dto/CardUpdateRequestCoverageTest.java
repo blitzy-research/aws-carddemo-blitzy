@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.Set;
 
 import com.carddemo.domain.enums.KeyAction;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -112,7 +113,8 @@ class CardUpdateRequestCoverageTest {
      */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
             "accountId", "cardNumber", "embossedName", "activeStatus",
-            "expiryMonth", "expiryYear", "expiryDay", "keyAction", "navigationContext");
+            "expiryMonth", "expiryYear", "expiryDay", "keyAction", "navigationContext",
+            "concurrencyToken");
 
     /**
      * The declared width of each bounded component, restated from the symbolic map. The expiry day
@@ -138,6 +140,9 @@ class CardUpdateRequestCoverageTest {
 
     /** An embossed name containing an embedded space, which the alphabetic rule admits. */
     private static final String EMBOSSED_NAME = "MARY ANN";
+
+    /** An opaque concurrency token, of no declared width because the component declares none. */
+    private static final String CONCURRENCY_TOKEN = "v7:9f2c41";
 
     /** The fixed marker the rendering emits in place of the whole component set. */
     private static final String EXPECTED_PLACEHOLDER = "***REDACTED***";
@@ -176,6 +181,7 @@ class CardUpdateRequestCoverageTest {
                 "2099",
                 "31",
                 null,
+                null,
                 null);
     }
 
@@ -196,7 +202,8 @@ class CardUpdateRequestCoverageTest {
                 "expiryYear".equals(component) ? value : null,
                 "expiryDay".equals(component) ? value : null,
                 null,
-                null);
+                null,
+                "concurrencyToken".equals(component) ? value : null);
     }
 
     /**
@@ -252,21 +259,28 @@ class CardUpdateRequestCoverageTest {
         }
 
         @Test
-        @DisplayName("the hidden expiry-day carry-through declares no annotation at all - not a "
-                + "width bound and not a serialization directive either")
+        @DisplayName("the hidden expiry-day carry-through declares no validation constraint at all, "
+                + "not even a width bound, and only a serialization directive besides")
         void theHiddenExpiryDayDeclaresNoConstraint() throws NoSuchFieldException {
             Annotation[] declared = CardUpdateRequest.class
                     .getDeclaredField(UNCONSTRAINED_COMPONENT).getDeclaredAnnotations();
 
-            assertThat(declared)
+            assertThat(Arrays.stream(declared)
+                            .map(annotation -> annotation.annotationType().getName())
+                            .filter(name -> name.startsWith("jakarta.validation")))
                     .as("the item is field-set, protected and hidden on the mapset: never operator "
-                            + "input and never validated, so a bound here would be an invention. A "
-                            + "directional binding would be no better - it would be this transport "
-                            + "type deciding a service question, and it would also strip the value "
-                            + "from any body that was deserialized and re-serialized. What keeps the "
-                            + "wire out of the stored expiry date is that CardUpdateService assembles "
-                            + "it from the day it captured at COCRDUPC line 1366")
+                            + "input and never validated, so a bound here would be an invention")
                     .isEmpty();
+            assertThat(Arrays.stream(declared)
+                            .map(annotation -> annotation.annotationType().getSimpleName()))
+                    .as("a serialization directive is not a constraint: it decides which way the "
+                            + "value crosses the boundary, not whether the value is acceptable")
+                    .containsExactly("JsonProperty");
+            assertThat(CardUpdateRequest.class.getDeclaredField(UNCONSTRAINED_COMPONENT)
+                            .getAnnotation(JsonProperty.class).access())
+                    .as("written outbound so the echo survives, discarded inbound so the wire "
+                            + "cannot reach the stored expiry date")
+                    .isEqualTo(JsonProperty.Access.READ_ONLY);
         }
 
         @Test
@@ -283,17 +297,17 @@ class CardUpdateRequestCoverageTest {
             }
             assertThat(components[7].getType()).isEqualTo(KeyAction.class);
             assertThat(components[8].getType()).isEqualTo(NavigationContext.class);
-            assertThat(components)
-                    .as("nine components and no tenth: the seven screen items and the two control "
-                            + "components are the whole contract")
-                    .hasSize(9);
+            assertThat(components[9].getType())
+                    .as("the concurrency token is opaque to this boundary: it is compared, never "
+                            + "parsed, so it is carried as characters and nothing narrower")
+                    .isEqualTo(String.class);
         }
 
         @Test
         @DisplayName("no pattern, range or numeric constraint is declared anywhere on the record, "
                 + "because every such rule is message-bearing and belongs to the service")
         void noPatternRangeOrNumericConstraintIsDeclared() {
-            List<String> permitted = List.of("Size", "Valid");
+            List<String> permitted = List.of("Size", "Null", "Valid", "JsonProperty");
 
             for (RecordComponent component : CardUpdateRequest.class.getRecordComponents()) {
                 assertThat(Arrays.stream(component.getDeclaredAnnotations())
@@ -306,19 +320,22 @@ class CardUpdateRequestCoverageTest {
         }
 
         @Test
-        @DisplayName("the account identifier is accepted on every submission shape, because which "
-                + "turn may carry it is the service's rule and not a constraint here")
-        void theAccountIdentifierIsAcceptedOnEverySubmissionShape() {
+        @DisplayName("the account identifier must be absent on the confirming submission, and that "
+                + "rule is scoped to a group so it never fires on the searching turn")
+        void theAccountIdentifierIsRequiredAbsentOnlyOnTheConfirmingSubmission() {
             assertThat(validator.validate(carrying("accountId", ACCOUNT_ID)))
-                    .as("the operator types the identifier on the searching turn, so nothing here "
-                            + "may object to it")
+                    .as("the operator types the identifier on the searching turn, so the default "
+                            + "group must not object to it")
                     .isEmpty();
-            assertThat(validator.validate(carrying("accountId", null)))
-                    .as("and the confirming turn, which has the item protected and takes the owning "
-                            + "account from the freshly loaded record, may omit it")
-                    .isEmpty();
-            assertThat(validator.validate(carrying("cardNumber", CARD_NUMBER)))
-                    .as("the record key the update targets is accepted on the same terms")
+            assertThat(validator.validate(carrying("accountId", ACCOUNT_ID),
+                            CardUpdateRequest.ConfirmSave.class))
+                    .as("the confirming turn has the item protected and writes it into the record's "
+                            + "owning-account field, so a submitted value there is a defect")
+                    .hasSize(1);
+            assertThat(validator.validate(carrying("cardNumber", CARD_NUMBER),
+                            CardUpdateRequest.ConfirmSave.class))
+                    .as("the group scopes the rule to one component; the record key it updates is "
+                            + "still expected on the confirming turn")
                     .isEmpty();
         }
 
@@ -334,17 +351,14 @@ class CardUpdateRequestCoverageTest {
         }
 
         @Test
-        @DisplayName("no concurrency component is declared at all, so there is no annotation to "
-                + "audit and nothing for a client to hold")
-        void noConcurrencyComponentIsDeclaredAtAll() {
-            assertThat(Arrays.stream(CardUpdateRequest.class.getRecordComponents())
-                            .map(RecordComponent::getName)
-                            .toList())
-                    .as("optimistic locking is reproduced by the version column on the card entity, "
-                            + "an entity and service concern; a conflict reaches the operator as the "
-                            + "legacy text at COCRDUPC line 208 and in no other form")
-                    .containsExactlyElementsOf(EXPECTED_COMPONENTS)
-                    .doesNotContain("concurrencyToken");
+        @DisplayName("the concurrency token declares no annotation at all, because its absence is a "
+                + "conflict for the service to report rather than a binding failure")
+        void theConcurrencyTokenDeclaresNoAnnotation() throws NoSuchFieldException {
+            assertThat(CardUpdateRequest.class.getDeclaredField("concurrencyToken")
+                            .getDeclaredAnnotations())
+                    .as("a presence rule here would turn a stale-read diagnostic into a generic "
+                            + "four-hundred, which is a different message to the operator")
+                    .isEmpty();
         }
     }
 
@@ -400,7 +414,7 @@ class CardUpdateRequestCoverageTest {
         void anEntirelyAbsentRequestReportsNoViolation() {
             assertThat(validator.validate(
                             new CardUpdateRequest(null, null, null, null, null, null, null, null,
-                                    null)))
+                                    null, null)))
                     .isEmpty();
         }
 
@@ -410,7 +424,7 @@ class CardUpdateRequestCoverageTest {
         void anAllBlankSubmissionReportsNoViolation() {
             assertThat(validator.validate(new CardUpdateRequest(
                             " ".repeat(11), " ".repeat(16), " ".repeat(50), " ", "  ", "    ", "  ",
-                            null, null)))
+                            null, null, null)))
                     .isEmpty();
         }
 
@@ -428,7 +442,8 @@ class CardUpdateRequestCoverageTest {
                 + "message-bearing service rules")
         void neitherExpiryBoundExpressesItsRange(String month, String year) {
             CardUpdateRequest request = new CardUpdateRequest(
-                    ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME, "Y", month, year, null, null, null);
+                    ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME, "Y", month, year, null, null, null,
+                    null);
 
             assertThat(validator.validate(request))
                     .as("the month rule is one to twelve and the year rule is 1950 to 2099, and "
@@ -456,7 +471,7 @@ class CardUpdateRequestCoverageTest {
         void aFullyPopulatedRequestRendersAllTenMembers() throws JsonProcessingException {
             CardUpdateRequest request = new CardUpdateRequest(
                     ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME, "Y", "01", "2026", "31",
-                    KeyAction.PFK05, JsonContractSupport.populatedNavigation());
+                    KeyAction.PFK05, JsonContractSupport.populatedNavigation(), CONCURRENCY_TOKEN);
 
             JsonNode payload = payloadOf(request);
 
@@ -472,11 +487,10 @@ class CardUpdateRequestCoverageTest {
                             + "legacy identifier or an ordinal")
                     .isEqualTo("PFK05");
             assertThat(payload.get("navigationContext").isObject()).isTrue();
-            assertThat(payload.has("concurrencyToken"))
-                    .as("no concurrency value crosses in either direction: the legacy before-and-after "
-                            + "image comparison is reproduced by the version column on the card "
-                            + "entity, and a conflict reaches the client only as operator text")
-                    .isFalse();
+            assertThat(payload.get("concurrencyToken").asText())
+                    .as("the token crosses outbound so the client can echo it back on the "
+                            + "confirming turn, which is the whole mechanism")
+                    .isEqualTo(CONCURRENCY_TOKEN);
             assertThat(payload.size()).isEqualTo(EXPECTED_COMPONENTS.size());
         }
 
@@ -503,7 +517,8 @@ class CardUpdateRequestCoverageTest {
                 + "character")
         void leadingZeroesAndTrailingSpacesSurviveTheWireRoundTrip() throws JsonProcessingException {
             CardUpdateRequest request = new CardUpdateRequest(
-                    "00000000011", CARD_NUMBER, "MARY ANN  ", "Y", "01", "2026", "07", null, null);
+                    "00000000011", CARD_NUMBER, "MARY ANN  ", "Y", "01", "2026", "07", null, null,
+                    CONCURRENCY_TOKEN);
 
             ObjectMapper mapper = JsonContractSupport.declaredSettingsMapper();
             CardUpdateRequest returned = mapper.readValue(
@@ -512,31 +527,30 @@ class CardUpdateRequestCoverageTest {
             assertThat(returned.accountId()).isEqualTo("00000000011");
             assertThat(returned.embossedName()).isEqualTo("MARY ANN  ");
             assertThat(returned.expiryMonth()).isEqualTo("01");
+            assertThat(returned.concurrencyToken()).isEqualTo(CONCURRENCY_TOKEN);
             assertThat(returned.expiryDay())
-                    .as("the hidden carry-through is written and read alike, because this passive "
-                            + "carrier applies no directional rule; the service assembles the stored "
-                            + "expiry date from the day it captured itself, never from this body")
-                    .isEqualTo("07");
+                    .as("the hidden carry-through is written outbound and discarded inbound, so a "
+                            + "round trip through the wire is deliberately not an identity for it")
+                    .isNull();
             assertThat(returned)
-                    .as("every component survives the round trip, so the record compares equal to "
-                            + "the one it was written from")
-                    .isEqualTo(request);
+                    .as("every bindable component survives the round trip; the one that does not is "
+                            + "the one the wire is not permitted to set")
+                    .isEqualTo(new CardUpdateRequest("00000000011", CARD_NUMBER, "MARY ANN  ", "Y",
+                            "01", "2026", null, null, null, CONCURRENCY_TOKEN));
         }
 
         @Test
-        @DisplayName("a body that supplies the hidden expiry day has it carried verbatim, leaving the "
-                + "decision to disregard it to the service that holds the stored record")
-        void aSuppliedHiddenExpiryDayIsCarriedVerbatim() throws JsonProcessingException {
+        @DisplayName("a body that supplies the hidden expiry day has it discarded while a sibling "
+                + "expiry part still binds")
+        void aSuppliedHiddenExpiryDayIsDiscarded() throws JsonProcessingException {
             String body = "{'expiryMonth':'01','expiryDay':'99'}".replace((char) 39, (char) 34);
 
             CardUpdateRequest bound = JsonContractSupport.declaredSettingsMapper()
                     .readValue(body, CardUpdateRequest.class);
 
             assertThat(bound.expiryDay())
-                    .as("the component carries whatever arrives; CardUpdateService assembles the "
-                            + "stored expiry date from the day it captured at COCRDUPC line 1366, so "
-                            + "the wire still cannot reach the record through it")
-                    .isEqualTo("99");
+                    .as("the wire cannot reach the stored expiry date through this component")
+                    .isNull();
             assertThat(bound.expiryMonth())
                     .as("positive control: a sibling expiry part still binds")
                     .isEqualTo("01");
@@ -580,7 +594,8 @@ class CardUpdateRequestCoverageTest {
                 + "edit to the embossed name is still visible at this boundary")
         void noComponentIsFoldedOrTrimmed() {
             CardUpdateRequest request = new CardUpdateRequest(
-                    " 0000000011", CARD_NUMBER, "mary ann", "y", " 1", "2026 ", " 7", null, null);
+                    " 0000000011", CARD_NUMBER, "mary ann", "y", " 1", "2026 ", " 7", null, null,
+                    null);
 
             assertThat(request.accountId()).isEqualTo(" 0000000011");
             assertThat(request.embossedName())
@@ -624,7 +639,7 @@ class CardUpdateRequestCoverageTest {
         void nestingTheNavigationStateDisclosesNothingIdentifying() {
             CardUpdateRequest request = new CardUpdateRequest(
                     ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME, "Y", "01", "2026", "31",
-                    KeyAction.ENTER, JsonContractSupport.populatedNavigation());
+                    KeyAction.ENTER, JsonContractSupport.populatedNavigation(), CONCURRENCY_TOKEN);
 
             assertThat(request.toString())
                     .doesNotContain(JsonContractSupport.NAV_CARD_NUMBER)

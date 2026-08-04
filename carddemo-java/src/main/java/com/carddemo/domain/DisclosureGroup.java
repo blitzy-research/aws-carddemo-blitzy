@@ -22,6 +22,8 @@ import java.util.Objects;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.IdClass;
 import jakarta.persistence.Table;
 
@@ -111,6 +113,15 @@ import com.carddemo.domain.id.DisclosureGroupId;
 public class DisclosureGroup {
 
     /**
+     * Total digit count of the rate column: 6, being four digits before the implied decimal point and two
+     * after, from the copybook's own picture clause.
+     *
+     * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
+     * than two copies of it.
+     */
+    static final int DIS_INT_RATE_PRECISION = 6;
+
+    /**
      * Account group identifier - key part 1, 10 bytes at offset 0 of the record image, from
      * {@code DIS-ACCT-GROUP-ID}.
      *
@@ -185,7 +196,7 @@ public class DisclosureGroup {
      * only when this rate is non-zero. No fee logic may be invented: the fee routine invoked
      * alongside accrual is empty in the legacy program and is preserved as a documented no-op.
      */
-    @Column(name = "dis_int_rate", precision = 6, scale = 2, nullable = false)
+    @Column(name = "dis_int_rate", precision = DIS_INT_RATE_PRECISION, scale = 2, nullable = false)
     private BigDecimal disIntRate;
 
     /**
@@ -321,6 +332,32 @@ public class DisclosureGroup {
      */
     public DisclosureGroupId toId() {
         return new DisclosureGroupId(disAcctGroupId, disTranTypeCd, disTranCatCd);
+    }
+
+    /**
+     * Normalises the interest rate to scale two, truncating toward zero, immediately before the row is
+     * inserted or updated.
+     *
+     * <p>No rule is applied to the group identifier. It is declared as ten <em>alphanumeric</em>
+     * characters and is legitimately ten spaces in every seeded account row, so a digit class would reject
+     * the reference data outright; and the group key is not a key of this row alone - the interest run
+     * falls back to a default group when a lookup misses, which is behaviour a refused insert would
+     * remove.
+     *
+     * <p>An amount is <strong>normalised</strong> rather than refused: a value computed in a service,
+     * parsed from a request or left over from a division carries whatever scale the arithmetic produced,
+     * and an entity that stored it verbatim would let a repository write bypass the truncation policy the
+     * whole estate depends on. {@code StoredValueRules} records why that policy truncates toward zero
+     * rather than rounding, and why the constants it uses are restated there rather than imported from the
+     * fixed-width codec.
+     *
+     * @throws IllegalArgumentException if an amount is absent or beyond the declared precision
+     */
+    @PrePersist
+    @PreUpdate
+    void normalizeAndValidateBeforeWrite() {
+        this.disIntRate =
+                StoredValueRules.normalizedAmount(disIntRate, DIS_INT_RATE_PRECISION, "disIntRate");
     }
 
     /**

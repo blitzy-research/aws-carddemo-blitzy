@@ -24,6 +24,10 @@ import com.carddemo.exception.JobSubmissionException;
 import com.carddemo.exception.OptimisticLockConflictException;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
+import jakarta.persistence.EntityNotFoundException;
+import jakarta.persistence.OptimisticLockException;
+import jakarta.persistence.PersistenceException;
+import jakarta.persistence.RollbackException;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.Valid;
@@ -40,6 +44,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.hibernate.StaleObjectStateException;
+import org.hibernate.StaleStateException;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
@@ -49,11 +55,15 @@ import org.springframework.context.MessageSourceResolvable;
 import org.springframework.context.support.DefaultMessageSourceResolvable;
 import org.springframework.core.DefaultParameterNameDiscoverer;
 import org.springframework.core.MethodParameter;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpInputMessage;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.validation.BindException;
@@ -553,6 +563,335 @@ class GlobalExceptionHandlerTest {
         }
     }
 
+    // 1b. Version conflicts the persistence provider detects rather than module code
+
+    /**
+     * Contract for the arm that answers a conflict raised by the persistence provider.
+     *
+     * <p><strong>What was wrong.</strong> The {@code @Version} attribute on the account and card
+     * entities is enforced by the provider at flush time, not by module code, so the provider raises its
+     * own type rather than the module's carrier. Only the module's carrier was mapped, so a provider
+     * conflict fell through to the terminal handler and became a {@code 500} carrying the abend literal.
+     * That told a client the server had broken when in fact its screen was merely stale: wrong status,
+     * wrong text, and a condition the legacy system had a specific message for.
+     *
+     * <p><strong>What this proves.</strong> Two things, and the second is the one that keeps the fix
+     * honest. The first is behavioural: each shape the conflict arrives in answers {@code 409} with the
+     * same verbatim legacy text the module's own conflict produces, so a client cannot tell which layer
+     * detected the staleness. The second is structural: all three declarations are load-bearing. None of
+     * the three covers another, their nearest common ancestor is {@code RuntimeException}, and the one
+     * supertype that does cover two of them also covers unrelated failures that must not answer
+     * {@code 409}. Those facts are computed from the type lattice rather than asserted, so a later
+     * "simplification" to a single broader declaration fails here instead of silently mapping a missing
+     * entity or a rolled-back commit onto a conflict.
+     */
+    @Nested
+    @DisplayName("a version conflict raised by the persistence provider")
+    class ProviderOptimisticLockTranslation {
+
+        @Test
+        @DisplayName("Spring's translated conflict answers 409 with the verbatim legacy record-changed text")
+        void springsTranslatedConflictAnswersConflict() {
+            ResponseEntity<ErrorResponse> response = handler.handleProviderOptimisticLockFailure(
+                    new OptimisticLockingFailureException("version mismatch on ACCTDAT"));
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+            ErrorResponse body = response.getBody();
+            assertThat(body).isNotNull();
+            assertThat(body.message())
+                    .isEqualTo(OptimisticLockConflictException.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE);
+            assertThat(body.fieldErrors()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the specification's conflict answers 409, because a flush outside a repository call "
+                + "escapes Spring's translation entirely")
+        void theSpecificationConflictAnswersConflict() {
+            ResponseEntity<ErrorResponse> response = handler.handleProviderOptimisticLockFailure(
+                    new OptimisticLockException("row was updated by another transaction"));
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+            ErrorResponse body = response.getBody();
+            assertThat(body).isNotNull();
+            assertThat(body.message())
+                    .isEqualTo(OptimisticLockConflictException.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE);
+        }
+
+        @Test
+        @DisplayName("the provider's own stale-state failure answers 409, which is why it is named "
+                + "separately rather than left to the specification type")
+        void theProvidersOwnStaleStateFailureAnswersConflict() {
+            ResponseEntity<ErrorResponse> response = handler.handleProviderOptimisticLockFailure(
+                    new StaleStateException("Batch update returned unexpected row count"));
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+            ErrorResponse body = response.getBody();
+            assertThat(body).isNotNull();
+            assertThat(body.message())
+                    .isEqualTo(OptimisticLockConflictException.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE);
+        }
+
+        @Test
+        @DisplayName("the subclass a Spring Data repository actually raises is covered by the superclass "
+                + "declaration, so the common case needs no separate arm")
+        void theRepositorySubclassIsCoveredByTheSuperclassDeclaration() {
+            // This is the shape a saveAndFlush on a stale @Version entity produces in practice.
+            ResponseEntity<ErrorResponse> response = handler.handleProviderOptimisticLockFailure(
+                    new ObjectOptimisticLockingFailureException("com.carddemo.domain.Account",
+                            "00000000011"));
+
+            assertThat(OptimisticLockingFailureException.class)
+                    .as("the declared type is a supertype of the one the repository raises")
+                    .isAssignableFrom(ObjectOptimisticLockingFailureException.class);
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+            ErrorResponse body = response.getBody();
+            assertThat(body).isNotNull();
+            assertThat(body.message())
+                    .isEqualTo(OptimisticLockConflictException.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE);
+        }
+
+        @Test
+        @DisplayName("the provider's row-level subclass is covered by the stale-state declaration")
+        void theProvidersRowLevelSubclassIsCovered() {
+            ResponseEntity<ErrorResponse> response = handler.handleProviderOptimisticLockFailure(
+                    new StaleObjectStateException("com.carddemo.domain.Card", SENSITIVE_CARD_NUMBER));
+
+            assertThat(StaleStateException.class)
+                    .isAssignableFrom(StaleObjectStateException.class);
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+            ErrorResponse body = response.getBody();
+            assertThat(body).isNotNull();
+            assertThat(body.message())
+                    .isEqualTo(OptimisticLockConflictException.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE);
+        }
+
+        @Test
+        @DisplayName("a provider conflict and the module's own conflict are indistinguishable to a client, "
+                + "because one condition has one status and one text")
+        void aProviderConflictIsIndistinguishableFromTheModulesOwn() {
+            // The legacy write paths detected staleness by re-reading the record and comparing it against
+            // the image they had presented, and answered with one text. Which layer notices here is an
+            // implementation detail of the port, so it must not be observable.
+            ResponseEntity<ErrorResponse> fromProvider = handler.handleProviderOptimisticLockFailure(
+                    new ObjectOptimisticLockingFailureException("com.carddemo.domain.Account", "11"));
+            ResponseEntity<ErrorResponse> fromModule = handler.handleOptimisticLockConflict(
+                    new OptimisticLockConflictException(OptimisticLockConflictException.ConflictKind
+                            .RECORD_CHANGED_BEFORE_UPDATE, "Account", "00000000011"));
+
+            assertThat(fromProvider.getStatusCode()).isEqualTo(fromModule.getStatusCode());
+            ErrorResponse providerBody = fromProvider.getBody();
+            ErrorResponse moduleBody = fromModule.getBody();
+            assertThat(providerBody).isNotNull();
+            assertThat(moduleBody).isNotNull();
+            assertThat(providerBody.message()).isEqualTo(moduleBody.message());
+            assertThat(providerBody.fieldErrors()).isEqualTo(moduleBody.fieldErrors());
+        }
+
+        @Test
+        @DisplayName("no entity name, persistent class name, identifier or provider type name reaches the "
+                + "body, however much of it the carrier holds")
+        void theBodyDisclosesNothingTheCarrierHolds() {
+            List<Exception> carriers = List.of(
+                    new ObjectOptimisticLockingFailureException("com.carddemo.domain.Account",
+                            SENSITIVE_CARD_NUMBER),
+                    new StaleObjectStateException("com.carddemo.domain.Card", SENSITIVE_CARD_NUMBER),
+                    new OptimisticLockException("stale row for " + SENSITIVE_CARD_NUMBER),
+                    new StaleStateException("unexpected row count for " + SENSITIVE_PASSWORD),
+                    new OptimisticLockingFailureException(SENSITIVE_PASSWORD,
+                            new IllegalStateException(SENSITIVE_CARD_NUMBER)));
+
+            assertThat(carriers).allSatisfy(carrier -> {
+                ErrorResponse body =
+                        handler.handleProviderOptimisticLockFailure(carrier).getBody();
+                assertThat(body).isNotNull();
+                assertNothingSensitiveEscaped(body);
+                assertThat(body.message())
+                        .as("the entity the conflict concerns is a diagnostic, not a disclosure")
+                        .doesNotContain("Account", "Card", "domain", "409");
+            });
+        }
+
+        @Test
+        @DisplayName("every shape a provider conflict arrives in resolves to the conflict arm rather than "
+                + "falling through to the terminal handler")
+        void everyProviderConflictShapeResolvesToTheConflictArm() {
+            // This is the assertion that actually pins the fix. Invoking the arm proves its body is
+            // right; only resolution proves the container would reach it. Before the arm existed each of
+            // these resolved to the terminal handler and became a 500 carrying the abend literal.
+            List<Class<?>> shapes = List.of(
+                    OptimisticLockingFailureException.class,
+                    ObjectOptimisticLockingFailureException.class,
+                    OptimisticLockException.class,
+                    StaleStateException.class,
+                    StaleObjectStateException.class);
+
+            assertThat(shapes).allSatisfy(shape ->
+                    assertThat(resolvedHandlerNameFor(shape))
+                            .as("%s must resolve to the conflict arm", shape.getSimpleName())
+                            .isEqualTo("handleProviderOptimisticLockFailure"));
+        }
+
+        @Test
+        @DisplayName("the resolution check is not vacuous: a failure with no arm of its own still resolves "
+                + "to the terminal handler, and the module's own conflict keeps its own arm")
+        void theResolutionCheckDistinguishesArms() {
+            // Without this, the assertion above would pass even if every type resolved to the same place.
+            assertThat(resolvedHandlerNameFor(IllegalStateException.class))
+                    .isEqualTo("handleUnexpectedFailure");
+            assertThat(resolvedHandlerNameFor(OptimisticLockConflictException.class))
+                    .isEqualTo("handleOptimisticLockConflict");
+            assertThat(resolvedHandlerNameFor(RecordNotFoundException.class))
+                    .isEqualTo("handleRecordNotFound");
+        }
+
+        @Test
+        @DisplayName("none of the three declared types covers another, so no declaration is redundant")
+        void noDeclaredTypeCoversAnother() {
+            List<Class<?>> declared = List.of(OptimisticLockingFailureException.class,
+                    OptimisticLockException.class, StaleStateException.class);
+
+            for (Class<?> outer : declared) {
+                for (Class<?> inner : declared) {
+                    if (outer != inner) {
+                        assertThat(outer.isAssignableFrom(inner))
+                                .as("%s would make %s redundant", outer.getSimpleName(),
+                                        inner.getSimpleName())
+                                .isFalse();
+                    }
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("the nearest common ancestor of the three is RuntimeException, which the advice "
+                + "refuses to declare, so three declarations are the narrowest possible cover")
+        void theNearestCommonAncestorIsTheForbiddenRuntimeException() {
+            // Computed from the lattice rather than hardcoded, so it stays true if a dependency
+            // reparents one of these types.
+            List<Class<?>> shared = new ArrayList<>(superclassChainOf(
+                    OptimisticLockingFailureException.class));
+            shared.retainAll(superclassChainOf(OptimisticLockException.class));
+            shared.retainAll(superclassChainOf(StaleStateException.class));
+
+            assertThat(shared).isNotEmpty();
+            assertThat(shared.get(0))
+                    .as("nothing narrower than RuntimeException covers all three")
+                    .isEqualTo(RuntimeException.class);
+            assertThat(declaredHandledTypes())
+                    .as("and the advice declares neither that ancestor nor anything above it")
+                    .doesNotContain(RuntimeException.class);
+        }
+
+        @Test
+        @DisplayName("the one supertype that does cover two of the three is not declared, because it also "
+                + "covers failures that must not answer 409")
+        void theTemptingSharedSupertypeIsNotDeclared() {
+            // Two of the three descend from PersistenceException, which makes collapsing them look safe.
+            // It is not: that supertype also covers a missing entity and a rolled-back commit, neither of
+            // which is a conflict. Declaring it would map both onto the record-changed text.
+            assertThat(PersistenceException.class)
+                    .isAssignableFrom(OptimisticLockException.class)
+                    .isAssignableFrom(StaleStateException.class);
+            assertThat(PersistenceException.class)
+                    .as("and it reaches well beyond conflicts")
+                    .isAssignableFrom(EntityNotFoundException.class)
+                    .isAssignableFrom(RollbackException.class);
+
+            assertThat(declaredHandledTypes())
+                    .doesNotContain(PersistenceException.class, EntityNotFoundException.class,
+                            RollbackException.class);
+        }
+
+        @Test
+        @DisplayName("pessimistic lock-acquisition failures are deliberately not folded in, because they "
+                + "are a different condition with a different legacy message")
+        void pessimisticFailuresAreNotFoldedIn() {
+            // Asserted so the exclusion cannot be quietly reversed. No write path in this module produces
+            // one, so mapping it would put text on a response for a state the module cannot reach.
+            assertThat(declaredHandledTypes())
+                    .doesNotContain(PessimisticLockingFailureException.class,
+                            CannotAcquireLockException.class);
+            assertThat(OptimisticLockingFailureException.class
+                    .isAssignableFrom(CannotAcquireLockException.class))
+                    .as("and the declared optimistic type does not reach a pessimistic failure anyway")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("a conflict wrapped in a cause chain is still answered from the arm's own literal, "
+                + "never from a cause's message")
+        void aWrappedConflictStillAnswersFromTheFrozenLiteral() {
+            ResponseEntity<ErrorResponse> response = handler.handleProviderOptimisticLockFailure(
+                    new OptimisticLockingFailureException("outer",
+                            new StaleObjectStateException("com.carddemo.domain.Account",
+                                    SENSITIVE_CARD_NUMBER)));
+
+            ErrorResponse body = response.getBody();
+            assertThat(body).isNotNull();
+            assertThat(body.message())
+                    .isEqualTo(OptimisticLockConflictException.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE);
+            assertNothingSensitiveEscaped(body);
+        }
+
+        @Test
+        @DisplayName("every way a carrier can name or fail to name its entity is answered identically, "
+                + "so the diagnostic naming can never change what a client sees")
+        void everyDiagnosticNamingShapeIsAnsweredIdentically() {
+            // The arm names the conflicting entity for the log line, and each type family carries it
+            // differently: one as a persistent class name, one as an entity name, one as the entity
+            // instance itself, and any of them can carry nothing at all. That naming is a diagnostic, so
+            // the requirement is that it is total - it must never throw and never alter the response -
+            // rather than that it succeeds. Every shape is exercised here because a null in any one of
+            // them is the way a diagnostic helper turns a conflict into a 500.
+            List<Exception> everyShape = List.of(
+                    // carries a persistent class name
+                    new ObjectOptimisticLockingFailureException("com.carddemo.domain.Account", "11"),
+                    // is that type but carries no persistent class name
+                    new ObjectOptimisticLockingFailureException("no class name",
+                            new IllegalStateException("cause")),
+                    // carries an entity name
+                    new StaleObjectStateException("com.carddemo.domain.Card", "11"),
+                    // is that type but carries no entity name
+                    new StaleObjectStateException(null, "11"),
+                    // carries the entity instance itself
+                    new OptimisticLockException("stale", null, "an entity instance"),
+                    // is that type but carries no entity
+                    new OptimisticLockException("stale"),
+                    // carries nothing at all
+                    new StaleStateException("Batch update returned unexpected row count"),
+                    new OptimisticLockingFailureException("version mismatch"));
+
+            assertThat(everyShape).allSatisfy(carrier -> {
+                ResponseEntity<ErrorResponse> response =
+                        handler.handleProviderOptimisticLockFailure(carrier);
+                assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+                ErrorResponse body = response.getBody();
+                assertThat(body).isNotNull();
+                assertThat(body.message())
+                        .isEqualTo(OptimisticLockConflictException.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE);
+                assertThat(body.fieldErrors()).isEmpty();
+                assertNothingSensitiveEscaped(body);
+            });
+        }
+
+        @Test
+        @DisplayName("a carrier holding no entity at all is answered identically, so the diagnostic "
+                + "fallback never changes what a client sees")
+        void aCarrierWithoutAnEntityIsAnsweredIdentically() {
+            ResponseEntity<ErrorResponse> named = handler.handleProviderOptimisticLockFailure(
+                    new ObjectOptimisticLockingFailureException("com.carddemo.domain.Account", "11"));
+            ResponseEntity<ErrorResponse> anonymous = handler.handleProviderOptimisticLockFailure(
+                    new StaleStateException("Batch update returned unexpected row count"));
+
+            assertThat(anonymous.getStatusCode()).isEqualTo(named.getStatusCode());
+            ErrorResponse anonymousBody = anonymous.getBody();
+            ErrorResponse namedBody = named.getBody();
+            assertThat(anonymousBody).isNotNull();
+            assertThat(namedBody).isNotNull();
+            assertThat(anonymousBody.message()).isEqualTo(namedBody.message());
+        }
+    }
+
     // 2. Request-body and binding rejections raised by the web framework
 
     @Nested
@@ -1031,15 +1370,17 @@ class GlobalExceptionHandlerTest {
         }
 
         @Test
-        @DisplayName("the advice declares exactly the seventeen failure types this contract covers - the six "
-                + "module carriers, the eight framework rejections, the two credential and entitlement "
-                + "refusals and the one terminal catch-all - and nothing else")
-        void theAdviceDeclaresExactlyTheSeventeenCoveredTypes() {
+        @DisplayName("the advice declares exactly the twenty failure types this contract covers - the six "
+                + "module carriers, the three provider conflict types, the eight framework rejections, the "
+                + "two credential and entitlement refusals and the one terminal catch-all - and nothing else")
+        void theAdviceDeclaresExactlyTheTwentyCoveredTypes() {
             // The inventory is asserted exhaustively rather than by sampling, so a handler cannot be
-            // added or lost without this failing. It is seventeen rather than fourteen because the
-            // boundary answers three things beyond the request-shape faults: a credential failure raised
-            // inside the dispatch, an entitlement refusal raised inside the dispatch, and anything the
-            // advice does not name. Each is grouped below with the reason it belongs here.
+            // added or lost without this failing. It is twenty rather than fourteen because the
+            // boundary answers six things beyond the request-shape faults: a credential failure raised
+            // inside the dispatch, an entitlement refusal raised inside the dispatch, the three shapes a
+            // version conflict arrives in when the persistence provider rather than module code detects
+            // it, and anything the advice does not name. Each is grouped below with the reason it
+            // belongs here.
             assertThat(declaredHandledTypes()).containsExactlyInAnyOrder(
                     // the six carriers this module raises for itself
                     AbendException.class,
@@ -1048,6 +1389,18 @@ class GlobalExceptionHandlerTest {
                     ValidationException.class,
                     OptimisticLockConflictException.class,
                     JobSubmissionException.class,
+                    // the three shapes a provider-detected version conflict arrives in. Three are needed
+                    // rather than one because none of them covers another and their nearest common
+                    // ancestor is RuntimeException, which the invariant above forbids declaring. Spring's
+                    // translated form is the superclass of the one a repository raises, so it covers
+                    // both; the specification type escapes untranslated when a flush happens outside a
+                    // repository call; and the provider's own type descends from PersistenceException
+                    // rather than from the specification's optimistic type, so naming the other two does
+                    // not reach it. The nested class below proves each of those three claims rather than
+                    // asserting them, because a redundant declaration here would be invisible otherwise.
+                    OptimisticLockingFailureException.class,
+                    OptimisticLockException.class,
+                    StaleStateException.class,
                     // the eight request-shape faults the framework raises before a service is reached
                     MethodArgumentNotValidException.class,
                     BindException.class,
@@ -1170,6 +1523,65 @@ class GlobalExceptionHandlerTest {
             }
         }
         return handled;
+    }
+
+    /**
+     * Names the advice method that would win for a given failure type.
+     *
+     * <p>This emulates the container's most-specific-match resolution rather than trusting it, because
+     * the property under test cannot be observed by invoking a handler directly. Every failure is
+     * covered by <em>something</em> once a terminal {@code Exception} handler exists, so calling a
+     * method proves only that the method's body is correct - not that the container would ever route to
+     * it. Dropping a declared type is therefore invisible to a direct call: the type silently falls to
+     * the terminal handler and the caller's status changes from a conflict to a server error. Resolving
+     * the winner here makes that regression fail.
+     *
+     * @param carrier the failure type a client's request would produce
+     * @return the name of the advice method the container would select
+     */
+    private static String resolvedHandlerNameFor(Class<?> carrier) {
+        Map<Class<?>, String> candidates = new LinkedHashMap<>();
+        for (Method method : GlobalExceptionHandler.class.getDeclaredMethods()) {
+            ExceptionHandler declaration = method.getAnnotation(ExceptionHandler.class);
+            if (declaration != null) {
+                for (Class<?> declared : declaration.value()) {
+                    if (declared.isAssignableFrom(carrier)) {
+                        candidates.put(declared, method.getName());
+                    }
+                }
+            }
+        }
+        assertThat(candidates)
+                .as("every failure must be covered by at least the terminal handler")
+                .isNotEmpty();
+        // The most specific candidate is the one no other candidate is a strict subtype of.
+        for (Map.Entry<Class<?>, String> candidate : candidates.entrySet()) {
+            boolean anyNarrower = candidates.keySet().stream()
+                    .anyMatch(other -> other != candidate.getKey()
+                            && candidate.getKey().isAssignableFrom(other));
+            if (!anyNarrower) {
+                return candidate.getValue();
+            }
+        }
+        throw new IllegalStateException("the declared types form a cycle, which is impossible");
+    }
+
+    /**
+     * Collects a type and every superclass above it, nearest first.
+     *
+     * <p>Used to compute the nearest common ancestor of the three provider conflict types from the
+     * lattice itself, so that the claim about how narrow the declarations can be does not silently
+     * become false if a dependency reparents one of them.
+     *
+     * @param type the type to walk up from
+     * @return the type followed by each superclass, ending at {@code Object}
+     */
+    private static List<Class<?>> superclassChainOf(Class<?> type) {
+        List<Class<?>> chain = new ArrayList<>();
+        for (Class<?> current = type; current != null; current = current.getSuperclass()) {
+            chain.add(current);
+        }
+        return chain;
     }
 
     /**

@@ -22,11 +22,9 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
 import java.util.Base64;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 import org.junit.jupiter.api.DisplayName;
@@ -404,20 +402,18 @@ class CardConcurrencyTokenServiceTest {
                 + "request naming a different account and day changes neither of them")
         void theCarriedValuesComeFromTheProofAndNotFromTheRequest() {
             String token = service.mint(card());
-            String accountIdTheClientClaimed = "99999999999";
-            String expiryDayTheClientClaimed = "01";
+            CardUpdateRequest clientClaims = new CardUpdateRequest("99999999999", CARD_NUMBER,
+                    EMBOSSED_NAME, "Y", "12", "2027", "01", null, null, token);
 
-            CardConcurrencyTokenService.CarriedState carried = service.verify(token, card());
+            CardConcurrencyTokenService.CarriedState carried =
+                    service.verify(clientClaims.concurrencyToken(), card());
 
-            assertThat(carried.accountId())
-                    .as("the owning account comes from the sealed proof, so a body naming another "
-                            + "account changes nothing")
-                    .isEqualTo(ACCOUNT_ID)
-                    .isNotEqualTo(accountIdTheClientClaimed);
-            assertThat(carried.expiryDay())
-                    .as("and so does the protected day")
-                    .isEqualTo(EXPIRY_DAY)
-                    .isNotEqualTo(expiryDayTheClientClaimed);
+            assertThat(clientClaims.accountId()).isEqualTo("99999999999");
+            assertThat(clientClaims.expiryDay()).isEqualTo("01");
+            assertThat(carried.accountId()).isEqualTo(ACCOUNT_ID).isNotEqualTo(
+                    clientClaims.accountId());
+            assertThat(carried.expiryDay()).isEqualTo(EXPIRY_DAY).isNotEqualTo(
+                    clientClaims.expiryDay());
         }
 
         @Test
@@ -609,15 +605,23 @@ class CardConcurrencyTokenServiceTest {
         @DisplayName("a card changed between the presenting turn and the confirming turn refuses the "
                 + "write, which is the window a row version cannot see into")
         void aCardChangedBetweenTheTwoTurnsRefusesTheWrite() {
-            // Presenting turn: the proof is minted from the card as it stands. It is a service-tier
-            // value that appears on no transport contract - the DTOs declare no concurrency component
-            // at all, because a conflict reaches the client only as the legacy operator text.
-            String proofFromThePresentingTurn = service.mint(card());
+            // Presenting turn: the screen is built from the card as it stands, and the proof rides out
+            // on the response exactly as the legacy work area rode out on the commarea at line 550.
+            Card asPresented = card();
+            CardUpdateResponse presented = new CardUpdateResponse("CCUP", null, null, "COCRDUPC",
+                    null, null, asPresented.getCardAcctId(), asPresented.getCardNum(),
+                    asPresented.getCardEmbossedName(), asPresented.getCardActiveStatus(), "12",
+                    "2027", EXPIRY_DAY, CardUpdateResponse.Messages.PROMPT_FOR_CHANGES,
+                    "/api/cards/update", null, service.mint(asPresented));
 
             // Someone else commits a change while the operator is reading the screen.
             Card asStoredNow = cardWith(CardField.EMBOSSED_NAME, "SOMEONE ELSE");
 
-            assertRefused(proofFromThePresentingTurn, asStoredNow);
+            // Confirming turn: the client echoes the proof back on the request.
+            CardUpdateRequest confirmation = new CardUpdateRequest(null, CARD_NUMBER, EMBOSSED_NAME,
+                    "Y", "12", "2027", null, null, null, presented.concurrencyToken());
+
+            assertRefused(confirmation.concurrencyToken(), asStoredNow);
         }
 
         @Test
@@ -625,8 +629,11 @@ class CardConcurrencyTokenServiceTest {
                 + "proceeds and yields the two protected values")
         void aConfirmingTurnWithNothingInterveningProceeds() {
             String proof = service.mint(card());
+            CardUpdateRequest confirmation = new CardUpdateRequest(null, CARD_NUMBER, EMBOSSED_NAME,
+                    "N", "12", "2027", null, null, null, proof);
 
-            CardConcurrencyTokenService.CarriedState carried = service.verify(proof, card());
+            CardConcurrencyTokenService.CarriedState carried =
+                    service.verify(confirmation.concurrencyToken(), card());
 
             assertThat(carried.accountId()).isEqualTo(ACCOUNT_ID);
             assertThat(carried.expiryDay()).isEqualTo(EXPIRY_DAY);
@@ -646,31 +653,35 @@ class CardConcurrencyTokenServiceTest {
         }
 
         @Test
-        @DisplayName("a proof minted on the presenting turn verifies on the confirming turn, and no "
-                + "transport contract declares a component through which it could travel")
-        void aMintedProofVerifiesOnTheConfirmingTurnWithoutCrossingAContract() {
+        @DisplayName("the proof the response returns is the proof the request carries, so the round trip "
+                + "is the only thing a client has to preserve")
+        void theProofTheResponseReturnsIsTheProofTheRequestCarries() {
             String minted = service.mint(card());
+            CardUpdateResponse presented = new CardUpdateResponse("CCUP", null, null, "COCRDUPC",
+                    null, null, ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME, "Y", "12", "2027",
+                    EXPIRY_DAY, null, "/api/cards/update", null, minted);
+            CardUpdateRequest echoed = new CardUpdateRequest(null, CARD_NUMBER, EMBOSSED_NAME, "Y",
+                    "12", "2027", null, null, null, presented.concurrencyToken());
 
-            assertThatCode(() -> service.verify(minted, card()))
-                    .as("the value the presenting turn minted is the value the confirming turn "
-                            + "verifies, both of them inside the service tier")
+            assertThat(echoed.concurrencyToken()).isEqualTo(minted);
+            assertThatCode(() -> service.verify(echoed.concurrencyToken(), card()))
                     .doesNotThrowAnyException();
-            assertThat(componentNamesOf(CardUpdateRequest.class))
-                    .as("the request declares no component through which this value could travel")
-                    .noneSatisfy(name -> assertThat(name)
-                            .containsAnyOf("concurrency", "version", "etag", "token"));
-            assertThat(componentNamesOf(CardUpdateResponse.class))
-                    .as("and neither does the response, so a client is never asked to hold it")
-                    .noneSatisfy(name -> assertThat(name)
-                            .containsAnyOf("concurrency", "version", "etag", "token"));
         }
-    }
 
-    /** Lower-cased record component names of a transport contract, for absence assertions. */
-    private static List<String> componentNamesOf(Class<?> contract) {
-        return Arrays.stream(contract.getRecordComponents())
-                .map(component -> component.getName().toLowerCase(Locale.ROOT))
-                .toList();
+        @Test
+        @DisplayName("neither the response nor the request discloses the proof in a diagnostic "
+                + "rendering, so the round trip cannot be reconstructed from a log")
+        void neitherContractDisclosesTheProofInADiagnosticRendering() {
+            String minted = service.mint(card());
+            CardUpdateResponse presented = new CardUpdateResponse("CCUP", null, null, "COCRDUPC",
+                    null, null, ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME, "Y", "12", "2027",
+                    EXPIRY_DAY, null, "/api/cards/update", null, minted);
+            CardUpdateRequest echoed = new CardUpdateRequest(null, CARD_NUMBER, EMBOSSED_NAME, "Y",
+                    "12", "2027", null, null, null, minted);
+
+            assertThat(presented.toString()).doesNotContain(minted);
+            assertThat(echoed.toString()).doesNotContain(minted);
+        }
     }
 
     @Nested

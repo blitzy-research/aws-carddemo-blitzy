@@ -16,6 +16,7 @@
  */
 package com.carddemo.config;
 
+import com.carddemo.api.AuthController;
 import com.carddemo.api.GlobalExceptionHandler;
 import com.carddemo.api.dto.ErrorResponse;
 import com.carddemo.domain.enums.UserType;
@@ -162,12 +163,16 @@ public class SecurityConfig {
      * The one route reachable without a credential because it is the route that issues them.
      *
      * <p>It is the REST form of the legacy sign-on transaction, the entry point of both the
-     * administrative and the ordinary navigation flow. Published as a constant so that the controller
-     * which serves it and the rule which exempts it name one authority: a controller mapped to some
-     * other path would be authenticated by the catch-all rule and would fail closed, which is the safe
-     * direction for that mistake to fail in.</p>
+     * administrative and the ordinary navigation flow. The controller which serves it and the rule which
+     * exempts it name one authority: a controller mapped to some other path would be authenticated by the
+     * catch-all rule and would fail closed, which is the safe direction for that mistake to fail in.</p>
+     *
+     * <p>That authority is the controller's own constant, read here rather than restated. The direction is
+     * deliberate: configuration is permitted to depend on the boundary and the boundary is not permitted to
+     * depend on configuration, so the declaring site has to be the controller. This field remains published
+     * because the security rules and their tests are written in terms of it.</p>
      */
-    public static final String SIGN_ON_PATH = "/api/auth/signon";
+    public static final String SIGN_ON_PATH = AuthController.SIGN_ON_PATH;
 
     /**
      * Path prefix beneath which every administrator-only route lives.

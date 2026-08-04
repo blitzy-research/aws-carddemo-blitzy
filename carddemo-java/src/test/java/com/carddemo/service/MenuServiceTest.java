@@ -30,9 +30,6 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
 
-import com.carddemo.api.dto.MenuResponse;
-import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.config.MenuOptionCatalog;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.domain.enums.UserType;
 import com.carddemo.exception.AbendException;
@@ -130,15 +127,19 @@ class MenuServiceTest {
             new MessageCatalogService(), catalog, FIXED_CLOCK);
 
     /** A state marked as a re-entry, which is what makes a turn consult the attention key. */
-    private static NavigationContext reEntry() {
-        return NavigationContext.empty().withReEntry();
+    private static ConversationState reEntry() {
+        return ConversationState.empty().withReEntry();
     }
 
-    /** A signed-on state carrying every component the communication area declares. */
-    private static NavigationContext signedOnState(NavigationContext.ProgramContext programContext) {
-        return new NavigationContext("CC00", "COSGN00C", null, null, "USER0001", "U", programContext,
-                "000000042", "MARY", null, "SMITH", "00000000042", "Y", "4111111111111111",
-                "COMEN1A", "COMEN01");
+    /**
+     * A signed-on carried state at the requested entry mode.
+     *
+     * <p>Five fields rather than sixteen: the identity and cardholder members of the communication-area
+     * contract are not part of the state a service reads, and their pass-through and identity
+     * reconciliation are asserted where they now happen, on the API-boundary adapter.
+     */
+    private static ConversationState signedOnState(final ConversationState.EntryMode entryMode) {
+        return new ConversationState("CC00", "COSGN00C", null, null, entryMode);
     }
 
     /** A catalog stub that renders the real rows but answers a single lookup with {@code entry}. */
@@ -167,7 +168,7 @@ class MenuServiceTest {
             assertThat(service.userMenu(reEntry(), KeyAction.ENTER, "1", UserType.USER).nextRoute())
                     .isEqualTo("account-view");
             // The echo is observable on a re-sent screen, and it carries the normalised two-digit form.
-            assertThat(service.userMenu(reEntry(), KeyAction.ENTER, "0", UserType.USER).selectedOption())
+            assertThat(service.userMenu(reEntry(), KeyAction.ENTER, "0", UserType.USER).echoedOption())
                     .isEqualTo("00");
         }
 
@@ -185,8 +186,8 @@ class MenuServiceTest {
         @Test
         @DisplayName("an entry wider than the field loses its excess on the right")
         void overLongEntryIsBoundedToTheFieldWidth() {
-            MenuResponse reply = service.userMenu(reEntry(), KeyAction.ENTER, "123", UserType.USER);
-            assertThat(reply.selectedOption()).isEqualTo("12");
+            MenuService.MenuScreen reply = service.userMenu(reEntry(), KeyAction.ENTER, "123", UserType.USER);
+            assertThat(reply.echoedOption()).isEqualTo("12");
             assertThat(reply.message()).isEqualTo(EXPECTED_RANGE_MESSAGE);
         }
 
@@ -194,11 +195,11 @@ class MenuServiceTest {
         @DisplayName("a blank field normalises to the zero option rather than to a non-numeric one")
         void blankFieldNormalisesToTheZeroOption() {
             for (String blank : List.of("", " ", "  ")) {
-                MenuResponse reply = service.userMenu(reEntry(), KeyAction.ENTER, blank, UserType.USER);
-                assertThat(reply.selectedOption()).as("entry '%s'", blank).isEqualTo("00");
+                MenuService.MenuScreen reply = service.userMenu(reEntry(), KeyAction.ENTER, blank, UserType.USER);
+                assertThat(reply.echoedOption()).as("entry '%s'", blank).isEqualTo("00");
                 assertThat(reply.message()).isEqualTo(EXPECTED_RANGE_MESSAGE);
             }
-            assertThat(service.userMenu(reEntry(), KeyAction.ENTER, null, UserType.USER).selectedOption())
+            assertThat(service.userMenu(reEntry(), KeyAction.ENTER, null, UserType.USER).echoedOption())
                     .isEqualTo("00");
         }
     }
@@ -211,24 +212,24 @@ class MenuServiceTest {
         @ValueSource(strings = {"0", "00", "11", "12", "99", "A", "1X", "-1", "", "  "})
         @DisplayName("zero, above the count and non-numeric all produce the same exact text")
         void rejectedEntriesProduceTheExactMessage(String entry) {
-            MenuResponse reply = service.userMenu(reEntry(), KeyAction.ENTER, entry, UserType.USER);
+            MenuService.MenuScreen reply = service.userMenu(reEntry(), KeyAction.ENTER, entry, UserType.USER);
             assertThat(reply.message()).isEqualTo(EXPECTED_RANGE_MESSAGE);
             assertThat(reply.errorFlag()).isTrue();
-            assertThat(reply.messageSeverity()).isEqualTo(MenuResponse.MessageSeverity.ERROR);
+            assertThat(reply.severity()).isEqualTo(MenuService.MessageSeverity.ERROR);
             assertThat(reply.nextRoute()).isEqualTo("user-menu");
             assertThat(reply.focusScreenFieldId()).isEqualTo("OPTION");
-            assertThat(reply.userMenuOptions()).hasSize(USER_ROUTES.size());
+            assertThat(reply.rows()).hasSize(USER_ROUTES.size());
         }
 
         @ParameterizedTest
         @ValueSource(strings = {"0", "5", "6", "9", "10", "B"})
         @DisplayName("the administrator menu rejects on its own smaller count")
         void administratorRejectionsUseTheAdministratorCount(String entry) {
-            MenuResponse reply = service.adminMenu(reEntry(), KeyAction.ENTER, entry);
+            MenuService.MenuScreen reply = service.adminMenu(reEntry(), KeyAction.ENTER, entry);
             assertThat(reply.message()).isEqualTo(EXPECTED_RANGE_MESSAGE);
             assertThat(reply.errorFlag()).isTrue();
             assertThat(reply.nextRoute()).isEqualTo("admin-menu");
-            assertThat(reply.adminMenuOptions()).hasSize(ADMIN_ROUTES.size());
+            assertThat(reply.rows()).hasSize(ADMIN_ROUTES.size());
         }
 
         @Test
@@ -276,13 +277,13 @@ class MenuServiceTest {
         @DisplayName("each of the ten user options reaches its own destination")
         void everyUserOptionReachesItsOwnDestination() {
             for (int option = 1; option <= USER_ROUTES.size(); option++) {
-                MenuResponse reply = service.userMenu(reEntry(), KeyAction.ENTER,
+                MenuService.MenuScreen reply = service.userMenu(reEntry(), KeyAction.ENTER,
                         String.valueOf(option), UserType.USER);
                 assertThat(reply.nextRoute()).as("option %d", option)
                         .isEqualTo(USER_ROUTES.get(option - 1));
                 assertThat(reply.errorFlag()).isFalse();
                 assertThat(reply.message()).isNull();
-                assertThat(reply.messageSeverity()).isNull();
+                assertThat(reply.severity()).isNull();
             }
         }
 
@@ -290,7 +291,7 @@ class MenuServiceTest {
         @DisplayName("each of the four administrator options reaches its own destination")
         void everyAdministratorOptionReachesItsOwnDestination() {
             for (int option = 1; option <= ADMIN_ROUTES.size(); option++) {
-                MenuResponse reply =
+                MenuService.MenuScreen reply =
                         service.adminMenu(reEntry(), KeyAction.ENTER, String.valueOf(option));
                 assertThat(reply.nextRoute()).as("option %d", option)
                         .isEqualTo(ADMIN_ROUTES.get(option - 1));
@@ -302,47 +303,49 @@ class MenuServiceTest {
         @Test
         @DisplayName("the originating identity is saved and the destination opens on a first entry")
         void originatingIdentityIsSavedAndDestinationOpensOnFirstEntry() {
-            MenuResponse reply = service.userMenu(signedOnState(
-                    NavigationContext.ProgramContext.REENTER), KeyAction.ENTER, "9", UserType.USER);
-            NavigationContext handOff = reply.navigationContext();
+            MenuService.MenuScreen reply = service.userMenu(signedOnState(
+                    ConversationState.EntryMode.RE_ENTRY), KeyAction.ENTER, "9", UserType.USER);
+            ConversationState handOff = reply.conversationState();
 
             assertThat(reply.nextRoute()).isEqualTo("report-request");
             assertThat(handOff.fromTransactionId()).isEqualTo("CM00");
             assertThat(handOff.fromProgram()).isEqualTo("COMEN01C");
             assertThat(handOff.firstEntry()).isTrue();
-            // The two identity moves are commented out in the source, so both components survive.
-            assertThat(handOff.userId()).isEqualTo("USER0001");
-            assertThat(handOff.userType()).isEqualTo("U");
-            // Nothing outside the routing components is disturbed.
-            assertThat(handOff.customerId()).isEqualTo("000000042");
-            assertThat(handOff.customerFirstName()).isEqualTo("MARY");
-            assertThat(handOff.customerLastName()).isEqualTo("SMITH");
-            assertThat(handOff.accountId()).isEqualTo("00000000042");
-            assertThat(handOff.accountStatus()).isEqualTo("Y");
-            assertThat(handOff.cardNumber()).isEqualTo("4111111111111111");
-            assertThat(handOff.lastMap()).isEqualTo("COMEN1A");
-            assertThat(handOff.lastMapset()).isEqualTo("COMEN01");
+
+            // The nomination the client sent is left alone: this screen records where the conversation
+            // came FROM and never overwrites where it was going.
+            assertThat(handOff.toTransactionId()).isNull();
+            assertThat(handOff.toProgram()).isNull();
+
+            // The identity and cardholder members of the communication-area contract are deliberately
+            // absent from the state a service reads, so there is nothing here for this turn to have
+            // disturbed and nothing it could have trusted. Their pass-through, and the replacement of
+            // the echoed identity with the authenticated one, are asserted on the API-boundary adapter
+            // where they now happen - see ConversationStateAdapterTest.
+            assertThat(ConversationState.class.getRecordComponents())
+                    .as("the carried state models the five routing and entry members and no others")
+                    .hasSize(5);
         }
 
         @Test
         @DisplayName("the administrator menu hands off its own transaction and program identity")
         void administratorDispatchSavesItsOwnIdentity() {
-            MenuResponse reply = service.adminMenu(
-                    signedOnState(NavigationContext.ProgramContext.REENTER), KeyAction.ENTER, "3");
+            MenuService.MenuScreen reply = service.adminMenu(
+                    signedOnState(ConversationState.EntryMode.RE_ENTRY), KeyAction.ENTER, "3");
             assertThat(reply.nextRoute()).isEqualTo("user-update");
-            assertThat(reply.navigationContext().fromTransactionId()).isEqualTo("CA00");
-            assertThat(reply.navigationContext().fromProgram()).isEqualTo("COADM01C");
-            assertThat(reply.navigationContext().firstEntry()).isTrue();
+            assertThat(reply.conversationState().fromTransactionId()).isEqualTo("CA00");
+            assertThat(reply.conversationState().fromProgram()).isEqualTo("COADM01C");
+            assertThat(reply.conversationState().firstEntry()).isTrue();
         }
 
         @Test
         @DisplayName("a transfer renders no header and hints no focus, yet still carries its rows")
         void transferRendersNoHeaderAndHintsNoFocus() {
-            MenuResponse reply = service.userMenu(reEntry(), KeyAction.ENTER, "1", UserType.USER);
+            MenuService.MenuScreen reply = service.userMenu(reEntry(), KeyAction.ENTER, "1", UserType.USER);
             assertThat(reply.currentDate()).isNull();
             assertThat(reply.currentTime()).isNull();
             assertThat(reply.focusScreenFieldId()).isNull();
-            assertThat(reply.userMenuOptions()).hasSize(USER_ROUTES.size());
+            assertThat(reply.rows()).hasSize(USER_ROUTES.size());
         }
     }
 
@@ -355,14 +358,14 @@ class MenuServiceTest {
         void firesForAStandardUserAndKeepsTheTrailingSpace() {
             MenuService gated = serviceWith(userCatalogAnswering(catalog, 8,
                     new MenuOptionCatalog.UserMenuOption(8, "Transaction Add", "COTRN02C", "A")));
-            MenuResponse reply = gated.userMenu(reEntry(), KeyAction.ENTER, "8", UserType.USER);
+            MenuService.MenuScreen reply = gated.userMenu(reEntry(), KeyAction.ENTER, "8", UserType.USER);
 
             assertThat(reply.message()).isEqualTo(EXPECTED_ADMIN_ONLY_MESSAGE);
             assertThat(reply.message()).endsWith("... ");
             assertThat(reply.errorFlag()).isTrue();
-            assertThat(reply.messageSeverity()).isEqualTo(MenuResponse.MessageSeverity.ERROR);
+            assertThat(reply.severity()).isEqualTo(MenuService.MessageSeverity.ERROR);
             assertThat(reply.nextRoute()).isEqualTo("user-menu");
-            assertThat(reply.selectedOption()).isEqualTo("08");
+            assertThat(reply.echoedOption()).isEqualTo("08");
             assertThat(MenuService.ADMIN_ONLY_OPTION_MESSAGE).isEqualTo(EXPECTED_ADMIN_ONLY_MESSAGE);
         }
 
@@ -406,16 +409,16 @@ class MenuServiceTest {
         void userMenuRendersFirstWordOnlyWithNoSeparatingSpace() {
             MenuService withDummy = serviceWith(userCatalogAnswering(catalog, 1,
                     new MenuOptionCatalog.UserMenuOption(1, "Account View", "DUMMYPGM", "U")));
-            MenuResponse reply = withDummy.userMenu(reEntry(), KeyAction.ENTER, "1", UserType.USER);
+            MenuService.MenuScreen reply = withDummy.userMenu(reEntry(), KeyAction.ENTER, "1", UserType.USER);
 
             assertThat(reply.message()).isEqualTo(EXPECTED_USER_PLACEHOLDER);
             assertThat(reply.message()).doesNotContain("Account is");
             assertThat(reply.message()).doesNotContain("Account View");
-            assertThat(reply.messageSeverity()).isEqualTo(MenuResponse.MessageSeverity.INFORMATIONAL);
+            assertThat(reply.severity()).isEqualTo(MenuService.MessageSeverity.INFORMATIONAL);
             assertThat(reply.errorFlag()).isFalse();
             assertThat(reply.nextRoute()).isEqualTo("user-menu");
             assertThat(reply.focusScreenFieldId()).isEqualTo("OPTION");
-            assertThat(reply.selectedOption()).isEqualTo("01");
+            assertThat(reply.echoedOption()).isEqualTo("01");
         }
 
         @Test
@@ -445,14 +448,14 @@ class MenuServiceTest {
         void administratorMenuCarriesNoOptionName() {
             MenuOptionCatalog stub = Mockito.mock(MenuOptionCatalog.class);
             Mockito.when(stub.adminMenuOptionCount()).thenReturn(ADMIN_ROUTES.size());
-            Mockito.when(stub.adminMenuOptions()).thenReturn(catalog.adminMenuOptions());
+            Mockito.when(stub.userMenuOptions()).thenReturn(catalog.userMenuOptions());
             Mockito.when(stub.findAdminOption(2)).thenReturn(Optional.of(
                     new MenuOptionCatalog.AdminMenuOption(2, "User Add (Security)", "DUMMYPGM")));
 
-            MenuResponse reply = serviceWith(stub).adminMenu(reEntry(), KeyAction.ENTER, "2");
+            MenuService.MenuScreen reply = serviceWith(stub).adminMenu(reEntry(), KeyAction.ENTER, "2");
             assertThat(reply.message()).isEqualTo(EXPECTED_ADMIN_PLACEHOLDER);
             assertThat(reply.message()).doesNotContain("User");
-            assertThat(reply.messageSeverity()).isEqualTo(MenuResponse.MessageSeverity.INFORMATIONAL);
+            assertThat(reply.severity()).isEqualTo(MenuService.MessageSeverity.INFORMATIONAL);
             assertThat(reply.errorFlag()).isFalse();
         }
 
@@ -477,72 +480,72 @@ class MenuServiceTest {
         @Test
         @DisplayName("a turn carrying no prior state returns to sign-on and carries nothing forward")
         void noPriorStateReturnsToSignOnCarryingNothingForward() {
-            for (NavigationContext absent : List.of(NavigationContext.empty())) {
-                MenuResponse reply = service.userMenu(absent, null, null, null);
+            for (ConversationState absent : List.of(ConversationState.empty())) {
+                MenuService.MenuScreen reply = service.userMenu(absent, null, null, null);
                 assertThat(reply.nextRoute()).isEqualTo("sign-on");
-                assertThat(reply.navigationContext()).isEqualTo(NavigationContext.empty());
+                assertThat(reply.conversationState()).isEqualTo(ConversationState.empty());
                 assertThat(reply.errorFlag()).isFalse();
                 assertThat(reply.message()).isNull();
-                assertThat(reply.userMenuOptions()).hasSize(USER_ROUTES.size());
+                assertThat(reply.rows()).hasSize(USER_ROUTES.size());
             }
             assertThat(service.userMenu(null, null, null, null).nextRoute()).isEqualTo("sign-on");
 
-            MenuResponse adminReply = service.adminMenu(null, null, null);
+            MenuService.MenuScreen adminReply = service.adminMenu(null, null, null);
             assertThat(adminReply.nextRoute()).isEqualTo("sign-on");
-            assertThat(adminReply.navigationContext()).isEqualTo(NavigationContext.empty());
-            assertThat(adminReply.adminMenuOptions()).hasSize(ADMIN_ROUTES.size());
+            assertThat(adminReply.conversationState()).isEqualTo(ConversationState.empty());
+            assertThat(adminReply.rows()).hasSize(ADMIN_ROUTES.size());
         }
 
         @Test
         @DisplayName("a first entry sends the screen, marks the state as a re-entry and echoes nothing")
         void firstEntrySendsTheScreenAndMarksTheStateAsReEntry() {
-            MenuResponse reply = service.userMenu(
-                    signedOnState(NavigationContext.ProgramContext.ENTER), null, null, UserType.USER);
+            MenuService.MenuScreen reply = service.userMenu(
+                    signedOnState(ConversationState.EntryMode.FIRST_ENTRY), null, null, UserType.USER);
 
-            assertThat(reply.navigationContext().reEntry()).isTrue();
-            assertThat(reply.selectedOption()).isNull();
+            assertThat(reply.conversationState().reEntry()).isTrue();
+            assertThat(reply.echoedOption()).isNull();
             assertThat(reply.message()).isNull();
-            assertThat(reply.messageSeverity()).isNull();
+            assertThat(reply.severity()).isNull();
             assertThat(reply.errorFlag()).isFalse();
             assertThat(reply.nextRoute()).isEqualTo("user-menu");
             assertThat(reply.focusScreenFieldId()).isEqualTo("OPTION");
-            assertThat(reply.transactionName()).isEqualTo("CM00");
-            assertThat(reply.programName()).isEqualTo("COMEN01C");
+            // The transaction and program names are the transport's own per-menu constants, supplied by
+            // the response factory the adapter chooses; what identifies the menu here is the kind.
+            assertThat(reply.kind()).isEqualTo(MenuService.MenuKind.USER_MENU);
             assertThat(reply.currentDate()).isEqualTo(EXPECTED_HEADER_DATE);
             assertThat(reply.currentTime()).isEqualTo(EXPECTED_HEADER_TIME);
-            assertThat(reply.userMenuOptions()).hasSize(USER_ROUTES.size());
-            assertThat(reply.userMenuOptions().get(0).number()).isEqualTo(1);
-            assertThat(reply.userMenuOptions().get(0).label()).isEqualTo("Account View");
-            assertThat(reply.userMenuOptions().get(9).number()).isEqualTo(10);
-            assertThat(reply.userMenuOptions().get(9).label()).isEqualTo("Bill Payment");
+            assertThat(reply.rows()).hasSize(USER_ROUTES.size());
+            assertThat(reply.rows().get(0).number()).isEqualTo(1);
+            assertThat(reply.rows().get(0).label()).isEqualTo("Account View");
+            assertThat(reply.rows().get(9).number()).isEqualTo(10);
+            assertThat(reply.rows().get(9).label()).isEqualTo("Bill Payment");
         }
 
         @Test
         @DisplayName("a first entry on the administrator menu identifies its own transaction")
         void firstEntryOnTheAdministratorMenuIdentifiesItself() {
-            MenuResponse reply = service.adminMenu(
-                    signedOnState(NavigationContext.ProgramContext.ENTER), null, null);
-            assertThat(reply.transactionName()).isEqualTo("CA00");
-            assertThat(reply.programName()).isEqualTo("COADM01C");
+            MenuService.MenuScreen reply = service.adminMenu(
+                    signedOnState(ConversationState.EntryMode.FIRST_ENTRY), null, null);
+            assertThat(reply.kind()).isEqualTo(MenuService.MenuKind.ADMIN_MENU);
+            assertThat(reply.adminMenu()).isTrue();
             assertThat(reply.currentDate()).isEqualTo(EXPECTED_HEADER_DATE);
             assertThat(reply.currentTime()).isEqualTo(EXPECTED_HEADER_TIME);
             assertThat(reply.nextRoute()).isEqualTo("admin-menu");
-            assertThat(reply.adminMenuOptions()).hasSize(ADMIN_ROUTES.size());
-            assertThat(reply.adminMenuOptions().get(0).label()).isEqualTo("User List (Security)");
-            assertThat(reply.adminMenuOptions().get(3).label()).isEqualTo("User Delete (Security)");
+            assertThat(reply.rows()).hasSize(ADMIN_ROUTES.size());
+            assertThat(reply.rows().get(0).label()).isEqualTo("User List (Security)");
+            assertThat(reply.rows().get(3).label()).isEqualTo("User Delete (Security)");
         }
 
         @Test
         @DisplayName("the exit key returns to sign-on even when the client nominated somewhere else")
         void exitKeyReturnsToSignOnOverAnyClientNomination() {
-            NavigationContext nominatingElsewhere = new NavigationContext(null, "COACTVWC", null,
-                    "COBIL00C", "USER0001", "U", NavigationContext.ProgramContext.REENTER, null,
-                    null, null, null, null, null, null, null, null);
-            MenuResponse reply =
+            ConversationState nominatingElsewhere = new ConversationState(null, "COACTVWC", null,
+                    "COBIL00C", ConversationState.EntryMode.RE_ENTRY);
+            MenuService.MenuScreen reply =
                     service.userMenu(nominatingElsewhere, KeyAction.PFK03, null, UserType.USER);
             assertThat(reply.nextRoute()).isEqualTo("sign-on");
             assertThat(reply.errorFlag()).isFalse();
-            assertThat(reply.navigationContext()).isEqualTo(NavigationContext.empty());
+            assertThat(reply.conversationState()).isEqualTo(ConversationState.empty());
             assertThat(service.adminMenu(nominatingElsewhere, KeyAction.PFK03, null).nextRoute())
                     .isEqualTo("sign-on");
         }
@@ -552,12 +555,12 @@ class MenuServiceTest {
         @DisplayName("every other key raises the error switch and carries the untrimmed common message")
         void everyOtherKeyRaisesTheErrorSwitch(String keyName) {
             KeyAction key = KeyAction.valueOf(keyName);
-            MenuResponse reply = service.userMenu(reEntry(), key, "1", UserType.USER);
+            MenuService.MenuScreen reply = service.userMenu(reEntry(), key, "1", UserType.USER);
             assertThat(reply.message()).isEqualTo(EXPECTED_INVALID_KEY_MESSAGE);
             assertThat(reply.message()).hasSize(COMMON_MESSAGE_WIDTH);
             assertThat(reply.errorFlag()).isTrue();
-            assertThat(reply.messageSeverity()).isEqualTo(MenuResponse.MessageSeverity.ERROR);
-            assertThat(reply.selectedOption()).isNull();
+            assertThat(reply.severity()).isEqualTo(MenuService.MessageSeverity.ERROR);
+            assertThat(reply.echoedOption()).isNull();
             assertThat(reply.nextRoute()).isEqualTo("user-menu");
             assertThat(service.adminMenu(reEntry(), key, "1").message())
                     .isEqualTo(EXPECTED_INVALID_KEY_MESSAGE);
@@ -566,7 +569,7 @@ class MenuServiceTest {
         @Test
         @DisplayName("an absent key takes the same arm as any unmapped one")
         void anAbsentKeyTakesTheUnmappedArm() {
-            MenuResponse reply = service.userMenu(reEntry(), null, "1", UserType.USER);
+            MenuService.MenuScreen reply = service.userMenu(reEntry(), null, "1", UserType.USER);
             assertThat(reply.message()).isEqualTo(EXPECTED_INVALID_KEY_MESSAGE);
             assertThat(reply.errorFlag()).isTrue();
             assertThat(service.adminMenu(reEntry(), null, "1").message())
@@ -619,7 +622,7 @@ class MenuServiceTest {
 
             MenuOptionCatalog stub = Mockito.mock(MenuOptionCatalog.class);
             Mockito.when(stub.adminMenuOptionCount()).thenReturn(ADMIN_ROUTES.size());
-            Mockito.when(stub.adminMenuOptions()).thenReturn(catalog.adminMenuOptions());
+            Mockito.when(stub.userMenuOptions()).thenReturn(catalog.userMenuOptions());
             Mockito.when(stub.findAdminOption(1)).thenReturn(Optional.of(
                     new MenuOptionCatalog.AdminMenuOption(1, "User List (Security)", "COZZZZZZ")));
             assertThatExceptionOfType(AbendException.class)

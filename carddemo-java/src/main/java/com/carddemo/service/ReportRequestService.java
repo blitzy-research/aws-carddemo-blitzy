@@ -27,7 +27,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.enums.DateFormat;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.domain.enums.ReportPeriod;
@@ -545,7 +544,7 @@ public final class ReportRequestService {
                                     String endYear,
                                     String confirm,
                                     KeyAction keyAction,
-                                    NavigationContext navigationContext) {
+                                    ConversationState navigationContext) {
     }
 
     /**
@@ -665,7 +664,7 @@ public final class ReportRequestService {
      * @param screen                  the ten screen fields as the turn leaves them
      */
     public record ReportRequestResult(NavigationService.Route route,
-                                      NavigationContext navigationContext,
+                                      ConversationState navigationContext,
                                       String reArmedTransactionId,
                                       ReportPeriod reportPeriod,
                                       String reportName,
@@ -766,11 +765,11 @@ public final class ReportRequestService {
         // condition, and the erase flag is never reset anywhere in the member, which is why the two
         // arms of the send at lines 562 to 578 differ only in a 3270 attribute with no equivalent
         // here. The end-of-file flag belongs to a file this member never opens.
-        if (navigationService.isNavigationContextAbsent(input.navigationContext())) {
+        if (navigationService.isConversationStateAbsent(input.navigationContext())) {
             // IF EIBCALEN = 0 at line 172, then MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM at line 173. The
             // destination is the one the navigation rules hold for a turn carrying no state, so no
             // program name is written here.
-            state.context = withNominatedProgram(NavigationContext.empty(),
+            state.context = withNominatedProgram(ConversationState.empty(),
                     navigationService.resolveAbsentContextRoute().getLegacyProgramName());
             returnToPrevScreen(state);
             return;
@@ -1941,24 +1940,9 @@ public final class ReportRequestService {
      * @param programName the destination program name to nominate
      * @return a new state differing only in its nominated-destination program
      */
-    private static NavigationContext withNominatedProgram(final NavigationContext context,
+    private static ConversationState withNominatedProgram(final ConversationState context,
             final String programName) {
-        return new NavigationContext(context.fromTransactionId(),
-                context.fromProgram(),
-                context.toTransactionId(),
-                programName,
-                context.userId(),
-                context.userType(),
-                context.programContext(),
-                context.customerId(),
-                context.customerFirstName(),
-                context.customerMiddleName(),
-                context.customerLastName(),
-                context.accountId(),
-                context.accountStatus(),
-                context.cardNumber(),
-                context.lastMap(),
-                context.lastMapset());
+        return context.withNominatedProgram(programName);
     }
 
     /**
@@ -1968,23 +1952,12 @@ public final class ReportRequestService {
      * @param context the state to copy
      * @return a new state differing only in its originating transaction and program
      */
-    private static NavigationContext withOriginatingProgram(final NavigationContext context) {
-        return new NavigationContext(WS_TRANID,
-                WS_PGMNAME,
-                context.toTransactionId(),
-                context.toProgram(),
-                context.userId(),
-                context.userType(),
-                context.programContext(),
-                context.customerId(),
-                context.customerFirstName(),
-                context.customerMiddleName(),
-                context.customerLastName(),
-                context.accountId(),
-                context.accountStatus(),
-                context.cardNumber(),
-                context.lastMap(),
-                context.lastMapset());
+    private static ConversationState withOriginatingProgram(final ConversationState context) {
+        // Lines 545 to 547 stamp the originator and clear the program-context flag together, which is
+        // exactly what the carried state's own origin derivation does. The eleven identity and
+        // cardholder members the earlier form copied through are absent from the service-tier state,
+        // so the copy that let an echoed identity survive a turn no longer exists to make.
+        return context.withOrigin(WS_TRANID, WS_PGMNAME);
     }
 
     // ==========================================================================================
@@ -2113,7 +2086,7 @@ public final class ReportRequestService {
         private boolean screenSent;
 
         /** {@code CARDDEMO-COMMAREA}, the navigation state the turn carries. */
-        private NavigationContext context = NavigationContext.empty();
+        private ConversationState context = ConversationState.empty();
 
         /**
          * The resolved period, absent until one of the three arms resolves it and left absent when the

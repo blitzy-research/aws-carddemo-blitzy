@@ -24,6 +24,7 @@ import com.carddemo.exception.OptimisticLockConflictException;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.util.FailureDiagnostics;
+import jakarta.persistence.OptimisticLockException;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.Path;
@@ -31,13 +32,17 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
+import org.hibernate.StaleObjectStateException;
+import org.hibernate.StaleStateException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.MessageSourceResolvable;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.validation.BindException;
@@ -215,6 +220,12 @@ public final class GlobalExceptionHandler {
      * held per instance would buy nothing. Nothing mutable is held anywhere in this class.
      */
     private static final Logger LOG = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    /**
+     * Placeholder recorded on the diagnostic channel when a persistence-provider conflict carries no
+     * entity name this boundary can read. Never reaches a response body.
+     */
+    private static final String UNNAMED_CONFLICTING_ENTITY = "UnnamedEntity";
 
     /**
      * The neutral summary emitted when a keyed read resolved to no record.
@@ -584,6 +595,85 @@ public final class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(new ErrorResponse(
                         exception.conflictKind().defaultMessage(exception.entityName())));
+    }
+
+    /**
+     * Handles an optimistic-lock failure raised by the persistence framework rather than by the
+     * module's own write paths, and answers it with the same {@code 409} the module's own conflict
+     * produces.
+     *
+     * <p><strong>Why this arm has to exist separately.</strong> The module raises
+     * {@link OptimisticLockConflictException} where it detects a conflict itself, and the arm above
+     * answers that. But the {@code @Version} attribute on the account and card entities is enforced by
+     * the persistence provider at flush time, not by module code, and the provider raises its own type.
+     * Without this arm that type reached the terminal handler and became a {@code 500} carrying the
+     * abend literal &mdash; which tells a client the server broke when in fact the client's screen was
+     * simply stale. The status was wrong, the text was wrong, and the condition it described is one the
+     * legacy system had a specific message for.
+     *
+     * <p><strong>Why every one of these types maps to the same arm.</strong> A version mismatch at flush
+     * is precisely the condition the legacy write paths detected by re-reading the record and comparing
+     * it against the image they had presented &mdash; the record changed between the read and the write.
+     * The estate answers that with one text, so the mapping is to
+     * {@link OptimisticLockConflictException.ConflictKind#RECORD_CHANGED_BEFORE_UPDATE}, whose message
+     * does not vary by entity. The entity is therefore recorded on the diagnostic channel rather than
+     * placed in the body, so no provider type name and no persistent class name reaches a client.
+     *
+     * <p><strong>The three type families this catches, and why three are needed.</strong>
+     * {@link OptimisticLockingFailureException} is Spring's translated form and the superclass of
+     * {@link ObjectOptimisticLockingFailureException}, which a Spring Data repository raises, so naming
+     * the superclass covers both. {@link OptimisticLockException} is the specification type, which
+     * escapes untranslated when a flush happens outside a repository call. {@link StaleStateException}
+     * is the provider's own, and it is the superclass of {@link StaleObjectStateException}; it descends
+     * from {@code PersistenceException} rather than from the specification's optimistic type, so it is
+     * genuinely not covered by the second and has to be named.
+     *
+     * <p>Pessimistic lock-acquisition failures are deliberately <em>not</em> folded in here. They are a
+     * different condition with a different legacy message, and no write path in this module currently
+     * produces one; mapping them speculatively would put text on a response for a state the module
+     * cannot reach.
+     *
+     * @param exception the provider's conflict, never {@code null} when invoked by the framework
+     * @return a {@code 409} response carrying the verbatim legacy record-changed text
+     */
+    @ExceptionHandler({
+        OptimisticLockingFailureException.class,
+        OptimisticLockException.class,
+        StaleStateException.class})
+    public ResponseEntity<ErrorResponse> handleProviderOptimisticLockFailure(Exception exception) {
+        LOG.warn("Concurrent update conflict raised by the persistence provider: entity={} "
+                        + "failureChain={}",
+                conflictingEntityNameOf(exception), FailureDiagnostics.failureChainOf(exception));
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ErrorResponse(OptimisticLockConflictException.ConflictKind
+                        .RECORD_CHANGED_BEFORE_UPDATE.defaultMessage()));
+    }
+
+    /**
+     * Names the entity a provider conflict concerns, for the diagnostic channel only.
+     *
+     * <p>Each of the three type families carries the entity differently, and none of them carries it in
+     * a way the others can read, so each is asked in its own terms. Nothing here is reflective: every
+     * accessor named is declared on the type being asked. An unknown shape yields the placeholder rather
+     * than a guess, because a wrong entity name in a log is worse than an absent one.
+     *
+     * @param exception the provider's conflict
+     * @return the entity name, or a placeholder when the type carries none
+     */
+    private static String conflictingEntityNameOf(Exception exception) {
+        if (exception instanceof ObjectOptimisticLockingFailureException objectLevel
+                && objectLevel.getPersistentClassName() != null) {
+            return objectLevel.getPersistentClassName();
+        }
+        if (exception instanceof StaleObjectStateException staleObject
+                && staleObject.getEntityName() != null) {
+            return staleObject.getEntityName();
+        }
+        if (exception instanceof OptimisticLockException specificationType
+                && specificationType.getEntity() != null) {
+            return specificationType.getEntity().getClass().getName();
+        }
+        return UNNAMED_CONFLICTING_ENTITY;
     }
 
     /**

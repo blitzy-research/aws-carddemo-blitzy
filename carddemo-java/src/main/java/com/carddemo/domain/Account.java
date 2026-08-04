@@ -22,6 +22,8 @@ import java.util.Objects;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 
@@ -52,12 +54,30 @@ import jakarta.persistence.Version;
 public class Account {
 
     /**
+     * Width of the account identifier in characters: 11, from the copybook's own picture clause, which
+     * declares it as eleven digits.
+     *
+     * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
+     * than two copies of it.
+     */
+    static final int ACCT_ID_WIDTH = 11;
+
+    /**
+     * Total digit count of every money column on this table: 12, being ten digits before the implied decimal
+     * point and two after, from the five identical picture clauses the copybook declares.
+     *
+     * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
+     * than two copies of it.
+     */
+    static final int MONEY_PRECISION = 12;
+
+    /**
      * Primary key, and the row's persistent identity: never generated. The sample dataset zero-fills
      * the identifier to its full width, so the leading zeros are contractual and a numeric type would
      * discard them.
      */
     @Id
-    @Column(name = "acct_id", length = 11, nullable = false)
+    @Column(name = "acct_id", length = ACCT_ID_WIDTH, nullable = false)
     private String acctId;
 
     /**
@@ -260,6 +280,48 @@ public class Account {
 
     public long getVersion() {
         return version;
+    }
+
+    /**
+     * Refuses an account identifier that is not exactly eleven ASCII digits and normalises all five money
+     * fields to scale two, immediately before the row is inserted or updated.
+     *
+     * <p>The identifier's digit class is contractual because the copybook declares the field as eleven
+     * <em>digits</em>, and because a short value would split one account's identity between the relational
+     * key and the eleven bytes of the record image it is written back into.
+     *
+     * <p><strong>Why a callback rather than the constructor or the setter.</strong> The persistence
+     * provider hydrates a row by instantiating the entity and assigning its fields directly, so a
+     * constructor guard is bypassed on every read while a callback sits on the one path every insert and
+     * every update must take. It also leaves an instance built for an assertion, a fixture or an
+     * intermediate calculation unrestricted - only one about to become a row is checked.
+     *
+     * <p>{@code V1__create_schema.sql} carries the same key rules a second time as check constraints, so
+     * a bulk load or a migration script that never constructs an entity is refused as well.
+     *
+     * <p>An amount is <strong>normalised</strong> rather than refused: a value computed in a service,
+     * parsed from a request or left over from a division carries whatever scale the arithmetic produced,
+     * and an entity that stored it verbatim would let a repository write bypass the truncation policy the
+     * whole estate depends on. {@code StoredValueRules} records why that policy truncates toward zero
+     * rather than rounding, and why the constants it uses are restated there rather than imported from the
+     * fixed-width codec.
+     *
+     * @throws IllegalArgumentException if an identifier is absent or is not exactly the width its layout
+     *         declares, or if an amount is absent or beyond the declared precision
+     */
+    @PrePersist
+    @PreUpdate
+    void normalizeAndValidateBeforeWrite() {
+        StoredValueRules.requireFixedWidthDigits(acctId, ACCT_ID_WIDTH, "acctId");
+        this.acctCurrBal = StoredValueRules.normalizedAmount(acctCurrBal, MONEY_PRECISION, "acctCurrBal");
+        this.acctCreditLimit =
+                StoredValueRules.normalizedAmount(acctCreditLimit, MONEY_PRECISION, "acctCreditLimit");
+        this.acctCashCreditLimit = StoredValueRules.normalizedAmount(acctCashCreditLimit, MONEY_PRECISION,
+                "acctCashCreditLimit");
+        this.acctCurrCycCredit = StoredValueRules.normalizedAmount(acctCurrCycCredit, MONEY_PRECISION,
+                "acctCurrCycCredit");
+        this.acctCurrCycDebit = StoredValueRules.normalizedAmount(acctCurrCycDebit, MONEY_PRECISION,
+                "acctCurrCycDebit");
     }
 
     /**

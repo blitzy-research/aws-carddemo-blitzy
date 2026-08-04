@@ -79,15 +79,21 @@ import com.carddemo.domain.enums.ReportPeriod;
  * rather than one value, and the parts are character fields, so a month of {@code 01} must not become
  * {@code 1}. Every part is asserted to keep its leading zero.</p>
  *
- * <p>The fourth is that the period arrives as <strong>one enumerated component</strong> rather than as
- * three one-character markers. The three screen positions are mutually exclusive - the program tests
- * them in a fixed order and acts on exactly one - so one component carries everything the screen could
- * mean while making a multiply-marked state impossible to submit. Nothing here supplies a period the
- * caller did not choose, nothing folds a value's case into the vocabulary, and no member stands for the
- * unmarked state, because the message produced when none is marked belongs to the response contract.
- * The tests assert that the period carries no screen width at all, that an unrecognised value resolves
- * to absence without raising, and that marking none transports as an omission, so no tie-break and no
- * default can be smuggled in at the boundary.</p>
+ * <p>The fourth is that the period arrives as <strong>three one-character markers</strong> rather than
+ * as one enumerated component. The program tests the three screen positions in a fixed order at
+ * {@code app/cbl/CORPT00C.cbl} lines 214, 240 and 256 and acts on the first non-blank one, so a
+ * submission marking two or three of them is a state the 3270 screen produces and the program resolves
+ * rather than rejects. Carrying one enumerated value instead would make that state unsubmittable, and
+ * with it the resolution: the caller would have to choose, which is the program's decision to make.
+ * Each marker therefore declares its one-character screen width and nothing else - no presence rule, no
+ * pattern restricting which character marks it, and no exclusivity rule against its two peers - because
+ * every one of those would be a boundary refusing a submission the legacy screen accepts. No resolved
+ * report type is accepted here at all: the service performs the ordered evaluation and publishes what
+ * it resolved on the response contract, and the message produced when none is marked belongs there too.
+ * The tests assert that each marker is bounded at one and carries no other rule, that the marker
+ * character is carried verbatim rather than interpreted, that marking none transports as three
+ * omissions, and that a multiply-marked payload is accepted - so no tie-break and no default can be
+ * smuggled in at the boundary.</p>
  *
  * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.</p>
@@ -95,15 +101,100 @@ import com.carddemo.domain.enums.ReportPeriod;
 @DisplayName("ReportRequest - the CR00 inbound contract")
 class ReportRequestSecurityTest {
 
-    /** The ten components in declaration order. A change here is a change to the REST contract. */
+    /**
+     * The character used as a selection mark throughout this file.
+     *
+     * <p>Any non-blank character is a mark: the program tests only that a marker field is non-blank and
+     * never which character it holds, so the specific value is arbitrary and is fixed here only so that
+     * every assertion in the file names the same one. It matches the value the service-tier tests use.
+     */
+    private static final String SELECTION_MARK = "Y";
+
+    /**
+     * Returns the month-to-date marker that expresses the given period, or {@code null} when it does not.
+     *
+     * @param period the period being expressed, which may be {@code null} for the unmarked state
+     * @return the mark when the period is month-to-date, otherwise {@code null}
+     */
+    private static String monthlyMarkerFor(final ReportPeriod period) {
+        return period == ReportPeriod.MONTHLY ? SELECTION_MARK : null;
+    }
+
+    /**
+     * Returns the year-to-date marker that expresses the given period, or {@code null} when it does not.
+     *
+     * @param period the period being expressed, which may be {@code null} for the unmarked state
+     * @return the mark when the period is year-to-date, otherwise {@code null}
+     */
+    private static String yearlyMarkerFor(final ReportPeriod period) {
+        return period == ReportPeriod.YEARLY ? SELECTION_MARK : null;
+    }
+
+    /**
+     * Returns the operator-range marker that expresses the given period, or {@code null} when it does not.
+     *
+     * @param period the period being expressed, which may be {@code null} for the unmarked state
+     * @return the mark when the period is the operator-supplied range, otherwise {@code null}
+     */
+    private static String customMarkerFor(final ReportPeriod period) {
+        return period == ReportPeriod.CUSTOM ? SELECTION_MARK : null;
+    }
+
+    /**
+     * Applies the legacy ordered evaluation to a request and reports which period it resolves to.
+     *
+     * <p>This restates the order the program uses - the month-to-date marker at {@code CORPT00C} line
+     * 213, then the year-to-date marker at line 239, then the operator-range marker at line 256, first
+     * non-blank winning - so that assertions about what a submission <em>means</em> can be written
+     * against the three markers the contract now carries. The resolution itself belongs to the service;
+     * this exists so a contract test can show that each arm, including a multiply-marked submission, is
+     * expressible.
+     *
+     * @param request the submission to resolve, never {@code null}
+     * @return the period the ordered evaluation selects, or {@code null} when nothing is marked
+     */
+    private static ReportPeriod resolvedPeriodOf(final ReportRequest request) {
+        if (isMarked(request.monthlySelection())) {
+            return ReportPeriod.MONTHLY;
+        }
+        if (isMarked(request.yearlySelection())) {
+            return ReportPeriod.YEARLY;
+        }
+        if (isMarked(request.customSelection())) {
+            return ReportPeriod.CUSTOM;
+        }
+        return null;
+    }
+
+    /**
+     * Reports whether a marker field counts as marked, which is simply whether it is non-blank.
+     *
+     * @param marker the marker field as transmitted, which may be {@code null}
+     * @return {@code true} when the field holds any non-blank character
+     */
+    private static boolean isMarked(final String marker) {
+        return marker != null && !marker.isBlank();
+    }
+
+    /** The twelve components in declaration order. A change here is a change to the REST contract. */
     private static final List<String> COMPONENTS_IN_ORDER = List.of(
-            "reportPeriod", "startMonth", "startDay",
+            "monthlySelection", "yearlySelection", "customSelection", "startMonth", "startDay",
             "startYear", "endMonth", "endDay", "endYear", "confirm", "keyAction",
             "navigationContext");
 
-    /** The three per-position selectors the collapse removed, asserted absent from the contract. */
-    private static final List<String> REMOVED_SELECTORS =
+    /**
+     * The three per-position selectors, in the order {@code app/cbl/CORPT00C.cbl} tests them at lines
+     * 214, 240 and 256. Each is one character wide and is carried verbatim.
+     */
+    private static final List<String> SELECTORS_IN_TEST_ORDER =
             List.of("monthlySelection", "yearlySelection", "customSelection");
+
+    /**
+     * The collapsed period component an earlier revision published in place of the three positions,
+     * asserted absent because supplying a resolved report type would move the program's own ordered
+     * first-match-wins decision onto the caller.
+     */
+    private static final String REMOVED_PERIOD_COMPONENT = "reportPeriod";
 
     /** The seven bounded text components, paired positionally with {@link #BOUNDED_WIDTHS}. */
     private static final List<String> BOUNDED_COMPONENTS = List.of(
@@ -114,21 +205,22 @@ class ReportRequestSecurityTest {
      * The measured widths of those seven components, read from {@code app/bms/CORPT00.bms} lines 127,
      * 138, 149, 166, 177 and 188 and from the symbolic map's confirmation field at line 114 rather than
      * from the class under test, so a width edited on the request alone fails here instead of agreeing
-     * with itself. The period is absent from this pairing because a member of a closed vocabulary has
-     * no screen width to measure.
+     * with itself. The three selection markers are absent from this pairing only because their shared
+     * one-character width is asserted together with their other declared rules, not because they are
+     * unbounded.
      */
     private static final List<Integer> BOUNDED_WIDTHS = List.of(2, 2, 4, 2, 2, 4, 1);
 
     /** A realistic custom-range submission with every component populated. */
     private static ReportRequest populated() {
-        return new ReportRequest(ReportPeriod.CUSTOM, "01", "15", "2024", "03", "31", "2024", "Y",
+        return new ReportRequest(null, null, "Y", "01", "15", "2024", "03", "31", "2024", "Y",
                 KeyAction.ENTER, NavigationContext.empty().withReEntry());
     }
 
     /** A submission carrying exactly one period and nothing else. */
     private static ReportRequest choosing(ReportPeriod period) {
         return new ReportRequest(
-                period, null, null, null, null, null, null, null, null, null);
+                monthlyMarkerFor(period), yearlyMarkerFor(period), customMarkerFor(period), null, null, null, null, null, null, null, null, null);
     }
 
     /**
@@ -158,20 +250,21 @@ class ReportRequestSecurityTest {
     class TheComponentSetIsTheReportMap {
 
         @Test
-        @DisplayName("ten components are declared in the order the symbolic map declares its fields")
-        void tenComponentsAreDeclaredInMapOrder() {
+        @DisplayName("twelve components are declared in the order the symbolic map declares its "
+                + "fields")
+        void twelveComponentsAreDeclaredInMapOrder() {
             List<String> declared = Arrays.stream(ReportRequest.class.getRecordComponents())
                     .map(RecordComponent::getName)
                     .toList();
 
-            assertThat(declared).containsExactlyElementsOf(COMPONENTS_IN_ORDER).hasSize(10);
-            assertThat(declared.get(0))
-                    .as("the collapsed period leads, where the three positions used to")
-                    .isEqualTo("reportPeriod");
+            assertThat(declared).containsExactlyElementsOf(COMPONENTS_IN_ORDER).hasSize(12);
+            assertThat(declared.subList(0, SELECTORS_IN_TEST_ORDER.size()))
+                    .as("the three positions lead in the order the program tests them")
+                    .containsExactlyElementsOf(SELECTORS_IN_TEST_ORDER);
             assertThat(declared)
-                    .as("no per-position selector survives the collapse, so no combination of them "
-                            + "can be submitted")
-                    .doesNotContainAnyElementsOf(REMOVED_SELECTORS);
+                    .as("no collapsed period component is declared, so no caller supplies a resolved "
+                            + "report type the program is supposed to derive")
+                    .doesNotContain(REMOVED_PERIOD_COMPONENT);
         }
 
         @Test
@@ -207,13 +300,12 @@ class ReportRequestSecurityTest {
         }
 
         @Test
-        @DisplayName("every date part and the confirmation are characters while only the period and the "
-                + "attention key are typed, so no leading zero is lost")
+        @DisplayName("every selection marker, date part and the confirmation are characters while only "
+                + "the attention key and the carried state are typed, so no leading zero and no "
+                + "marker character is lost")
         void everySubmittedValueIsCharactersAndOnlyTheClosedValuesAreTyped() {
             for (RecordComponent component : ReportRequest.class.getRecordComponents()) {
                 switch (component.getName()) {
-                    case "reportPeriod" ->
-                            assertThat(component.getType()).isEqualTo(ReportPeriod.class);
                     case "keyAction" -> assertThat(component.getType()).isEqualTo(KeyAction.class);
                     case "navigationContext" ->
                             assertThat(component.getType()).isEqualTo(NavigationContext.class);
@@ -244,7 +336,7 @@ class ReportRequestSecurityTest {
         void everyAccessorReturnsExactlyWhatItWasConstructedWith() {
             ReportRequest request = populated();
 
-            assertThat(request.reportPeriod()).isSameAs(ReportPeriod.CUSTOM);
+            assertThat(resolvedPeriodOf(request)).isSameAs(ReportPeriod.CUSTOM);
             assertThat(request.confirm()).isEqualTo("Y");
             assertThat(request.keyAction()).isEqualTo(KeyAction.ENTER);
             assertThat(request.navigationContext().programContext())
@@ -259,21 +351,30 @@ class ReportRequestSecurityTest {
             ReportRequest request = choosing(period);
 
             assertThat(violationsOf(request)).isEmpty();
-            assertThat(request.reportPeriod()).isSameAs(period);
+            assertThat(resolvedPeriodOf(request)).isSameAs(period);
         }
 
         @Test
-        @DisplayName("the period carries no width bound and no vocabulary rule beyond the three members "
-                + "themselves, so no tie-break and no default can be smuggled in at the boundary")
-        void thePeriodCarriesNoWidthBoundAndNoVocabularyRule() throws NoSuchFieldException {
-            Field field = ReportRequest.class.getDeclaredField("reportPeriod");
+        @DisplayName("each marker carries only its one-character screen width and no exclusivity, "
+                + "vocabulary or default rule, so no tie-break the program owns can be smuggled in "
+                + "at the boundary")
+        void eachMarkerCarriesOnlyItsWidthAndNoResolutionRule() throws NoSuchFieldException {
+            for (String marker : SELECTORS_IN_TEST_ORDER) {
+                Field field = ReportRequest.class.getDeclaredField(marker);
 
-            assertThat(field.getAnnotation(Size.class))
-                    .as("a member of a closed vocabulary has no screen width to measure")
-                    .isNull();
-            assertThat(field.getAnnotations())
-                    .as("the period carries no declarative rule at all")
-                    .isEmpty();
+                assertThat(field.getAnnotation(Size.class))
+                        .as("%s is a fixed-width screen field and declares that width", marker)
+                        .isNotNull();
+                assertThat(field.getAnnotation(Size.class).max())
+                        .as("%s is one character wide", marker)
+                        .isEqualTo(1);
+                assertThat(Arrays.stream(field.getAnnotations())
+                        .map(annotation -> annotation.annotationType().getSimpleName()).toList())
+                        .as("%s declares its width and nothing else - no presence rule, no pattern "
+                                + "restricting which character marks it, and no exclusivity rule "
+                                + "against its two peers", marker)
+                        .containsExactly("Size");
+            }
             assertThat(Arrays.stream(ReportPeriod.values()).map(Enum::name).toList())
                     .containsExactly("MONTHLY", "YEARLY", "CUSTOM")
                     .doesNotContain("NONE", "UNKNOWN", "OTHER", "INVALID", "DEFAULT");
@@ -295,11 +396,11 @@ class ReportRequestSecurityTest {
         @DisplayName("an entirely unmarked submission is accepted, because marking no option is the "
                 + "state the screen reports on rather than a malformed submission")
         void anEntirelyUnmarkedSubmissionIsAccepted() {
-            ReportRequest request = new ReportRequest(null, null, null, null, null, null, null, null,
+            ReportRequest request = new ReportRequest(null, null, null, null, null, null, null, null, null, null,
                     null, null);
 
             assertThat(violationsOf(request)).isEmpty();
-            assertThat(request.reportPeriod()).isNull();
+            assertThat(resolvedPeriodOf(request)).isNull();
         }
     }
 
@@ -356,7 +457,7 @@ class ReportRequestSecurityTest {
         @DisplayName("a blank in every date part transports rather than being rejected, because a blank "
                 + "part is the state the screen prompts against rather than refuses")
         void aBlankValueTransportsRatherThanBeingRejected(String blank) {
-            ReportRequest request = new ReportRequest(null, blank, blank, blank,
+            ReportRequest request = new ReportRequest(null, null, null, blank, blank, blank,
                     blank, blank, blank, blank, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
@@ -369,7 +470,7 @@ class ReportRequestSecurityTest {
         @DisplayName("a submission space-filled to each declared width draws no violation, because that "
                 + "is the shape a blank report screen transmits")
         void aSpaceFilledSubmissionDrawsNoViolation() {
-            ReportRequest spaceFilled = new ReportRequest(null, "  ", "  ", "    ", "  ",
+            ReportRequest spaceFilled = new ReportRequest(null, null, null, "  ", "  ", "    ", "  ",
                     "  ", "    ", " ", null, null);
 
             assertThat(violationsOf(spaceFilled)).isEmpty();
@@ -403,7 +504,7 @@ class ReportRequestSecurityTest {
 
         private static ReportRequest requestWithOnly(String component, String value) {
             return new ReportRequest(
-                    null,
+                    null, null, null,
                     "startMonth".equals(component) ? value : null,
                     "startDay".equals(component) ? value : null,
                     "startYear".equals(component) ? value : null,
@@ -434,7 +535,7 @@ class ReportRequestSecurityTest {
             NavigationContext overWidth = new NavigationContext(null, "NINECHARS", null, null, null,
                     null, NavigationContext.ProgramContext.REENTER, null, null, null, null, null,
                     null, null, null, null);
-            ReportRequest request = new ReportRequest(ReportPeriod.MONTHLY, null, null, null, null,
+            ReportRequest request = new ReportRequest("Y", null, null, null, null, null, null,
                     null, null, null, null, overWidth);
 
             Set<ConstraintViolation<ReportRequest>> violations = violationsOf(request);
@@ -452,7 +553,7 @@ class ReportRequestSecurityTest {
             NavigationContext overWidth = new NavigationContext(null, null, null, null, null, null,
                     NavigationContext.ProgramContext.REENTER, null, null, null, null,
                     "1".repeat(NavigationContext.ACCOUNT_ID_LENGTH + 1), null, null, null, null);
-            ReportRequest request = new ReportRequest(null, null, null, null, null, null, null,
+            ReportRequest request = new ReportRequest(null, null, null, null, null, null, null, null, null,
                     null, null, overWidth);
 
             Set<ConstraintViolation<ReportRequest>> violations = violationsOf(request);
@@ -469,7 +570,7 @@ class ReportRequestSecurityTest {
             NavigationContext overWidth = new NavigationContext(null, "NINECHARS", null, null, null,
                     null, NavigationContext.ProgramContext.REENTER, null, null, null, null, null,
                     null, null, null, null);
-            ReportRequest request = new ReportRequest(null, "999", null, null, null,
+            ReportRequest request = new ReportRequest(null, null, null, "999", null, null, null,
                     null, null, null, null, overWidth);
 
             Set<ConstraintViolation<ReportRequest>> violations = violationsOf(request);
@@ -485,7 +586,7 @@ class ReportRequestSecurityTest {
         @Test
         @DisplayName("an absent navigation state is not a violation, because a first entry carries none")
         void anAbsentNavigationStateIsNotAViolation() {
-            ReportRequest request = new ReportRequest(ReportPeriod.YEARLY, null, null, null, null,
+            ReportRequest request = new ReportRequest(null, "Y", null, null, null, null, null,
                     null, null, null, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
@@ -501,7 +602,7 @@ class ReportRequestSecurityTest {
         @DisplayName("a leading zero survives in every date part, because each part mirrors a "
                 + "fixed-width character field rather than a number")
         void aLeadingZeroSurvivesInEveryDatePart() {
-            ReportRequest request = new ReportRequest(ReportPeriod.CUSTOM, "01", "02", "0024", "09",
+            ReportRequest request = new ReportRequest(null, null, "Y", "01", "02", "0024", "09",
                     "08", "0024", null, null, null);
 
             assertThat(request.startMonth()).isEqualTo("01");
@@ -516,7 +617,7 @@ class ReportRequestSecurityTest {
         @DisplayName("an out-of-range month and day transport intact, because the range check belongs to "
                 + "the report screen's own stage and its message must be the one the operator sees")
         void anOutOfRangeMonthAndDayTransportIntact() {
-            ReportRequest request = new ReportRequest(ReportPeriod.CUSTOM, "13", "45", "2024", "00",
+            ReportRequest request = new ReportRequest(null, null, "Y", "13", "45", "2024", "00",
                     "99", "2024", null, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
@@ -530,7 +631,7 @@ class ReportRequestSecurityTest {
         @DisplayName("a non-numeric date part transports intact, because the shape check belongs to the "
                 + "report screen rather than to this boundary")
         void aNonNumericDatePartTransportsIntact() {
-            ReportRequest request = new ReportRequest(ReportPeriod.CUSTOM, "AB", "CD", "EFGH", "IJ",
+            ReportRequest request = new ReportRequest(null, null, "Y", "AB", "CD", "EFGH", "IJ",
                     "KL", "MNOP", null, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
@@ -542,7 +643,7 @@ class ReportRequestSecurityTest {
         @DisplayName("an end window earlier than its start transports intact, because ordering is a "
                 + "cross-field rule the screen reports rather than the boundary refusing it")
         void anEndWindowEarlierThanItsStartTransportsIntact() {
-            ReportRequest request = new ReportRequest(ReportPeriod.CUSTOM, "12", "31", "2024", "01",
+            ReportRequest request = new ReportRequest(null, null, "Y", "12", "31", "2024", "01",
                     "01", "2024", null, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
@@ -553,9 +654,9 @@ class ReportRequestSecurityTest {
         @DisplayName("a lower-case answer is not folded and an out-of-vocabulary answer round-trips, "
                 + "because accept, reset and quoted-back are three distinct outcomes")
         void theAnswerIsNeitherFoldedNorRestricted() {
-            ReportRequest lower = new ReportRequest(null, null, null, null, null, null, null,
+            ReportRequest lower = new ReportRequest(null, null, null, null, null, null, null, null, null,
                     "y", null, null);
-            ReportRequest unexpected = new ReportRequest(null, null, null, null, null, null, null,
+            ReportRequest unexpected = new ReportRequest(null, null, null, null, null, null, null, null, null,
                     "Q", null, null);
 
             assertThat(violationsOf(lower)).isEmpty();
@@ -563,7 +664,8 @@ class ReportRequestSecurityTest {
             assertThat(lower.confirm()).isEqualTo("y");
             assertThat(unexpected.confirm()).isEqualTo("Q");
             assertThat(ReportPeriod.MONTHLY.getValue())
-                    .as("the period's carried value is not folded either, in either direction")
+                    .as("the report name the service produces is not folded either, in either "
+                            + "direction")
                     .isEqualTo("Monthly")
                     .isNotEqualTo(ReportPeriod.MONTHLY.name());
         }
@@ -578,8 +680,10 @@ class ReportRequestSecurityTest {
                     .contains("startMonth=01")
                     .contains("startYear=2024")
                     .contains("endDay=31")
-                    .contains("reportPeriod=CUSTOM");
-            assertThatCode(() -> new ReportRequest(null, null, null, null, null, null, null, null,
+                    .contains("customSelection=Y")
+                    .contains("monthlySelection=null")
+                    .doesNotContain("reportPeriod=");
+            assertThatCode(() -> new ReportRequest(null, null, null, null, null, null, null, null, null, null,
                     null, null).toString()).doesNotThrowAnyException();
         }
 
@@ -588,7 +692,7 @@ class ReportRequestSecurityTest {
         void equalityComparesEveryComponent() {
             ReportRequest first = populated();
             ReportRequest same = populated();
-            ReportRequest differentWindow = new ReportRequest(ReportPeriod.CUSTOM, "01", "15",
+            ReportRequest differentWindow = new ReportRequest(null, null, "Y", "01", "15",
                     "2024", "04", "30", "2024", "Y", KeyAction.ENTER,
                     NavigationContext.empty().withReEntry());
 
@@ -599,14 +703,14 @@ class ReportRequestSecurityTest {
         @Test
         @DisplayName("a document naming every component deserializes with each value intact")
         void aDocumentNamingEveryComponentDeserializesIntact() throws JsonProcessingException {
-            String document = "{\"reportPeriod\":\"CUSTOM\",\"startMonth\":\"01\","
+            String document = "{\"customSelection\":\"Y\",\"startMonth\":\"01\","
                     + "\"startDay\":\"15\",\"startYear\":\"2024\",\"endMonth\":\"03\","
                     + "\"endDay\":\"31\",\"endYear\":\"2024\",\"confirm\":\"Y\","
                     + "\"keyAction\":\"ENTER\"}";
 
             ReportRequest request = moduleEquivalentMapper().readValue(document, ReportRequest.class);
 
-            assertThat(request.reportPeriod()).isSameAs(ReportPeriod.CUSTOM);
+            assertThat(resolvedPeriodOf(request)).isSameAs(ReportPeriod.CUSTOM);
             assertThat(request.startMonth()).isEqualTo("01");
             assertThat(request.endDay()).isEqualTo("31");
             assertThat(request.keyAction()).isEqualTo(KeyAction.ENTER);
@@ -623,14 +727,13 @@ class ReportRequestSecurityTest {
             assertThat(payload.get("startMonth").asText()).isEqualTo("01");
             assertThat(payload.get("endYear").asText()).isEqualTo("2024");
             assertThat(payload.get("confirm").asText()).isEqualTo("Y");
-            assertThat(payload.get("reportPeriod").asText()).isEqualTo("CUSTOM");
+            assertThat(payload.get("customSelection").asText()).isEqualTo("Y");
             assertThat(payload.has("navigationContext"))
                     .as("a populated navigation state is published rather than suppressed")
                     .isTrue();
-            assertThat(REMOVED_SELECTORS).allSatisfy(removed ->
-                    assertThat(payload.has(removed))
-                            .as("%s is no longer part of the wire form", removed)
-                            .isFalse());
+            assertThat(payload.has(REMOVED_PERIOD_COMPONENT))
+                    .as("no collapsed period name is part of the wire form")
+                    .isFalse();
         }
     }
 }

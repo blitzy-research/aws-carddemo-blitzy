@@ -34,6 +34,7 @@ import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -189,6 +190,51 @@ final class UserSecurityRepositoryIT extends AbstractPostgresIT {
         }
 
         @Test
+        @DisplayName("resumes the browse strictly after a cursor and strictly before it, in the direction "
+                + "each attention key asks for, and still projects no credential")
+        void resumesTheBrowseFromEitherBoundaryCursor() {
+            runner().run(context -> {
+                final UserSecurityRepository repository = context.getBean(UserSecurityRepository.class);
+
+                final List<String> firstPage = identifiersOf(repository.findAllProjectedBy(
+                        PageRequest.of(0, ADMIN_PAGE_SIZE, Sort.by(Sort.Direction.ASC, SORT_ATTRIBUTE))));
+                final String lastOnPage = firstPage.get(firstPage.size() - 1);
+                final String firstOnPage = firstPage.get(0);
+
+                assertThat(repository.findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(
+                        lastOnPage, Limit.of(ADMIN_PAGE_SIZE + 1)))
+                        .as("strictly after the last identifier displayed, so it is not listed twice")
+                        .extracting(UserSecurityRepository.AdminEntry::getSecUsrId)
+                        .allSatisfy(identifier -> assertThat(identifier).isGreaterThan(lastOnPage));
+
+                final List<UserSecurityRepository.AdminEntry> backward =
+                        repository.findBySecUsrIdLessThanOrderBySecUsrIdDesc(
+                                lastOnPage, Limit.of(ADMIN_PAGE_SIZE));
+
+                assertThat(backward)
+                        .as("strictly before the cursor, descending, which is the read order the legacy "
+                                + "backward path uses before the service reverses it")
+                        .extracting(UserSecurityRepository.AdminEntry::getSecUsrId)
+                        .isSortedAccordingTo(java.util.Comparator.reverseOrder())
+                        .doesNotContain(lastOnPage);
+                assertThat(backward.reversed())
+                        .extracting(UserSecurityRepository.AdminEntry::getSecUsrId)
+                        .as("reversing recovers the ascending page the operator sees")
+                        .startsWith(firstOnPage);
+                assertThat(backward.get(0).getSecUsrLname())
+                        .as("the keyset forms return the same closed projection, so the credential column "
+                                + "is not selected on this path either")
+                        .isNotNull();
+
+                assertThat(repository.findBySecUsrIdLessThanOrderBySecUsrIdDesc(
+                        firstOnPage, Limit.of(ADMIN_PAGE_SIZE)))
+                        .as("nothing precedes the lowest identifier, which is how the first page is "
+                                + "recognised without a count")
+                        .isEmpty();
+            });
+        }
+
+        @Test
         @DisplayName("populates every projected column, so the projection is a narrowing rather than an "
                 + "emptying")
         void populatesEveryProjectedColumn() {
@@ -273,11 +319,13 @@ final class UserSecurityRepositoryIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("declares exactly the four operations it needs, so a fifth added later is a "
+        @DisplayName("declares exactly the six operations it needs, so a seventh added later is a "
                 + "deliberate widening rather than an inherited one")
-        void declaresExactlyFourOperations() {
+        void declaresExactlySixOperations() {
             assertThat(operationNames())
-                    .containsExactlyInAnyOrder("findById", "findAllProjectedBy", "save", "deleteById");
+                    .containsExactlyInAnyOrder("findById", "findAllProjectedBy", "save", "deleteById",
+                            "findBySecUsrIdGreaterThanOrderBySecUsrIdAsc",
+                            "findBySecUsrIdLessThanOrderBySecUsrIdDesc");
         }
 
         @Test

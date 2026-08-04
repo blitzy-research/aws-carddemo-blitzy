@@ -119,10 +119,10 @@ class CardListRequestSecurityTest {
      * the paging component were ever rendered - even by delegating to its own rendering - the account
      * identifier would reach the diagnostic through it, and the fragment scans below would catch it.</p>
      */
-    private static final String PREVIOUS_CURSOR = "AAA78412590063PREVCURSOR99";
+    private static final String PREVIOUS_CURSOR = "AAA784125900639";
 
     /** The forward cursor key, distinct from the backward one so a transposition is visible. */
-    private static final String NEXT_CURSOR = "BBB78412590063NEXTCURSOR77";
+    private static final String NEXT_CURSOR = "BBB784125900637";
 
     /**
      * The echoed paging state a caller may submit.

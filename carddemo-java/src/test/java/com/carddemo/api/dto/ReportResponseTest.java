@@ -60,10 +60,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * rather than assembled by any production helper, so the assertion is an independent oracle.
  *
  * <p><strong>The second thing pinned here is the shape of the echo.</strong> The screen presents
- * three mutually exclusive report-type positions and six separate date components. The three
- * positions collapse into one enumerated period, because the program acts on exactly one of them and
- * a single value therefore loses nothing the screen could mean while making a multiply-marked state
- * unrepresentable. The six date components, by contrast, stay six text components rather than one
+ * three report-type positions and six separate date components. All three positions stay three
+ * one-character components, and the period the ordered evaluation resolved is published beside them
+ * rather than in place of them: the reset paragraph at {@code app/cbl/CORPT00C.cbl:L633-L646} blanks all
+ * three on a successful submission while every error path returns the transmitted marks still standing,
+ * so a response naming only the period could describe neither state and could not re-present two marks
+ * at once. The six date components likewise stay six text components rather than one
  * merged date: that reduction <em>would</em> destroy information the legacy screen carried, namely the
  * leading zero on a single-digit month and the ability to report which part failed. The date
  * components are proven to be text by static typing: every read below is assigned to an explicitly
@@ -174,8 +176,15 @@ class ReportResponseTest {
     private static final List<ReportPeriod> PERIODS_IN_EVALUATION_ORDER =
             List.of(ReportPeriod.MONTHLY, ReportPeriod.YEARLY, ReportPeriod.CUSTOM);
 
+    /**
+     * The one character a marked selector position carried on the legacy screen, and which the response
+     * re-presents unchanged because the program never inspects which character marked a position.
+     */
+    private static final String SELECTION_MARK = "Y";
+
     /** Every component the contract publishes, in declaration order. */
     private static final List<String> ALL_COMPONENTS = List.of(
+            "monthlySelection", "yearlySelection", "customSelection",
             "reportPeriod", "startMonth",
             "startDay", "startYear", "endMonth", "endDay", "endYear", "confirm", "transactionName",
             "title01", "currentDate", "programName", "title02", "currentTime", "errorMessage",
@@ -183,13 +192,22 @@ class ReportResponseTest {
             "navigationContext");
 
     /**
-     * The three per-position selector properties and the separate report-name property the collapse
-     * removed. Asserted absent, because their survival would reintroduce the multiply-marked state the
-     * single component exists to make unrepresentable, and would give the derived name a second, drifting
-     * source of truth.
+     * The three report-type selector positions the response re-presents, in the order the symbolic map
+     * declares them at lines 60, 66 and 72.
+     *
+     * <p>They are published separately, and separately from the resolved period, because the reset
+     * paragraph {@code INITIALIZE-ALL-FIELDS} at {@code app/cbl/CORPT00C.cbl:L633-L646} blanks all ten
+     * screen fields while every error path returns the transmitted marks still standing. A response
+     * carrying only the resolved period could express neither state.
      */
-    private static final List<String> REMOVED_COMPONENTS = List.of(
-            "monthlySelection", "yearlySelection", "customSelection", "reportName");
+    private static final List<String> SELECTOR_COMPONENTS =
+            List.of("monthlySelection", "yearlySelection", "customSelection");
+
+    /**
+     * The separate derived report-name property, asserted absent because it would give the name a
+     * second, drifting source of truth: the name is the resolved period's own carried value.
+     */
+    private static final List<String> REMOVED_COMPONENTS = List.of("reportName");
 
     /** A 40-character screen title, at the exact width the symbolic map declares. */
     private static final String TITLE_UPPER = "      AWS Mainframe Modernization       ";
@@ -198,7 +216,7 @@ class ReportResponseTest {
     private static final String TITLE_LOWER = "         Transaction Reports            ";
 
     /**
-     * A response with every one of the twenty-one components populated.
+     * A response with every one of the twenty-four components populated.
      *
      * <p>Used wherever the assertion is about the wire form as a whole - that every component is
      * published under its own name, that the key count is exactly the component count, and that no
@@ -208,7 +226,8 @@ class ReportResponseTest {
      * @return a fully populated response
      */
     private static ReportResponse everyComponentPresent() {
-        return new ReportResponse(ReportPeriod.CUSTOM, "07", "01", "2022", "07", "19", "2022",
+        return new ReportResponse(SELECTION_MARK, SELECTION_MARK, SELECTION_MARK,
+                ReportPeriod.CUSTOM, "07", "01", "2022", "07", "19", "2022",
                 "Y", "CR00", TITLE_UPPER, "07/19/22", "CORPT00C", TITLE_LOWER, "19:27:53",
                 ACCEPTED_CUSTOM, true, ACCEPTED_CUSTOM, false,
                 ReportResponse.FIELD_MONTHLY_SELECTION, "/api/v1/reports", navigation());
@@ -224,7 +243,7 @@ class ReportResponseTest {
      * @return an empty response
      */
     private static ReportResponse everyComponentAbsent() {
-        return new ReportResponse(null, null, null, null, null, null, null, null,
+        return new ReportResponse(null, null, null,null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, false, null, false, null, null, null);
     }
 
@@ -235,7 +254,7 @@ class ReportResponseTest {
      * @return a response carrying that period and nothing else
      */
     private static ReportResponse selecting(ReportPeriod period) {
-        return new ReportResponse(period, null, null, null, null, null, null,
+        return new ReportResponse(null, null, null,period, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, false, null, false, null, null,
                 null);
     }
@@ -254,7 +273,7 @@ class ReportResponseTest {
      */
     private static ReportResponse echoing(String startMonth, String startDay, String startYear,
             String endMonth, String endDay, String endYear, String confirm) {
-        return new ReportResponse(null, startMonth, startDay, startYear, endMonth,
+        return new ReportResponse(null, null, null,null, startMonth, startDay, startYear, endMonth,
                 endDay, endYear, confirm, null, null, null, null, null, null, null, false, null,
                 false, null, null, null);
     }
@@ -273,7 +292,7 @@ class ReportResponseTest {
      */
     private static ReportResponse announcing(String text, boolean submissionAccepted,
             boolean generalError) {
-        return new ReportResponse(null, null, null, null, null, null, null, null,
+        return new ReportResponse(null, null, null,null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, text, submissionAccepted, text, generalError,
                 null, null, null);
     }
@@ -362,8 +381,8 @@ class ReportResponseTest {
                 + "is not a fixed-width screen value")
         void declaresNoWidthForTheEchoedPeriod() {
             assertThat(ReportPeriod.values())
-                    .as("the three one-character positions collapsed into one closed vocabulary, so "
-                            + "their shared width is gone and no selector width remains to declare")
+                    .as("the resolved period is a closed vocabulary rather than a screen value, so it "
+                            + "declares no width of its own - the three positions beside it do")
                     .hasSize(3);
             assertThat(PERIODS_IN_EVALUATION_ORDER)
                     .as("the period is carried as a vocabulary member, never as a bounded screen value")
@@ -564,8 +583,8 @@ class ReportResponseTest {
     }
 
     @Nested
-    @DisplayName("The three report-type positions collapse into one echoed period")
-    class TheThreePositionsCollapseIntoOnePeriod {
+    @DisplayName("The three report-type positions are echoed, and the resolved period beside them")
+    class TheThreePositionsAreEchoedBesideTheResolvedPeriod {
 
         @Test
         @DisplayName("carries exactly one period, for each of the three the screen names, and nothing "
@@ -732,7 +751,7 @@ class ReportResponseTest {
         @Test
         @DisplayName("returns attention to the selector block, as the program's catch-all does")
         void returnsAttentionToTheSelectorBlock() {
-            ReportResponse response = new ReportResponse(null, null, null, null, null, null, null, null,
+            ReportResponse response = new ReportResponse(null, null, null,null, null, null, null, null, null, null, null,
                                               null, null, null, null, null, null,
                                               NO_SELECTION_TEXT, false, NO_SELECTION_TEXT, true,
                                               ReportResponse.FIELD_MONTHLY_SELECTION, null, null);
@@ -868,7 +887,7 @@ class ReportResponseTest {
         @Test
         @DisplayName("is carried through the same single message component and returns focus to confirm")
         void isCarriedThroughTheSingleMessageComponent() {
-            ReportResponse response = new ReportResponse(ReportPeriod.MONTHLY, null, null, null, null,
+            ReportResponse response = new ReportResponse(null, null, null,ReportPeriod.MONTHLY, null, null, null, null,
                                               null, null, null, null, null, null, null, null,
                                               null, CONFIRM_MONTHLY, false, CONFIRM_MONTHLY,
                                               true, ReportResponse.FIELD_CONFIRM, null, null);
@@ -1027,7 +1046,7 @@ class ReportResponseTest {
         @Test
         @DisplayName("carries the supplied character beside the text it was quoted into")
         void carriesTheSuppliedCharacterBesideTheText() {
-            ReportResponse response = new ReportResponse(ReportPeriod.YEARLY, null, null,
+            ReportResponse response = new ReportResponse(null, null, null,ReportPeriod.YEARLY, null, null,
                     null, null, null, null, "q", null, null, null, null, null, null,
                     INVALID_CONFIRM_LOWER, false, INVALID_CONFIRM_LOWER, true,
                     ReportResponse.FIELD_CONFIRM, null, null);
@@ -1055,7 +1074,7 @@ class ReportResponseTest {
         @Test
         @DisplayName("is constructible as an ordinary message, exactly like every other shape")
         void isConstructibleAsAnOrdinaryMessage() {
-            ReportResponse response = new ReportResponse(ReportPeriod.MONTHLY, null, null,
+            ReportResponse response = new ReportResponse(null, null, null,ReportPeriod.MONTHLY, null, null,
                     null, null, null, null, null, null, null, null, null, null, null,
                     QUEUE_WRITE_FAILURE_TEXT, false, QUEUE_WRITE_FAILURE_TEXT, true,
                     ReportResponse.FIELD_MONTHLY_SELECTION, null, null);
@@ -1329,7 +1348,7 @@ class ReportResponseTest {
         @DisplayName("leaves the unprojected text unbounded so a long text is not silently cut")
         void leavesTheUnprojectedTextUnbounded() {
             String longerThanTheScreen = "L".repeat(ReportResponse.ERROR_MESSAGE_LENGTH + 40);
-            ReportResponse response = new ReportResponse(null, null, null, null, null, null, null, null,
+            ReportResponse response = new ReportResponse(null, null, null,null, null, null, null, null, null, null, null,
                                               null, null, null, null, null, null, null, false,
                                               longerThanTheScreen, true, null, null, null);
 
@@ -1413,7 +1432,7 @@ class ReportResponseTest {
         void boundsTheProjectedMessageAndTheFocusIdentity() {
             String tooWide = "E".repeat(ReportResponse.ERROR_MESSAGE_LENGTH + 1);
             ReportResponse overWideMessage = announcing(tooWide, false, true);
-            ReportResponse overWideFocus = new ReportResponse(null, null, null, null, null, null, null,
+            ReportResponse overWideFocus = new ReportResponse(null, null, null,null, null, null, null, null, null, null,
                                                    null, null, null, null, null, null, null,
                                                    null, false, null, true, "TOOLONG1", null,
                                                    null);
@@ -1432,7 +1451,7 @@ class ReportResponseTest {
                     ReportResponse.FIELD_CONFIRM);
 
             for (String identity : identities) {
-                ReportResponse response = new ReportResponse(null, null, null, null, null, null, null,
+                ReportResponse response = new ReportResponse(null, null, null,null, null, null, null, null, null, null,
                                                   null, null, null, null, null, null, null,
                                                   null, false, null, true, identity, null, null);
 
@@ -1452,7 +1471,7 @@ class ReportResponseTest {
         @DisplayName("carries the state it was given, as the very same value")
         void carriesTheStateItWasGiven() {
             NavigationContext supplied = navigation();
-            ReportResponse response = new ReportResponse(null, null, null, null, null, null, null, null,
+            ReportResponse response = new ReportResponse(null, null, null,null, null, null, null, null, null, null, null,
                                               null, null, null, null, null, null, null, false,
                                               null, false, null, null, supplied);
 
@@ -1502,7 +1521,7 @@ class ReportResponseTest {
         @DisplayName("carries the empty state exactly as supplied, without substituting anything")
         void carriesTheEmptyStateAsSupplied() {
             NavigationContext empty = NavigationContext.empty();
-            ReportResponse response = new ReportResponse(null, null, null, null, null, null, null, null,
+            ReportResponse response = new ReportResponse(null, null, null,null, null, null, null, null, null, null, null,
                                               null, null, null, null, null, null, null, false,
                                               null, false, null, null, empty);
 
@@ -1617,7 +1636,7 @@ class ReportResponseTest {
         @Test
         @DisplayName("accepts any route value without validating it, since the vocabulary is elsewhere")
         void acceptsAnyRouteValueWithoutValidatingIt() {
-            ReportResponse response = new ReportResponse(null, null, null, null, null, null, null, null,
+            ReportResponse response = new ReportResponse(null, null, null,null, null, null, null, null, null, null, null,
                                               null, null, null, null, null, null, null, false,
                                               null, false, null,
                                               "/api/v1/reports/transaction-report", null);
@@ -1679,10 +1698,10 @@ class ReportResponseTest {
         }
 
         @Test
-        @DisplayName("publishes exactly the component count and no twenty-second member")
+        @DisplayName("publishes exactly the component count and no twenty-fifth member")
         void publishesExactlyTheComponentCount() throws JsonProcessingException {
             assertThat(publishedNames(everyComponentPresent())).hasSize(ALL_COMPONENTS.size());
-            assertThat(ALL_COMPONENTS).hasSize(21);
+            assertThat(ALL_COMPONENTS).hasSize(24);
         }
     }
 
@@ -1766,7 +1785,7 @@ class ReportResponseTest {
         }
 
         @Test
-        @DisplayName("reads every one of the twenty-one components of a populated response")
+        @DisplayName("reads every one of the twenty-four components of a populated response")
         void readsEveryComponentOfAPopulatedResponse() {
             ReportResponse response = everyComponentPresent();
 
@@ -1795,7 +1814,7 @@ class ReportResponseTest {
         }
 
         @Test
-        @DisplayName("tolerates an absent value in every one of the twenty-one positions")
+        @DisplayName("tolerates an absent value in every one of the twenty-four positions")
         void toleratesAnAbsentValueInEveryPosition() {
             ReportResponse response = everyComponentAbsent();
 

@@ -164,6 +164,15 @@ class PageMetadataTest {
 
     private static final int CARD_KEY_CARD_NUMBER_WIDTH = 16;
 
+    /**
+     * Width of the account-identifier half of the card-list program's declared composite work field.
+     *
+     * <p>Retained deliberately even though it is <em>not</em> part of the browse cursor: the program
+     * declares the composite, but at all four of its repositioning sites only the card-number half is
+     * moved into the browse key and the companion move of this half is commented out. The constant
+     * exists so that the assertions below can state that the cursor bound is the card-number width and
+     * is strictly below the composite width, which is the distinction the contract turns on.
+     */
     private static final int CARD_KEY_ACCOUNT_ID_WIDTH = 11;
 
     private static final int TRANSACTION_KEY_WIDTH = 16;
@@ -175,15 +184,17 @@ class PageMetadataTest {
     private static final int LIST_MAP_INDICATOR_WIDTH = 8;
 
     // Synthetic sample values. Every one is invented for this test, identifies nothing real and
-    // authenticates nothing. Each is shaped to exercise one hazard: the widest legacy key at 27
+    // authenticates nothing. Each is shaped to exercise one hazard: the widest legacy key at 16
     // characters, leading zeros a numeric reading would collapse, a value that cannot be parsed as a
     // number at all, and padding on either side of a fixed-width indicator. Within a boundary pair
     // the two values always differ, so an assertion which confused the first cursor with the last
-    // would fail rather than pass by coincidence.
+    // would fail rather than pass by coincidence. The two card cursors differ from the two transaction
+    // cursors as well, even though both keys are sixteen characters wide, so that a screen mix-up
+    // cannot pass either.
 
-    private static final String CARD_LAST_CURSOR = "0000000000000042" + "00000000011";
+    private static final String CARD_LAST_CURSOR = "4111111111110042";
 
-    private static final String CARD_FIRST_CURSOR = "0000000000000036" + "00000000011";
+    private static final String CARD_FIRST_CURSOR = "4111111111110036";
 
     /**
      * Fifteen leading zeros: a numeric reading would collapse this cursor to two characters.
@@ -625,8 +636,9 @@ class PageMetadataTest {
         }
 
         @Test
-        @DisplayName("the card composite key crosses at the widest legacy key width of 27 characters")
-        void cardCompositeCursorCrossesAtTwentySevenCharacters() {
+        @DisplayName("the card browse key crosses at the widest legacy key width of 16 characters, "
+                + "which is the card number alone and not the declared composite")
+        void cardCursorCrossesAtSixteenCharacters() {
             PageMetadata page =
                     PageMetadata.backward(
                             PageMetadata.CARD_LIST_PAGE_SIZE,
@@ -636,22 +648,28 @@ class PageMetadataTest {
                             true,
                             CARD_MAP_INDICATOR);
 
-            // Both retained key groups are declared with the same two components at the same two
-            // widths, so both boundaries cross at the same 27 characters.
-            assertThat(page.previousCursorKey()).hasSize(27);
-            assertThat(page.nextCursorKey()).hasSize(27);
-            assertThat(CARD_KEY_CARD_NUMBER_WIDTH + CARD_KEY_ACCOUNT_ID_WIDTH).isEqualTo(27);
+            // The card-list program declares a composite work field of a card number followed by an
+            // account identifier, but at all four of its repositioning sites only the card-number half
+            // reaches the browse key - the companion move of the account half is commented out - so the
+            // key that actually resumes a card browse is sixteen characters, not twenty-seven.
+            assertThat(page.previousCursorKey()).hasSize(CARD_KEY_CARD_NUMBER_WIDTH).hasSize(16);
+            assertThat(page.nextCursorKey()).hasSize(CARD_KEY_CARD_NUMBER_WIDTH).hasSize(16);
+            assertThat(CARD_KEY_CARD_NUMBER_WIDTH)
+                    .as("the resumption key is the card-number half of the declared composite")
+                    .isLessThan(CARD_KEY_CARD_NUMBER_WIDTH + CARD_KEY_ACCOUNT_ID_WIDTH);
         }
 
         @Test
         @DisplayName("the declared cursor bound is the widest of the three legacy keys, so no legal "
-                + "cursor is ever refused")
+                + "cursor is ever refused and none the screens cannot produce is admitted")
         void cursorBoundIsTheWidestOfTheThreeLegacyKeys() {
             assertThat(PageMetadata.CURSOR_KEY_MAX_LENGTH)
-                    .isEqualTo(27)
-                    .isEqualTo(CARD_KEY_CARD_NUMBER_WIDTH + CARD_KEY_ACCOUNT_ID_WIDTH)
+                    .isEqualTo(16)
+                    .isEqualTo(CARD_KEY_CARD_NUMBER_WIDTH)
                     .isGreaterThanOrEqualTo(TRANSACTION_KEY_WIDTH)
-                    .isGreaterThanOrEqualTo(USER_KEY_WIDTH);
+                    .isGreaterThanOrEqualTo(USER_KEY_WIDTH)
+                    .as("a bound of twenty-seven would admit a cursor no screen can produce")
+                    .isLessThan(CARD_KEY_CARD_NUMBER_WIDTH + CARD_KEY_ACCOUNT_ID_WIDTH);
         }
 
         @Test
@@ -726,8 +744,10 @@ class PageMetadataTest {
             PageMetadata page =
                     PageMetadata.forward(10, overWideKey, overWideKey, false, false, null);
 
-            assertThat(page.previousCursorKey()).isEqualTo(overWideKey).hasSize(28);
-            assertThat(page.nextCursorKey()).isEqualTo(overWideKey).hasSize(28);
+            assertThat(page.previousCursorKey()).isEqualTo(overWideKey)
+                    .hasSize(PageMetadata.CURSOR_KEY_MAX_LENGTH + 1);
+            assertThat(page.nextCursorKey()).isEqualTo(overWideKey)
+                    .hasSize(PageMetadata.CURSOR_KEY_MAX_LENGTH + 1);
         }
     }
 
@@ -847,7 +867,7 @@ class PageMetadataTest {
         }
 
         @Test
-        @DisplayName("all three screens supply their two keys at their own single width - 27 and 27 for "
+        @DisplayName("all three screens supply their two keys at their own single width - 16 and 16 for "
                 + "the card list, 16 and 16 for the transaction list, 8 and 8 for the user list")
         void allThreeScreensSupplyTheirTwoKeysAtTheirOwnSingleWidth() {
             PageMetadata cardListPage =
@@ -875,10 +895,8 @@ class PageMetadataTest {
                             true,
                             LIST_MAP_INDICATOR);
 
-            assertThat(cardListPage.previousCursorKey())
-                    .hasSize(CARD_KEY_CARD_NUMBER_WIDTH + CARD_KEY_ACCOUNT_ID_WIDTH);
-            assertThat(cardListPage.nextCursorKey())
-                    .hasSize(CARD_KEY_CARD_NUMBER_WIDTH + CARD_KEY_ACCOUNT_ID_WIDTH);
+            assertThat(cardListPage.previousCursorKey()).hasSize(CARD_KEY_CARD_NUMBER_WIDTH);
+            assertThat(cardListPage.nextCursorKey()).hasSize(CARD_KEY_CARD_NUMBER_WIDTH);
             assertThat(transactionListPage.previousCursorKey()).hasSize(TRANSACTION_KEY_WIDTH);
             assertThat(transactionListPage.nextCursorKey()).hasSize(TRANSACTION_KEY_WIDTH);
             assertThat(userListPage.previousCursorKey()).hasSize(USER_KEY_WIDTH);
@@ -889,11 +907,10 @@ class PageMetadataTest {
         @DisplayName("one declared bound governs both keys, because every screen declares its first "
                 + "and last field at identical widths")
         void oneDeclaredBoundGovernsBothKeys() {
-            // 27 and 27, 16 and 16, 8 and 8: the per-screen pair is always equal, so a second bound
+            // 16 and 16, 16 and 16, 8 and 8: the per-screen pair is always equal, so a second bound
             // would be a second name for the same number.
-            assertThat(CARD_KEY_CARD_NUMBER_WIDTH + CARD_KEY_ACCOUNT_ID_WIDTH)
-                    .isEqualTo(PageMetadata.CURSOR_KEY_MAX_LENGTH);
-            assertThat(TRANSACTION_KEY_WIDTH).isLessThan(PageMetadata.CURSOR_KEY_MAX_LENGTH);
+            assertThat(CARD_KEY_CARD_NUMBER_WIDTH).isEqualTo(PageMetadata.CURSOR_KEY_MAX_LENGTH);
+            assertThat(TRANSACTION_KEY_WIDTH).isEqualTo(PageMetadata.CURSOR_KEY_MAX_LENGTH);
             assertThat(USER_KEY_WIDTH).isLessThan(PageMetadata.CURSOR_KEY_MAX_LENGTH);
         }
 
@@ -914,8 +931,8 @@ class PageMetadataTest {
             assertThat(List.copyOf(wire.keySet()).subList(0, 3))
                     .containsExactly("pageSize", "previousCursorKey", "nextCursorKey");
             assertThat(wire)
-                    .containsEntry("previousCursorKey", "000000000000003600000000011")
-                    .containsEntry("nextCursorKey", "000000000000004200000000011");
+                    .containsEntry("previousCursorKey", "4111111111110036")
+                    .containsEntry("nextCursorKey", "4111111111110042");
         }
 
         @Test
@@ -1515,7 +1532,7 @@ class PageMetadataTest {
 
         @Test
         @DisplayName("no fragment of either boundary cursor reaches the rendering of a card page, whose "
-                + "27-character key is a primary account number followed by an account identifier")
+                + "16-character key is a primary account number in full")
         void noFragmentOfEitherCardCursorReachesTheRendering() {
             String rendering =
                     PageMetadata.forward(
@@ -1530,11 +1547,11 @@ class PageMetadataTest {
             assertThat(rendering)
                     .doesNotContain(CARD_FIRST_CURSOR)
                     .doesNotContain(CARD_LAST_CURSOR)
-                    .doesNotContain(CARD_FIRST_CURSOR.substring(0, CARD_KEY_CARD_NUMBER_WIDTH))
-                    .doesNotContain(CARD_LAST_CURSOR.substring(0, CARD_KEY_CARD_NUMBER_WIDTH))
-                    .doesNotContain(CARD_LAST_CURSOR.substring(CARD_KEY_CARD_NUMBER_WIDTH))
-                    .doesNotContain("0000000000000042")
-                    .doesNotContain("00000000011");
+                    .doesNotContain(CARD_FIRST_CURSOR.substring(0, CARD_KEY_CARD_NUMBER_WIDTH / 2))
+                    .doesNotContain(CARD_LAST_CURSOR.substring(0, CARD_KEY_CARD_NUMBER_WIDTH / 2))
+                    .doesNotContain(CARD_LAST_CURSOR.substring(CARD_KEY_CARD_NUMBER_WIDTH / 2))
+                    .doesNotContain("4111111111110042")
+                    .doesNotContain("0042");
         }
 
         @Test
@@ -1711,8 +1728,8 @@ class PageMetadataTest {
                             "displayedPageNumber");
             assertThat(wire)
                     .containsEntry("pageSize", 7)
-                    .containsEntry("previousCursorKey", "000000000000003600000000011")
-                    .containsEntry("nextCursorKey", "000000000000004200000000011")
+                    .containsEntry("previousCursorKey", "4111111111110036")
+                    .containsEntry("nextCursorKey", "4111111111110042")
                     .containsEntry("direction", "FORWARD")
                     .containsEntry("hasMorePages", true)
                     .containsEntry("hasPreviousPages", false)
@@ -1780,10 +1797,10 @@ class PageMetadataTest {
             assertThat(restored).isEqualTo(original).isNotSameAs(original);
             assertThat(restored.pageSize()).isEqualTo(7);
             assertThat(restored.previousCursorKey())
-                    .isEqualTo("000000000000003600000000011")
+                    .isEqualTo("4111111111110036")
                     .hasSize(PageMetadata.CURSOR_KEY_MAX_LENGTH);
             assertThat(restored.nextCursorKey())
-                    .isEqualTo("000000000000004200000000011")
+                    .isEqualTo("4111111111110042")
                     .hasSize(PageMetadata.CURSOR_KEY_MAX_LENGTH);
             assertThat(restored.displayedPageNumber())
                     .isEqualTo("  1")
@@ -1940,7 +1957,7 @@ class PageMetadataTest {
         }
 
         @Test
-        @DisplayName("each boundary key is bounded at the same twenty-seven characters the outbound shape "
+        @DisplayName("each boundary key is bounded at the same sixteen characters the outbound shape "
                 + "uses, which is the widest legacy browse key of the three screens")
         void eachBoundaryKeyIsBoundedAtTheSharedCursorWidth() {
             String widest = "x".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH);
@@ -1949,13 +1966,14 @@ class PageMetadataTest {
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(atTheBound))
-                        .as("a key of exactly the declared width is the card-list pair, sixteen digits of "
-                                + "card number followed by eleven of account id")
+                        .as("a key of exactly the declared width is a card number or a transaction "
+                                + "identifier, each sixteen characters")
                         .isEmpty();
             }
 
             assertThat(PageMetadata.CURSOR_KEY_MAX_LENGTH)
-                    .isEqualTo(CARD_KEY_CARD_NUMBER_WIDTH + CARD_KEY_ACCOUNT_ID_WIDTH);
+                    .isEqualTo(CARD_KEY_CARD_NUMBER_WIDTH)
+                    .isEqualTo(TRANSACTION_KEY_WIDTH);
         }
 
         @Test

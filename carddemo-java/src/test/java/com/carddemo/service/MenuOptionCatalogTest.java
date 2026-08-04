@@ -14,7 +14,7 @@
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License
  */
-package com.carddemo.config;
+package com.carddemo.service;
 
 import java.util.ArrayList;
 import java.util.Comparator;

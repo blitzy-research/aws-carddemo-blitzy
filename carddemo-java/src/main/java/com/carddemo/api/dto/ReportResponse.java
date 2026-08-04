@@ -37,6 +37,29 @@ import jakarta.validation.constraints.Size;
  * payload: the failure text is the frozen operator-facing literal and nothing else.
  */
 public record ReportResponse(
+        /*
+         * The three report-type selector positions as they stand when the turn ends, in the order the
+         * symbolic map declares them: MONTHLYI at line 60, YEARLYI at line 66, CUSTOMI at line 72.
+         *
+         * They are published, and published separately, for the same reason the request carries them
+         * separately. The legacy screen re-presents whatever the operator marked: the reset paragraph
+         * INITIALIZE-ALL-FIELDS at [app/cbl/CORPT00C.cbl:L633-L646] blanks all three along with the six
+         * date parts and the confirmation, so a successful submission and a declined confirmation both
+         * come back cleared, while every error path comes back with the transmitted marks still
+         * standing. A response carrying only the resolved period cannot express either state: it cannot
+         * say "the operator's monthly and custom marks are both still marked", and it cannot
+         * distinguish a cleared screen from one whose single mark survived. A client would have to
+         * guess, and guessing is how a re-presented screen loses a mark the operator made.
+         *
+         * These do not duplicate reportPeriod below. These three are what the operator SEES; that one
+         * is what the service RESOLVED by the ordered evaluation at lines 214, 240 and 256. The two
+         * genuinely differ - an error turn can re-present three marks while the period is absent, and a
+         * turn can publish the month-to-date period while a stale custom mark is still standing - so
+         * both are carried and neither is derived from the other.
+         */
+        @Size(max = ReportResponse.SELECTION_LENGTH) String monthlySelection,
+        @Size(max = ReportResponse.SELECTION_LENGTH) String yearlySelection,
+        @Size(max = ReportResponse.SELECTION_LENGTH) String customSelection,
         ReportPeriod reportPeriod,
         @Size(max = ReportResponse.MONTH_LENGTH) String startMonth,
         @Size(max = ReportResponse.DAY_LENGTH) String startDay,
@@ -58,6 +81,12 @@ public record ReportResponse(
         @Size(max = ReportResponse.SCREEN_FIELD_ID_LENGTH) String focusScreenFieldId,
         String nextRoute,
         NavigationContext navigationContext) {
+    /**
+     * Declared width of each report-type selector position, one character, from the symbolic map
+     * {@code app/cpy-bms/CORPT00.CPY} lines 60, 66 and 72.
+     */
+    public static final int SELECTION_LENGTH = 1;
+
     public static final int MONTH_LENGTH = 2;
 
     public static final int DAY_LENGTH = 2;

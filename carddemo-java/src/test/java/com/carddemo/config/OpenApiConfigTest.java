@@ -16,18 +16,8 @@
  */
 package com.carddemo.config;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Properties;
-import java.util.Set;
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
-
 import com.carddemo.CardDemoApplication;
+import com.carddemo.api.AuthController;
 import com.carddemo.api.dto.ErrorResponse;
 import com.carddemo.api.dto.FieldErrorDecorator;
 import com.carddemo.api.dto.MenuResponse;
@@ -36,28 +26,47 @@ import com.carddemo.api.dto.PageMetadata;
 import com.carddemo.domain.enums.AccountStatus;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.domain.enums.ReportPeriod;
+
 import com.carddemo.domain.enums.UserType;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import io.swagger.v3.oas.annotations.OpenAPIDefinition;
+import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
 import io.swagger.v3.oas.models.info.License;
 import io.swagger.v3.oas.models.security.SecurityRequirement;
 import io.swagger.v3.oas.models.security.SecurityScheme;
-import org.springdoc.core.models.GroupedOpenApi;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
+import java.util.Properties;
+import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springdoc.core.models.GroupedOpenApi;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.info.BuildProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
-import org.springframework.core.annotation.MergedAnnotations;
 import org.springframework.core.annotation.MergedAnnotations.SearchStrategy;
+import org.springframework.core.annotation.MergedAnnotations;
 
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RestController;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -852,15 +861,68 @@ final class OpenApiConfigTest {
         }
 
         @Test
-        @DisplayName("the document declares no operation path at all, because the paths are contributed by "
-                + "the controller scan")
+        @DisplayName("the constructed document declares no operation path of its own, because the paths are "
+                + "contributed by the controller scan and not maintained here")
         void theDocumentDeclaresNoOperationPath() {
+            // This asserts a property of the configuration bean, not of the published system. Read on its
+            // own it once implied a module with no operations at all, which is what the review objected
+            // to; the companion test below now requires the delivered inventory, so the two together say
+            // "this bean maintains no inventory" and "an inventory exists", which is the intended design.
             final OpenAPI document = publishedDocument();
 
             assertThat(document.getPaths())
                     .as("an operation inventory maintained here would drift from the controllers the "
                             + "moment either changed")
                     .isNull();
+        }
+
+        @Test
+        @DisplayName("a scanned controller surface exists for the document to describe, so the absent "
+                + "inventory above is a delegation rather than an empty system")
+        void aScannedControllerSurfaceExistsToContributePaths() {
+            // The review's finding was that nothing in the module carried @RestController, so the document
+            // had nothing to publish and the assertion above was vacuously satisfied by an empty system.
+            // Requiring a delivered surface here is what distinguishes the two states. It is asserted on
+            // the production sources rather than on a booted context so that it holds without a servlet,
+            // a datasource or key material - the same reason every other structural audit in this suite
+            // reads the tree.
+            final List<String> controllers = new ArrayList<>();
+            final Path productionRoot = Path.of("src", "main", "java");
+            assertThat(productionRoot)
+                    .as("the production source root must be readable, or this assertion is vacuous")
+                    .isDirectory();
+
+            try (Stream<Path> tree = Files.walk(productionRoot)) {
+                for (final Path path : tree.filter(Files::isRegularFile)
+                        .filter(candidate -> candidate.getFileName().toString().endsWith(".java"))
+                        .sorted()
+                        .toList()) {
+                    final String text = Files.readString(path, StandardCharsets.UTF_8);
+                    if (text.contains("@RestController")) {
+                        controllers.add(path.getFileName().toString());
+                    }
+                }
+            } catch (final IOException problem) {
+                throw new UncheckedIOException("unable to walk " + productionRoot, problem);
+            }
+
+            assertThat(controllers)
+                    .as("without a scanned controller the published document has no operation to describe")
+                    .isNotEmpty()
+                    .contains("AuthController.java");
+        }
+
+        @Test
+        @DisplayName("the delivered sign-on operation is documented, so the scan contributes a described "
+                + "operation rather than an unlabelled path")
+        void theDeliveredOperationIsDocumented() {
+            assertThat(AuthController.class.getAnnotation(RestController.class)).isNotNull();
+            assertThat(Arrays.stream(AuthController.class.getDeclaredMethods())
+                    .filter(method -> method.getAnnotation(PostMapping.class) != null)
+                    .filter(method -> method.getAnnotation(Operation.class) != null)
+                    .count())
+                    .as("springdoc publishes a summary and responses only where they are declared")
+                    .isEqualTo(1L);
         }
 
         @Test

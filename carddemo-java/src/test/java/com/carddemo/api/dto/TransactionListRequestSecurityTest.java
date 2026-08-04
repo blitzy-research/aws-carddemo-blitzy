@@ -113,10 +113,10 @@ class TransactionListRequestSecurityTest {
     private static final String DISPLAYED_PAGE_NUMBER = "00000003";
 
     /** A cursor key at the declared paging width, distinct from every other literal here. */
-    private static final String PREVIOUS_CURSOR = "000000000000003120240115X";
+    private static final String PREVIOUS_CURSOR = "000000000000031X";
 
     /** The forward cursor key, distinct from the backward one so a transposition is visible. */
-    private static final String NEXT_CURSOR = "000000000000005220240118Y";
+    private static final String NEXT_CURSOR = "000000000000052Y";
 
     /** The ten selector keystrokes of a full browse page, one per screen row. */
     private static final List<String> TEN_SELECTORS =

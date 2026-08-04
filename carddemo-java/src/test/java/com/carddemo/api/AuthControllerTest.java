@@ -1,0 +1,513 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ */
+package com.carddemo.api;
+
+import com.carddemo.config.SecurityConfig;
+import com.carddemo.domain.UserSecurity;
+import com.carddemo.domain.enums.UserType;
+import com.carddemo.repository.UserSecurityRepository;
+import com.carddemo.service.AuthenticationService;
+import com.carddemo.service.CredentialDigestService;
+import com.carddemo.service.MessageCatalogService;
+import com.carddemo.service.NavigationService;
+import com.carddemo.service.SessionTokenIssuer;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import java.lang.reflect.Method;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Locale;
+import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/**
+ * Contract test for {@link AuthController}, the REST surface of transaction {@code CC00}.
+ *
+ * <p><strong>What this proves, and why it is the finding's closure.</strong> Before this controller
+ * existed the module published no operation at all: eleven repositories, twenty-six services and a full
+ * DTO layer with nothing reachable over HTTP. The first nest below asserts the delivered inventory - that a
+ * documented POST operation is mapped at the one route the security rules exempt - which is the property
+ * the review found missing. The rest asserts the behaviour that makes the route usable and safe:
+ * <ul>
+ *   <li><strong>Every outcome answers {@code 200}.</strong> All seven are screens the legacy program
+ *       successfully composed, rejections included, so the outcome is read from the body exactly as an
+ *       operator read it from the screen.</li>
+ *   <li><strong>Only an admitted turn is issued a session.</strong> Asserted for the admitted turn and for
+ *       every refusal, because a token on a rejected sign-on would be the single worst defect this surface
+ *       could have.</li>
+ *   <li><strong>A request wider than the map is rejected before the service runs.</strong> The credential
+ *       master is never consulted for input the screen could not have transmitted.</li>
+ * </ul>
+ *
+ * <p>The controller is driven through a standalone {@code MockMvc} rather than a booted application, so
+ * the assertions are about this class and its collaborators and not about the container's configuration.
+ * The service beneath it is real, over a mocked repository, because a mocked service could not show that
+ * the turn's outcome and the header's presence stay in step.
+ *
+ * <p>Provenance: {@code app/cbl/COSGN00C.cbl} and {@code app/csd/CARDDEMO.CSD}, read as read-only
+ * reference at commit SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
+ */
+@DisplayName("AuthController :: the delivered sign-on operation")
+class AuthControllerTest {
+
+    /** Fixed clock at the upstream release stamp. */
+    private static final Clock FIXED_CLOCK =
+            Clock.fixed(Instant.parse("2022-07-19T23:12:33Z"), ZoneOffset.UTC);
+
+    /** A seeded administrator identifier. */
+    private static final String ADMIN_USER_ID = "ADMIN001";
+
+    /** The literal secret the seed records carry. */
+    private static final String SEEDED_SECRET = "PASSWORD";
+
+    /** The token the stub issuer returns, distinctive so its presence is unambiguous. */
+    private static final String ISSUED_TOKEN = "issued.session.token";
+
+    /** The credential master. */
+    private UserSecurityRepository repository;
+
+    /** The digest verifier, real so the fold is genuinely exercised end to end. */
+    private CredentialDigestService credentialDigestService;
+
+    /** The session issuer, stubbed so no key material is needed. */
+    private SessionTokenIssuer sessionTokenIssuer;
+
+    /** Registry the turn timer is registered against. */
+    private MeterRegistry meterRegistry;
+
+    /** The controller under test. */
+    private AuthController controller;
+
+    /** Standalone servlet harness over that controller. */
+    private MockMvc mockMvc;
+
+    /** Assembles the controller over a real service and a stubbed issuer. */
+    @BeforeEach
+    void setUp() {
+        repository = mock(UserSecurityRepository.class);
+        credentialDigestService = new CredentialDigestService();
+        sessionTokenIssuer = mock(SessionTokenIssuer.class);
+        meterRegistry = new SimpleMeterRegistry();
+
+        final AuthenticationService authenticationService = new AuthenticationService(repository,
+                credentialDigestService, new NavigationService(), new MessageCatalogService(),
+                FIXED_CLOCK);
+        controller = new AuthController(authenticationService,
+                new SignOnContractAdapter(new MessageCatalogService()), sessionTokenIssuer,
+                meterRegistry);
+        mockMvc = MockMvcBuilders.standaloneSetup(controller)
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build();
+    }
+
+    /**
+     * Stubs the credential master to hold one record.
+     *
+     * @param userId the identifier
+     * @param typeCode the one-character role code
+     */
+    private void givenStoredOperator(final String userId, final String typeCode) {
+        when(repository.findById(userId)).thenReturn(Optional.of(new UserSecurity(userId, "Test",
+                "Operator", credentialDigestService.encode(SEEDED_SECRET), typeCode)));
+    }
+
+    /**
+     * Renders a sign-on request body.
+     *
+     * @param userId the identifier, or {@code null} to omit it
+     * @param password the secret, or {@code null} to omit it
+     * @return the JSON body
+     */
+    private static String body(final String userId, final String password) {
+        return "{\"userId\":" + quotedOrNull(userId)
+                + ",\"password\":" + quotedOrNull(password)
+                + ",\"keyAction\":\"ENTER\"}";
+    }
+
+    /**
+     * Quotes a value or renders the JSON null literal.
+     *
+     * @param value the value
+     * @return the rendered JSON
+     */
+    private static String quotedOrNull(final String value) {
+        return value == null ? "null" : "\"" + value + "\"";
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // The finding: an operation is actually delivered
+    // ------------------------------------------------------------------------------------------
+
+    @Nested
+    @DisplayName("the delivered operation inventory")
+    class TheDeliveredOperationInventory {
+
+        @Test
+        @DisplayName("the class is a REST controller mapped at the sign-on route, so the document builder "
+                + "has an operation to contribute where before it had none")
+        void theClassIsARestControllerAtTheSignOnRoute() {
+            assertThat(AuthController.class.getAnnotation(RestController.class))
+                    .as("without this the class is not scanned and publishes nothing")
+                    .isNotNull();
+
+            final RequestMapping mapping = AuthController.class.getAnnotation(RequestMapping.class);
+            assertThat(mapping).isNotNull();
+            assertThat(mapping.value()).containsExactly(AuthController.SIGN_ON_PATH);
+        }
+
+        @Test
+        @DisplayName("the route and the rule that exempts it from authentication name one authority, so a "
+                + "mapping typo cannot open an unauthenticated surface")
+        void theRouteAndTheExemptionNameOneAuthority() {
+            assertThat(SecurityConfig.SIGN_ON_PATH)
+                    .as("the security rule reads the controller's own constant")
+                    .isEqualTo(AuthController.SIGN_ON_PATH);
+            assertThat(AuthController.SIGN_ON_PATH).isEqualTo("/api/auth/signon");
+        }
+
+        @Test
+        @DisplayName("exactly one handler is published, it accepts and produces JSON, and it is documented, "
+                + "so the published document describes a real operation rather than a bare path")
+        void oneDocumentedJsonHandlerIsPublished() {
+            final List<Method> handlers = Arrays.stream(AuthController.class.getDeclaredMethods())
+                    .filter(method -> method.getAnnotation(PostMapping.class) != null)
+                    .toList();
+
+            assertThat(handlers).hasSize(1);
+            final Method handler = handlers.get(0);
+            final PostMapping post = handler.getAnnotation(PostMapping.class);
+            assertThat(post.consumes()).containsExactly(MediaType.APPLICATION_JSON_VALUE);
+            assertThat(post.produces()).containsExactly(MediaType.APPLICATION_JSON_VALUE);
+            assertThat(handler.getAnnotation(Operation.class))
+                    .as("an undocumented operation publishes a path with no description")
+                    .isNotNull();
+            assertThat(handler.getAnnotation(ApiResponses.class)).isNotNull();
+        }
+
+        @Test
+        @DisplayName("the controller holds no rule of its own: no message literal, no comparison and no "
+                + "routing decision appear in it")
+        void theControllerHoldsNoRuleOfItsOwn() {
+            // Asserted structurally because the property is an absence. The controller's only fields are
+            // its four collaborators, so there is nowhere for a rule to be kept, and every one of the
+            // frozen literals lives in the adapter or the response contract instead.
+            assertThat(Arrays.stream(AuthController.class.getDeclaredFields())
+                    .filter(field -> !field.isSynthetic())
+                    .filter(field -> !java.lang.reflect.Modifier.isStatic(field.getModifiers()))
+                    .map(field -> field.getType().getSimpleName())
+                    .toList())
+                    .containsExactlyInAnyOrder("AuthenticationService", "SignOnContractAdapter",
+                            "SessionTokenIssuer", "MeterRegistry");
+        }
+
+        @Test
+        @DisplayName("every collaborator is required, so a part-wired controller cannot be constructed")
+        void everyCollaboratorIsRequired() {
+            final AuthenticationService service = new AuthenticationService(repository,
+                    credentialDigestService, new NavigationService(), new MessageCatalogService(),
+                    FIXED_CLOCK);
+            final SignOnContractAdapter adapter =
+                    new SignOnContractAdapter(new MessageCatalogService());
+
+            assertThatNullPointerException().isThrownBy(() ->
+                    new AuthController(null, adapter, sessionTokenIssuer, meterRegistry));
+            assertThatNullPointerException().isThrownBy(() ->
+                    new AuthController(service, null, sessionTokenIssuer, meterRegistry));
+            assertThatNullPointerException().isThrownBy(() ->
+                    new AuthController(service, adapter, null, meterRegistry));
+            assertThatNullPointerException().isThrownBy(() ->
+                    new AuthController(service, adapter, sessionTokenIssuer, null));
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // The route serves, and only an admitted turn earns a session
+    // ------------------------------------------------------------------------------------------
+
+    @Nested
+    @DisplayName("the route serves every outcome and issues a session only to an admitted one")
+    class TheRouteServesAndIssuesCarefully {
+
+        @Test
+        @DisplayName("an admitted sign-on answers 200 with the route, the derived context and a bearer "
+                + "session in the header rather than in the body")
+        void anAdmittedSignOnCarriesABearerHeader() throws Exception {
+            givenStoredOperator(ADMIN_USER_ID, "A");
+            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN)).thenReturn(ISSUED_TOKEN);
+
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(ADMIN_USER_ID, SEEDED_SECRET)))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string(HttpHeaders.AUTHORIZATION,
+                            SessionTokenIssuer.BEARER_PREFIX + ISSUED_TOKEN))
+                    .andExpect(jsonPath("$.nextRoute")
+                            .value(NavigationService.Route.ADMIN_MENU.getRouteValue()))
+                    .andExpect(jsonPath("$.userId").value(ADMIN_USER_ID))
+                    .andExpect(jsonPath("$.userType").value("A"))
+                    .andExpect(jsonPath("$.navigationContext.userId").value(ADMIN_USER_ID))
+                    .andExpect(jsonPath("$.message").doesNotExist())
+                    .andExpect(jsonPath("$.generalError").value(false));
+
+            verify(sessionTokenIssuer).issue(ADMIN_USER_ID, UserType.ADMIN);
+        }
+
+        @Test
+        @DisplayName("the session never appears in the body, because the screen contract declares fifteen "
+                + "components and none of them is a credential")
+        void theSessionNeverAppearsInTheBody() throws Exception {
+            givenStoredOperator(ADMIN_USER_ID, "A");
+            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN)).thenReturn(ISSUED_TOKEN);
+
+            final String rendered = mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(ADMIN_USER_ID, SEEDED_SECRET)))
+                    .andExpect(status().isOk())
+                    .andReturn()
+                    .getResponse()
+                    .getContentAsString();
+
+            assertThat(rendered).doesNotContain(ISSUED_TOKEN);
+        }
+
+        @Test
+        @DisplayName("a wrong secret answers 200 with the screen's own text, no session header and the "
+                + "error flag lowered, exactly as the program leaves it")
+        void aWrongSecretAnswersWithoutASession() throws Exception {
+            givenStoredOperator(ADMIN_USER_ID, "A");
+
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(ADMIN_USER_ID, "WRONGONE")))
+                    .andExpect(status().isOk())
+                    .andExpect(header().doesNotExist(HttpHeaders.AUTHORIZATION))
+                    .andExpect(jsonPath("$.message").value("Wrong Password. Try again ..."))
+                    .andExpect(jsonPath("$.generalError").value(false))
+                    .andExpect(jsonPath("$.focusScreenFieldId").value("PASSWD"))
+                    .andExpect(jsonPath("$.nextRoute").doesNotExist())
+                    .andExpect(jsonPath("$.navigationContext").doesNotExist());
+
+            verify(sessionTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any(),
+                    org.mockito.ArgumentMatchers.any());
+        }
+
+        @Test
+        @DisplayName("an unknown identifier answers 200 with the not-found text, the flag raised and no "
+                + "session")
+        void anUnknownIdentifierAnswersWithoutASession() throws Exception {
+            when(repository.findById(ADMIN_USER_ID)).thenReturn(Optional.empty());
+
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(ADMIN_USER_ID, SEEDED_SECRET)))
+                    .andExpect(status().isOk())
+                    .andExpect(header().doesNotExist(HttpHeaders.AUTHORIZATION))
+                    .andExpect(jsonPath("$.message").value("User not found. Try again ..."))
+                    .andExpect(jsonPath("$.generalError").value(true))
+                    .andExpect(jsonPath("$.focusScreenFieldId").value("USERID"));
+
+            verify(sessionTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any(),
+                    org.mockito.ArgumentMatchers.any());
+        }
+
+        @Test
+        @DisplayName("an omitted identifier answers the prompt without reaching the credential master, so "
+                + "an empty submission costs no read")
+        void anOmittedIdentifierCostsNoRead() throws Exception {
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(null, null)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.message").value("Please enter User ID ..."))
+                    .andExpect(jsonPath("$.focusScreenFieldId").value("USERID"));
+
+            verify(repository, never()).findById(org.mockito.ArgumentMatchers.any());
+        }
+
+        @Test
+        @DisplayName("the exit key answers the shared farewell with the flag lowered and no session")
+        void theExitKeyAnswersTheSharedFarewell() throws Exception {
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"keyAction\":\"PFK03\"}"))
+                    .andExpect(status().isOk())
+                    .andExpect(header().doesNotExist(HttpHeaders.AUTHORIZATION))
+                    .andExpect(jsonPath("$.message")
+                            .value(new MessageCatalogService().thankYouMessage()))
+                    .andExpect(jsonPath("$.generalError").value(false));
+        }
+
+        @Test
+        @DisplayName("an unmapped key answers the shared invalid-key text with the flag raised")
+        void anUnmappedKeyAnswersTheSharedInvalidKeyText() throws Exception {
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"keyAction\":\"PFK09\"}"))
+                    .andExpect(status().isOk())
+                    .andExpect(header().doesNotExist(HttpHeaders.AUTHORIZATION))
+                    .andExpect(jsonPath("$.message")
+                            .value(new MessageCatalogService().invalidKeyMessage()))
+                    .andExpect(jsonPath("$.generalError").value(true));
+        }
+
+        @Test
+        @DisplayName("an ordinary operator is admitted to the main menu rather than the administrative "
+                + "one, so the role split is observable over HTTP")
+        void anOrdinaryOperatorReachesTheMainMenu() throws Exception {
+            givenStoredOperator("USER0001", "U");
+            when(sessionTokenIssuer.issue("USER0001", UserType.USER)).thenReturn(ISSUED_TOKEN);
+
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body("USER0001", SEEDED_SECRET)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.nextRoute")
+                            .value(NavigationService.Route.USER_MENU.getRouteValue()))
+                    .andExpect(jsonPath("$.userType").value("U"));
+        }
+
+        @Test
+        @DisplayName("a lower-case submission is admitted, so the fold the program applies to both fields "
+                + "survives all the way to the wire")
+        void aLowerCaseSubmissionIsAdmitted() throws Exception {
+            givenStoredOperator(ADMIN_USER_ID, "A");
+            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN)).thenReturn(ISSUED_TOKEN);
+
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(ADMIN_USER_ID.toLowerCase(Locale.ROOT),
+                                    SEEDED_SECRET.toLowerCase(Locale.ROOT))))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string(HttpHeaders.AUTHORIZATION,
+                            SessionTokenIssuer.BEARER_PREFIX + ISSUED_TOKEN))
+                    .andExpect(jsonPath("$.userId").value(ADMIN_USER_ID));
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Input the screen could not have transmitted, and the turn timer
+    // ------------------------------------------------------------------------------------------
+
+    @Nested
+    @DisplayName("input wider than the map, and the turn timer")
+    class WidthRejectionAndTiming {
+
+        @Test
+        @DisplayName("a submission wider than the map's own fields is rejected before the service runs, so "
+                + "the credential master is never read for input the screen could not have sent")
+        void anOverWideSubmissionIsRejectedBeforeTheServiceRuns() throws Exception {
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body("ADMIN0011", SEEDED_SECRET)))
+                    .andExpect(status().isBadRequest());
+
+            verify(repository, never()).findById(org.mockito.ArgumentMatchers.any());
+            verify(sessionTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any(),
+                    org.mockito.ArgumentMatchers.any());
+        }
+
+        @Test
+        @DisplayName("an over-wide secret is rejected on the same rule, so neither field is bounded more "
+                + "loosely than the eight characters its screen field declares")
+        void anOverWideSecretIsRejectedToo() throws Exception {
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(ADMIN_USER_ID, "PASSWORD9")))
+                    .andExpect(status().isBadRequest());
+
+            verify(repository, never()).findById(org.mockito.ArgumentMatchers.any());
+        }
+
+        @Test
+        @DisplayName("each turn is timed and tagged by the outcome it reached, so a rise in one rejection "
+                + "can be told from a rise in another")
+        void eachTurnIsTimedAndTaggedByOutcome() throws Exception {
+            givenStoredOperator(ADMIN_USER_ID, "A");
+            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN)).thenReturn(ISSUED_TOKEN);
+
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(ADMIN_USER_ID, SEEDED_SECRET)))
+                    .andExpect(status().isOk());
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(ADMIN_USER_ID, "WRONGONE")))
+                    .andExpect(status().isOk());
+
+            assertThat(meterRegistry.find("carddemo.online.signon.turn")
+                    .tag("outcome", AuthenticationService.Decision.ADMITTED.name())
+                    .timer())
+                    .isNotNull()
+                    .satisfies(timer -> assertThat(timer.count()).isEqualTo(1));
+            assertThat(meterRegistry.find("carddemo.online.signon.turn")
+                    .tag("outcome", AuthenticationService.Decision.WRONG_PASSWORD.name())
+                    .timer())
+                    .as("one aggregate timer would hide which outcome the traffic actually reached")
+                    .isNotNull()
+                    .satisfies(timer -> assertThat(timer.count()).isEqualTo(1));
+        }
+
+        @Test
+        @DisplayName("the outcome tag is drawn from the decision's own enumerated name, so it cannot "
+                + "become a high-cardinality label")
+        void theOutcomeTagCannotBecomeHighCardinality() throws Exception {
+            when(repository.findById(ADMIN_USER_ID)).thenReturn(Optional.empty());
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(ADMIN_USER_ID, SEEDED_SECRET)))
+                    .andExpect(status().isOk());
+
+            final List<String> observedTags = meterRegistry.find("carddemo.online.signon.turn")
+                    .timers().stream()
+                    .map(timer -> timer.getId().getTag("outcome"))
+                    .toList();
+            final List<String> declared = Arrays.stream(AuthenticationService.Decision.values())
+                    .map(Enum::name)
+                    .toList();
+
+            assertThat(observedTags).isNotEmpty().allSatisfy(tag ->
+                    assertThat(declared).contains(tag));
+        }
+    }
+}

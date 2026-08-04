@@ -19,6 +19,8 @@ package com.carddemo.domain;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
@@ -112,6 +114,15 @@ import java.util.Objects;
 @Entity
 @Table(name = "daily_transaction")
 public class DailyTransaction {
+
+    /**
+     * Total digit count of the amount column: 11, being nine digits before the implied decimal point and two
+     * after, from the copybook's own picture clause.
+     *
+     * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
+     * than two copies of it.
+     */
+    static final int DALYTRAN_AMT_PRECISION = 11;
 
     /**
      * Transaction identifier: 16 bytes at offset 0, column {@code dalytran_id}.
@@ -214,7 +225,7 @@ public class DailyTransaction {
      * the field is intentionally left uninitialized rather than defaulted to zero, so that a missing
      * value surfaces as a mapping fault instead of being masked by a plausible-looking zero.
      */
-    @Column(name = "dalytran_amt", precision = 11, scale = 2, nullable = false)
+    @Column(name = "dalytran_amt", precision = DALYTRAN_AMT_PRECISION, scale = 2, nullable = false)
     private BigDecimal dalytranAmt;
 
     /**
@@ -604,6 +615,33 @@ public class DailyTransaction {
      */
     public void setDalytranProcTs(String dalytranProcTs) {
         this.dalytranProcTs = dalytranProcTs;
+    }
+
+    /**
+     * Normalises the amount to scale two, truncating toward zero, immediately before the row is inserted or
+     * updated.
+     *
+     * <p>No identifier rule is applied here. This is the raw landing surface for the sequential daily
+     * input: a row arrives <em>before</em> validation, the posting job is what judges it, and a malformed
+     * identifier is a reject record carrying a reason code rather than a refused insert. Refusing it here
+     * would delete the very case the posting job exists to report. The amount is different in kind - it is
+     * normalised rather than judged, and the normalisation is a representation policy that applies to
+     * every stored amount whatever its provenance.
+     *
+     * <p>An amount is <strong>normalised</strong> rather than refused: a value computed in a service,
+     * parsed from a request or left over from a division carries whatever scale the arithmetic produced,
+     * and an entity that stored it verbatim would let a repository write bypass the truncation policy the
+     * whole estate depends on. {@code StoredValueRules} records why that policy truncates toward zero
+     * rather than rounding, and why the constants it uses are restated there rather than imported from the
+     * fixed-width codec.
+     *
+     * @throws IllegalArgumentException if an amount is absent or beyond the declared precision
+     */
+    @PrePersist
+    @PreUpdate
+    void normalizeAndValidateBeforeWrite() {
+        this.dalytranAmt =
+                StoredValueRules.normalizedAmount(dalytranAmt, DALYTRAN_AMT_PRECISION, "dalytranAmt");
     }
 
     /**

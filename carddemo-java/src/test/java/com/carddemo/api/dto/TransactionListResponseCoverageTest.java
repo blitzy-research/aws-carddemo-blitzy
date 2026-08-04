@@ -1283,26 +1283,30 @@ class TransactionListResponseCoverageTest {
          * An over-deep page is refused rather than truncated, which surfaces the defect instead of
          * hiding it.
          *
-         * <p>Neither truncating nor refusing happens here. Truncation would discard a row the browse
-         * returned and leave the caller with a plausible page it could neither audit nor attribute, and
-         * refusal would require this contract to publish the screen depth it refused against - a
-         * measurement the paging contract already states once for the whole module. The page is
-         * therefore carried exactly as supplied, and whether it fits the screen it is destined for is
-         * the concern of the service that assembled it, which is the layer that knows which screen that
-         * is. The no-truncation guarantee is kept by carrying every row, not by rejecting the page.</p>
+         * <p>Truncating and refusing are not equivalent, and this contract refuses. Truncation would
+         * discard a row the browse returned and leave the caller with a plausible page it could neither
+         * audit nor attribute, so it is never done. Refusal was once argued against on the grounds that
+         * it would force this contract to publish the screen depth it refused against, duplicating a
+         * measurement the paging contract already states once for the whole module - but that does not
+         * follow: the refusal <em>reads</em> {@link PageMetadata#TRANSACTION_LIST_PAGE_SIZE} and
+         * declares nothing of its own, which is why the sibling assertion that no depth constant appears
+         * on this body still holds. An eleventh row corresponds to no slot the legacy screen ever
+         * rendered, so it is a producer defect, and reporting it at construction is what stops it
+         * reaching a client as a page no screen can present.</p>
          */
         @Test
-        @DisplayName("carries an over-deep page untouched rather than truncating or refusing it")
-        void anOverDeepPageIsCarriedUntouched() {
+        @DisplayName("refuses an over-deep page rather than carrying or truncating it")
+        void anOverDeepPageIsRefused() {
             List<TransactionListResponse.TransactionRow> tooMany = new ArrayList<>();
             for (int index = 0; index < PageMetadata.TRANSACTION_LIST_PAGE_SIZE + 1; index++) {
                 tooMany.add(row(String.format(Locale.ROOT, "%016d", index + 1)));
             }
 
-            assertThat(withRows(tooMany).rows())
-                    .as("every row the browse returned survives, so nothing is hidden from the caller")
-                    .hasSize(11)
-                    .containsExactlyElementsOf(tooMany);
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("a page deeper than the screen is a producer defect, reported not published")
+                    .isThrownBy(() -> withRows(tooMany))
+                    .withMessageContaining(String.valueOf(PageMetadata.TRANSACTION_LIST_PAGE_SIZE))
+                    .withMessageContaining("11");
         }
 
         /** A page at exactly the screen depth is carried like any other, in the order supplied. */

@@ -19,6 +19,8 @@ package com.carddemo.domain;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
@@ -202,6 +204,23 @@ import java.util.Objects;
 public class Transaction {
 
     /**
+     * Width of the transaction identifier in characters: 16, from the copybook's own field declaration
+     * and from the cluster key definition that keys the base cluster at width 16 and offset 0.
+     *
+     * <p>Named so that the column length, the persistence-time check and any assertion all read the one
+     * figure rather than three copies of it.
+     */
+    static final int TRAN_ID_WIDTH = 16;
+
+    /**
+     * Total digit count of the amount column: 11, being nine digits before the implied decimal point and
+     * two after, from the copybook's own picture clause for this field.
+     *
+     * <p>Named so that the column declaration and the persistence-time normalisation read the one figure.
+     */
+    static final int TRAN_AMT_PRECISION = 11;
+
+    /**
      * Transaction identifier - 16 characters at offset 0, and the business key.
      *
      * <p>Stored verbatim, leading zeros included. Although the legacy bill-payment path derives a new
@@ -210,7 +229,7 @@ public class Transaction {
      * address.
      */
     @Id
-    @Column(name = "tran_id", length = 16, nullable = false)
+    @Column(name = "tran_id", length = TRAN_ID_WIDTH, nullable = false)
     private String tranId;
 
     /** Transaction type code - 2 characters at offset 16, the key of the transaction type reference. */
@@ -282,7 +301,7 @@ public class Transaction {
      * nor normalises a negative value. It is also left unset rather than initialised, so an
      * uninitialised amount is visibly absent instead of silently zero.
      */
-    @Column(name = "tran_amt", precision = 11, scale = 2, nullable = false)
+    @Column(name = "tran_amt", precision = TRAN_AMT_PRECISION, scale = 2, nullable = false)
     private BigDecimal tranAmt;
 
     /**
@@ -651,6 +670,49 @@ public class Transaction {
      */
     public void setTranProcTs(String tranProcTs) {
         this.tranProcTs = tranProcTs;
+    }
+
+    /**
+     * Refuses a transaction identifier that is not exactly sixteen ASCII digits, immediately before the
+     * row is inserted or updated.
+     *
+     * <p><strong>Why the width and the digit class are both contractual here.</strong> The identifier is
+     * the cluster key and the leading sixteen bytes of the record image, so a shorter value could not
+     * have come from a valid image and would split one record's identity across two rows. The digit
+     * class matters for a second, sharper reason: identifiers are minted by taking the current
+     * <em>character</em> maximum and adding one, and a character maximum coincides with a numeric maximum
+     * only while every stored value is sixteen zero-padded digits. A single value of any other shape -
+     * {@code "9"}, or an identifier carrying a letter - would sort above every well-formed identifier and
+     * silently freeze allocation for the remaining life of the table, without breaking compilation and
+     * without failing any test that was not looking for it. Both legacy writers satisfy the rule: the
+     * online payment path moves a sixteen-digit numeric work field into the key, and the interest run
+     * concatenates a ten-character all-digit run date with a six-digit sequence counter.
+     *
+     * <p><strong>Why a callback rather than the constructor or the setter.</strong> The persistence
+     * provider hydrates a row by instantiating the entity and assigning its fields directly, so a
+     * constructor guard is bypassed on every read while a callback sits on the one path every insert and
+     * every update must take. It also leaves an instance built for an assertion, a fixture or an
+     * intermediate calculation entirely unrestricted - only one about to become a row is checked.
+     *
+     * <p>The database enforces the same rule independently through the check constraint
+     * {@code ck_transaction_tran_id_digits} in {@code V1__create_schema.sql}, so a bulk load or a
+     * migration script that never constructs an entity is refused as well.
+     *
+     * <p>The amount is normalised in the same callback rather than in its setter, for the same reason and
+     * against the same hazard: a value computed in a service, parsed from a request or left over from an
+     * interest division carries whatever scale the arithmetic produced, and an entity that stored it
+     * verbatim would let a repository write bypass the truncation policy the whole estate depends on.
+     * {@code StoredValueRules} records why that policy truncates rather than rounds.
+     *
+     * @throws IllegalArgumentException if the identifier is absent, is not sixteen characters long, or
+     *                                  carries a character outside {@code 0}-{@code 9}, or if the amount
+     *                                  is absent or beyond the declared precision
+     */
+    @PrePersist
+    @PreUpdate
+    void normalizeAndValidateBeforeWrite() {
+        StoredValueRules.requireFixedWidthDigits(tranId, TRAN_ID_WIDTH, "tranId");
+        this.tranAmt = StoredValueRules.normalizedAmount(tranAmt, TRAN_AMT_PRECISION, "tranAmt");
     }
 
     /**

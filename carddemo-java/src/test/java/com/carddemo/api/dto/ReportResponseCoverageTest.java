@@ -47,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <h2>What is under test</h2>
  *
- * <p>The transport contract of the report-request response: the twenty-one components, the ten
+ * <p>The transport contract of the report-request response: the twenty-four components, the ten
  * declared widths, the fifteen single-purpose texts, the five composition fragments, the eight field
  * identities, the wire form under the module's declared serialisation settings, and the value
  * semantics of a record that carries no secret and normalises nothing.
@@ -108,8 +108,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("ReportResponse :: report-request response contract of legacy transaction CR00")
 class ReportResponseCoverageTest {
 
-    /** The twenty-one components in declaration order. */
+    /** The twenty-four components in declaration order. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
+            "monthlySelection", "yearlySelection", "customSelection",
             "reportPeriod",
             "startMonth", "startDay", "startYear", "endMonth", "endDay", "endYear",
             "confirm", "transactionName", "title01", "currentDate", "programName", "title02",
@@ -117,12 +118,22 @@ class ReportResponseCoverageTest {
             "focusScreenFieldId", "nextRoute", "navigationContext");
 
     /**
-     * The three per-position selector properties and the separate report-name property the collapse
-     * removed. Asserted absent, because the three screen positions are mutually exclusive and the name
-     * is the period's own carried value rather than a component of its own.
+     * The three report-type selector positions the response re-presents, in the order the symbolic map
+     * declares them at lines 60, 66 and 72.
+     *
+     * <p>They are published separately, and separately from the resolved period, because the reset
+     * paragraph {@code INITIALIZE-ALL-FIELDS} at {@code app/cbl/CORPT00C.cbl:L633-L646} blanks all ten
+     * screen fields while every error path returns the transmitted marks still standing. A response
+     * carrying only the resolved period could express neither state.
      */
-    private static final List<String> REMOVED_COMPONENTS = List.of(
-            "monthlySelection", "yearlySelection", "customSelection", "reportName");
+    private static final List<String> SELECTOR_COMPONENTS =
+            List.of("monthlySelection", "yearlySelection", "customSelection");
+
+    /**
+     * The separate derived report-name property, asserted absent because it would give the name a
+     * second, drifting source of truth: the name is the resolved period's own carried value.
+     */
+    private static final List<String> REMOVED_COMPONENTS = List.of("reportName");
 
     /**
      * The eight published field identities, in the order the constants are declared.
@@ -164,7 +175,7 @@ class ReportResponseCoverageTest {
      * @return a response carrying that one value
      */
     private static ReportResponse carrying(String component, String value) {
-        return new ReportResponse(
+        return new ReportResponse(null, null, null,
                 null,
                 "startMonth".equals(component) ? value : null,
                 "startDay".equals(component) ? value : null,
@@ -195,7 +206,7 @@ class ReportResponseCoverageTest {
      * @return a fully populated acceptance response
      */
     private static ReportResponse accepted(ReportPeriod period) {
-        return new ReportResponse(
+        return new ReportResponse(null, null, null,
                 period,
                 "01", "31", "2022", "12", "28", "2022", "Y", "CR00",
                 "AWS Mainframe Modernization             ", "08/02/26", "CORPT00C",
@@ -237,7 +248,7 @@ class ReportResponseCoverageTest {
     class DeclaredContract {
 
         @Test
-        @DisplayName("the twenty-one components are declared in the order the screen presents them")
+        @DisplayName("the twenty-four components are declared in the order the screen presents them")
         void componentsAreDeclaredInScreenOrder() {
             List<String> declared = Arrays.stream(ReportResponse.class.getRecordComponents())
                     .map(RecordComponent::getName)
@@ -290,9 +301,15 @@ class ReportResponseCoverageTest {
                 + "and the two indicators are primitives rather than derived values")
         void theOutcomeComponentsAreTyped() {
             assertThat(componentType("reportPeriod"))
-                    .as("the three mutually exclusive screen positions collapse into one enumerated "
-                            + "component, never three characters")
+                    .as("the period the ordered evaluation resolved is an enumerated outcome, "
+                            + "published alongside the three screen characters rather than in place "
+                            + "of them")
                     .isEqualTo(ReportPeriod.class);
+            for (final String marker : SELECTOR_COMPONENTS) {
+                assertThat(componentType(marker))
+                        .as("%s is the screen character the operator marked, carried verbatim", marker)
+                        .isEqualTo(String.class);
+            }
             assertThat(EXPECTED_COMPONENTS)
                     .as("the report name is the period's own carried value, so it publishes no "
                             + "component of its own and cannot drift from the period")
@@ -351,7 +368,7 @@ class ReportResponseCoverageTest {
         }
 
         @Test
-        @DisplayName("no member is declared beyond the twenty-one accessors, so this type computes "
+        @DisplayName("no member is declared beyond the twenty-four accessors, so this type computes "
                 + "nothing and composes nothing")
         void noMemberIsDeclaredBeyondTheAccessors() {
             List<String> instanceMethods = Arrays.stream(ReportResponse.class.getDeclaredMethods())
@@ -811,7 +828,7 @@ class ReportResponseCoverageTest {
                 + "the screen has nothing to report")
         void anEntirelyEmptyResponseReportsNoViolation() {
             assertThat(validator.validate(
-                            new ReportResponse(null, null, null, null, null,
+                            new ReportResponse(null, null, null,null, null, null, null, null,
                                     null, null, null, null, null, null, null, null, null, null,
                                     false, null, false, null, null, null)))
                     .isEmpty();
@@ -851,9 +868,9 @@ class ReportResponseCoverageTest {
                     .isFalse();
         }
 
-        @ParameterizedTest(name = "{0} crosses under the one collapsed name")
+        @ParameterizedTest(name = "{0} crosses as the resolved outcome, beside the marks")
         @EnumSource(ReportPeriod.class)
-        @DisplayName("each period crosses the wire under the one collapsed name carrying the bare "
+        @DisplayName("each resolved period crosses the wire as the outcome component carrying the bare "
                 + "mixed-case report name the composed message embeds")
         void eachPeriodCrossesUnderTheCollapsedName(ReportPeriod period)
                 throws JsonProcessingException {
@@ -893,7 +910,7 @@ class ReportResponseCoverageTest {
                 + "state to omit")
         void bothBooleanIndicatorsAreAlwaysWritten() throws JsonProcessingException {
             JsonNode payload = payloadOf(
-                    new ReportResponse(null, null, null, null, null, null, null,
+                    new ReportResponse(null, null, null,null, null, null, null, null, null, null,
                             null, null, null, null, null, null, null, null, false, null, false, null,
                             null, null));
 
@@ -966,11 +983,11 @@ class ReportResponseCoverageTest {
 
             assertThat(rendered)
                     .startsWith("ReportResponse[")
-                    .as("the three mutually exclusive positions collapse into one enumerated value, "
-                            + "so the rendering names that value once")
+                    .as("the rendering names the three re-presented positions and, separately, the "
+                            + "period the service resolved - the two are different facts")
                     .contains("reportPeriod=MONTHLY")
-                    .doesNotContain("monthlySelection", "yearlySelection", "customSelection",
-                            "reportName=")
+                    .contains("monthlySelection=", "yearlySelection=", "customSelection=")
+                    .doesNotContain("reportName=")
                     .contains("startMonth=01")
                     .contains("submissionAccepted=true");
             for (String component : EXPECTED_COMPONENTS) {
@@ -1026,10 +1043,10 @@ class ReportResponseCoverageTest {
         @DisplayName("the acceptance indicator participates in equality, so an accepted and a "
                 + "pending submission carrying the same text are distinguishable")
         void theAcceptanceIndicatorParticipatesInEquality() {
-            ReportResponse acceptedFlag = new ReportResponse(null, null, null, null,
+            ReportResponse acceptedFlag = new ReportResponse(null, null, null,null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, true, "same",
                     false, null, null, null);
-            ReportResponse pendingFlag = new ReportResponse(null, null, null, null,
+            ReportResponse pendingFlag = new ReportResponse(null, null, null,null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, false, "same",
                     false, null, null, null);
 

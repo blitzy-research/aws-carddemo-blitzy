@@ -135,23 +135,33 @@ import jakarta.validation.constraints.Size;
  * It is modelled for exactly that reason and must be echoed back unchanged; it is not an editable
  * field and no client should present it as one.
  *
- * <p><strong>No concurrency proof, version number or entity tag is returned.</strong> The legacy
- * program carried the fetched image itself: the work area declared at program line 274, whose second
- * group (line 291 onward) holds that image, is filled by {@code 9000-READ-DATA} at line 1344, moved
- * into the communication area returned with the screen at line 550 and sliced back off on the next
- * turn at lines 392 to 400. When the operator confirms, {@code 9200-WRITE-PROCESSING} reads the record
- * under lock and {@code 9300-CHECK-CHANGE-IN-REC} compares it against that image at lines 1503 to
- * 1508, abandoning the write on any single difference by jumping back to line 1494 from line 1518.
- * That comparison is reproduced by JPA {@code @Version} on the {@code Card} entity, which is an
- * <strong>entity and service concern</strong> and is deliberately invisible on this contract. A
- * concurrent change reaches the client as one thing only - the operator text
- * {@link Messages#DATA_WAS_CHANGED} at program line 208 - and never as a readable or opaque token a
- * client would have to store and echo.
+ * <p><strong>The concurrency proof is returned here because this is the presenting screen.</strong>
+ * {@link #concurrencyToken()} is the opaque, integrity-protected description of the card as it stood
+ * when this response was built. The legacy program carried the same state itself: the work area
+ * declared at program line 274, whose second group (line 291 onward) holds the fetched image, is
+ * filled by {@code 9000-READ-DATA} at line 1344, moved into the communication area returned with the
+ * screen at line 550 and sliced back off on the next turn at lines 392 to 400. When the operator
+ * confirms, {@code 9200-WRITE-PROCESSING} reads the record under lock and {@code 9300-CHECK-CHANGE-IN-REC}
+ * compares it against that image at lines 1503 to 1508, abandoning the write on any single difference
+ * by jumping back to line 1494 from line 1518. That comparison exists only because the image travelled
+ * with the conversation, so the migrated screen has to hand it out. This screen is both the presenting
+ * and the confirming screen, which is why the proof is minted and returned on this type and echoed
+ * back on {@link CardUpdateRequest} - the same round trip the communication area performed, with the
+ * value sealed because a client, unlike the transaction manager, is not trusted to hold it. Decision
+ * {@code DL-109} in {@code docs/decision-log.md} records this arrangement, and records that an earlier
+ * revision of this file declared no version, entity-tag or concurrency component to exist here at all -
+ * a statement the stale-update parity requirement overrules.
  *
- * <p><strong>Deliberately absent.</strong> No version number, entity tag, timestamp, sealed proof or
- * fetched-image snapshot exists here in any form, readable or opaque: optimistic locking is an entity
- * and service concern and nothing about it is described on this contract. Equally absent are the abend
- * path, which
+ * <p><strong>The card entity's version column does not replace it.</strong> The provider's version
+ * check catches a change made between reading a row for update and writing it. This proof catches a
+ * change made between presenting this screen and confirming it. A confirming request that begins by
+ * loading the current row loads the current version with it and then agrees with itself, so the
+ * version column cannot see into the presentation window at all. The two are complementary, and
+ * {@link Messages#DATA_WAS_CHANGED} is the operator text for either.
+ *
+ * <p><strong>Deliberately absent.</strong> No readable version number, entity tag, timestamp or
+ * fetched-image snapshot exists here, because each of those is a value a client could assert for
+ * itself; only the sealed proof crosses the boundary. Equally absent are the abend path, which
  * belongs to the abend service and whose default operator text is owned there rather than restated
  * here; the screen work area, whose key-action and identity state is request-side and whose
  * identifiers this response already carries; the card status enumeration and every date and time
@@ -220,6 +230,18 @@ import jakarta.validation.constraints.Size;
  *                           type neither interprets nor acts on.
  * @param navigationContext  the echoed navigation state, or {@code null} when the caller carries
  *                           none. Immutable request state, not a server session.
+ * @param concurrencyToken   the opaque, integrity-protected description of the card as it stood when
+ *                           this response was built, minted by
+ *                           {@code com.carddemo.service.CardConcurrencyTokenService}, or {@code null}
+ *                           on a shape that presents no card to confirm. Not a map field: it is the
+ *                           sealed counterpart of the program work area the legacy transaction returns
+ *                           with the screen at program line 550. A client stores it untouched and
+ *                           echoes it on the confirming {@link CardUpdateRequest}; it carries no
+ *                           readable structure, so nothing may be parsed out of it, compared against
+ *                           another card's proof or used for anything but that echo. Carried without
+ *                           a width constraint because its length follows the sealing envelope's
+ *                           encoding rather than any legacy screen field.
+ * @since 1.0.0
  */
 public record CardUpdateResponse(
 
@@ -281,7 +303,13 @@ public record CardUpdateResponse(
         String nextRoute,
 
         /* Echoed navigation state, from COCOM01Y; immutable, not a server session. */
-        NavigationContext navigationContext) {
+        NavigationContext navigationContext,
+
+        /* Not a map field. The sealed counterpart of the program work area COCRDUPC returns with the
+         * screen at line 550, described on the type above. Opaque and unbounded by design, and
+         * deliberately unannotated: a width or pattern rule on a sealed value would couple this
+         * contract to the envelope's internal encoding. */
+        String concurrencyToken) {
 
     /**
      * Fixed stand-in emitted by {@link #toString()} in place of each regulated component.
@@ -501,6 +529,11 @@ public record CardUpdateResponse(
      * @param informationMessage the information line, or {@code null}
      * @param nextRoute          the declarative next route, or {@code null}
      * @param navigationContext  the echoed navigation state, or {@code null}
+     * @param concurrencyToken   the minted concurrency proof for the card being presented, or
+     *                           {@code null} on a shape that presents no card to confirm. Declared
+     *                           explicitly rather than defaulted to {@code null}, because this is the
+     *                           presenting shape: a screen sent out without a proof cannot have one
+     *                           echoed back, so the caller has to state its absence deliberately.
      */
     public CardUpdateResponse(String transactionName,
                               String title01,
@@ -517,7 +550,8 @@ public record CardUpdateResponse(
                               String expiryDay,
                               String informationMessage,
                               String nextRoute,
-                              NavigationContext navigationContext) {
+                              NavigationContext navigationContext,
+                              String concurrencyToken) {
         this(transactionName,
                 title01,
                 currentDate,
@@ -537,7 +571,8 @@ public record CardUpdateResponse(
                 List.of(),
                 null,
                 nextRoute,
-                navigationContext);
+                navigationContext,
+                concurrencyToken);
     }
 
     /**
@@ -568,7 +603,9 @@ public record CardUpdateResponse(
      * and the withheld set here is deliberately the same one
      * {@link CardDetailResponse#toString()} withholds - the two card screens describe the same record,
      * so a value that is unsafe to print from one is not made safe by having been reached through the
-     * other. Every other component is shown as-is: the header items,
+     * other. The concurrency proof is withheld for a third reason: it is not cardholder data but a live
+     * integrity credential, and a proof recovered from a log line would let a stale confirmation be
+     * replayed against the record it describes. Every other component is shown as-is: the header items,
      * the status code, the two message lines, the error surface and the navigation state are all needed
      * to diagnose a response and none of them identifies a cardholder or authenticates anything. The
      * navigation state renders itself under the same discipline.
@@ -603,6 +640,7 @@ public record CardUpdateResponse(
                 + ", focusScreenFieldId=" + focusScreenFieldId
                 + ", nextRoute=" + nextRoute
                 + ", navigationContext=" + navigationContext
+                + ", concurrencyToken=" + REDACTION_PLACEHOLDER
                 + "]";
     }
 
@@ -850,11 +888,13 @@ public record CardUpdateResponse(
          * reported to a client: the operator is told to review, never which field moved, who moved it
          * or what it now holds. The legacy program detected the conflict by comparing the image it had
          * fetched when the screen was built against the record it re-read under lock (lines 1503 to
-         * 1508), then refreshed that image and left the write path at line 1518. That behaviour is
-         * reproduced by the version column on the {@code Card} entity, an entity and service concern
-         * that is invisible on this contract, and it surfaces as this one text and nothing else. The
-         * client is told to review and is never told which field moved, who moved it, what it now holds,
-         * or any token by which it could reason about the record's revision.
+         * 1508), then refreshed that image and left the write path at line 1518. Two migrated checks
+         * cover that behaviour between them and both surface as this one text. The sealed proof on
+         * {@link CardUpdateResponse#concurrencyToken()}, verified before the write, covers the window
+         * between presenting this screen and confirming it, which is the window the legacy comparison
+         * covered. The version column on the card entity covers the shorter window between reading the
+         * row for update and writing it. Neither subsumes the other, and neither is described to the
+         * client in any more detail than this sentence.
          */
         public static final String DATA_WAS_CHANGED = "Record changed by some one else. Please review";
 

@@ -22,6 +22,8 @@ import java.util.Objects;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.IdClass;
 import jakarta.persistence.Table;
 
@@ -60,6 +62,15 @@ import com.carddemo.domain.id.TransactionCategoryBalanceId;
 @Table(name = "transaction_category_balance")
 @IdClass(TransactionCategoryBalanceId.class)
 public class TransactionCategoryBalance {
+
+    /**
+     * Total digit count of the balance column: 11, being nine digits before the implied decimal point and two
+     * after, from the copybook's own picture clause.
+     *
+     * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
+     * than two copies of it.
+     */
+    static final int TRAN_CAT_BAL_PRECISION = 11;
     @Id
     @Column(name = "trancat_acct_id", length = 11, nullable = false)
     private String trancatAcctId;
@@ -72,7 +83,7 @@ public class TransactionCategoryBalance {
     @Column(name = "trancat_cd", length = 4, nullable = false)
     private String trancatCd;
 
-    @Column(name = "tran_cat_bal", precision = 11, scale = 2, nullable = false)
+    @Column(name = "tran_cat_bal", precision = TRAN_CAT_BAL_PRECISION, scale = 2, nullable = false)
     private BigDecimal tranCatBal;
 
     /** Required by the persistence provider; application code uses the all-arguments constructor. */
@@ -123,6 +134,31 @@ public class TransactionCategoryBalance {
 
     public TransactionCategoryBalanceId toId() {
         return new TransactionCategoryBalanceId(trancatAcctId, trancatTypeCd, trancatCd);
+    }
+
+    /**
+     * Normalises the category balance to scale two, truncating toward zero, immediately before the row is
+     * inserted or updated.
+     *
+     * <p>This balance is the left operand of the interest computation, which multiplies it by a rate and
+     * divides by twelve hundred into a two-decimal field. That division is exactly the route by which a
+     * longer scale reaches an entity, which is why the normalisation matters more here than anywhere else
+     * in the module.
+     *
+     * <p>An amount is <strong>normalised</strong> rather than refused: a value computed in a service,
+     * parsed from a request or left over from a division carries whatever scale the arithmetic produced,
+     * and an entity that stored it verbatim would let a repository write bypass the truncation policy the
+     * whole estate depends on. {@code StoredValueRules} records why that policy truncates toward zero
+     * rather than rounding, and why the constants it uses are restated there rather than imported from the
+     * fixed-width codec.
+     *
+     * @throws IllegalArgumentException if an amount is absent or beyond the declared precision
+     */
+    @PrePersist
+    @PreUpdate
+    void normalizeAndValidateBeforeWrite() {
+        this.tranCatBal =
+                StoredValueRules.normalizedAmount(tranCatBal, TRAN_CAT_BAL_PRECISION, "tranCatBal");
     }
 
     @Override

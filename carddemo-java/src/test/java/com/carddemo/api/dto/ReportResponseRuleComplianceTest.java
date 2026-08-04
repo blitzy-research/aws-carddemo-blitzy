@@ -64,13 +64,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * literal fragments. Those fragments are published separately from the whole messages precisely
  * because the middle of the sentence is supplied at run time.
  *
- * <p><strong>One enumerated period, and no separate derived name.</strong> The screen carries three
- * one-character selector positions, but they are mutually exclusive: {@code CORPT00C} evaluates the
- * three inbound positions in the fixed order monthly, yearly, custom and acts on exactly one, writing
- * the name of the report it chose into its own ten-character work item at lines 214, 240 and 433.
- * Because the screen can only ever mean one period, the response echoes one enumerated component
- * rather than three characters, which makes a multiply-marked state unrepresentable instead of leaving
- * every consumer to re-derive which position won. The derived name is that component's own carried
+ * <p><strong>Three echoed positions, one resolved period, and no separate derived name.</strong> The
+ * screen carries three one-character selector positions. {@code CORPT00C} evaluates them in the fixed
+ * order monthly, yearly, custom at lines 214, 240 and 256, acts on the first non-blank one, and writes
+ * the name of the report it chose into its own ten-character work item at lines 214, 240 and 433. The
+ * response therefore carries both: the three positions as the operator will see them re-presented, and
+ * the enumerated period the evaluation resolved. Both are needed and neither is derivable from the
+ * other - the reset paragraph at lines 633 to 646 blanks all three positions on a successful submission
+ * or a declined confirmation while every error path returns the transmitted marks still standing, so a
+ * response naming only the period could describe neither a cleared screen nor a surviving mark, and
+ * could not re-present two marks at once. The derived name, by contrast, is the period's own carried
  * value rather than a component of its own, so it cannot drift from the period and cannot be submitted
  * independently of it; it reaches an operator only inside the two composed message texts.
  *
@@ -103,11 +106,22 @@ class ReportResponseRuleComplianceTest {
     private static final String PROGRAM_NAME = "CORPT00C";
 
     /**
-     * The three per-position selector properties and the separate report-name property the collapse
-     * removed, asserted absent from the contract.
+     * The three report-type selector positions the response re-presents, in the order the symbolic map
+     * declares them at lines 60, 66 and 72.
+     *
+     * <p>They are published separately, and separately from the resolved period, because the reset
+     * paragraph {@code INITIALIZE-ALL-FIELDS} at {@code app/cbl/CORPT00C.cbl:L633-L646} blanks all ten
+     * screen fields while every error path returns the transmitted marks still standing. A response
+     * carrying only the resolved period could express neither state.
      */
-    private static final List<String> REMOVED_COMPONENTS = List.of(
-            "monthlySelection", "yearlySelection", "customSelection", "reportName");
+    private static final List<String> SELECTOR_COMPONENTS =
+            List.of("monthlySelection", "yearlySelection", "customSelection");
+
+    /**
+     * The separate derived report-name property, asserted absent because it would give the name a
+     * second, drifting source of truth: the name is the resolved period's own carried value.
+     */
+    private static final List<String> REMOVED_COMPONENTS = List.of("reportName");
 
     /**
      * Builds a mapper configured exactly as {@code application.yml} configures the module's mapper.
@@ -161,7 +175,7 @@ class ReportResponseRuleComplianceTest {
             final String endDay, final String endYear, final String confirm,
             final String errorMessage, final boolean submissionAccepted,
             final String message, final boolean generalError, final String focusScreenFieldId) {
-        return new ReportResponse(
+        return new ReportResponse(null, null, null,
                 period, startMonth,
                 startDay, startYear, endMonth, endDay, endYear,
                 confirm, TRANSACTION_NAME, "CardDemo", "07/19/22", PROGRAM_NAME,
@@ -179,7 +193,7 @@ class ReportResponseRuleComplianceTest {
      */
     private static ReportResponse aSparseResponse(final ReportPeriod period, final String confirm,
             final String errorMessage) {
-        return new ReportResponse(
+        return new ReportResponse(null, null, null,
                 period, null,
                 null, null, null, null, null,
                 confirm, null, null, null, null,
@@ -269,9 +283,9 @@ class ReportResponseRuleComplianceTest {
         }
 
         @Test
-        @DisplayName("the collapsed period declares no width at all, because a member of a closed "
+        @DisplayName("the resolved period declares no width at all, because a member of a closed "
                 + "vocabulary is not a fixed-width screen value")
-        void theCollapsedPeriodDeclaresNoWidth() {
+        void theResolvedPeriodDeclaresNoWidth() {
             assertThat(declaresAnUpperBound("reportPeriod")).isFalse();
         }
 
@@ -572,43 +586,48 @@ class ReportResponseRuleComplianceTest {
     class TheDeclaredShapeAndValidationBounds {
 
         @Test
-        @DisplayName("the response declares twenty-one components in screen order, the collapsed "
-                + "period, two date triples, the confirmation, the screen furniture and the routing "
-                + "block")
-        void theResponseDeclaresTwentyOneComponentsInScreenOrder() {
+        @DisplayName("the response declares twenty-four components in screen order, the three "
+                + "selector positions, the resolved period, two date triples, the confirmation, the "
+                + "screen furniture and the routing block")
+        void theResponseDeclaresTwentyFourComponentsInScreenOrder() {
             final List<String> declared = Arrays.stream(ReportResponse.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
-            assertThat(declared).containsExactly("reportPeriod",
+            assertThat(declared).containsExactly("monthlySelection", "yearlySelection",
+                    "customSelection", "reportPeriod",
                     "startMonth", "startDay", "startYear",
                     "endMonth", "endDay", "endYear", "confirm", "transactionName", "title01",
                     "currentDate", "programName", "title02", "currentTime", "errorMessage",
                     "submissionAccepted", "message", "generalError", "focusScreenFieldId",
                     "nextRoute", "navigationContext");
-            assertThat(declared).hasSize(21);
+            assertThat(declared).hasSize(24);
             assertThat(declared)
-                    .as("no per-position selector and no separate report name survives on the wire")
+                    .as("no separate derived report name survives on the wire")
                     .doesNotContainAnyElementsOf(REMOVED_COMPONENTS);
-            assertThat(declared.get(0))
-                    .as("the collapsed period leads, where the three positions used to")
-                    .isEqualTo("reportPeriod");
+            assertThat(declared.subList(0, SELECTOR_COMPONENTS.size()))
+                    .as("the three positions lead in the order the map declares them, and the period "
+                            + "the service resolved follows them rather than replacing them")
+                    .containsExactlyElementsOf(SELECTOR_COMPONENTS);
+            assertThat(declared.get(SELECTOR_COMPONENTS.size())).isEqualTo("reportPeriod");
         }
 
         @Test
-        @DisplayName("exactly fifteen components carry a declared upper bound, and the six that do "
+        @DisplayName("exactly eighteen components carry a declared upper bound, and the six that do "
                 + "not are the enumerated period, the two flags, the free-form message, the route and "
                 + "the navigation block")
-        void exactlyFifteenComponentsCarryAnUpperBound() {
+        void exactlyEighteenComponentsCarryAnUpperBound() {
             final List<String> bounded = Arrays.stream(ReportResponse.class.getRecordComponents())
                     .map(RecordComponent::getName)
                     .filter(ReportResponseRuleComplianceTest::declaresAnUpperBound).toList();
 
-            assertThat(bounded).hasSize(15);
+            assertThat(bounded).hasSize(18);
             assertThat(bounded).doesNotContain("reportPeriod", "submissionAccepted", "message",
                     "generalError", "nextRoute", "navigationContext");
             assertThat(bounded)
-                    .as("every fixed-width screen value the response echoes is bounded")
-                    .contains("startMonth", "startDay", "startYear", "endMonth", "endDay", "endYear",
+                    .as("every fixed-width screen value the response echoes is bounded, the three "
+                            + "one-character selector positions among them")
+                    .contains("monthlySelection", "yearlySelection", "customSelection",
+                            "startMonth", "startDay", "startYear", "endMonth", "endDay", "endYear",
                             "confirm");
         }
 
@@ -689,35 +708,35 @@ class ReportResponseRuleComplianceTest {
          */
         private ReportResponse responseWith(final String componentName, final String value) {
             return switch (componentName) {
-                case "startMonth" -> new ReportResponse(null, value, null, null, null, null, null, null, null, null, null, null, null, null,
+                case "startMonth" -> new ReportResponse(null, null, null,null, value, null, null, null, null, null, null, null, null, null, null, null, null,
                         null, false, null, false, null, null, null);
-                case "startDay" -> new ReportResponse(null, null, value, null, null, null, null, null, null, null, null, null, null, null,
+                case "startDay" -> new ReportResponse(null, null, null,null, null, value, null, null, null, null, null, null, null, null, null, null, null,
                         null, false, null, false, null, null, null);
-                case "startYear" -> new ReportResponse(null, null, null, value, null, null, null, null, null, null, null, null, null, null,
+                case "startYear" -> new ReportResponse(null, null, null,null, null, null, value, null, null, null, null, null, null, null, null, null, null,
                         null, false, null, false, null, null, null);
-                case "endMonth" -> new ReportResponse(null, null, null, null, value, null, null, null, null, null, null, null, null, null,
+                case "endMonth" -> new ReportResponse(null, null, null,null, null, null, null, value, null, null, null, null, null, null, null, null, null,
                         null, false, null, false, null, null, null);
-                case "endDay" -> new ReportResponse(null, null, null, null, null, value, null, null, null, null, null, null, null, null,
+                case "endDay" -> new ReportResponse(null, null, null,null, null, null, null, null, value, null, null, null, null, null, null, null, null,
                         null, false, null, false, null, null, null);
-                case "endYear" -> new ReportResponse(null, null, null, null, null, null, value, null, null, null, null, null, null, null,
+                case "endYear" -> new ReportResponse(null, null, null,null, null, null, null, null, null, value, null, null, null, null, null, null, null,
                         null, false, null, false, null, null, null);
-                case "confirm" -> new ReportResponse(null, null, null, null, null, null, null, value, null, null, null, null, null, null,
+                case "confirm" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, value, null, null, null, null, null, null,
                         null, false, null, false, null, null, null);
-                case "transactionName" -> new ReportResponse(null, null, null, null, null, null, null, null, value, null, null, null, null, null,
+                case "transactionName" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, null, value, null, null, null, null, null,
                         null, false, null, false, null, null, null);
-                case "title01" -> new ReportResponse(null, null, null, null, null, null, null, null, null, value, null, null, null, null,
+                case "title01" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, null, null, value, null, null, null, null,
                         null, false, null, false, null, null, null);
-                case "currentDate" -> new ReportResponse(null, null, null, null, null, null, null, null, null, null, value, null, null, null,
+                case "currentDate" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, null, null, null, value, null, null, null,
                         null, false, null, false, null, null, null);
-                case "programName" -> new ReportResponse(null, null, null, null, null, null, null, null, null, null, null, value, null, null,
+                case "programName" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, null, null, null, null, value, null, null,
                         null, false, null, false, null, null, null);
-                case "title02" -> new ReportResponse(null, null, null, null, null, null, null, null, null, null, null, null, value, null,
+                case "title02" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, null, null, null, null, null, value, null,
                         null, false, null, false, null, null, null);
-                case "currentTime" -> new ReportResponse(null, null, null, null, null, null, null, null, null, null, null, null, null, value,
+                case "currentTime" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, null, null, null, null, null, null, value,
                         null, false, null, false, null, null, null);
-                case "errorMessage" -> new ReportResponse(null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+                case "errorMessage" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, null, null, null, null, null, null, null,
                         value, false, null, false, null, null, null);
-                case "focusScreenFieldId" -> new ReportResponse(null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+                case "focusScreenFieldId" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, null, null, null, null, null, null, null,
                         null, false, null, false, value, null, null);
                 default -> throw new IllegalArgumentException(
                         "no bounded component named " + componentName);
@@ -761,8 +780,15 @@ class ReportResponseRuleComplianceTest {
             assertThat(rendered).contains("reportPeriod=" + ReportPeriod.YEARLY.name(), "confirm=Y",
                     "errorMessage=" + ReportResponse.MSG_END_DATE_INVALID,
                     "submissionAccepted=false", "generalError=false");
-            assertThat(rendered).doesNotContain("monthlySelection", "yearlySelection",
-                    "customSelection", "reportName=");
+            assertThat(rendered)
+                    .as("the three re-presented positions are named alongside the resolved period, "
+                            + "because a response that named only the period could not describe a "
+                            + "cleared screen or a surviving mark")
+                    .contains("monthlySelection=", "yearlySelection=", "customSelection=");
+            assertThat(rendered)
+                    .as("the derived report name is still the resolved period's carried value and "
+                            + "never a component of its own")
+                    .doesNotContain("reportName=");
         }
 
         @Test

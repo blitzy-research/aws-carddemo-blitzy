@@ -193,11 +193,18 @@ class CardListRequestTest {
     /** A second fictional card identifier, so a forward and a backward cursor differ. */
     private static final String OTHER_CARD_FILTER = "0000000000000099";
 
-    /** Backward-resume cursor: card identifier followed by account identifier, 27 characters. */
-    private static final String PREVIOUS_CURSOR = CARD_FILTER + ACCOUNT_FILTER;
+    /**
+     * Backward-resume cursor: the card identifier alone, sixteen characters.
+     *
+     * <p>The card-list program declares a composite work field of a card number followed by an account
+     * identifier, but at all four of its repositioning sites only the card-number half is moved into the
+     * browse key - the companion move of the account half is commented out - so the key that resumes a
+     * card browse is the card number by itself.
+     */
+    private static final String PREVIOUS_CURSOR = CARD_FILTER;
 
-    /** Forward-resume cursor built on the same composite shape. */
-    private static final String NEXT_CURSOR = OTHER_CARD_FILTER + ACCOUNT_FILTER;
+    /** Forward-resume cursor built on the same shape. */
+    private static final String NEXT_CURSOR = OTHER_CARD_FILTER;
 
     /** The display echo at the map's three characters. */
     private static final String PAGE_ECHO = "002";
@@ -940,7 +947,7 @@ class CardListRequestTest {
         @DisplayName("a cursor keeps its trailing spaces, because a legacy key is space padded and "
                 + "the padding is part of the key")
         void aCursorKeepsItsTrailingSpaces() {
-            String paddedKey = "11                         ";
+            String paddedKey = "11              ";
             CardListRequest request = new CardListRequest(null, null, null, null, null, null, null,
                     null, null, null,
                     new PageMetadata.PageCursorRequest(paddedKey, null,
