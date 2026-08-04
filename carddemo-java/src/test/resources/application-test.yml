@@ -1,14 +1,39 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
 #
-# TEST profile, SUITE OVERLAY - the copy on the test classpath.
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+
+# TEST profile, SUITE OVERLAY - the copy on the test class path.
+#
+#   ./mvnw -B clean verify        # unit tier, then the container-backed tiers, all reading THIS copy
 #
 # THIS FILE SHARES ITS NAME WITH src/main/resources/application-test.yml AND SHADOWS IT DURING A
-# SUITE RUN, because target/test-classes precedes target/classes. That is deliberate and both copies
-# are required by the plan, so neither may be deleted. This copy is what a suite run resolves; the
-# packaged copy is what a deployed `test`-profile run resolves. ConfigurationProfileBaselineTest
-# asserts BOTH by physical location rather than by classpath name, so an assertion written for the
-# packaged copy can no longer be answered by this one.
+# SUITE RUN, because target/test-classes precedes target/classes and a `classpath:` config-data
+# location answers with the FIRST match only. That is deliberate and both copies are named
+# deliverables, so neither may be deleted or renamed. This copy is what a suite run resolves; the
+# packaged copy is what a deployed `test`-profile run of the built artefact resolves.
+# ConfigurationProfileBaselineTest asserts BOTH by physical location rather than by class-path name,
+# so an assertion written for the packaged copy can no longer be answered by this one, and every
+# value the two must agree on is compared between them.
+#
+# The shared baseline application.yml is NOT shadowed - it carries a different name - so everything
+# this document does not restate is inherited from it. Two things are inherited on purpose and must
+# NOT be restated here: the management surface, and the interface-description surface. The baseline
+# publishes health, info, metrics and prometheus at the default /actuator base path, which is what
+# makes /actuator/health and /actuator/prometheus reachable in a suite run; restating that list here
+# would create a second place to widen it from, and ConfigurationProfileBaselineTest fails the build
+# if this copy declares it at all. A suite that needs to observe the shipped posture must observe
+# the shipped one.
 #
 # WHERE A CONTAINER ADDRESS COMES FROM
 #
@@ -27,23 +52,39 @@
 #   ITS OWN CONTAINER; that is what keeps the tiers composable. @ServiceConnection is deliberately
 #   NOT used - spring-boot-testcontainers is not a dependency of this module - and an earlier
 #   revision of this comment named it anyway. See docs/decision-log.md DL-104.
+#
+# Provenance of every legacy fact cited below: checkout 7756d895ffeb65f7ea72aaa609e356d9899afcec,
+# upstream release stamp CardDemo_v1.0-15-g27d6c6f-68 dated 2022-07-19. No COBOL, job-stream,
+# screen-map, copybook or CICS resource-definition source text appears in this file: the estate is
+# cited by resource name, record width, migration name and property name only.
 
 spring:
   datasource:
-    # NO ADDRESS, NO USER AND NO PASSWORD ARE DECLARED HERE, AND THAT ABSENCE IS THE SETTING. An
+    # NEITHER THE url NOR THE username NOR THE credential KEY IS DECLARED HERE, AND THAT ABSENCE IS
+    # THE SETTING - the packaged copy states the same three omissions in the same terms. An
     # ephemeral port is unknowable ahead of the run, and any value written here that is REACHABLE is
     # worse than no value: it would let a test that forgot to extend AbstractPostgresIT connect to
     # the DEVELOPER'S OWN database and silently pass. With the keys absent, data-source resolution
     # fails during context refresh and names the missing property. A context-booting subclass of
     # AbstractPostgresIT gets the container's address from that class's @DynamicPropertySource.
     #
+    # The engine is real PostgreSQL 16 in every tier - postgres:16.14-bookworm, started by that base
+    # class. No in-memory engine is used anywhere: the eleven application tables carry zoned-decimal
+    # widths, composite keys and a versioned schema that only the real engine validates.
+    #
     # The driver IS fixed, so a slicing test does not attempt embedded-database auto-detection and
-    # quietly substitute an in-memory engine for the migrated schema.
+    # quietly substitute an in-memory engine for the migrated schema. Pool sizing and time-outs are
+    # deliberately absent: the pool keeps its shipped defaults, exactly as the baseline says, because
+    # no legacy figure exists to tune against and a suite must not measure a tuning this module never
+    # ships.
     driver-class-name: org.postgresql.Driver
 
   jpa:
     open-in-view: false
     hibernate:
+      # validate, never create/create-drop/update. Flyway owns every table, index and constraint, so
+      # a mapping that has drifted from the migrated schema must fail at start-up rather than be
+      # silently reconciled by generated DDL.
       ddl-auto: validate
     show-sql: false
     properties:
@@ -54,31 +95,48 @@ spring:
   flyway:
     enabled: true
     # TWO SETTINGS ADMIT THE SEEDS, AND BOTH ARE REQUIRED: the seed LOCATION and the lifted target.
-    # The delivered scripts sit in two sibling locations - classpath:db/migration/schema carries
+    # The four delivered scripts sit in two sibling locations - classpath:db/migration/schema carries
     # V1__create_schema.sql and V2__create_indexes.sql, and classpath:db/migration/seed carries
     # V3__seed_reference_data.sql and V4__seed_user_security.sql, the reference-data and sign-on seeds
     # the gate fixtures assert against. A directory separates them, which is what AAP 0.3.1 and 0.4.2
-    # require: production resolves the schema location alone and is refused the seed location outright by
-    # FlywayConfig. See docs/decision-log.md DL-127.
+    # require: production resolves the schema location alone and is refused the seed location outright
+    # by com.carddemo.config.FlywayConfig. See docs/decision-log.md DL-127.
     #
     # The shared baseline also pins spring.flyway.target at "2", which would stop a migration at the
     # schema even with the seed location resolved, so this overlay lifts the pin to latest as well. Do
-    # not drop either setting here - that leaves every fixture asserting against an empty result set. The
-    # shared parent classpath:db/migration is never declared and holds no script: a location is scanned
-    # recursively, so naming the parent beside a child would resolve every script twice.
+    # not drop either setting here - that leaves every fixture asserting against an empty result set.
+    # The shared parent classpath:db/migration is never declared and holds no script: a location is
+    # scanned recursively, so naming the parent beside a child would resolve every script twice.
+    #
+    # Written as ONE comma-separated scalar rather than a YAML sequence. A sequence flattens to
+    # spring.flyway.locations[0] and [1], which no consumer of this contract reads.
+    #
+    # The ten sign-on identities V4 seeds are BCrypt digests and belong to the non-production
+    # profiles alone; no cleartext credential appears in this file, in a comment or in a message.
     locations: classpath:db/migration/schema,classpath:db/migration/seed
     target: latest
+    # A suite may drop and rebuild the schema it owns; production may not, and the baseline keeps it
+    # disabled there. baseline-on-migrate and validate-on-migrate are inherited from the baseline
+    # unchanged: migrations are forward-only and are validated on every run.
     clean-disabled: false
 
   batch:
     job:
+      # No job runs merely because a context was refreshed. Every job in the suite is launched
+      # explicitly, by a test or through the launch surface, so a context-booting test never fires a
+      # posting run as a side effect.
       enabled: false
     jdbc:
-      # `always` under every profile, inherited from the shared baseline and restated here because this
-      # document is the one a suite run actually reads. Spring Batch provisions its own six metadata
-      # tables and three sequences from its bundled PostgreSQL script - AAP 0.3.1 assigns that metadata
-      # to the framework and the eleven application tables to V1__create_schema.sql - so a suite run
-      # exercises exactly the provisioning path a deployment uses. The initialiser is idempotent, so a
+      # `always` under every profile, inherited from the shared baseline and restated here because
+      # this document is the one a suite run actually reads. Spring Batch provisions its own metadata
+      # tables and sequences from its bundled PostgreSQL script, under the BATCH_ prefix the baseline
+      # sets.
+      #
+      # THOSE BATCH_ TABLES ARE EXPECTED AND ARE EXCLUDED FROM THE ELEVEN-TABLE ASSERTION: the count
+      # of eleven is APPLICATION tables only - the eleven record layouts V1__create_schema.sql
+      # creates - and framework metadata is neither counted nor owned by a migration. AAP 0.3.1
+      # assigns the metadata to the framework and the eleven tables to V1, which is what keeps the
+      # delivered migration inventory at exactly four scripts. The initialiser is idempotent, so a
       # re-used database is unaffected.
       initialize-schema: always
 
@@ -97,8 +155,15 @@ spring:
   # address of the emulator that class started, at a precedence above every property file. Whichever
   # of the two applies, no client can reach a real account. See docs/decision-log.md DL-104.
   #
-  # The credentials are what the emulator wants: it accepts any non-empty pair and verifies nothing.
-  # They are NOT keys. Never substitute a real access key here.
+  # LocalStack COMMUNITY serves all three services this module uses - S3, SQS and SNS. No Pro-only
+  # feature is configured and no authentication token is read.
+  #
+  # The credential pair below is a FLOOR and is not a credential of anything: the emulator accepts
+  # any non-empty pair and verifies neither, and the placeholder text says so. Declaring it is what
+  # keeps the SDK's default credential chain - which on a developer machine or a build agent can find
+  # a REAL key - out of the picture entirely. AbstractLocalStackIT raises both to the emulator's own
+  # throwaway pair for a context-booting test, and the environment variables let a CI runner supply
+  # its own inert pair. Never substitute a real access key here.
   #
   # Path-style addressing is required because the emulator does not serve virtual-hosted bucket
   # subdomains; production turns it off.
@@ -107,8 +172,8 @@ spring:
       region:
         static: ${carddemo.aws.region}
       credentials:
-        access-key: test
-        secret-key: test
+        access-key: ${AWS_ACCESS_KEY_ID:localstack-placeholder-not-a-real-key}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:localstack-placeholder-not-a-real-secret}
       endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
       s3:
         endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
@@ -120,22 +185,33 @@ spring:
 
 management:
   tracing:
-    # Instrumentation off entirely in the suite: the wiring cost is paid on every one of several
-    # hundred context refreshes and no test asserts on a span.
-    enabled: false
+    # INSTRUMENTATION STAYS ON, and only the export leaves. com.carddemo.config.ObservabilityConfig
+    # records the contract this honours: the test profile neutralises export while leaving the
+    # tracing instrumentation switched on, so the bridge still places the trace and span identifiers
+    # in the diagnostic context and the correlation fields of a log line still resolve - which is
+    # what logback-spring.xml publishes through its two-key allow list. Switching instrumentation
+    # off outright, as an earlier revision of this copy did, empties those fields for every test in
+    # the suite and leaves the packaged copy exercising a posture no suite run ever sees.
+    enabled: true
+    sampling:
+      # An optimisation and nothing more: it suppresses ROOT spans, which keeps recording cost off
+      # several hundred context refreshes. It is NOT the export control and cannot be - the effective
+      # sampler is parent-based over the ratio sampler, so a request arriving with an already-sampled
+      # traceparent is sampled whatever the ratio says. The identifiers of an unsampled span are
+      # still valid and still reach the diagnostic context. Same value as the packaged copy.
+      probability: 0.0
   otlp:
     tracing:
       export:
         # THE export control, and the reason nothing is exported. Boot resolves this key BEFORE
-        # management.tracing.enabled when deciding whether to create the OTLP exporter, so export
-        # stays off even if a test re-enables tracing above. Declaring it is not redundant: a
-        # sampling probability cannot do this job, because the effective sampler is parent-based and
-        # a request carrying an already-sampled traceparent is sampled whatever the ratio says.
-        # See docs/decision-log.md DL-104.
+        # management.tracing.enabled when deciding whether to create the OTLP exporter, so no
+        # exporter bean exists, nothing opens a transport, and a suite run that has no collector
+        # produces no connection-refused noise. See docs/decision-log.md DL-104.
         enabled: false
-      # Never called. Retained so the key path is identical across profiles and a deliberate
-      # diagnostic session has somewhere to send spans the moment both switches above are flipped.
-      endpoint: http://localhost:4318/v1/traces
+      # Never called while the switch above is false. Retained so the key path is identical across
+      # profiles and a deliberate diagnostic session has somewhere to send spans the moment it is
+      # flipped.
+      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
 
 logging:
   level:
@@ -171,12 +247,27 @@ carddemo:
   security:
     jwt:
       issuer: carddemo-java
-      secret: test-only-signing-secret-not-used-outside-tests-0123456789
+      # A SUITE FIXTURE, resolved from the environment first so a runner can supply its own, with a
+      # self-describing test-only tail so that a suite run needs nothing configured. It signs tokens
+      # that exist for the length of one test and is worth nothing outside this suite.
+      #
+      # The tail must stay byte-identical to the packaged src/main/resources/application-test.yml:
+      # ConfigurationProfileBaselineTest compares the two copies' resolved value, because a suite that
+      # signed with one secret while the artefact verified with another would pass on a contract
+      # nothing ships. The key is declared rather than omitted for the same reason - the binder
+      # requires a non-blank secret, and this is the copy in force during a suite run.
+      #
+      # PRODUCTION IS THE OPPOSITE AND MUST STAY SO: application-prod.yml writes a bare
+      # ${CARDDEMO_JWT_SECRET} with NO tail, so an absent variable fails start-up rather than binding
+      # a value that shipped in the repository. A bare reference is production's alone; writing one
+      # here would make a suite run depend on a variable nothing guards. See docs/decision-log.md
+      # DL-105.
+      secret: ${CARDDEMO_JWT_SECRET:test-only-signing-secret-not-used-outside-tests-0123456789}
       expiration: PT15M
     field-encryption:
-      # THE ONE NON-PRODUCTION FIXTURE KEY. Base64 of exactly 32 bytes. Fixed rather than random so
-      # that a sealed fixture is reproducible across runs; test-only, never deployed, and worth
-      # nothing outside this suite.
+      # THE ONE NON-PRODUCTION FIXTURE KEY. Base64 of exactly 32 bytes, decoding to obviously
+      # synthetic text. Fixed rather than random so that a sealed fixture is reproducible across
+      # runs; test-only, never deployed, and worth nothing outside this suite.
       #
       # This literal must stay byte-identical to the default in application-local.yml and in the
       # packaged src/main/resources/application-test.yml. V3__seed_reference_data.sql seeds fifty

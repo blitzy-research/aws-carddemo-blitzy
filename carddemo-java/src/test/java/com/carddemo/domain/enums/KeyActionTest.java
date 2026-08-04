@@ -17,173 +17,281 @@
 package com.carddemo.domain.enums;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Verifies {@link KeyAction}, the sixteen attention-key actions the screen work area can record.
+ * Unit tests for {@link KeyAction}, the typed replacement for the terminal attention-identifier
+ * vocabulary the legacy screen work area records a key press into.
  *
- * <p><strong>Where the sixteen come from.</strong> The screen work area declares a five-byte action
- * field, {@code CCARD-AID PIC X(5)}, at {@code app/cpy/CVCRD01Y.cpy} line 3, and immediately below it
- * declares sixteen condition names over that same field at lines 4 through 19 &mdash; one for the enter
- * key, one for the clear key, two for the program-attention keys and twelve for the program-function
- * keys. Sixteen condition names is the whole vocabulary; there is no seventeenth.
+ * <p><strong>Where the sixteen constants come from.</strong> The screen work-area copybook
+ * {@code app/cpy/CVCRD01Y.cpy} declares the attention-identifier field {@code CCARD-AID} as a
+ * five-character item and declares sixteen condition names over that same field immediately beneath
+ * it: one for the enter key, one for the clear key, two for the program-attention keys and twelve for
+ * the program-function keys. Two plus two plus twelve is sixteen, and there is no seventeenth.
+ * Citations here name the copybook member and the field or condition name rather than a line number,
+ * because the copybook carries COBOL sequence numbers in its leftmost columns that are neither line
+ * numbers nor even unique &mdash; one sequence value occurs on two separate records of this member.
+ * Where a line is genuinely useful it is labelled a physical line: the field is declared on physical
+ * line 3 and its sixteen condition names occupy physical lines 4 through 19.
  *
- * <p><strong>Why the two program-attention values carry trailing blanks.</strong> The field is five
- * bytes wide and blank-filled, so a three-character name is stored as three characters plus two blanks.
- * The copybook writes those blanks out explicitly in its condition values. This class asserts them,
- * because an action recorded as three characters would not equal the five-byte image the screen layer
- * actually stores, and every comparison against it would silently fail.
+ * <p><strong>Why two of the sixteen identifiers carry trailing spaces.</strong> The field is five
+ * characters wide, so a three-character program-attention name occupies three characters followed by
+ * two spaces, and the copybook writes those two spaces into the condition value itself. The padding is
+ * therefore data, not formatting. This suite asserts it, because an identifier recorded as three
+ * characters would never equal the five-character image the screen layer actually stores and every
+ * comparison against it would silently fail to match. See {@code docs/decision-log.md} for the
+ * faithful-over-idiomatic decision that keeps the padding rather than normalising it away.
  *
- * <p><strong>Why the vocabulary is smaller than the key set.</strong> The function-key copybook
- * recognises twenty-eight distinct terminal identifiers but folds the upper twelve onto the lower twelve,
- * so twenty-eight identifiers collapse onto exactly twelve function-key actions. That fold belongs to
- * the translator and is verified there. What matters here is the consequence: this vocabulary is
- * deliberately lossy relative to the terminal's key set, so nothing may be added to it to make the fold
- * lossless.
+ * <p><strong>Why there is deliberately no catch-all constant.</strong> The procedural copybook
+ * {@code app/cpy/CSSTRPFY.cpy} holds exactly two paragraphs, and between them one dispatch construct
+ * carrying twenty-eight clauses and <em>no</em> catch-all clause whatsoever. The behavioural
+ * consequence is precise: when an incoming terminal identifier matches none of the twenty-eight
+ * clauses, nothing is assigned, nothing is raised and the field simply keeps the value it already
+ * held. A synthetic sentinel constant &mdash; of any name, whether unknown, none, other, invalid,
+ * unmapped or default &mdash; would manufacture a state the legacy system cannot represent and would
+ * invite callers to branch on something the legacy dispatch never branched on. Absence is therefore
+ * modelled by the empty {@link Optional} that {@link KeyAction#fromAid(String)} returns, and by
+ * nothing else. That is the second faithful-over-idiomatic decision recorded in
+ * {@code docs/decision-log.md}.
  *
- * <p><strong>An independent oracle.</strong> The sixteen expected action images below are transcribed
- * from the copybook's condition values rather than read back from the type under test, so a change to
- * either side is detected rather than accommodated.
+ * <p><strong>Why the upper twelve function keys have no constants.</strong> Within that same dispatch
+ * construct, the clauses for function keys thirteen through twenty-four assign the very same twelve
+ * flags as the clauses for keys one through twelve, so the upper twelve are aliases rather than
+ * distinct actions. A search of the whole legacy tree finds no condition name in that range at all.
+ * Performing the fold belongs to the utility-layer key translator, which this suite neither names,
+ * imports nor invokes: the domain layer does not depend on the utility layer, and calling the
+ * translator to produce an expected value would be using an implementation as its own oracle. This
+ * suite asserts only the consequence &mdash; that the upper twelve identifiers resolve to nothing.
+ * That is the third faithful-over-idiomatic decision recorded in {@code docs/decision-log.md}.
  *
- * <p><strong>Deliberately not asserted.</strong> Nothing here maps a terminal identifier to an action;
- * that is the translator's contract and is covered by its own suite. Nothing claims an action ordering
- * with screen meaning, because the copybook assigns none &mdash; each program decides for itself what a
- * given function key does.
+ * <p><strong>Every expectation is hand-derived.</strong> No production method is asked to compute an
+ * expected value and no output is snapshotted. Each of the sixteen identifiers below was read from the
+ * copybook's condition values and typed out as a literal with its trailing spaces visible in the
+ * source, and each census figure was counted in the copybook and typed out as a literal too. The
+ * transcription of the sixteen data values is a deliberate, narrow exception to this module's
+ * no-transcription standard; no declaration, clause or paragraph body is reproduced.
+ *
+ * <p><strong>Deliberately not asserted.</strong> This type models transient screen state and has no
+ * persistence mapping at all &mdash; no table, no column, no converter &mdash; so nothing here asserts
+ * mapping metadata, column naming, length or nullability. Nothing here maps a terminal identifier to
+ * an action either, because that is the translator's contract and is covered by its own suite. The
+ * remaining items of the same work-area group &mdash; the next-program, next-mapset and next-map
+ * fields, the two message fields with their low-values condition name, and the three identifier fields
+ * with their numeric redefinitions &mdash; belong to the screen work-area transfer object rather than
+ * here, and the eight commented-out declarations in the same copybook are inactive text that describes
+ * no behaviour. None of them is modelled, named or asserted.
+ *
+ * <p>Every fact asserted here was read from the estate at commit
+ * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} dated {@code 2022-07-19}.
  */
-@DisplayName("KeyAction — the sixteen attention-key actions of the five-byte action field")
+@DisplayName("KeyAction :: the sixteen attention identifiers of the five-character work-area field")
 class KeyActionTest {
 
-    /** Width of {@code CCARD-AID}, declared {@code PIC X(5)}. */
-    private static final int ACTION_FIELD_WIDTH = 5;
+    /**
+     * Width of {@code CCARD-AID}, declared as a five-character item.
+     *
+     * <p>Every width assertion below measures encoded bytes rather than characters, because the field
+     * is a fixed-width byte field in the legacy record image: the two counts coincide for these
+     * particular values, which is precisely why counting characters would conceal a value that had
+     * acquired a character costing more than one byte.
+     */
+    private static final int ACTION_FIELD_BYTE_WIDTH = 5;
 
-    /** Condition names declared over {@code CCARD-AID} at copybook lines 4 through 19. */
-    private static final int LEGACY_CONDITION_NAME_COUNT = 16;
+    /** Condition names declared over the action field: two keys, two attention keys, twelve function keys. */
+    private static final int CONDITION_NAME_COUNT = 16;
 
-    /** Terminal identifiers the function-key copybook recognises before folding. */
-    private static final int RECOGNISED_TERMINAL_IDENTIFIERS = 28;
+    /** Clauses in the single dispatch construct of {@code app/cpy/CSSTRPFY.cpy}. */
+    private static final int DISPATCH_CLAUSE_COUNT = 28;
 
-    /** Program-function actions the twenty-eight identifiers fold onto. */
-    private static final int FUNCTION_KEY_ACTIONS = 12;
+    /** Catch-all clauses in that construct. There are none, which is why no sentinel constant exists. */
+    private static final int DISPATCH_CATCH_ALL_CLAUSE_COUNT = 0;
+
+    /** Paragraphs in {@code app/cpy/CSSTRPFY.cpy}: the storing paragraph and its exit paragraph. */
+    private static final int DISPATCH_PARAGRAPH_COUNT = 2;
+
+    /** Dispatch clauses for the enter, clear and two program-attention identifiers. */
+    private static final int NON_FUNCTION_KEY_CLAUSES = 4;
+
+    /** Dispatch clauses for function keys one through twelve. */
+    private static final int LOWER_FUNCTION_KEY_CLAUSES = 12;
+
+    /** Dispatch clauses for function keys thirteen through twenty-four, which fold onto the lower twelve. */
+    private static final int FOLDED_FUNCTION_KEY_CLAUSES = 12;
+
+    /** Spaces each program-attention identifier carries after its three characters. */
+    private static final int PROGRAM_ATTENTION_TRAILING_SPACES = 2;
+
+    /** The padded identifier of program-attention key one, its two trailing spaces visible here. */
+    private static final String PROGRAM_ATTENTION_1_IDENTIFIER = "PA1  ";
+
+    /** The padded identifier of program-attention key two, its two trailing spaces visible here. */
+    private static final String PROGRAM_ATTENTION_2_IDENTIFIER = "PA2  ";
+
+    /** The three-character form of program-attention key one, which the five-character field never holds. */
+    private static final String PROGRAM_ATTENTION_1_UNPADDED = "PA1";
+
+    /** The three-character form of program-attention key two, which the five-character field never holds. */
+    private static final String PROGRAM_ATTENTION_2_UNPADDED = "PA2";
 
     /**
-     * The sixteen action images transcribed from the condition values at
-     * {@code app/cpy/CVCRD01Y.cpy} lines 4 through 19, in copybook order.
+     * The sixteen identifiers transcribed from the condition values declared over {@code CCARD-AID},
+     * keyed by condition-name suffix and held in copybook declaration order.
      */
-    private static final Map<String, String> LEGACY_CONDITION_VALUES = legacyConditionValues();
+    private static final Map<String, String> TRANSCRIBED_IDENTIFIERS = transcribedIdentifiers();
+
+    /** The sixteen condition-name suffixes in copybook declaration order. */
+    private static final List<String> TRANSCRIBED_NAMES = List.of(
+            "ENTER", "CLEAR", "PA1", "PA2",
+            "PFK01", "PFK02", "PFK03", "PFK04", "PFK05", "PFK06",
+            "PFK07", "PFK08", "PFK09", "PFK10", "PFK11", "PFK12");
+
+    /** The twelve identifiers the copybook declares for function keys one through twelve. */
+    private static final List<String> FUNCTION_KEY_IDENTIFIERS = List.of(
+            "PFK01", "PFK02", "PFK03", "PFK04", "PFK05", "PFK06",
+            "PFK07", "PFK08", "PFK09", "PFK10", "PFK11", "PFK12");
 
     /**
-     * Transcribes the copybook's sixteen condition values, keyed by the condition-name suffix.
+     * The single-digit renderings of function keys one through nine.
      *
-     * <p>The map is wrapped rather than copied into an immutable map, because the copybook's
-     * declaration order is itself part of what this suite asserts and a hash-ordered immutable copy
-     * would discard it.
-     *
-     * @return an ordered, unmodifiable view of the copybook's declared action images
+     * <p>The copybook zero-fills the suffix, so none of these nine is a declared identifier. They are
+     * probed rather than assumed absent, because a renderer that dropped the zero fill would produce
+     * exactly these and would then match nothing the screen layer stores.
      */
-    private static Map<String, String> legacyConditionValues() {
-        final Map<String, String> values = new LinkedHashMap<>();
-        values.put("ENTER", "ENTER");
-        values.put("CLEAR", "CLEAR");
-        values.put("PA1", "PA1  ");
-        values.put("PA2", "PA2  ");
-        values.put("PFK01", "PFK01");
-        values.put("PFK02", "PFK02");
-        values.put("PFK03", "PFK03");
-        values.put("PFK04", "PFK04");
-        values.put("PFK05", "PFK05");
-        values.put("PFK06", "PFK06");
-        values.put("PFK07", "PFK07");
-        values.put("PFK08", "PFK08");
-        values.put("PFK09", "PFK09");
-        values.put("PFK10", "PFK10");
-        values.put("PFK11", "PFK11");
-        values.put("PFK12", "PFK12");
-        return Collections.unmodifiableMap(values);
+    private static final List<String> SINGLE_DIGIT_RENDERINGS = List.of(
+            "PFK1", "PFK2", "PFK3", "PFK4", "PFK5", "PFK6", "PFK7", "PFK8", "PFK9");
+
+    /**
+     * The twelve identifiers a caller would expect for function keys thirteen through twenty-four.
+     *
+     * <p>The dispatch construct folds those keys onto the lower twelve flags, so the legacy estate
+     * declares no condition name in this range and none of these twelve is a valid identifier.
+     */
+    private static final List<String> FOLDED_UPPER_FUNCTION_KEY_RENDERINGS = List.of(
+            "PFK13", "PFK14", "PFK15", "PFK16", "PFK17", "PFK18",
+            "PFK19", "PFK20", "PFK21", "PFK22", "PFK23", "PFK24");
+
+    /**
+     * Transcribes the sixteen condition values declared over {@code CCARD-AID}, in declaration order.
+     *
+     * <p>An insertion-ordered map is wrapped rather than copied into a hash-ordered immutable map,
+     * because the copybook's declaration order is itself asserted below and a hash-ordered copy would
+     * discard it.
+     *
+     * @return an ordered, unmodifiable view of the sixteen transcribed identifiers
+     */
+    private static Map<String, String> transcribedIdentifiers() {
+        final Map<String, String> identifiers = new LinkedHashMap<>();
+        identifiers.put("ENTER", "ENTER");
+        identifiers.put("CLEAR", "CLEAR");
+        identifiers.put("PA1", PROGRAM_ATTENTION_1_IDENTIFIER);
+        identifiers.put("PA2", PROGRAM_ATTENTION_2_IDENTIFIER);
+        identifiers.put("PFK01", "PFK01");
+        identifiers.put("PFK02", "PFK02");
+        identifiers.put("PFK03", "PFK03");
+        identifiers.put("PFK04", "PFK04");
+        identifiers.put("PFK05", "PFK05");
+        identifiers.put("PFK06", "PFK06");
+        identifiers.put("PFK07", "PFK07");
+        identifiers.put("PFK08", "PFK08");
+        identifiers.put("PFK09", "PFK09");
+        identifiers.put("PFK10", "PFK10");
+        identifiers.put("PFK11", "PFK11");
+        identifiers.put("PFK12", "PFK12");
+        return Collections.unmodifiableMap(identifiers);
     }
 
-    // VOCABULARY
+    /**
+     * Counts the trailing spaces of an identifier in the encoded byte domain the legacy field occupies.
+     *
+     * <p>The scan walks the encoded bytes backwards from the last one. It deliberately performs no
+     * white-space normalisation of any kind: normalising would make the padded and unpadded forms of a
+     * program-attention identifier interchangeable, which a fixed-width field does not permit and which
+     * is the very confusion these tests exist to detect.
+     *
+     * @param identifier the identifier exactly as declared
+     * @return the number of consecutive space bytes at the end of the encoded identifier
+     */
+    private static int trailingSpaceCount(String identifier) {
+        final byte[] encoded = identifier.getBytes(StandardCharsets.US_ASCII);
+        int count = 0;
+        for (int index = encoded.length - 1; index >= 0 && encoded[index] == (byte) ' '; index--) {
+            count++;
+        }
+        return count;
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // THE CONSTANT VOCABULARY
+    // ------------------------------------------------------------------------------------------
 
     /**
-     * Verifies the sixteen actions against the copybook's condition names.
+     * Verifies the sixteen constants against the condition names declared over {@code CCARD-AID}.
      */
     @Nested
-    @DisplayName("vocabulary")
-    class Vocabulary {
+    @DisplayName("the constant vocabulary")
+    class ConstantVocabulary {
 
         @Test
-        @DisplayName("exactly sixteen actions exist, one per condition name over the action field")
-        void exactlySixteenActionsExist() {
-            assertThat(KeyAction.values()).hasSize(LEGACY_CONDITION_NAME_COUNT);
-            assertThat(LEGACY_CONDITION_VALUES).hasSize(LEGACY_CONDITION_NAME_COUNT);
+        @DisplayName("all sixteen condition names declared over CCARD-AID have a constant carrying that "
+                + "exact identifier")
+        void allSixteenIdentifiersMatchTheirTranscribedConditionValue() {
+            assertThat(KeyAction.ENTER.getAid()).isEqualTo("ENTER");
+            assertThat(KeyAction.CLEAR.getAid()).isEqualTo("CLEAR");
+            assertThat(KeyAction.PA1.getAid()).isEqualTo(PROGRAM_ATTENTION_1_IDENTIFIER);
+            assertThat(KeyAction.PA2.getAid()).isEqualTo(PROGRAM_ATTENTION_2_IDENTIFIER);
+            assertThat(KeyAction.PFK01.getAid()).isEqualTo("PFK01");
+            assertThat(KeyAction.PFK02.getAid()).isEqualTo("PFK02");
+            assertThat(KeyAction.PFK03.getAid()).isEqualTo("PFK03");
+            assertThat(KeyAction.PFK04.getAid()).isEqualTo("PFK04");
+            assertThat(KeyAction.PFK05.getAid()).isEqualTo("PFK05");
+            assertThat(KeyAction.PFK06.getAid()).isEqualTo("PFK06");
+            assertThat(KeyAction.PFK07.getAid()).isEqualTo("PFK07");
+            assertThat(KeyAction.PFK08.getAid()).isEqualTo("PFK08");
+            assertThat(KeyAction.PFK09.getAid()).isEqualTo("PFK09");
+            assertThat(KeyAction.PFK10.getAid()).isEqualTo("PFK10");
+            assertThat(KeyAction.PFK11.getAid()).isEqualTo("PFK11");
+            assertThat(KeyAction.PFK12.getAid()).isEqualTo("PFK12");
         }
 
         @Test
-        @DisplayName("every declared action has a transcribed condition value, and vice versa")
-        void everyActionHasATranscribedConditionValue() {
-            final List<String> declaredNames = List.of(KeyAction.values()).stream()
-                    .map(KeyAction::name)
-                    .toList();
-
-            assertThat(declaredNames).containsExactlyElementsOf(LEGACY_CONDITION_VALUES.keySet());
+        @DisplayName("the vocabulary is closed at exactly sixteen, the number of condition names the "
+                + "copybook declares over the action field")
+        void theVocabularyIsClosedAtExactlySixteen() {
+            assertThat(KeyAction.values()).hasSize(CONDITION_NAME_COUNT);
+            assertThat(TRANSCRIBED_IDENTIFIERS).hasSize(CONDITION_NAME_COUNT);
+            assertThat(TRANSCRIBED_NAMES).hasSize(CONDITION_NAME_COUNT);
         }
 
         @Test
-        @DisplayName("every action's image equals its transcribed condition value")
-        void everyActionImageMatchesTheTranscription() {
+        @DisplayName("the constant names are exactly the sixteen condition-name suffixes, so no "
+                + "seventeenth constant of any kind has been introduced")
+        void theConstantNamesAreExactlyTheSixteenConditionNameSuffixes() {
+            final List<String> declaredNames = new ArrayList<>();
             for (final KeyAction action : KeyAction.values()) {
-                assertThat(action.getAid())
-                        .as("image of %s", action.name())
-                        .isEqualTo(LEGACY_CONDITION_VALUES.get(action.name()));
+                declaredNames.add(action.name());
             }
+
+            assertThat(declaredNames).containsExactlyElementsOf(TRANSCRIBED_NAMES);
         }
 
         @Test
-        @DisplayName("the two program-attention images carry their two trailing blanks, as the copybook "
-                + "writes them")
-        void theProgramAttentionImagesCarryTheirTrailingBlanks() {
-            assertThat(KeyAction.PA1.getAid()).isEqualTo("PA1  ").endsWith("  ");
-            assertThat(KeyAction.PA2.getAid()).isEqualTo("PA2  ").endsWith("  ");
-            assertThat(KeyAction.PA1.getAid().strip()).isEqualTo("PA1").hasSize(3);
-            assertThat(KeyAction.PA2.getAid().strip()).isEqualTo("PA2").hasSize(3);
-        }
-
-        @Test
-        @DisplayName("the fourteen non-attention images fill the field exactly and carry no blank")
-        void theFourteenOtherImagesCarryNoBlank() {
-            for (final KeyAction action : KeyAction.values()) {
-                if (action == KeyAction.PA1 || action == KeyAction.PA2) {
-                    continue;
-                }
-                assertThat(action.getAid())
-                        .as("image of %s", action.name())
-                        .doesNotContain(" ")
-                        .hasSize(ACTION_FIELD_WIDTH);
-            }
-        }
-
-        @Test
-        @DisplayName("the sixteen images are distinct, so a recorded action is unambiguous")
-        void theSixteenImagesAreDistinct() {
-            final List<String> images = List.of(KeyAction.values()).stream()
-                    .map(KeyAction::getAid)
-                    .toList();
-
-            assertThat(images).doesNotHaveDuplicates().hasSize(LEGACY_CONDITION_NAME_COUNT);
-        }
-
-        @Test
-        @DisplayName("the actions are declared in copybook order: enter, clear, the two attention keys, "
-                + "then the twelve function keys ascending")
-        void theActionsAreDeclaredInCopybookOrder() {
+        @DisplayName("the constants are declared in copybook order: enter, clear, the two "
+                + "program-attention keys, then the twelve function keys ascending")
+        void theConstantsAreDeclaredInCopybookOrder() {
             assertThat(KeyAction.values()).containsExactly(
                     KeyAction.ENTER, KeyAction.CLEAR, KeyAction.PA1, KeyAction.PA2,
                     KeyAction.PFK01, KeyAction.PFK02, KeyAction.PFK03, KeyAction.PFK04,
@@ -192,87 +300,227 @@ class KeyActionTest {
         }
 
         @Test
-        @DisplayName("each function-key image is its two-digit ordinal, zero-filled, so key nine reads "
-                + "PFK09 rather than PFK9")
-        void eachFunctionKeyImageIsItsZeroFilledOrdinal() {
-            final List<KeyAction> functionKeys = List.of(KeyAction.values()).stream()
-                    .filter(KeyAction::isProgramFunctionKey)
-                    .toList();
+        @DisplayName("the enter and clear identifiers fill the five-character field on their own and "
+                + "need no padding, unlike the two program-attention identifiers")
+        void theEnterAndClearIdentifiersNeedNoPadding() {
+            assertThat(trailingSpaceCount("ENTER")).isZero();
+            assertThat(trailingSpaceCount("CLEAR")).isZero();
+            assertThat(trailingSpaceCount(KeyAction.ENTER.getAid())).isZero();
+            assertThat(trailingSpaceCount(KeyAction.CLEAR.getAid())).isZero();
+            assertThat(KeyAction.ENTER.getAid()).doesNotContain(" ");
+            assertThat(KeyAction.CLEAR.getAid()).doesNotContain(" ");
+        }
 
-            assertThat(functionKeys).hasSize(FUNCTION_KEY_ACTIONS);
-            for (int ordinal = 1; ordinal <= FUNCTION_KEY_ACTIONS; ordinal++) {
-                final String expected = "PFK" + (ordinal < 10 ? "0" + ordinal : Integer.toString(ordinal));
-
-                assertThat(functionKeys.get(ordinal - 1).getAid())
-                        .as("image of function key %d", ordinal)
-                        .isEqualTo(expected);
+        @Test
+        @DisplayName("the sixteen identifiers are distinct, so a recorded key press resolves to one "
+                + "action and never to two")
+        void theSixteenIdentifiersAreDistinct() {
+            final List<String> identifiers = new ArrayList<>();
+            for (final KeyAction action : KeyAction.values()) {
+                identifiers.add(action.getAid());
             }
+
+            assertThat(identifiers).doesNotHaveDuplicates().hasSize(CONDITION_NAME_COUNT);
         }
     }
 
-    // FIELD WIDTH
+    // ------------------------------------------------------------------------------------------
+    // THE FIVE-CHARACTER ACTION FIELD
+    // ------------------------------------------------------------------------------------------
 
     /**
-     * Verifies the fixed five-byte field every action image must fill.
+     * Verifies that every identifier fills the fixed-width field the copybook declares.
      */
     @Nested
-    @DisplayName("the five-byte action field")
-    class FieldWidth {
+    @DisplayName("the five-character action field")
+    class ActionFieldWidth {
 
         @Test
-        @DisplayName("every image measures exactly five characters, so it fills the field")
-        void everyImageMeasuresFiveCharacters() {
-            for (final KeyAction action : KeyAction.values()) {
-                assertThat(action.getAid())
-                        .as("character width of %s", action.name())
-                        .hasSize(ACTION_FIELD_WIDTH);
-            }
-        }
-
-        @Test
-        @DisplayName("every image measures exactly five encoded bytes, so no character costs two")
-        void everyImageMeasuresFiveEncodedBytes() {
+        @DisplayName("every one of the sixteen identifiers encodes to exactly five bytes, matching the "
+                + "five-character picture of CCARD-AID")
+        void everyIdentifierEncodesToExactlyFiveBytes() {
             for (final KeyAction action : KeyAction.values()) {
                 assertThat(action.getAid().getBytes(StandardCharsets.US_ASCII))
                         .as("encoded width of %s", action.name())
-                        .hasSize(ACTION_FIELD_WIDTH);
+                        .hasSize(ACTION_FIELD_BYTE_WIDTH);
             }
         }
 
         @Test
-        @DisplayName("every transcribed condition value is also five characters, confirming the "
-                + "copybook's own picture rather than the type's")
-        void everyTranscribedValueMeasuresFiveCharacters() {
-            for (final Map.Entry<String, String> entry : LEGACY_CONDITION_VALUES.entrySet()) {
-                assertThat(entry.getValue())
-                        .as("transcribed value for %s", entry.getKey())
-                        .hasSize(ACTION_FIELD_WIDTH);
+        @DisplayName("every transcribed condition value also encodes to exactly five bytes, confirming "
+                + "the copybook's own picture rather than the type's")
+        void everyTranscribedIdentifierEncodesToExactlyFiveBytes() {
+            for (final Map.Entry<String, String> entry : TRANSCRIBED_IDENTIFIERS.entrySet()) {
+                assertThat(entry.getValue().getBytes(StandardCharsets.US_ASCII))
+                        .as("encoded width of the value transcribed for %s", entry.getKey())
+                        .hasSize(ACTION_FIELD_BYTE_WIDTH);
             }
         }
 
         @Test
-        @DisplayName("no image is padded on the left, so a recorded action compares from byte one")
-        void noImageIsPaddedOnTheLeft() {
+        @DisplayName("no identifier is padded on the left, so a recorded key press compares from the "
+                + "first byte of the field")
+        void noIdentifierIsPaddedOnTheLeft() {
             for (final KeyAction action : KeyAction.values()) {
                 assertThat(action.getAid())
-                        .as("image of %s", action.name())
+                        .as("identifier of %s", action.name())
                         .doesNotStartWith(" ");
             }
         }
     }
 
-    // FUNCTION-KEY PREDICATE
+    // ------------------------------------------------------------------------------------------
+    // THE TWO PROGRAM-ATTENTION IDENTIFIERS
+    // ------------------------------------------------------------------------------------------
 
     /**
-     * Verifies the partition between the four non-function actions and the twelve function keys.
+     * Verifies the padding the copybook writes into the two program-attention condition values.
+     */
+    @Nested
+    @DisplayName("the two program-attention identifiers")
+    class ProgramAttentionPadding {
+
+        @Test
+        @DisplayName("program-attention key one is three characters plus two trailing spaces in a "
+                + "five-byte field, never the bare three characters")
+        void programAttentionKeyOneIsThreeCharactersPlusTwoSpaces() {
+            final String identifier = KeyAction.PA1.getAid();
+
+            assertThat(identifier).isEqualTo(PROGRAM_ATTENTION_1_IDENTIFIER);
+            assertThat(identifier).isNotEqualTo(PROGRAM_ATTENTION_1_UNPADDED);
+            assertThat(trailingSpaceCount(identifier)).isEqualTo(PROGRAM_ATTENTION_TRAILING_SPACES);
+            assertThat(identifier.getBytes(StandardCharsets.US_ASCII))
+                    .hasSize(ACTION_FIELD_BYTE_WIDTH)
+                    .isEqualTo(PROGRAM_ATTENTION_1_IDENTIFIER.getBytes(StandardCharsets.US_ASCII))
+                    .isNotEqualTo(PROGRAM_ATTENTION_1_UNPADDED.getBytes(StandardCharsets.US_ASCII));
+        }
+
+        @Test
+        @DisplayName("program-attention key two is three characters plus two trailing spaces in a "
+                + "five-byte field, never the bare three characters")
+        void programAttentionKeyTwoIsThreeCharactersPlusTwoSpaces() {
+            final String identifier = KeyAction.PA2.getAid();
+
+            assertThat(identifier).isEqualTo(PROGRAM_ATTENTION_2_IDENTIFIER);
+            assertThat(identifier).isNotEqualTo(PROGRAM_ATTENTION_2_UNPADDED);
+            assertThat(trailingSpaceCount(identifier)).isEqualTo(PROGRAM_ATTENTION_TRAILING_SPACES);
+            assertThat(identifier.getBytes(StandardCharsets.US_ASCII))
+                    .hasSize(ACTION_FIELD_BYTE_WIDTH)
+                    .isEqualTo(PROGRAM_ATTENTION_2_IDENTIFIER.getBytes(StandardCharsets.US_ASCII))
+                    .isNotEqualTo(PROGRAM_ATTENTION_2_UNPADDED.getBytes(StandardCharsets.US_ASCII));
+        }
+
+        @Test
+        @DisplayName("each padded program-attention identifier round-trips through the lookup byte for "
+                + "byte, so the padding survives resolution intact")
+        void eachPaddedProgramAttentionIdentifierRoundTripsByteForByte() {
+            final Optional<KeyAction> resolvedOne = KeyAction.fromAid(PROGRAM_ATTENTION_1_IDENTIFIER);
+            final Optional<KeyAction> resolvedTwo = KeyAction.fromAid(PROGRAM_ATTENTION_2_IDENTIFIER);
+
+            assertThat(resolvedOne).contains(KeyAction.PA1);
+            assertThat(resolvedTwo).contains(KeyAction.PA2);
+            assertThat(resolvedOne.orElseThrow().getAid().getBytes(StandardCharsets.US_ASCII))
+                    .isEqualTo(PROGRAM_ATTENTION_1_IDENTIFIER.getBytes(StandardCharsets.US_ASCII));
+            assertThat(resolvedTwo.orElseThrow().getAid().getBytes(StandardCharsets.US_ASCII))
+                    .isEqualTo(PROGRAM_ATTENTION_2_IDENTIFIER.getBytes(StandardCharsets.US_ASCII));
+        }
+
+        @Test
+        @DisplayName("the bare three-character program-attention forms are not valid identifiers, "
+                + "because the field is five characters wide and blank-filled")
+        void theBareThreeCharacterFormsAreNotValidIdentifiers() {
+            assertThat(KeyAction.fromAid(PROGRAM_ATTENTION_1_UNPADDED)).isEmpty();
+            assertThat(KeyAction.fromAid(PROGRAM_ATTENTION_2_UNPADDED)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("only the two program-attention identifiers carry trailing spaces; the other "
+                + "fourteen carry none")
+        void onlyTheTwoProgramAttentionIdentifiersCarryTrailingSpaces() {
+            int padded = 0;
+            for (final KeyAction action : KeyAction.values()) {
+                if (trailingSpaceCount(action.getAid()) > 0) {
+                    padded++;
+                    assertThat(trailingSpaceCount(action.getAid()))
+                            .as("trailing spaces of %s", action.name())
+                            .isEqualTo(PROGRAM_ATTENTION_TRAILING_SPACES);
+                }
+            }
+
+            assertThat(padded).isEqualTo(2);
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // THE TWELVE FUNCTION-KEY IDENTIFIERS
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * Verifies the zero-filled two-digit suffix the copybook uses for the twelve function keys.
+     */
+    @Nested
+    @DisplayName("the twelve function-key identifiers")
+    class FunctionKeyIdentifiers {
+
+        @Test
+        @DisplayName("each function-key suffix is zero-filled to two digits, so function key nine is "
+                + "PFK09 and never PFK9")
+        void eachFunctionKeySuffixIsZeroFilledToTwoDigits() {
+            assertThat(KeyAction.PFK01.getAid()).isEqualTo("PFK01");
+            assertThat(KeyAction.PFK02.getAid()).isEqualTo("PFK02");
+            assertThat(KeyAction.PFK03.getAid()).isEqualTo("PFK03");
+            assertThat(KeyAction.PFK04.getAid()).isEqualTo("PFK04");
+            assertThat(KeyAction.PFK05.getAid()).isEqualTo("PFK05");
+            assertThat(KeyAction.PFK06.getAid()).isEqualTo("PFK06");
+            assertThat(KeyAction.PFK07.getAid()).isEqualTo("PFK07");
+            assertThat(KeyAction.PFK08.getAid()).isEqualTo("PFK08");
+            assertThat(KeyAction.PFK09.getAid()).isEqualTo("PFK09");
+            assertThat(KeyAction.PFK10.getAid()).isEqualTo("PFK10");
+            assertThat(KeyAction.PFK11.getAid()).isEqualTo("PFK11");
+            assertThat(KeyAction.PFK12.getAid()).isEqualTo("PFK12");
+            assertThat(FUNCTION_KEY_IDENTIFIERS).hasSize(LOWER_FUNCTION_KEY_CLAUSES);
+        }
+
+        @Test
+        @DisplayName("the single-digit renderings PFK1 through PFK9 are not the declared identifiers, "
+                + "because the copybook zero-fills the suffix")
+        void theSingleDigitRenderingsAreNotTheDeclaredIdentifiers() {
+            final List<String> declared = new ArrayList<>();
+            for (final KeyAction action : KeyAction.values()) {
+                declared.add(action.getAid());
+            }
+
+            assertThat(declared).doesNotContainAnyElementsOf(SINGLE_DIGIT_RENDERINGS);
+            assertThat(SINGLE_DIGIT_RENDERINGS).hasSize(9);
+        }
+
+        @Test
+        @DisplayName("the single-digit renderings PFK1 through PFK9 are not valid identifiers either, "
+                + "so a dropped zero fill resolves to nothing rather than to the wrong key")
+        void theSingleDigitRenderingsAreNotValidIdentifiers() {
+            for (final String rendering : SINGLE_DIGIT_RENDERINGS) {
+                assertThat(KeyAction.fromAid(rendering))
+                        .as("lookup of the single-digit rendering %s", rendering)
+                        .isEmpty();
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // THE FUNCTION-KEY PREDICATE
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * Verifies the partition between the four non-function identifiers and the twelve function keys.
      */
     @Nested
     @DisplayName("the function-key predicate")
     class FunctionKeyPredicate {
 
         @Test
-        @DisplayName("the twelve function keys report themselves function keys")
-        void theTwelveFunctionKeysReportThemselvesSo() {
+        @DisplayName("the twelve function-key constants report themselves function keys, matching the "
+                + "twelve function-key clauses of the dispatch construct")
+        void theTwelveFunctionKeysReportThemselvesFunctionKeys() {
             assertThat(KeyAction.PFK01.isProgramFunctionKey()).isTrue();
             assertThat(KeyAction.PFK02.isProgramFunctionKey()).isTrue();
             assertThat(KeyAction.PFK03.isProgramFunctionKey()).isTrue();
@@ -288,8 +536,9 @@ class KeyActionTest {
         }
 
         @Test
-        @DisplayName("the enter, clear and two attention actions do not report themselves function keys")
-        void theFourOthersDoNotReportThemselvesSo() {
+        @DisplayName("the enter, clear and two program-attention constants do not report themselves "
+                + "function keys, matching the four non-function clauses")
+        void theFourNonFunctionConstantsDoNotReportThemselvesFunctionKeys() {
             assertThat(KeyAction.ENTER.isProgramFunctionKey()).isFalse();
             assertThat(KeyAction.CLEAR.isProgramFunctionKey()).isFalse();
             assertThat(KeyAction.PA1.isProgramFunctionKey()).isFalse();
@@ -297,46 +546,41 @@ class KeyActionTest {
         }
 
         @Test
-        @DisplayName("the predicate partitions the vocabulary twelve to four with nothing left over")
-        void thePredicatePartitionsTheVocabulary() {
-            final List<KeyAction> functionKeys = List.of(KeyAction.values()).stream()
-                    .filter(KeyAction::isProgramFunctionKey)
-                    .toList();
-            final List<KeyAction> others = List.of(KeyAction.values()).stream()
-                    .filter(action -> !action.isProgramFunctionKey())
-                    .toList();
-
-            assertThat(functionKeys).hasSize(FUNCTION_KEY_ACTIONS);
-            assertThat(others).containsExactly(
-                    KeyAction.ENTER, KeyAction.CLEAR, KeyAction.PA1, KeyAction.PA2);
-            assertThat(functionKeys.size() + others.size()).isEqualTo(KeyAction.values().length);
-        }
-
-        @Test
-        @DisplayName("the predicate agrees with the image prefix, so the naming and the classification "
-                + "cannot drift apart")
-        void thePredicateAgreesWithTheImagePrefix() {
+        @DisplayName("the predicate partitions the vocabulary twelve to four with nothing left over, "
+                + "which is the four-plus-twelve split the copybook declares")
+        void thePredicatePartitionsTheVocabularyTwelveToFour() {
+            int functionKeys = 0;
+            int others = 0;
             for (final KeyAction action : KeyAction.values()) {
-                assertThat(action.isProgramFunctionKey())
-                        .as("classification of %s", action.name())
-                        .isEqualTo(action.getAid().startsWith("PFK"));
+                if (action.isProgramFunctionKey()) {
+                    functionKeys++;
+                } else {
+                    others++;
+                }
             }
+
+            assertThat(functionKeys).isEqualTo(LOWER_FUNCTION_KEY_CLAUSES);
+            assertThat(others).isEqualTo(NON_FUNCTION_KEY_CLAUSES);
+            assertThat(functionKeys + others).isEqualTo(CONDITION_NAME_COUNT);
         }
     }
 
-    // LOOKUP
+    // ------------------------------------------------------------------------------------------
+    // LOOKUP FROM A RECORDED IDENTIFIER
+    // ------------------------------------------------------------------------------------------
 
     /**
-     * Verifies the lookup from a recorded five-byte image back to an action.
+     * Verifies resolution of a five-character identifier read out of the work-area field.
      */
     @Nested
-    @DisplayName("lookup from a recorded image")
+    @DisplayName("lookup from a recorded identifier")
     class Lookup {
 
         @Test
-        @DisplayName("every transcribed condition value resolves to the action bearing that name")
-        void everyTranscribedValueResolves() {
-            for (final Map.Entry<String, String> entry : LEGACY_CONDITION_VALUES.entrySet()) {
+        @DisplayName("all sixteen transcribed condition values resolve to the constant bearing that "
+                + "condition name")
+        void allSixteenTranscribedValuesResolve() {
+            for (final Map.Entry<String, String> entry : TRANSCRIBED_IDENTIFIERS.entrySet()) {
                 assertThat(KeyAction.fromAid(entry.getValue()))
                         .as("lookup of the value transcribed for %s", entry.getKey())
                         .isPresent()
@@ -347,8 +591,9 @@ class KeyActionTest {
         }
 
         @Test
-        @DisplayName("every action round-trips through its own image")
-        void everyActionRoundTrips() {
+        @DisplayName("every constant round-trips through its own identifier, so recording and resolving "
+                + "a key press is lossless")
+        void everyConstantRoundTripsThroughItsOwnIdentifier() {
             for (final KeyAction action : KeyAction.values()) {
                 assertThat(KeyAction.fromAid(action.getAid()))
                         .as("round trip of %s", action.name())
@@ -357,97 +602,211 @@ class KeyActionTest {
         }
 
         @Test
-        @DisplayName("a stripped attention image does not resolve, because the field is blank-filled")
-        void aStrippedAttentionImageDoesNotResolve() {
-            assertThat(KeyAction.fromAid("PA1")).isEmpty();
-            assertThat(KeyAction.fromAid("PA2")).isEmpty();
+        @DisplayName("an unmapped identifier resolves to nothing without throwing, because the dispatch "
+                + "construct has no catch-all clause and so stores no sentinel")
+        void anUnmappedIdentifierResolvesToNothingWithoutThrowing() {
+            // The dispatch construct in app/cpy/CSSTRPFY.cpy carries twenty-eight clauses and no
+            // catch-all clause at all, so an unrecognised terminal identifier causes no assignment and
+            // the work-area field keeps whatever it already held. There is consequently no sentinel
+            // constant to fall back on, and absence is modelled by an empty result. Each probe below is
+            // a genuinely undeclared value.
+            assertThatCode(() -> {
+                assertThat(KeyAction.fromAid("PFK13")).isEmpty();
+                assertThat(KeyAction.fromAid("PFK24")).isEmpty();
+                assertThat(KeyAction.fromAid("XXXXX")).isEmpty();
+                assertThat(KeyAction.fromAid("     ")).isEmpty();
+                assertThat(KeyAction.fromAid("")).isEmpty();
+            }).doesNotThrowAnyException();
         }
 
         @Test
-        @DisplayName("no case folding is applied, so a lower-cased image does not resolve")
+        @DisplayName("an absent identifier resolves to nothing rather than throwing, so an unpopulated "
+                + "work-area field is not mistaken for a key press")
+        void anAbsentIdentifierResolvesToNothingRatherThanThrowing() {
+            assertThatCode(() -> assertThat(KeyAction.fromAid(null)).isNotNull().isEmpty())
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("no white-space normalisation is applied, so an identifier of the wrong width does "
+                + "not resolve whether it is short or long")
+        void noWhiteSpaceNormalisationIsApplied() {
+            assertThat(KeyAction.fromAid("ENTE")).isEmpty();
+            assertThat(KeyAction.fromAid("ENTER ")).isEmpty();
+            assertThat(KeyAction.fromAid("PA1 ")).isEmpty();
+            assertThat(KeyAction.fromAid("PA1   ")).isEmpty();
+            assertThat(KeyAction.fromAid(" PA1 ")).isEmpty();
+        }
+
+        @Test
+        @DisplayName("no case folding is applied, so a lower-cased identifier does not resolve")
         void noCaseFoldingIsApplied() {
             assertThat(KeyAction.fromAid("enter")).isEmpty();
+            assertThat(KeyAction.fromAid("clear")).isEmpty();
+            assertThat(KeyAction.fromAid("pa1  ")).isEmpty();
             assertThat(KeyAction.fromAid("pfk03")).isEmpty();
             assertThat(KeyAction.fromAid("Pfk03")).isEmpty();
         }
 
         @Test
-        @DisplayName("an unfolded function-key name does not resolve, because the fold happens before "
-                + "the action is recorded")
-        void anUnfoldedFunctionKeyNameDoesNotResolve() {
-            assertThat(KeyAction.fromAid("PFK13")).isEmpty();
-            assertThat(KeyAction.fromAid("PFK24")).isEmpty();
-            assertThat(KeyAction.fromAid("PFK00")).isEmpty();
-            assertThat(KeyAction.fromAid("PFK9")).isEmpty();
-        }
-
-        @Test
-        @DisplayName("an image of the wrong width does not resolve, whether short or long")
-        void anImageOfTheWrongWidthDoesNotResolve() {
-            assertThat(KeyAction.fromAid("ENTE")).isEmpty();
-            assertThat(KeyAction.fromAid("ENTER ")).isEmpty();
-            assertThat(KeyAction.fromAid("PA1 ")).isEmpty();
-            assertThat(KeyAction.fromAid("PA1   ")).isEmpty();
-        }
-
-        @Test
-        @DisplayName("a blank image resolves to nothing, so an unset action field is not mistaken for a "
-                + "key press")
-        void aBlankImageResolvesToNothing() {
-            assertThat(KeyAction.fromAid("     ")).isEmpty();
-            assertThat(KeyAction.fromAid("")).isEmpty();
-        }
-
-        @Test
-        @DisplayName("an absent image resolves to nothing rather than throwing")
-        void anAbsentImageResolvesToNothing() {
-            assertThat(KeyAction.fromAid(null)).isNotNull().isEmpty();
-        }
-
-        @Test
-        @DisplayName("the lookup covers the whole vocabulary and nothing beyond it")
-        void theLookupCoversTheWholeVocabularyAndNoMore() {
-            long resolved = 0;
+        @DisplayName("the lookup admits the whole vocabulary and nothing beyond it, so exactly sixteen "
+                + "identifiers resolve")
+        void theLookupAdmitsTheWholeVocabularyAndNothingBeyondIt() {
+            int resolved = 0;
             for (final KeyAction action : KeyAction.values()) {
                 if (KeyAction.fromAid(action.getAid()).isPresent()) {
                     resolved++;
                 }
             }
 
-            assertThat(resolved).isEqualTo(LEGACY_CONDITION_NAME_COUNT);
-            assertThat(KeyAction.fromAid("PFK13")).isEmpty();
+            assertThat(resolved).isEqualTo(CONDITION_NAME_COUNT);
+            assertThat(KeyAction.fromAid("PFK00")).isEmpty();
+            assertThat(KeyAction.fromAid("PA3  ")).isEmpty();
         }
     }
 
-    // THE DELIBERATE FOLD
+    // ------------------------------------------------------------------------------------------
+    // THE FOLD OF FUNCTION KEYS THIRTEEN THROUGH TWENTY-FOUR
+    // ------------------------------------------------------------------------------------------
 
     /**
-     * Records why the vocabulary is smaller than the terminal's key set.
+     * Verifies that the upper twelve function keys have no constants of their own.
      */
     @Nested
-    @DisplayName("the deliberate fold")
-    class DeliberateFold {
+    @DisplayName("the fold of function keys thirteen through twenty-four")
+    class FoldedUpperFunctionKeys {
 
         @Test
-        @DisplayName("twenty-eight recognised terminal identifiers fold onto sixteen actions, so the "
-                + "vocabulary is lossy by design")
-        void theVocabularyIsLossyByDesign() {
-            assertThat(KeyAction.values().length)
-                    .isEqualTo(LEGACY_CONDITION_NAME_COUNT)
-                    .isLessThan(RECOGNISED_TERMINAL_IDENTIFIERS);
+        @DisplayName("function keys thirteen through twenty-four have no identifier of their own, "
+                + "because the dispatch construct folds them onto keys one through twelve")
+        void theUpperTwelveFunctionKeysHaveNoIdentifierOfTheirOwn() {
+            // In app/cpy/CSSTRPFY.cpy the clauses for terminal function keys thirteen through
+            // twenty-four assign the same twelve flags as the clauses for keys one through twelve, so
+            // the upper twelve are aliases rather than distinct actions. A search of the whole legacy
+            // tree for a condition name in that range returns no hits. Performing the fold is the
+            // utility-layer key translator's responsibility and is verified in its own suite; this
+            // enumeration only declares constants, and it declares none for the upper twelve. The
+            // translator is deliberately neither named, imported nor invoked here.
+            for (final String rendering : FOLDED_UPPER_FUNCTION_KEY_RENDERINGS) {
+                assertThat(KeyAction.fromAid(rendering))
+                        .as("an identifier for the folded upper key %s must not exist", rendering)
+                        .isEmpty();
+            }
+
+            assertThat(FOLDED_UPPER_FUNCTION_KEY_RENDERINGS).hasSize(FOLDED_FUNCTION_KEY_CLAUSES);
         }
 
         @Test
-        @DisplayName("the twelve upper function keys have no action of their own, which is what makes "
-                + "the fold lossy")
-        void theUpperFunctionKeysHaveNoActionOfTheirOwn() {
-            for (int upperKey = 13; upperKey <= 24; upperKey++) {
-                assertThat(KeyAction.fromAid("PFK" + upperKey))
-                        .as("an action for upper function key %d must not exist", upperKey)
-                        .isEmpty();
+        @DisplayName("no constant carries an identifier for the upper twelve function keys, so the "
+                + "vocabulary is lossy relative to the terminal's key set by design")
+        void noConstantCarriesAnUpperFunctionKeyIdentifier() {
+            final List<String> declared = new ArrayList<>();
+            for (final KeyAction action : KeyAction.values()) {
+                declared.add(action.getAid());
             }
-            assertThat(RECOGNISED_TERMINAL_IDENTIFIERS - LEGACY_CONDITION_NAME_COUNT)
-                    .isEqualTo(FUNCTION_KEY_ACTIONS);
+
+            assertThat(declared).doesNotContainAnyElementsOf(FOLDED_UPPER_FUNCTION_KEY_RENDERINGS);
+            assertThat(KeyAction.values().length).isLessThan(DISPATCH_CLAUSE_COUNT);
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // LEGACY CENSUS AND DOCUMENTED ABSENCES
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * Records the counted legacy facts and the deliberate absences they justify.
+     */
+    @Nested
+    @DisplayName("the legacy census and the absences it justifies")
+    class LegacyCensusAndDocumentedAbsences {
+
+        @Test
+        @DisplayName("the counted legacy facts are sixteen condition names, twenty-eight dispatch "
+                + "clauses, two paragraphs and zero catch-all clauses")
+        void theCountedLegacyFactsHold() {
+            // Counted in the two governing copybooks and typed out as literals rather than derived from
+            // the type under test. These are layout and census figures, not service levels.
+            assertThat(CONDITION_NAME_COUNT).isEqualTo(16);
+            assertThat(DISPATCH_CLAUSE_COUNT).isEqualTo(28);
+            assertThat(DISPATCH_PARAGRAPH_COUNT).isEqualTo(2);
+            assertThat(DISPATCH_CATCH_ALL_CLAUSE_COUNT).isZero();
+            assertThat(KeyAction.values()).hasSize(CONDITION_NAME_COUNT);
+        }
+
+        @Test
+        @DisplayName("the twenty-eight dispatch clauses decompose as four non-function keys plus twelve "
+                + "lower function keys plus twelve folded upper function keys")
+        void theDispatchClausesDecomposeAsFourPlusTwelvePlusTwelve() {
+            assertThat(NON_FUNCTION_KEY_CLAUSES).isEqualTo(4);
+            assertThat(LOWER_FUNCTION_KEY_CLAUSES).isEqualTo(12);
+            assertThat(FOLDED_FUNCTION_KEY_CLAUSES).isEqualTo(12);
+            assertThat(NON_FUNCTION_KEY_CLAUSES
+                    + LOWER_FUNCTION_KEY_CLAUSES
+                    + FOLDED_FUNCTION_KEY_CLAUSES)
+                    .isEqualTo(DISPATCH_CLAUSE_COUNT);
+            assertThat(NON_FUNCTION_KEY_CLAUSES + LOWER_FUNCTION_KEY_CLAUSES)
+                    .isEqualTo(CONDITION_NAME_COUNT);
+        }
+
+        @Test
+        @DisplayName("the enumeration declares no catch-all constant of any name, because the dispatch "
+                + "construct has twenty-eight clauses and no catch-all clause")
+        void theEnumerationDeclaresNoCatchAllConstant() {
+            // Documented by absence. The dispatch construct in app/cpy/CSSTRPFY.cpy has no catch-all
+            // clause, so an unrecognised terminal identifier leaves the work-area field untouched and no
+            // sentinel value is ever stored. This enumeration therefore declares no synthetic constant
+            // for an unrecognised key under any name - not unknown, none, other, invalid, unmapped or
+            // default - because such a constant would represent a state the legacy system cannot
+            // produce, and would let a caller branch on something the legacy dispatch never branched on.
+            // The absence is proved by the closed count of sixteen and by the constant names matching
+            // the copybook's sixteen condition-name suffixes exactly, and no such constant is referenced
+            // anywhere in this file. No reflection is used to prove it. Recorded in
+            // docs/decision-log.md. A default clause inside a Java switch is an unrelated language
+            // construct and is not what is excluded here.
+            assertThat(KeyAction.values()).hasSize(CONDITION_NAME_COUNT);
+
+            final List<String> declaredNames = new ArrayList<>();
+            for (final KeyAction action : KeyAction.values()) {
+                declaredNames.add(action.name());
+            }
+
+            assertThat(declaredNames).containsExactlyElementsOf(TRANSCRIBED_NAMES);
+            assertThat(DISPATCH_CATCH_ALL_CLAUSE_COUNT).isZero();
+        }
+
+        @Test
+        @DisplayName("the remaining fields of the same work-area group are not modelled here, nor are "
+                + "the copybook's eight commented-out declarations")
+        void theRemainingWorkAreaFieldsAreNotModelledHere() {
+            // Documented by absence. Besides the attention-identifier field, the work-area group in
+            // app/cpy/CVCRD01Y.cpy declares a next-program field, a next-mapset field, a next-map
+            // field, two seventy-five-character message fields with a low-values condition name, and
+            // three identifier fields each paired with a numeric redefinition. All of those belong to
+            // the screen work-area transfer object, not to this enumeration, and none is referenced
+            // anywhere in this file. The same copybook additionally carries eight commented-out
+            // declarations - a last-program field, a return-to-program field, a return flag with two
+            // condition names and a function field with two condition names - which are inactive text
+            // describing no behaviour; they are neither modelled nor asserted. The proof is that the
+            // constant names are exactly the sixteen attention-identifier condition-name suffixes, so
+            // nothing from the rest of the group has leaked in.
+            final List<String> declaredNames = new ArrayList<>();
+            for (final KeyAction action : KeyAction.values()) {
+                declaredNames.add(action.name());
+            }
+
+            assertThat(declaredNames)
+                    .containsExactlyElementsOf(TRANSCRIBED_NAMES)
+                    .hasSize(CONDITION_NAME_COUNT);
+        }
+
+        @Test
+        @DisplayName("the transcribed copybook evidence is immutable, so no test can widen the sixteen "
+                + "condition values the rest of this suite compares against")
+        void theTranscribedEvidenceIsImmutable() {
+            assertThatThrownBy(() -> TRANSCRIBED_IDENTIFIERS.put("PFK13", "PFK13"))
+                    .isInstanceOf(UnsupportedOperationException.class);
+            assertThat(TRANSCRIBED_IDENTIFIERS).hasSize(CONDITION_NAME_COUNT);
         }
     }
 }

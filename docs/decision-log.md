@@ -2568,9 +2568,15 @@ number had already stopped being true of either.
 `management.tracing.enabled` when deciding whether to create the OTLP exporter, so no exporter bean
 exists and there is nothing that could open a connection. The zero probability is retained as what it
 actually is - an optimisation that suppresses root spans and so keeps recording cost off several hundred
-context refreshes - and the comment now says so. The suite overlay additionally disables instrumentation
-outright, which the packaged copy does not, because the packaged copy is what a deployed `test`-profile
-run loads and a deployment may legitimately want a tracer wired while exporting nothing.
+context refreshes - and the comment now says so. **Instrumentation itself stays switched on in both
+copies.** An intermediate revision of the suite overlay disabled it outright, on the reasoning that a
+suite asserts on no span; that reasoning overlooked the diagnostic context. `ObservabilityConfig` records
+that the test profile neutralises export *while leaving the tracing instrumentation switched on*, so the
+bridge still places the trace and span identifiers in the diagnostic context and the two correlation
+fields `logback-spring.xml` publishes through its allow list still resolve. Disabling instrumentation
+empties those fields for every test in the suite, and it leaves the packaged copy - the one a deployed
+`test`-profile run loads - exercising a posture no suite run ever sees. Both copies therefore carry the
+same three settings: instrumentation on, root sampling at zero, export off.
 
 **Decision - a floor in the files, a lift from the base classes.** Both copies declare the emulator
 endpoint for the global setting and for each of the three services. That is the floor: a client assembled

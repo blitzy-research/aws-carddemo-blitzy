@@ -20,6 +20,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
@@ -66,6 +67,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  * make this test fail for a hundred unrelated reasons, so it loads the smallest context in which the
  * question can be asked.
  *
+ * <h2>Why {@code @AutoConfigureObservability} is present, and what asserting without it would prove</h2>
+ * Boot's own {@code ObservabilityContextCustomizerFactory} injects
+ * {@code management.tracing.enabled=false} - together with two metrics-export settings - as an inlined
+ * property into every {@code @SpringBootTest} context that does not carry this annotation, at a
+ * precedence above every property file. That is a test-framework default and not a posture any profile
+ * document takes: a deployed {@code test}-profile run is not a {@code @SpringBootTest} and never sees it.
+ * Asserting the resolved value without this annotation therefore observes Boot's default while appearing
+ * to observe the profile's, which is exactly the false assurance the nested class name here would
+ * promise and not deliver. The annotation steps that default aside so the value observed below is the
+ * one the documents declare. It switches nothing on in this context, because the context carries no
+ * auto-configuration at all, and it leaves the export switch alone - which is asserted separately and
+ * must stay off.
+ *
  * <p>This is the only {@code @SpringBootTest} in the module, and it is not a precedent for the tiers
  * above it: every other integration test works directly against a container because that is the cheapest
  * way to assert a record layout or a queue contract. It exists solely because the precedence claim cannot
@@ -77,6 +91,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @SpringBootTest(classes = ContextInheritsContainerAddressesIT.BareContext.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE)
+@AutoConfigureObservability
 @ActiveProfiles("test")
 @DisplayName("A context inherits the running containers, and they outrank the profile documents")
 class ContextInheritsContainerAddressesIT extends AbstractPostgresIT {
@@ -240,12 +255,33 @@ class ContextInheritsContainerAddressesIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("tracing instrumentation is off as well in a suite run")
-        void tracingInstrumentationIsOffInASuiteRun() {
+        @DisplayName("tracing instrumentation stays ON in a suite run, so only the export leaves")
+        void tracingInstrumentationStaysOnInASuiteRun() {
             assertThat(environment.getProperty("management.tracing.enabled"))
-                    .as("the suite overlay switches instrumentation off outright, which the packaged"
-                            + " copy does not; the overlay is the copy in force here")
-                    .isEqualTo("false");
+                    .as("com.carddemo.config.ObservabilityConfig records the contract both copies of"
+                            + " the profile honour: export is neutralised while the tracing"
+                            + " instrumentation stays switched on, so the bridge still places the"
+                            + " trace and span identifiers in the diagnostic context and the"
+                            + " correlation fields logback-spring.xml publishes still resolve."
+                            + " Switching instrumentation off outright - which an earlier revision of"
+                            + " the suite overlay did - empties those fields for every test in the"
+                            + " suite and leaves the packaged copy exercising a posture no suite run"
+                            + " ever sees. Observed with @AutoConfigureObservability in force, so this"
+                            + " is the documents' value and not Boot's test-framework default; see the"
+                            + " class comment")
+                    .isEqualTo("true");
+        }
+
+        @Test
+        @DisplayName("the sampling probability is the optimisation and not the export control")
+        void theSamplingProbabilityIsTheOptimisationAndNotTheExportControl() {
+            assertThat(environment.getProperty("management.tracing.sampling.probability"))
+                    .as("a zero probability suppresses ROOT spans, which keeps recording cost off the"
+                            + " several hundred context refreshes of a suite run. It is asserted"
+                            + " beside the export switch rather than instead of it: the effective"
+                            + " sampler is parent-based over the ratio sampler, so a request carrying"
+                            + " an already-sampled traceparent is sampled whatever the ratio says")
+                    .isEqualTo("0.0");
         }
     }
 }
