@@ -18,7 +18,11 @@ package com.carddemo.config;
 
 import com.carddemo.api.GlobalExceptionHandler;
 import com.carddemo.domain.enums.UserType;
+import com.nimbusds.jose.jwk.JWKSet;
+import com.nimbusds.jose.jwk.OctetSequenceKey;
+import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import jakarta.servlet.Filter;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -45,6 +49,11 @@ import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
+import org.springframework.security.oauth2.jwt.JwsHeader;
+import org.springframework.security.oauth2.jwt.JwtClaimsSet;
+import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
+import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 import org.springframework.security.provisioning.InMemoryUserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.test.web.servlet.MockMvc;
@@ -343,6 +352,36 @@ class SecurityConfigTest {
         return context.getBean(JwtTokenProvider.class).issue("TESTUSR1", type);
     }
 
+    /**
+     * Mints a token that verifies against the chain's own signing material but carries a user-type code the
+     * estate does not declare, or none at all.
+     *
+     * <p>The module's own provider cannot produce this, because it accepts only a declared user type - which
+     * is why the token is assembled here instead. Everything else about it is exactly what the provider
+     * would write: the same signature algorithm, the same secret, the issuer the verifier requires, and a
+     * window around the same fixed instant the chain's clock reports. So the only reason the boundary can
+     * refuse it is the claim under test.</p>
+     *
+     * @param roleCode the user-type code to carry, or {@code null} to omit the claim entirely
+     * @return the compact serialized token
+     */
+    private static String tokenCarryingRole(final String roleCode) {
+        final OctetSequenceKey signingKey =
+                new OctetSequenceKey.Builder(SECRET.getBytes(StandardCharsets.UTF_8)).build();
+        final JwtClaimsSet.Builder claims = JwtClaimsSet.builder()
+                .issuer(ISSUER)
+                .subject("TESTUSR1")
+                .issuedAt(NOW)
+                .expiresAt(NOW.plus(Duration.ofMinutes(30)));
+        if (roleCode != null) {
+            claims.claim(JwtTokenProvider.ROLE_CLAIM, roleCode);
+        }
+        return new NimbusJwtEncoder(new ImmutableJWKSet<>(new JWKSet(signingKey)))
+                .encode(JwtEncoderParameters.from(
+                        JwsHeader.with(MacAlgorithm.HS256).build(), claims.build()))
+                .getTokenValue();
+    }
+
     @Nested
     @DisplayName("The surfaces a sibling file resolves literally")
     class OperationalSurfaces {
@@ -568,6 +607,30 @@ class SecurityConfigTest {
                     .perform(get(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION,
                             "bearer " + tokenFor(context, UserType.USER)))
                     .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(200)));
+        }
+
+        @ParameterizedTest(name = "[{0}]")
+        @ValueSource(strings = {"X", "a", "u", "1", " ", "AA"})
+        @DisplayName("establishes no identity, and does not fail, when it verifies but carries a user type "
+                + "this estate does not declare - the sign-on program tolerates an unexpected code, so "
+                + "neither may the boundary")
+        void establishesNoIdentityForAnUndeclaredUserType(final String undeclaredCode) throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(get(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenCarryingRole(undeclaredCode)))
+                    // Refused because no identity was established, not because anything raised: an
+                    // unauthorized answer rather than a server error is the whole point of the assertion.
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401)));
+        }
+
+        @Test
+        @DisplayName("establishes no identity, and does not fail, when it verifies but carries no user "
+                + "type at all")
+        void establishesNoIdentityWhenTheRoleClaimIsAbsent() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(get(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenCarryingRole(null)))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401)));
         }
     }
 

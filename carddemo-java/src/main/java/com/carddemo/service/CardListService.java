@@ -258,9 +258,18 @@ import com.carddemo.util.PfKeyTranslator;
  * candidate primitives accept a decoration marker or the fuller numeric grammar of another screen,
  * and either would widen this member's edits to admit input it rejects, so the two edits below are
  * expressed against this member's own tests instead.
+ *
+ * <p>This type is deliberately <em>not</em> {@code final}. The {@code @Transactional} methods
+ * declared below are advised through a CGLIB subclass proxy, and a final class cannot be
+ * subclassed, so declaring this type final makes the application context fail to start with
+ * {@code Cannot subclass final class}. The proxy is what applies the declared transaction
+ * semantics, so the modifier and the annotation cannot both be present. The sibling services that
+ * carry transactional methods are non-final for the same reason, and extension is not invited: the
+ * constructor is the only way to build one, every field is final, and no method is designed to be
+ * overridden.
  */
 @Service
-public final class CardListService {
+public class CardListService {
 
     /**
      * Structured diagnostic channel. {@code COCRDLIC} declares no {@code DISPLAY} statement of its own,

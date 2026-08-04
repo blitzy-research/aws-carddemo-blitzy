@@ -24,6 +24,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -194,11 +195,20 @@ import com.carddemo.util.ZonedDecimalCodec;
  * {@code OptimisticLockConflictException}, which is recoverable and never routed to
  * {@code AbendService}.
  *
+ * <p>This type is deliberately <em>not</em> {@code final}. The {@code @Transactional} methods
+ * declared below are advised through a CGLIB subclass proxy, and a final class cannot be
+ * subclassed, so declaring this type final makes the application context fail to start with
+ * {@code Cannot subclass final class}. The proxy is what applies the declared transaction
+ * semantics, so the modifier and the annotation cannot both be present. The sibling services that
+ * carry transactional methods are non-final for the same reason, and extension is not invited: the
+ * constructor is the only way to build one, every field is final, and no method is designed to be
+ * overridden.
+ *
  * @see AccountUpdateRequest
  * @see AccountUpdateResponse
  */
 @Service
-public final class AccountUpdateService {
+public class AccountUpdateService {
 
     private static final Logger LOG = LoggerFactory.getLogger(AccountUpdateService.class);
 
@@ -456,11 +466,25 @@ public final class AccountUpdateService {
     /** The nine-digit national identifier as stored, split into the three keyed screen components. */
     private static final Pattern STORED_SSN = Pattern.compile("(\\d{3})(\\d{2})(\\d{4})");
 
-    /** {@code WS-CURDATE-MM-DD-YY}, the eight-character screen date built at lines 2680 to 2684. */
-    private static final DateTimeFormatter SCREEN_DATE = DateTimeFormatter.ofPattern("MM/dd/yy");
+    /**
+     * {@code WS-CURDATE-MM-DD-YY}, the eight-character screen date built at lines 2680 to 2684.
+     *
+     * <p>{@code Locale.ROOT} is mandatory rather than tidy. Both of these fields are fixed-width screen
+     * items, and a formatter built without an explicit locale renders digits in whatever numbering system
+     * the default locale prescribes - Arabic-Indic digits under an Arabic locale, for instance - so the
+     * same instant would produce a different byte sequence on a differently configured host. That is a
+     * parity defect in a byte-exact format, not a presentation preference. This is the same term the
+     * sibling user-administration service states for its own header date and time.</p>
+     */
+    private static final DateTimeFormatter SCREEN_DATE =
+            DateTimeFormatter.ofPattern("MM/dd/yy", Locale.ROOT);
 
-    /** {@code WS-CURTIME-HH-MM-SS}, the eight-character screen time built at lines 2686 to 2690. */
-    private static final DateTimeFormatter SCREEN_TIME = DateTimeFormatter.ofPattern("HH:mm:ss");
+    /**
+     * {@code WS-CURTIME-HH-MM-SS}, the eight-character screen time built at lines 2686 to 2690, on the
+     * same locale terms as the date above.
+     */
+    private static final DateTimeFormatter SCREEN_TIME =
+            DateTimeFormatter.ofPattern("HH:mm:ss", Locale.ROOT);
 
     /**
      * The three states every field-validation flag in this program can hold.

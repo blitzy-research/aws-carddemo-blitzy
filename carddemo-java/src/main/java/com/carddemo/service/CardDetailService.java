@@ -159,9 +159,18 @@ import com.carddemo.util.PfKeyTranslator;
  * practice instead: pinned dependencies, a zero-warning build, one-way layering, no code generation
  * or reflection, no secret in source, structured logging with no hardcoded performance figure, the
  * licence header above, and full paragraph-level auditability.
+ *
+ * <p>This type is deliberately <em>not</em> {@code final}. The {@code @Transactional} methods
+ * declared below are advised through a CGLIB subclass proxy, and a final class cannot be
+ * subclassed, so declaring this type final makes the application context fail to start with
+ * {@code Cannot subclass final class}. The proxy is what applies the declared transaction
+ * semantics, so the modifier and the annotation cannot both be present. The sibling services that
+ * carry transactional methods are non-final for the same reason, and extension is not invited: the
+ * constructor is the only way to build one, every field is final, and no method is designed to be
+ * overridden.
  */
 @Service
-public final class CardDetailService {
+public class CardDetailService {
 
     private static final Logger LOG = LoggerFactory.getLogger(CardDetailService.class);
 

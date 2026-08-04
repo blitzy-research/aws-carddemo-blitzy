@@ -137,9 +137,18 @@ import com.carddemo.util.ZonedDecimalCodec;
  * diverge, the legacy wins and the divergence is documented at the member concerned. The four that
  * matter are the untouched timestamps, the alphanumeric identifier, the refusal rather than truncation
  * of an over-long identifier described on {@code processEnterKey}, and the plain read described above.
+ *
+ * <p>This type is deliberately <em>not</em> {@code final}. The {@code @Transactional} methods
+ * declared below are advised through a CGLIB subclass proxy, and a final class cannot be
+ * subclassed, so declaring this type final makes the application context fail to start with
+ * {@code Cannot subclass final class}. The proxy is what applies the declared transaction
+ * semantics, so the modifier and the annotation cannot both be present. The sibling services that
+ * carry transactional methods are non-final for the same reason, and extension is not invited: the
+ * constructor is the only way to build one, every field is final, and no method is designed to be
+ * overridden.
  */
 @Service
-public final class TransactionViewService {
+public class TransactionViewService {
 
     /**
      * Diagnostic channel for this class, replacing the console-display statement that was this

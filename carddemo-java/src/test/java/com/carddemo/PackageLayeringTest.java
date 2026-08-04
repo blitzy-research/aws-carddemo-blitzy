@@ -123,6 +123,18 @@ final class PackageLayeringTest {
      * <em>is</em> the two-state error contract: the service's whole job is to produce it, and giving it a
      * service-owned twin would add a type whose only content is a copy of the transport type's.
      *
+     * <h2>The second edge that is a design choice</h2>
+     *
+     * <p>{@code StatementGenerationService} names the statement summary for the same reason and with the
+     * same narrowness: the summary <em>is</em> the statement work area of
+     * {@code [app/cpy/COSTM01.CPY]}, which {@code [app/cbl/CBSTM03A.CBL]} declares as its own working
+     * storage and populates one line at a time, and producing it is part of what that program does. The
+     * platform specification for this service, §A5, explicitly permits it to name the transport types it
+     * returns, and §B10 requires the summaries to be among the four things one run yields. Giving the
+     * service a private twin of a thirteen-component record would add a type whose only content is a copy
+     * of the transport type's, so this is enrolled on the same footing as the decorator above and remains
+     * a single named type rather than a package-wide hole.
+     *
      * <h2>The ten edges that are a recorded deviation, not a design choice</h2>
      *
      * <p>The ten online screen services below take and return the screen-contract records directly -
@@ -150,6 +162,8 @@ final class PackageLayeringTest {
     private static final Map<String, Set<String>> LICENSED_UPWARD_EDGES = Map.ofEntries(
             Map.entry("com.carddemo.service.FieldErrorTranslationService",
                     Set.of("com.carddemo.api.dto.FieldErrorDecorator")),
+            Map.entry("com.carddemo.service.StatementGenerationService",
+                    Set.of("com.carddemo.api.dto.StatementSummary")),
             Map.entry("com.carddemo.service.AccountUpdateService",
                     Set.of("com.carddemo.api.dto.AccountUpdateRequest",
                             "com.carddemo.api.dto.AccountUpdateResponse",
@@ -188,7 +202,7 @@ final class PackageLayeringTest {
                             "com.carddemo.api.dto.UserResponse")));
 
     /** How many upward service-to-transport edges the table above licenses, counted by hand. */
-    private static final int LICENSED_UPWARD_EDGE_COUNT = 27;
+    private static final int LICENSED_UPWARD_EDGE_COUNT = 28;
 
     /**
      * The permitted downward dependencies of each package, keyed by the depending package.
@@ -208,7 +222,8 @@ final class PackageLayeringTest {
                     "com.carddemo.exception"),
             "com.carddemo.batch", Set.of("com.carddemo.service", "com.carddemo.batch.step",
                     "com.carddemo.repository", "com.carddemo.domain", "com.carddemo.domain.enums",
-                    "com.carddemo.domain.id", "com.carddemo.util", "com.carddemo.exception"),
+                    "com.carddemo.domain.id", "com.carddemo.util", "com.carddemo.exception",
+                    "com.carddemo.config"),
             "com.carddemo.batch.step", Set.of("com.carddemo.service", "com.carddemo.repository",
                     "com.carddemo.domain", "com.carddemo.domain.enums", "com.carddemo.domain.id",
                     "com.carddemo.util", "com.carddemo.exception"),
@@ -428,13 +443,45 @@ final class PackageLayeringTest {
         }
 
         @Test
-        @DisplayName("no batch job or step imports a transport record or a configuration class, "
-                + "because a batch tier has no screen to answer and no wiring to read")
-        void noBatchClassImportsATransportRecordOrConfiguration() {
+        @DisplayName("no batch job or step imports a transport record, because a batch tier has no "
+                + "screen to answer")
+        void noBatchClassImportsATransportRecord() {
             final List<String> offenders = internalEdges().stream()
                     .filter(edge -> edge.fromPackage().startsWith("com.carddemo.batch"))
-                    .filter(edge -> edge.toPackage().startsWith("com.carddemo.api")
-                            || edge.toPackage().startsWith("com.carddemo.config"))
+                    .filter(edge -> edge.toPackage().startsWith("com.carddemo.api"))
+                    .map(Edge::describe)
+                    .toList();
+
+            assertThat(offenders).isEmpty();
+        }
+
+        /**
+         * A step processor, reader or writer reads no wiring, so the prohibition this test was
+         * originally written as still holds over {@code com.carddemo.batch.step} unchanged.
+         *
+         * <p><strong>Why the sibling job package is no longer covered by it.</strong> When this test
+         * was first written the batch tier held only step components, and for those the claim "a batch
+         * tier has no wiring to read" is exactly right. The job tier that has since arrived in
+         * {@code com.carddemo.batch} is made of configuration classes: a job configuration exists in
+         * order to compose beans, and the two things it composes with are the shared batch
+         * infrastructure - the boundary listener, the parameter incrementer and the two named
+         * condition-code ceilings, all published by {@code config/BatchConfig} for job configurations
+         * to use - and the settings records that carry a destination it must not hardcode. Denying it
+         * those two would force it either to restate a ceiling that already exists, which is how the
+         * strict and tolerant gate forms would drift into one, or to embed a bucket name, which the
+         * no-hardcoded-configuration standard forbids outright.
+         *
+         * <p>The licence is therefore granted to the job package and withheld from the step package,
+         * rather than granted to the whole tier by prefix, so a step component reaching for wiring
+         * still fails here even though a job configuration is allowed to read it.
+         */
+        @Test
+        @DisplayName("no batch step component imports a configuration class, because a step reads "
+                + "records and not wiring - only the job configurations above it read wiring")
+        void noBatchStepComponentImportsAConfigurationClass() {
+            final List<String> offenders = internalEdges().stream()
+                    .filter(edge -> edge.fromPackage().equals("com.carddemo.batch.step"))
+                    .filter(edge -> edge.toPackage().startsWith("com.carddemo.config"))
                     .map(Edge::describe)
                     .toList();
 

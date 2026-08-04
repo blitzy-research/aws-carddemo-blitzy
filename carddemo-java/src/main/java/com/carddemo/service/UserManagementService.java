@@ -223,9 +223,18 @@ import com.carddemo.util.CobolStringUtils;
  * {@code app/} is read-only reference material that nothing here reads at run time: only member
  * names, transaction identifiers, paragraph names, line numbers, field names, widths, offsets and
  * the exact message texts cross into this module.</p>
+ *
+ * <p>This type is deliberately <em>not</em> {@code final}. The {@code @Transactional} methods
+ * declared below are advised through a CGLIB subclass proxy, and a final class cannot be
+ * subclassed, so declaring this type final makes the application context fail to start with
+ * {@code Cannot subclass final class}. The proxy is what applies the declared transaction
+ * semantics, so the modifier and the annotation cannot both be present. The sibling services that
+ * carry transactional methods are non-final for the same reason, and extension is not invited: the
+ * constructor is the only way to build one, every field is final, and no method is designed to be
+ * overridden.
  */
 @Service
-public final class UserManagementService {
+public class UserManagementService {
 
     private static final Logger LOG = LoggerFactory.getLogger(UserManagementService.class);
 

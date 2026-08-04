@@ -51,13 +51,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <h2>What this evidence does and does not prove</h2>
  *
- * <p>It proves that no source under {@code src/main/java} contains a call to the raw fitter. It
- * does <strong>not</strong> prove that a correct caller exists, and it must not be read that way:
- * at the checkout this test was written against, the module ships no statement-generation service,
- * so the raw fitter and the three escaping composers alike have no production call site of any
- * kind. This test is therefore a <em>standing</em> guard rather than a certificate about code that
- * is already there &mdash; it is written now so that the first service to compose statement records
- * cannot quietly reach for the unescaped path without failing the build.</p>
+ * <p>It proves that no source under {@code src/main/java} contains a call to the raw fitter, and it
+ * now also proves who does call the escaping composers. When this file was first written the module
+ * shipped no statement-generation service, so the raw fitter and the three escaping composers alike
+ * had no production call site of any kind, and the second claim was recorded as an emptiness with a
+ * note asking a later change to name the caller rather than delete the expectation. That service has
+ * since arrived, so the claim is now the stronger one: the composers are reached from exactly one
+ * class, and the raw fitter is still reached from none. A second record-composing caller appearing
+ * anywhere in the production tree fails the build, which is what the standing guard was for.</p>
  *
  * <p>A census can fail in a way a behavioural test cannot: it can pass because it looked at
  * nothing. Every assertion of absence below is therefore paired with an assertion of presence
@@ -82,6 +83,17 @@ class StatementHtmlWorkLineExposureTest {
 
     /** The class that publishes the fitter; its own declaration is not a call site. */
     private static final String TEMPLATE_CLASS_FILE_NAME = "StatementHtmlTemplates.java";
+
+    /**
+     * The one production class that composes statement records, and therefore the one class licensed
+     * to call an escaping composer.
+     *
+     * <p>Named rather than left as an absence, exactly as the earlier form of the composer census
+     * asked when it recorded that no such class shipped yet. It composes the account heading, the
+     * customer name line, the three address lines, the three basic-detail lines and the three
+     * transaction cells of {@code [app/cbl/CBSTM03A.CBL:L529, L560-L592, L613-L633, L686-L716]}.
+     */
+    private static final String STATEMENT_SERVICE_FILE_NAME = "StatementGenerationService.java";
 
     /** The bare method name whose call sites are being counted. */
     private static final String FITTER_NAME = "workLine";
@@ -268,14 +280,16 @@ class StatementHtmlWorkLineExposureTest {
     }
 
     @Test
-    @DisplayName("the three escaping composers likewise have no production call site yet, which is "
-            + "why this census is a standing guard and not a certificate")
-    void theEscapingComposersHaveNoProductionCallSiteEither() {
-        // This records the true state rather than implying a correct caller exists. The module
-        // ships no statement-generation service, so nothing composes statement records yet. If a
-        // future change adds one, this test is expected to be updated to name it -- and the
-        // preceding test is expected to keep passing, because that service must reach for an
-        // escaping composer rather than the raw fitter.
+    @DisplayName("the three escaping composers are reached from exactly one production class, the "
+            + "statement generation service, and from nothing else")
+    void theEscapingComposersAreReachedOnlyFromTheStatementService() {
+        // Updated rather than deleted when the statement-generation service arrived, exactly as the
+        // earlier form of this test asked while it was still recording an absence. The guard is
+        // unchanged in substance and is now stronger than an emptiness claim: the composers may be
+        // reached, but only from the one class whose job is to compose statement records, so a second
+        // caller appearing anywhere in the production tree still fails the build. The preceding test
+        // continues to hold, because that service reaches for an escaping composer and never for the
+        // raw fitter.
         final List<SourceFile> sources = productionSources().stream()
                 .filter(source -> !source.path().getFileName().toString()
                         .equals(TEMPLATE_CLASS_FILE_NAME))
@@ -299,10 +313,22 @@ class StatementHtmlWorkLineExposureTest {
         }
 
         assertThat(composerCallSites)
-                .as("no statement-generation service ships at this checkout, so the escaping"
-                        + " composers have no production caller; when one is added this expectation"
-                        + " should be changed to name it rather than deleted")
-                .isEmpty();
+                .as("the escaping composers must be reached, or the statement service would have"
+                        + " composed its records some other way; finding none would mean this census"
+                        + " is matching nothing at all")
+                .isNotEmpty();
+
+        final List<String> callingFiles = composerCallSites.stream()
+                .map(site -> Path.of(site.substring(0, site.lastIndexOf(':'))).getFileName()
+                        .toString())
+                .distinct()
+                .toList();
+
+        assertThat(callingFiles)
+                .as("only the statement-generation service composes statement records, so it is the"
+                        + " only class licensed to call an escaping composer; any other caller is a"
+                        + " new record-composing path that has not been reviewed")
+                .containsExactly(STATEMENT_SERVICE_FILE_NAME);
     }
 
     /**

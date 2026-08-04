@@ -3,7 +3,10 @@
     "list": [
       {
         "builtIn": 1,
-        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
         "enable": true,
         "hide": true,
         "iconColor": "rgba(0, 211, 255, 1)",
@@ -12,205 +15,2573 @@
       }
     ]
   },
-  "description": "CardDemo Java module overview: REST endpoint latency/throughput, Spring Batch step timings, JVM and datasource health. Source of the Gate 3 performance baseline.",
-  "editable": false,
-  "graphTooltip": 1,
+  "description": "Copyright Amazon.com, Inc. or its affiliates.\nAll Rights Reserved.\n\nLicensed under the Apache License, Version 2.0 (the \"License\").\nYou may not use this file except in compliance with the License.\nYou may obtain a copy of the License at\n\n   http://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing,\nsoftware distributed under the License is distributed on an\n\"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,\neither express or implied. See the License for the specific\nlanguage governing permissions and limitations under the License\n\n===========================================================================\nCardDemo - Grafana overview dashboard\n===========================================================================\n\nPROVENANCE\n  Legacy estate checkout SHA : 7756d895ffeb65f7ea72aaa609e356d9899afcec\n  Upstream release stamp     : CardDemo_v1.0-15-g27d6c6f-68 (2022-07-19)\n\n  That stamp is the DESIGNATED provenance identifier for this migration and\n  the one carried by the dominant cohort of legacy members. It is not the\n  only stamp in the estate - three further stamps appear on a small number\n  of members - so it is cited as the designated identifier rather than as a\n  universal one.\n\n  This file has no legacy antecedent. Nothing in the mainframe estate\n  corresponds to it, so it is a net-new artifact rather than the translation\n  of a COBOL program, a copybook or a job stream. Traceability is by\n  CITATION only - path and line number - and no legacy source text is\n  reproduced anywhere in this module.\n\nPURPOSE\n  This is the presentation surface of the observability layer that replaces\n  the legacy estate's only diagnostic channel, the DISPLAY statement -\n  approximately 217 of them across the 28 COBOL programs. The count is\n  deliberately approximate: it varies with parse tolerance, and a raw keyword\n  grep over the legacy tree reports a higher figure than a statement-context\n  parse does, so no exact number is asserted here.\n\n  Collection is config/prometheus/prometheus.yml, which scrapes\n  /actuator/prometheus and stamps job=\"carddemo-app\" onto every series it\n  collects. Resolution is\n  config/grafana/provisioning/datasources/datasource.yml, which publishes\n  uid \"carddemo-prometheus\". Every panel below names that uid and every\n  query below filters on that job label. Both strings are interfaces between\n  files rather than local choices: change either one on a single side and\n  every panel here empties while the whole stack still reports healthy.\n\n  The job label is used in preference to the application meter tag because\n  it describes scrape topology. That collector also scrapes itself under a\n  second job, so an unfiltered query would mix two targets.\n\nPERFORMANCE GATE - THIS DASHBOARD ESTABLISHES A BASELINE AND ASSERTS NONE\n  Gate 3 ESTABLISHES the first Java performance baseline. These panels\n  present measurements only. No panel asserts a service level, and no\n  numeric latency, throughput, availability or capacity figure exists\n  anywhere in the source estate - not in the COBOL, not in the job streams,\n  not in the CICS resource definitions - so there is nothing for a panel to\n  be checked against. Recorded figures are written up in\n  docs/gate-evidence.md.\n\n  The three figures the gate names are all read from here: elapsed time from\n  the batch job and step timers, peak memory from the peak-heap panel, and\n  records per second from the item-read rate.\n\n  That is why no panel carries a threshold ladder, a limit line, an alert\n  rule or a fixed axis range. Percentiles, rates and windowed peaks are\n  INSTRUMENTATION and are exactly what is wanted; a boundary drawn across\n  any of them would fabricate a service level this migration is expressly\n  forbidden from inventing. Their absence is a decision, not an oversight,\n  and a reader who finds the panels bare should read that as intent.\n\nDISPLAY CADENCE IS NOT A SERVICE LEVEL\n  \"refresh\" is how often a browser re-runs these queries and \"time\" is the\n  window the panels cover. Both are viewing preferences that belong to\n  whoever is looking. Neither states anything about how fast the application\n  is or ought to be, and neither should be read as a limit by a reviewer\n  applying the no-capacity-figure rule.\n\nBATCH SERIES ARE ABSENT UNTIL A JOB IS LAUNCHED\n  spring.batch.job.enabled is false in application.yml, so no job runs at\n  application startup. Spring Batch series come into existence only after a\n  job has been launched through the module's batch job launch endpoint,\n  com.carddemo.api.BatchJobController. An empty batch row before the first\n  launch is EXPECTED, not a defect.\n\n  The same holds for the application-registered meters row: a Micrometer\n  meter is created on first use, so each of those series appears only once\n  its emitting path has actually executed.\n\nFIXTURE VOLUMES THE BASELINE IS MEASURED OVER\n  Daily transactions : 300 records, 105,300 bytes - 250 point-of-sale\n                       purchases and 50 operator-originated returns. All 300\n                       carry the same processing date and the same\n                       timestamp, so date-window filtering has to be\n                       exercised by a separately constructed fixture rather\n                       than by this input.\n  Accounts           : 50 records\n  Category balances  : 50 records - the interest run's driving set\n  Disclosure groups  : 51 records\n\n  A figure read off these panels is only meaningful when it is quoted\n  alongside these volumes, which is why they are recorded here rather than\n  left to the reader to rediscover.\n\nSCOPE - THE LOCAL VALIDATION STACK AND NOTHING ELSE\n  Grafana reads this file from /var/lib/grafana/dashboards, where the\n  sibling docker-compose.yml mounts config/grafana/dashboards read-only, and\n  the provider definition in config/grafana/provisioning/dashboards places\n  it in the CardDemo folder with UI updates disabled - so this file, not the\n  browser, is the source of truth.\n\n  This file presents NO credential of any kind. Grafana's own sign-in values\n  come from the compose environment, and a 401 answered by the scrape\n  endpoint would be a matter for com.carddemo.config.SecurityConfig, never\n  something to resolve by committing a credential to this repository.\n===========================================================================",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
   "links": [],
   "panels": [
     {
-      "type": "row",
-      "title": "REST endpoints (BMS screen contract)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
       "collapsed": false,
-      "panels": []
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "One endpoint group per legacy screen transaction. Five admin-gated transactions and one public sign-on transaction are among them. Every series here is published by Spring Boot Actuator, so these panels have data as soon as one request has been served.",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "panels": [],
+      "title": "Per-endpoint - REST surface of the CICS screen transactions",
+      "type": "row"
     },
     {
-      "type": "timeseries",
-      "title": "HTTP request rate by URI",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Requests per second, split by URI and method. Framework-published counter, so it needs no application instrumentation.",
       "fieldConfig": {
-        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10 } },
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
           "editorMode": "code",
-          "expr": "sum by (uri, method) (rate(http_server_requests_seconds_count{job=\"carddemo-app\"}[1m]))",
+          "expr": "sum by (uri, method) (rate(http_server_requests_seconds_count{job=\"$job\", uri=~\"$uri\"}[$__rate_interval]))",
+          "format": "time_series",
+          "instant": false,
           "legendFormat": "{{method}} {{uri}}",
           "range": true,
           "refId": "A"
         }
-      ]
+      ],
+      "title": "Request rate by endpoint",
+      "type": "timeseries"
     },
     {
-      "type": "timeseries",
-      "title": "HTTP latency p95 by URI",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Requests per second whose outcome was not SUCCESS, split by status so a client fault reads differently from a server fault.",
       "fieldConfig": {
-        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0 } },
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, uri) (rate(http_server_requests_seconds_bucket{job=\"carddemo-app\"}[5m])))",
+          "expr": "sum by (uri, method, status) (rate(http_server_requests_seconds_count{job=\"$job\", uri=~\"$uri\", outcome!=\"SUCCESS\"}[$__rate_interval]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{method}} {{uri}} {{status}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Error rate by endpoint",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Non-SUCCESS rate divided by total rate. A proportion that is observed, not one that is required.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "id": 4,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (uri) (rate(http_server_requests_seconds_count{job=\"$job\", uri=~\"$uri\", outcome!=\"SUCCESS\"}[$__rate_interval])) / sum by (uri) (rate(http_server_requests_seconds_count{job=\"$job\", uri=~\"$uri\"}[$__rate_interval]))",
+          "format": "time_series",
+          "instant": false,
           "legendFormat": "{{uri}}",
           "range": true,
           "refId": "A"
         }
-      ]
+      ],
+      "title": "Error ratio by endpoint",
+      "type": "timeseries"
     },
     {
-      "type": "timeseries",
-      "title": "HTTP error rate (4xx / 5xx)",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
-      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Read off the percentile histogram that application.yml enables for the request timer. These are MEASUREMENTS of what happened, not levels anything is held to, which is why the panel carries no limit line.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 9
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
           "editorMode": "code",
-          "expr": "sum by (status) (rate(http_server_requests_seconds_count{job=\"carddemo-app\", status=~\"4..|5..\"}[1m]))",
-          "legendFormat": "HTTP {{status}}",
+          "expr": "histogram_quantile(0.50, sum by (le, uri) (rate(http_server_requests_seconds_bucket{job=\"$job\", uri=~\"$uri\"}[$__rate_interval])))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "p50 {{uri}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, uri) (rate(http_server_requests_seconds_bucket{job=\"$job\", uri=~\"$uri\"}[$__rate_interval])))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "p95 {{uri}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, uri) (rate(http_server_requests_seconds_bucket{job=\"$job\", uri=~\"$uri\"}[$__rate_interval])))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "p99 {{uri}}",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Observed request latency percentiles - p50, p95, p99",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Timer sum rate over timer count rate. The arithmetic mean over the refresh window, reported alongside the percentiles because the two answer different questions.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 9
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (uri) (rate(http_server_requests_seconds_sum{job=\"$job\", uri=~\"$uri\"}[$__rate_interval])) / sum by (uri) (rate(http_server_requests_seconds_count{job=\"$job\", uri=~\"$uri\"}[$__rate_interval]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{uri}}",
           "range": true,
           "refId": "A"
         }
-      ]
+      ],
+      "title": "Observed mean request latency by endpoint",
+      "type": "timeseries"
     },
     {
-      "type": "stat",
-      "title": "Application uptime",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
-      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
-      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "The framework's own decaying maximum for the request timer. Useful for spotting a single slow call the percentiles smooth away.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 9
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
           "editorMode": "code",
-          "expr": "process_uptime_seconds{job=\"carddemo-app\"}",
-          "legendFormat": "uptime",
+          "expr": "max by (uri) (http_server_requests_seconds_max{job=\"$job\", uri=~\"$uri\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{uri}}",
           "range": true,
           "refId": "A"
         }
-      ]
+      ],
+      "title": "Observed recent maximum request latency by endpoint",
+      "type": "timeseries"
     },
     {
-      "type": "row",
-      "title": "Spring Batch (JCL job replacement)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
       "collapsed": false,
-      "panels": []
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Nine job configurations carry the application work of the legacy job streams; the remaining steps in those streams were dataset definition and utility invocations, which became schema migrations, in-job comparators and compose services rather than batch steps. There is no master orchestrator: ordering across the pipeline is an operational convention. One job is defined without a legacy driver and is excluded from the default pipeline, so it appears here only when a test launches it. EVERY series in this row is absent until a job has been launched.",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "id": 8,
+      "panels": [],
+      "title": "Per-batch-step - Spring Batch jobs replacing the application job steps",
+      "type": "row"
     },
     {
-      "type": "timeseries",
-      "title": "Batch step duration (p95)",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
-      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Maximum and mean wall-clock duration per job. This is where the Gate 3 elapsed-time figure is read. Quote it with the fixture volumes recorded in this dashboard's description. Absent until a job has been launched.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, name) (rate(spring_batch_step_seconds_bucket{job=\"carddemo-app\"}[5m])))",
-          "legendFormat": "{{name}}",
+          "expr": "max by (spring_batch_job_name) (spring_batch_job_seconds_max{job=\"$job\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{spring_batch_job_name}} max",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (spring_batch_job_name) (spring_batch_job_seconds_sum{job=\"$job\"}) / sum by (spring_batch_job_name) (spring_batch_job_seconds_count{job=\"$job\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{spring_batch_job_name}} mean",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Batch job elapsed time - GATE 3 ELAPSED TIME",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Maximum and mean duration per step, keyed by owning job and step name. Absent until a job has been launched.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (spring_batch_step_job_name, spring_batch_step_name) (spring_batch_step_seconds_max{job=\"$job\", spring_batch_step_name=~\"$step\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{spring_batch_step_job_name}} / {{spring_batch_step_name}} max",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (spring_batch_step_job_name, spring_batch_step_name) (spring_batch_step_seconds_sum{job=\"$job\", spring_batch_step_name=~\"$step\"}) / sum by (spring_batch_step_job_name, spring_batch_step_name) (spring_batch_step_seconds_count{job=\"$job\", spring_batch_step_name=~\"$step\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{spring_batch_step_job_name}} / {{spring_batch_step_name}} mean",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Batch step elapsed time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Rate of the item-read timer's count, which is one observation per record read. This is where the Gate 3 records-per-second figure is read. Note that this timer's labels are unprefixed, unlike the job and step timers above. Absent until a job has been launched.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "records/s",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "cps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 26
+      },
+      "id": 11,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job_name, step_name) (rate(spring_batch_item_read_seconds_count{job=\"$job\"}[$__rate_interval]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{job_name}} / {{step_name}}",
           "range": true,
           "refId": "A"
         }
-      ]
+      ],
+      "title": "Records read per second - GATE 3 RECORDS PER SECOND",
+      "type": "timeseries"
     },
     {
-      "type": "timeseries",
-      "title": "Batch item throughput (records/s)",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
-      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Increase in the item-read count across whatever window the time picker is showing. A volume observed, never a volume expected.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 26
+      },
+      "id": 12,
+      "options": {
+        "colorMode": "none",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.6.6",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
           "editorMode": "code",
-          "expr": "sum by (name) (rate(spring_batch_item_process_seconds_count{job=\"carddemo-app\"}[1m]))",
-          "legendFormat": "{{name}}",
+          "expr": "sum by (job_name, step_name) (increase(spring_batch_item_read_seconds_count{job=\"$job\"}[$__range]))",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "{{job_name}} / {{step_name}}",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Records read over the selected window",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Cumulative job-timer count split by status. Spring Batch 5.2.6 publishes no active-job gauge, so execution counts by status are the available view of job outcomes over time.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 26
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (spring_batch_job_name, spring_batch_job_status) (spring_batch_job_seconds_count{job=\"$job\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{spring_batch_job_name}} {{spring_batch_job_status}}",
           "range": true,
           "refId": "A"
         }
-      ]
+      ],
+      "title": "Batch job executions by status",
+      "type": "timeseries"
     },
     {
-      "type": "row",
-      "title": "JVM and datasource",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "One row per job, step and status. The status label distinguishes a step that completed from one that failed, which is the distinction the legacy condition-code gating depended on.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true,
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "id": 14,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "enablePagination": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "pluginVersion": "11.6.6",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (spring_batch_step_job_name, spring_batch_step_name, spring_batch_step_status) (spring_batch_step_seconds_count{job=\"$job\", spring_batch_step_name=~\"$step\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Batch step executions by status",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {},
+            "renameByName": {
+              "Value": "executions",
+              "spring_batch_step_job_name": "job",
+              "spring_batch_step_name": "step",
+              "spring_batch_step_status": "status"
+            }
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
       "collapsed": false,
-      "panels": []
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Published by Micrometer's JVM and process binders, so this row has data from application startup onward and needs no request or job to populate it. Axes are left auto-scaled on purpose: a fixed range would imply an acceptable band, and none is documented anywhere in the source estate.",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      },
+      "id": 15,
+      "panels": [],
+      "title": "JVM and process - GATE 3 PEAK MEMORY is read from this row",
+      "type": "row"
     },
     {
-      "type": "timeseries",
-      "title": "JVM heap used vs committed",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
-      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Used against committed against the maximum the JVM reports. The maximum is a fact the runtime publishes about itself, not a limit asserted here; no heap sizing figure is set by this module.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 0,
+        "y": 43
+      },
+      "id": 16,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
           "editorMode": "code",
-          "expr": "sum(jvm_memory_used_bytes{job=\"carddemo-app\", area=\"heap\"})",
+          "expr": "sum(jvm_memory_used_bytes{job=\"$job\", area=\"heap\"})",
+          "format": "time_series",
+          "instant": false,
           "legendFormat": "heap used",
           "range": true,
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
           "editorMode": "code",
-          "expr": "sum(jvm_memory_committed_bytes{job=\"carddemo-app\", area=\"heap\"})",
+          "expr": "sum(jvm_memory_committed_bytes{job=\"$job\", area=\"heap\"})",
+          "format": "time_series",
+          "instant": false,
           "legendFormat": "heap committed",
           "range": true,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(jvm_memory_max_bytes{job=\"$job\", area=\"heap\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "heap max reported by the JVM",
+          "range": true,
+          "refId": "C"
         }
-      ]
+      ],
+      "title": "Heap used, committed and maximum",
+      "type": "timeseries"
     },
     {
-      "type": "timeseries",
-      "title": "HikariCP connections",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 27 },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "The largest summed heap occupancy seen anywhere in the window the time picker is showing. This is where the Gate 3 peak-memory figure is read. It is a measurement over a chosen window, so widen the window before quoting it and record it beside the fixture volumes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 10,
+        "y": 43
+      },
+      "id": 17,
+      "options": {
+        "colorMode": "none",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.6.6",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
           "editorMode": "code",
-          "expr": "hikaricp_connections_active{job=\"carddemo-app\"}",
-          "legendFormat": "active",
+          "expr": "max_over_time(sum(jvm_memory_used_bytes{job=\"$job\", area=\"heap\"})[$__range:])",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "peak heap",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Peak heap over the selected window - GATE 3 PEAK MEMORY",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Metaspace, compressed class space and the code heaps. Reported per pool as well as in total, because a class-space trend and a code-cache trend mean different things.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 14,
+        "y": 43
+      },
+      "id": 18,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(jvm_memory_used_bytes{job=\"$job\", area=\"nonheap\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "non-heap used, total",
           "range": true,
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
           "editorMode": "code",
-          "expr": "hikaricp_connections_idle{job=\"carddemo-app\"}",
-          "legendFormat": "idle",
+          "expr": "sum by (id) (jvm_memory_used_bytes{job=\"$job\", area=\"nonheap\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{id}}",
           "range": true,
           "refId": "B"
         }
-      ]
+      ],
+      "title": "Non-heap used by pool",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Pauses per second and pause-seconds per second, split by action and cause. The second series is a dimensionless proportion of wall-clock time spent paused.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 51
+      },
+      "id": 19,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (action, cause) (rate(jvm_gc_pause_seconds_count{job=\"$job\"}[$__rate_interval]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "pauses/s {{action}} {{cause}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (action, cause) (rate(jvm_gc_pause_seconds_sum{job=\"$job\"}[$__rate_interval]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "pause seconds/s {{action}} {{cause}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Garbage-collection pause rate and pause time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Process and whole-system processor usage on the left axis, live thread count on the right. No thread-count figure is configured by this module, so the count is observed rather than bounded.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "live threads"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 51
+      },
+      "id": 20,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "process_cpu_usage{job=\"$job\"}",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "process processor usage",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "system_cpu_usage{job=\"$job\"}",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "system processor usage",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "jvm_threads_live_threads{job=\"$job\"}",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "live threads",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Processor usage and live threads",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Seconds since this process started. Reported so that a figure read from the other panels can be placed against how long the process had been running when it was taken. It is not an availability proportion and no availability proportion is asserted anywhere in this dashboard.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 51
+      },
+      "id": 21,
+      "options": {
+        "colorMode": "none",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.6.6",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "process_uptime_seconds{job=\"$job\"}",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "process uptime",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Process uptime observed",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Observation only. The HikariCP 6.3.3 default configuration is retained DELIBERATELY because no legacy tuning baseline exists to tune against: every legacy data file was defined with uncommitted read integrity and no recovery, so there is no prior figure for pool behaviour. These panels exist to be read, and no pool size, timeout or concurrency figure is set by this module.",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 59
+      },
+      "id": 22,
+      "panels": [],
+      "title": "Connection pool - OBSERVATION ONLY, not a tuning surface",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Active, idle and pending connections per pool. Pending rising while active is flat is the shape worth noticing; no figure is prescribed for any of the three.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 60
+      },
+      "id": 23,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "hikaricp_connections_active{job=\"$job\"}",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "active {{pool}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "hikaricp_connections_idle{job=\"$job\"}",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "idle {{pool}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "hikaricp_connections_pending{job=\"$job\"}",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "pending {{pool}}",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Connection pool activity",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Restates, for anyone reading the dashboard rather than its JSON, what the performance gate does and does not do.",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 68
+      },
+      "id": 24,
+      "panels": [],
+      "title": "How to read this dashboard",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "The same framing carried in this dashboard's own description, repeated on the canvas so it is read by someone who never opens the file.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 22,
+        "w": 24,
+        "x": 0,
+        "y": 69
+      },
+      "id": 25,
+      "options": {
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "## Gate 3 establishes the first Java performance baseline. It asserts no threshold.\n\nNo numeric latency, throughput, availability or capacity figure exists anywhere in the\nlegacy estate - not in the COBOL, not in the job streams, not in the CICS resource\ndefinitions - so there is nothing here for a panel to be checked against. **These panels\nmeasure.** Recorded figures are written up in `docs/gate-evidence.md`.\n\n### Where each of the three figures the gate names is read\n\n| Gate 3 figure | Panel |\n| --- | --- |\n| Elapsed time | *Batch job elapsed time*, and *Batch step elapsed time* |\n| Peak memory | *Peak heap over the selected window* |\n| Records per second | *Records read per second* |\n\n### Quote every figure alongside the fixture volumes it was measured over\n\n- **Daily transactions - 300 records, 105,300 bytes.** 250 point-of-sale purchases and\n  50 operator-originated returns, so both signed directions of the balance computation\n  are exercised. All 300 carry the same processing date and the same timestamp, so\n  date-window filtering has to be exercised by a separately constructed fixture rather\n  than by this input.\n- **Accounts - 50 records.**\n- **Transaction-category balances - 50 records.** The interest run's driving set.\n- **Disclosure groups - 51 records.** Three complete groups, one of which is the default\n  group, which is what makes both the direct-hit and the fallback branch of the interest\n  lookup reachable from seeded data alone.\n\nA number taken from these panels without those volumes beside it is not a baseline.\n\n### Batch rows are empty until a job is launched\n\n`spring.batch.job.enabled` is `false`, so no job runs at application startup. Spring\nBatch series come into existence only once a job has been launched through the module's\nbatch job launch endpoint. The application-registered meters row behaves the same way,\nbecause a Micrometer meter is created on first use. **An empty panel before the first\nrun is expected, not a defect.**\n\n### Why there is no threshold, no limit line and no alert rule here\n\nPercentiles, rates and windowed peaks are instrumentation. A boundary drawn across one\nof them would be a service level, and this migration is expressly forbidden from\ninventing one. `refresh` and `time` are display cadence and display window - viewing\npreferences, not limits.\n\n### Provenance\n\nLegacy estate checkout SHA `7756d895ffeb65f7ea72aaa609e356d9899afcec`; upstream release\nstamp `CardDemo_v1.0-15-g27d6c6f-68` (2022-07-19), the designated provenance identifier\nfor this migration. Traceability is by citation - path and line number - and no legacy\nsource text is reproduced anywhere in this module.\n",
+        "mode": "markdown"
+      },
+      "pluginVersion": "11.6.6",
+      "title": "Gate 3 - baseline, fixture volumes, and why there are no thresholds",
+      "transparent": false,
+      "type": "text"
+    },
+    {
+      "collapsed": false,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Unlike the rows above, these four meters are registered by this module's own code rather than by the framework, and Micrometer creates a meter on first use. Each panel here is therefore EXPECTED to be empty until the path that emits it has actually executed. Every name below was verified against a real registration in the module source; no metric this module does not emit is charted anywhere in this dashboard.",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 91
+      },
+      "id": 26,
+      "panels": [],
+      "title": "Application-registered meters - SECONDARY, each present only once its code path has run",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "One observation per run of a translated batch program, tagged with the legacy program name and whether the lifecycle completed or abended. The abended outcome is the translation of the legacy terminal path, so a series appearing under it is a real failure rather than a slow run.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 92
+      },
+      "id": 27,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (step, outcome) (carddemo_batch_cobol_step_seconds_max{job=\"$job\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{step}} {{outcome}} max",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (step, outcome) (carddemo_batch_cobol_step_seconds_sum{job=\"$job\"}) / sum by (step, outcome) (carddemo_batch_cobol_step_seconds_count{job=\"$job\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{step}} {{outcome}} mean",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Legacy batch program lifecycle elapsed time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Records written to the fixed-length reject dataset, as a rate on the left axis and as a window total on the right. Rejects are an expected product of the posting validation cascade, not an error condition, so no acceptable count is stated for them.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "records/s",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "cps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "DALYREJS records in window"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 92
+      },
+      "id": 28,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (resource) (rate(carddemo_batch_reject_records_total{job=\"$job\"}[$__rate_interval]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{resource}} records/s",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (resource) (increase(carddemo_batch_reject_records_total{job=\"$job\"}[$__range]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{resource}} records in window",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Reject-record write throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Duration of one chunk write to the reject dataset, tagged by resource and by whether the destination accepted the chunk.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 100
+      },
+      "id": 29,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (resource, outcome) (carddemo_batch_reject_write_seconds_max{job=\"$job\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{resource}} {{outcome}} max",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (resource, outcome) (carddemo_batch_reject_write_seconds_sum{job=\"$job\"}) / sum by (resource, outcome) (carddemo_batch_reject_write_seconds_count{job=\"$job\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{resource}} {{outcome}} mean",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Reject dataset chunk write elapsed time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "One observation per sign-on turn, tagged with the decision the turn reached. Split by outcome rather than aggregated because a rise in the not-found outcome and a rise in the failed-verification outcome mean different things. The tag values are the enumerated decision names, so the label cannot become high-cardinality.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 100
+      },
+      "id": 30,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (outcome) (carddemo_online_signon_turn_seconds_max{job=\"$job\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{outcome}} max",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (outcome) (carddemo_online_signon_turn_seconds_sum{job=\"$job\"}) / sum by (outcome) (carddemo_online_signon_turn_seconds_count{job=\"$job\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{outcome}} mean",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Sign-on turn elapsed time by outcome",
+      "type": "timeseries"
     }
   ],
   "preload": false,
-  "refresh": "10s",
+  "refresh": "30s",
   "schemaVersion": 39,
-  "tags": ["carddemo", "cobol-migration", "spring-boot"],
-  "templating": { "list": [] },
-  "time": { "from": "now-30m", "to": "now" },
+  "tags": [
+    "carddemo",
+    "cobol-migration",
+    "gate-3",
+    "observability"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "carddemo-app",
+          "value": "carddemo-app"
+        },
+        "description": "The Prometheus scrape job label. Published by config/prometheus/prometheus.yml as job_name and stamped onto every series it collects. Hidden and single-valued because it is an interface between two files, not a user choice: that collector also scrapes itself under a second job, so every query on this dashboard is scoped by this label.",
+        "hide": 2,
+        "includeAll": false,
+        "label": "Scrape job",
+        "multi": false,
+        "name": "job",
+        "options": [
+          {
+            "selected": true,
+            "text": "carddemo-app",
+            "value": "carddemo-app"
+          }
+        ],
+        "query": "carddemo-app",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "carddemo-prometheus"
+        },
+        "definition": "label_values(http_server_requests_seconds_count{job=\"carddemo-app\"}, uri)",
+        "description": "Endpoint filter for the per-endpoint row. Discovered from the data rather than hardcoded, so no endpoint path is duplicated into this file. Defaults to All, which matches every URI, so the row is populated before any selection is made.",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Endpoint",
+        "multi": true,
+        "name": "uri",
+        "options": [],
+        "query": "label_values(http_server_requests_seconds_count{job=\"carddemo-app\"}, uri)",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "carddemo-prometheus"
+        },
+        "definition": "label_values(spring_batch_step_seconds_count{job=\"carddemo-app\"}, spring_batch_step_name)",
+        "description": "Batch step filter. The label name is prefixed because Spring Batch publishes its step timer through the Observation API. Defaults to All and stays empty until a job has been launched, which is expected rather than a fault.",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Batch step",
+        "multi": true,
+        "name": "step",
+        "options": [],
+        "query": "label_values(spring_batch_step_seconds_count{job=\"carddemo-app\"}, spring_batch_step_name)",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "utc",
   "title": "CardDemo Overview",

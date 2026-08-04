@@ -131,11 +131,20 @@ import com.carddemo.util.ZonedDecimalCodec;
  * concurrent turns cannot observe one another, and no identifier, account or balance is cached
  * between calls.
  *
+ * <p>This type is deliberately <em>not</em> {@code final}. The {@code @Transactional} methods
+ * declared below are advised through a CGLIB subclass proxy, and a final class cannot be
+ * subclassed, so declaring this type final makes the application context fail to start with
+ * {@code Cannot subclass final class}. The proxy is what applies the declared transaction
+ * semantics, so the modifier and the annotation cannot both be present. The sibling services that
+ * carry transactional methods are non-final for the same reason, and extension is not invited: the
+ * constructor is the only way to build one, every field is final, and no method is designed to be
+ * overridden.
+ *
  * @see MessageCatalogService
  * @see NavigationService
  */
 @Service
-public final class BillPaymentService {
+public class BillPaymentService {
 
     private static final Logger LOG = LoggerFactory.getLogger(BillPaymentService.class);
 

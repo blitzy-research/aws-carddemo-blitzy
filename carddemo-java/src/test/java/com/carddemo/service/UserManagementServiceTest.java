@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.TreeMap;
 import java.util.UUID;
@@ -265,8 +266,13 @@ class UserManagementServiceTest {
     private static FakeRepository repositoryOf(final int rowCount) {
         final FakeRepository repository = new FakeRepository();
         for (int index = 1; index <= rowCount; index++) {
-            seed(repository, String.format("USER%04d", index), "GIVEN" + index, "FAMILY" + index,
-                    index % 2 == 0 ? "A" : "U", FILLER_DIGEST);
+            // Locale.ROOT is mandatory, not decorative. The identifier is a fixed-width field whose
+            // eight bytes must stay inside US-ASCII, and an unqualified format emits the default
+            // locale's digits - under a locale whose numbering system is not Latin those are not ASCII
+            // digits at all, and every identifier assertion in this class would compare against a
+            // value it could never equal.
+            seed(repository, String.format(Locale.ROOT, "USER%04d", index), "GIVEN" + index,
+                    "FAMILY" + index, index % 2 == 0 ? "A" : "U", FILLER_DIGEST);
         }
         return repository;
     }

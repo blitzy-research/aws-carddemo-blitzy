@@ -29,6 +29,7 @@ import com.carddemo.repository.CardRepository;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -111,7 +112,11 @@ final class CardListServiceTest {
      * @return the row
      */
     private static Card cardRow(final int ordinal) {
-        final String cardNumber = String.format("41111111111111%02d", ordinal);
+        // Locale.ROOT is mandatory, not decorative. The card number is a fixed-width sixteen-byte
+        // field that must stay inside US-ASCII, and an unqualified format emits the default locale's
+        // digits - under a locale whose numbering system is not Latin those are not ASCII digits at
+        // all, and the row would carry a card number no fixed-width image could hold.
+        final String cardNumber = String.format(Locale.ROOT, "41111111111111%02d", ordinal);
         return new Card(cardNumber, ACCOUNT_ID, "123", "ALICE SMITH", "2029-12-31", "Y");
     }
 
