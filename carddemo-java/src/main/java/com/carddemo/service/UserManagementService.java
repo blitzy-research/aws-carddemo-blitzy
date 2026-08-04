@@ -233,6 +233,12 @@ import com.carddemo.util.CobolStringUtils;
  * constructor is the only way to build one, every field is final, and no method is designed to be
  * overridden.
  */
+// NOT FINAL, AND THAT IS A REQUIREMENT RATHER THAN AN OVERSIGHT. The transactional methods below
+// are advised by a framework-generated subclass proxy, and a final class cannot be subclassed - so
+// declaring this class final makes the application fail to start, rather than making it start with
+// the advice silently absent. The sibling services that carry transactional methods are non-final
+// for the same reason. Extension is not invited: the constructor is the only way to build one, every
+// field is final, and no method is designed to be overridden.
 @Service
 public class UserManagementService {
 

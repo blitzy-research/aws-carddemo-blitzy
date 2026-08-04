@@ -4825,6 +4825,74 @@ the gate and the first two by never touching a regulated column.
 
 ---
 
+### DL-130 - The three cloud clients are aimed from this module's own namespace by customizing them, because publishing clients of our own would seize settings we have no position on
+
+**Context.** Two of the six key paths the migration plan mandates under this module's own prefix - the
+region and the optional endpoint redirection - were bound and validated and then read by nothing. The
+configuration class that owns the settings type said so in its own words, claiming both belonged
+exclusively to the cloud integration's namespace, while the settings type it registers bound both. One of
+those two statements had to be wrong, and it was the configuration class: a key that is bound while
+nothing consumes it advertises an adjustability that does not exist, which is the very fault two earlier
+entries record for the withdrawn queue keys.
+
+**Decision.** The configuration class takes the settings type as a constructor parameter and contributes
+one customizer per client - object store, queue, notifications. Each applies the configured region
+unconditionally and the configured endpoint redirection only when one is configured. Nothing else is
+touched: no credential is read, no bucket, queue or topic is created, no addressing style is overridden,
+and no attempt count, time-out, backoff interval, pool size or capacity figure is set.
+
+**Why customizing rather than publishing clients.** The plan asks this class to register the three
+clients and, in its next breath, to prefer the starters' auto-configured clients and customize them
+rather than hand-build. The second reading is the one that survives contact with the code. Publishing
+clients here would take over credential resolution and the object store's path-style addressing from the
+integration's own settings - values every profile document already states - leaving two sources of truth
+for one setting, which is the hazard the settings type's own reasoning warns about. It would also silence
+the customizers, since the auto-configuration backs off once a client bean exists. Customizing changes
+only what this module has a position on and leaves the rest exactly where the profile documents put it.
+
+**Why a customizer is authoritative, established by reading the library rather than assuming.** The
+integration's builder configurer applies, in order, the credentials provider, the region, the endpoint,
+the defaults mode and the protocol flags, and only then the per-service customizers. A customizer is
+therefore the last writer of every property it sets, so the region and redirection this module states are
+the ones the built client uses. Both are set to one definite value, so the outcome cannot depend on the
+order customizers happen to run in.
+
+**Why the redirection is conditional and the region is not.** An absent redirection is not a fault and
+must not be defaulted: a client with no redirection resolves its region's own real endpoint, which is
+precisely what a deployment wants, and the production guard refuses the redirection keys outright, so the
+redirecting branch is unreachable under that profile. The region has no such absent case - every client
+must resolve somewhere - and every profile derives the integration's region setting from this same key, so
+the two namespaces cannot name different regions. The decision "is a redirection configured" is taken
+once, in one helper, rather than three times at three builders where getting it wrong once means one
+client silently addressing a real account.
+
+**Nothing is registered that could shorten a submission.** No publishing template is contributed here.
+The auto-configured one already carries the library's message conversion and observation wiring, and the
+publisher supplies the two per-message properties that matter: the stable message group that preserves
+append order, and a per-card deduplication identifier derived from the card's ordinal. That second one is
+the subtlest hazard in the bridge - several of the seventeen cards are comment or delimiter cards with
+byte-identical bodies, so content-based deduplication would discard the duplicates and shorten the job
+stream into something a reader would accept - and it is closed twice, by that identifier and by the
+bootstrap creating the queue with content-based deduplication off.
+
+**Verified by running it, not by reading it.** The packaged artefact was started under the local profile
+on a clone-index-derived port and against a clone-index-derived database, leaving the shared stack
+untouched. It reported healthy with no warning and no error, logged the five resource settings and a
+boolean for whether a redirection was configured - never the redirection itself, per the diagnostics
+rule - and emitted one debug line per client showing that all three customizers ran and each applied the
+redirection, naming the key rather than its value. The throwaway database was dropped afterwards. Unit
+assertions additionally require the region on all three builders, the redirection on all three when
+configured, and none on any when the value is absent or blank, each paired with the region assertion so
+the absent cases cannot pass vacuously.
+
+*Cited by:* `config/AwsConfig.java`. The settings it consumes are `config/AwsProperties.java`; the
+profile documents that supply them are `application.yml`, `application-local.yml`,
+`application-test.yml` and `application-prod.yml`; the production refusal of the redirection keys is
+`config/ProductionConfigurationValidator.java`; and the resources it addresses are provisioned by
+`localstack/init/01-create-aws-resources.sh`.
+
+---
+
 *This log is authored alongside the target module and is never edited by the code that cites it. A
 citation is a pointer into this document; the reasoning lives here in one place so that it cannot
 drift between the files that depend on it.*

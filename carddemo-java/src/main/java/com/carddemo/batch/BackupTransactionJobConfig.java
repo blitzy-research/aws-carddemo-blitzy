@@ -262,6 +262,14 @@ import org.springframework.transaction.PlatformTransactionManager;
  * record to its image is the mapping layer's responsibility: all fixed-width offset knowledge lives
  * there, and this configuration composes rather than slices.
  *
+ * <p>Bean-method proxying is switched off, as it is on every sibling job configuration in this
+ * package, and the two properties of this class that follow from that are worth stating because
+ * removing either one breaks start-up. The class stays {@code final}: a proxying configuration class
+ * is subclassed at run time and cannot be final, so the container refuses one outright, and the
+ * refusal is a start-up failure rather than a compile error. And the two step definitions below stay
+ * private methods rather than beans: nothing here calls one bean method from another, so there is no
+ * inter-bean reference for a proxy to intercept and no singleton guarantee to preserve.
+ *
  * <h2>Standards this file is held to</h2>
  *
  * <p>No user-specified rules were provided for this engagement, so the work is held to
@@ -273,6 +281,15 @@ import org.springframework.transaction.PlatformTransactionManager;
  * a first-class concern with no hardcoded performance target; licence continuity through the header
  * above; and full auditability through the traceability matrix. Where a faithful translation and an
  * idiomatic one disagree, the legacy behaviour wins and the divergence becomes a decision-log entry.
+ *
+ * <p>Declared as a lite configuration, which is what every other configuration class in this module
+ * declares and what this one has to declare. A full configuration class is subclassed at runtime so
+ * that a call from one bean method to another can be intercepted and answered with the singleton, and
+ * a class that cannot be subclassed is rejected outright - so the full form on a final class prevents
+ * the application context from starting at all. The lite form is not a workaround for that: it is the
+ * accurate description of this class, whose single bean method calls private step builders rather than
+ * other bean methods, so there is no call here for interception to answer differently. It also keeps
+ * this file inside the module's zero-reflection posture by introducing no generated subclass.
  */
 @Configuration(proxyBeanMethods = false)
 public final class BackupTransactionJobConfig {

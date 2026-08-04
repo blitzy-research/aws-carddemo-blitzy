@@ -213,9 +213,19 @@ final class PackageLayeringTest {
      * prefix rule, so a new sub-package cannot inherit a permission nobody granted it.
      */
     private static final Map<String, Set<String>> PERMITTED_DEPENDENCIES = Map.of(
+            // The edge onto com.carddemo.batch is the one deliberate exception to "the API layer talks to
+            // services". It exists for exactly one class - the batch control surface - and for exactly one
+            // purpose: reading the nine stable job names out of the configurations that publish them,
+            // rather than repeating nine string literals that could drift away from the names the
+            // framework actually registered. It carries no job logic across the boundary, because the
+            // launch itself is issued through the framework's own registry and operator interfaces, which
+            // are not module packages and are therefore not measured here. The edge is one-way and stays
+            // one-way: noBatchClassImportsATransportRecord below asserts that no job configuration and no
+            // step component imports anything under com.carddemo.api in return, so the pair cannot become
+            // a cycle.
             "com.carddemo.api", Set.of("com.carddemo.api.dto", "com.carddemo.service",
                     "com.carddemo.domain", "com.carddemo.domain.enums", "com.carddemo.domain.id",
-                    "com.carddemo.util", "com.carddemo.exception"),
+                    "com.carddemo.util", "com.carddemo.exception", "com.carddemo.batch"),
             "com.carddemo.api.dto", Set.of("com.carddemo.domain.enums"),
             "com.carddemo.service", Set.of("com.carddemo.repository", "com.carddemo.domain",
                     "com.carddemo.domain.enums", "com.carddemo.domain.id", "com.carddemo.util",
