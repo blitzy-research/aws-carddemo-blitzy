@@ -1,19 +1,171 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
 #
-# Grafana dashboard provider: loads every dashboard JSON mounted at /var/lib/grafana/dashboards.
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+
+# ===========================================================================
+# CardDemo - Grafana dashboard provider provisioning
+# ===========================================================================
+#
+# PROVENANCE
+#   Legacy estate checkout SHA : 7756d895ffeb65f7ea72aaa609e356d9899afcec
+#   Upstream release stamp     : CardDemo_v1.0-15-g27d6c6f-68 (2022-07-19)
+#
+#   This file has no legacy antecedent. Nothing in the mainframe estate
+#   corresponds to it, so it is a net-new artifact rather than the
+#   translation of a COBOL program, a copybook or a job stream. Traceability
+#   to the legacy estate is by citation only - path and line number - and no
+#   legacy source text is reproduced anywhere in this module.
+#
+# PURPOSE
+#   This is the delivery half of the observability layer that replaces the
+#   legacy estate's only diagnostic channel, the DISPLAY statement. It
+#   declares ONE file-based dashboard provider, which is what makes Grafana
+#   discover config/grafana/dashboards/carddemo-overview.json while it
+#   starts, file it under a named folder, and present it with NO manual
+#   import step.
+#
+#   Three files divide that work and each one states its own half of the
+#   contract. config/prometheus/prometheus.yml collects, stamping
+#   job="carddemo-app" onto every series it gathers. The sibling
+#   provisioning/datasources/datasource.yml registers the Prometheus holding
+#   those series under uid carddemo-prometheus, which is the uid all thirty
+#   panels resolve against. This file says where the dashboard that queries
+#   them lives. It does nothing else, and deliberately so - see PERFORMANCE
+#   GATE below.
+#
+#   Two directories in this module are named "dashboards", they are
+#   different things, and confusing them is exactly how the silent failure
+#   described next gets introduced. THIS file, under provisioning/dashboards,
+#   is the PROVIDER - the instruction to go looking. config/grafana/dashboards
+#   is the CONTENT - the panels themselves. This file declares no panel, and
+#   that directory declares no provider.
+#
+# THE PATH BELOW IS AN IN-CONTAINER PATH, AND THAT IS THE WHOLE GAME
+#   Grafana resolves options.path inside its OWN filesystem, never on the
+#   host. The compose stack of this module binds the content directory
+#   config/grafana/dashboards to /var/lib/grafana/dashboards, and binds the
+#   provisioning directory holding this file to /etc/grafana/provisioning,
+#   which is the tree Grafana scans while it starts. The value below is the
+#   in-container destination of that first bind, read out of the sibling
+#   docker-compose.yml rather than assumed.
+#
+#   Put a host-relative path there instead and the failure is SILENT in the
+#   worst way. The path simply does not exist inside the container, so
+#   Grafana starts with no dashboard at all, reports itself HEALTHY, logs
+#   nothing to catch, and offers no exit code to fail on. The stack looks
+#   entirely correct and only the performance-gate write-up comes out empty.
+#   That is why this file is verified by asking Grafana's own API for what it
+#   should have created - /api/search, /api/dashboards/uid/carddemo-overview
+#   and /api/folders - rather than by looking at container state.
+#
+# THE folderUid IS A CONTRACT, NOT A LOCAL NAME
+#   carddemo-overview.json declares no folder of its own, so the folder and
+#   folderUid below are the only thing that places it. Grafana keys a
+#   provisioned folder by uid, so pinning that uid is what makes provisioning
+#   IDEMPOTENT: restart the container and the dashboard returns to the same
+#   folder instead of to a second one beside it.
+#
+#   Omit the key and Grafana generates a random uid in its place, which
+#   reintroduces precisely the non-determinism the reproducible-build
+#   standard forbids - and quietly, because a duplicated folder reads as a
+#   cosmetic surprise rather than as an error.
+#
+# PERFORMANCE GATE
+#   The performance gate ESTABLISHES the first Java baseline. It asserts NO
+#   threshold. No numeric latency, throughput, availability or capacity
+#   target exists anywhere in the legacy estate - not in the COBOL, not in
+#   the job streams, not in the CICS resource definitions - so there is
+#   nothing to test against. Elapsed time, peak memory and records per second
+#   are measured and written up in docs/gate-evidence.md.
+#
+#   That is why this provider declares no scan cadence, no query setting and
+#   no cache setting, and why it provisions no rule group, no contact point
+#   and no notification policy. Their absence is a decision rather than an
+#   oversight. A rule carrying a boundary would state a service level this
+#   migration is expressly forbidden from inventing, a cadence figure would
+#   read as a tuning claim when Grafana's own default scan behaviour is
+#   already correct, and neither belongs to a provider whose entire job is to
+#   name a directory. A reader who finds this file bare should read that as
+#   intent.
+#
+#   One consequence is worth stating here so it is not mistaken for a fault
+#   of this file: batch jobs in this module launch on demand only, because
+#   spring.batch.job.enabled is false, so the dashboard's per-step panels
+#   hold no data until a job is actually launched. An empty step panel just
+#   after startup is expected behaviour, and nothing in this file can or
+#   should change it.
+#
+# SCOPE - LOCAL VALIDATION STACK ONLY
+#   The grafana service of the sibling docker-compose.yml mounts the
+#   provisioning tree read-only, which puts this file at
+#   /etc/grafana/provisioning/dashboards/dashboard.yml. Because that mount
+#   covers the whole directory, anything else dropped in beside this file
+#   would also be read as provisioning configuration - which is the practical
+#   reason this directory holds exactly one file and nothing else.
+#
+#   A file provider reads from the container's own filesystem, so it presents
+#   NO credential of any kind. None would be meaningful here and none
+#   appears below. Grafana's own sign-in values come from the compose
+#   environment and are local-development values, so they are not restated
+#   here either; a panel query refused as unauthenticated would be a matter
+#   for com.carddemo.config.SecurityConfig, never something to settle by
+#   writing a secret into a committed file.
+#
+#   Exactly ONE provider is declared, reading from the filesystem. A provider
+#   that fetched dashboards over the network would make container start
+#   depend on a remote endpoint, and a second provider or a second folder
+#   would surface a dashboard this module does not ship. The first is ruled
+#   out by the hermetic-build standard, the second by that standard and by
+#   the no-feature-expansion boundary together.
+# ===========================================================================
 
 apiVersion: 1
 
+# One provider, reading from the local filesystem. This module ships exactly
+# one dashboard, the legacy estate had no second one, and provisioning a
+# provider for a dashboard nothing ships would be feature expansion.
 providers:
   - name: carddemo
+    # The default organisation. This stack creates no other.
     orgId: 1
+    # The folder a reader sees the dashboard filed under in the UI.
     folder: CardDemo
+    # Load-bearing; see THE folderUid IS A CONTRACT above.
+    # carddemo-overview.json names no folder itself, so pinning this uid keeps
+    # provisioning idempotent across restarts rather than accumulating a fresh
+    # folder each time the container comes up.
     folderUid: carddemo
+    # Filesystem, never a network fetch: container start must not be made to
+    # depend on a remote endpoint.
     type: file
-    disableDeletion: true
+    # Provisioning stays authoritative over the dashboards it owns, so
+    # removing the JSON removes the dashboard rather than orphaning a copy
+    # inside Grafana. This is Grafana's own default, stated explicitly so the
+    # behaviour is declared here rather than inherited silently.
+    disableDeletion: false
+    # Version-controlled rather than UI-mutated: carddemo-overview.json is the
+    # source of truth, and an edit made in the browser would not survive a
+    # restart. This is the provider-side counterpart of editable: false on the
+    # sibling data source.
     allowUiUpdates: false
-    updateIntervalSeconds: 30
     options:
+      # THE IN-CONTAINER PATH - not a host path. See the note above. This is
+      # the destination of the compose bind that carries
+      # config/grafana/dashboards into the container, cross-checked against
+      # docker-compose.yml rather than assumed.
       path: /var/lib/grafana/dashboards
+      # One flat directory holding one dashboard, so there is no nested
+      # structure to mirror into a folder hierarchy. The single folder named
+      # above is the whole layout.
       foldersFromFilesStructure: false

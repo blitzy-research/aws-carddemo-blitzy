@@ -718,25 +718,52 @@ final class ConversationStateAdapterTest {
                 + "enrolled screen services read an echoed member, so no other file performs the "
                 + "pass-through")
         void onlyTheBoundaryAndTheEnrolledScreenServicesReadAnEchoedMember() {
-            // Scoped to the files that name the wire record, because a member accessor name can be a
-            // homonym elsewhere: MenuOptionCatalog.UserMenuOption declares its own userType(), which is
-            // the option's required role read from app/cpy/COMEN02Y.cpy and not an echoed claim. Only a
-            // file holding a NavigationContext can read one off it, so only those files are searched.
+            // Scoped twice over, because a member accessor name is not by itself evidence of an echoed
+            // read. It is scoped to the files that name the wire record, since only a file holding a
+            // NavigationContext has a receiver to read one off. And within those files it is scoped to
+            // the receiver, because the accessor names are homonyms of components other records
+            // genuinely declare: MenuOptionCatalog.UserMenuOption declares its own userType(), which is
+            // the option's required role read from app/cpy/COMEN02Y.cpy, and the account, card,
+            // transaction and user screen contracts declare their own accountId(), cardNumber() and
+            // userId() map items, which are the operator's own entry. A boundary controller that
+            // publishes such a screen therefore contains those names while passing the wire record
+            // through whole and reading nothing off it - and a bare accessor-name search cannot tell the
+            // two apart, so it would report every one of those controllers as an offender.
+            //
+            // The receiver test is the same one the identity guard below applies, over the same
+            // documented list of names a wire record is held in, so the two halves of this guarantee
+            // cannot come to disagree about what an echoed read looks like. The structural test above
+            // is what keeps this scoping honest: a file outside the API and configuration packages and
+            // outside the ten enrolled services may not name the record at all, so it has no receiver
+            // this scan could miss.
             final List<String> offenders = new ArrayList<>();
+            final List<String> positiveControl = new ArrayList<>();
             for (final Map.Entry<Path, String> source : productionSources()) {
                 final String fileName = source.getKey().getFileName().toString();
-                if (ENTITLED_FILE_NAMES.contains(fileName)
-                        || ENROLLED_SCREEN_SERVICE_FILE_NAMES.contains(fileName)
-                        || !source.getValue().contains("NavigationContext")) {
+                if (!source.getValue().contains(WIRE_RECORD_TYPE_NAME)) {
                     continue;
                 }
-                for (final String member : ECHOED_MEMBER_NAMES) {
-                    if (source.getValue().contains("." + member + "()")) {
-                        offenders.add(fileName + " reads ." + member + "()");
+                final boolean licensed = ENTITLED_FILE_NAMES.contains(fileName)
+                        || ENROLLED_SCREEN_SERVICE_FILE_NAMES.contains(fileName);
+                for (final String line : source.getValue().split("\n", -1)) {
+                    for (final String member : ECHOED_MEMBER_NAMES) {
+                        if (!readsEchoedMemberOffCarriedState(line, member)) {
+                            continue;
+                        }
+                        if (licensed) {
+                            positiveControl.add(fileName + " reads ." + member + "()");
+                        } else {
+                            offenders.add(fileName + " reads ." + member + "() at: " + line.strip());
+                        }
                     }
                 }
             }
 
+            assertThat(positiveControl)
+                    .as("the receiver-scoped search must still find the pass-through reads the "
+                            + "licensed files genuinely perform, or the scoping has made this "
+                            + "assertion vacuous and an unlicensed read would pass unnoticed")
+                    .isNotEmpty();
             assertThat(offenders)
                     .as("the transport records declare the eleven members; only the boundary and the "
                             + "ten enrolled screen services read them, and each reads them to carry "
@@ -798,6 +825,30 @@ final class ConversationStateAdapterTest {
         private static boolean readsCarriedIdentity(final String line) {
             for (final String receiver : CARRIED_STATE_RECEIVER_NAMES) {
                 if (line.contains(receiver + ".userId()") || line.contains(receiver + ".userType()")) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * Reports whether a line reads one named echoed member off a wire-record receiver.
+         *
+         * <p>The generalisation of {@link #readsCarriedIdentity(String)} from the two identity members
+         * to all eleven, over the same documented receiver names, so that the two guards share one
+         * definition of what an echoed read is. Requiring the receiver is what distinguishes a read off
+         * carried state from a read of an identically named component that another record genuinely
+         * declares - a screen contract's own account identifier, card number or user identifier, which
+         * is the operator's own entry rather than a claim the client echoed.
+         *
+         * @param line one line of production source
+         * @param member the echoed member's accessor name
+         * @return {@code true} when the line reads that member off a carried-state receiver
+         */
+        private static boolean readsEchoedMemberOffCarriedState(final String line,
+                final String member) {
+            for (final String receiver : CARRIED_STATE_RECEIVER_NAMES) {
+                if (line.contains(receiver + "." + member + "()")) {
                     return true;
                 }
             }

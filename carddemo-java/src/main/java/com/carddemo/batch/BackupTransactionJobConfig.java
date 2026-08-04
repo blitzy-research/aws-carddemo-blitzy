@@ -237,6 +237,16 @@ import org.springframework.transaction.PlatformTransactionManager;
  * keeps no mutable state: each step's per-execution state lives in an object created for that
  * execution, never in a field of a singleton.
  *
+ * <p><strong>Inter-bean method proxying is switched off, and that is what allows the class to be
+ * final.</strong> Left at its default the container would subclass this class at run time to
+ * intercept calls between its own factory methods, a subclass a final class cannot have &mdash; and
+ * the container rejects the combination while the definitions are being read, before any bean is
+ * created, so the whole application fails to start rather than this one job failing to wire. Nothing
+ * here needs the interception: no factory method calls another, every collaborator arrives through
+ * the constructor, and each step is composed from values passed as arguments. Switching it off is
+ * also the posture every other configuration class in this module already takes, so this class is not
+ * the exception that a reader has to account for.
+ *
  * <p>Execution is <strong>strictly sequential</strong> - no task executor, no partitioning, no
  * multi-threaded step and no parallel flow. The archive must be complete and ordered before the
  * reset runs, and concurrency here would risk archiving a partially cleared master. Nothing fires
@@ -264,7 +274,7 @@ import org.springframework.transaction.PlatformTransactionManager;
  * above; and full auditability through the traceability matrix. Where a faithful translation and an
  * idiomatic one disagree, the legacy behaviour wins and the divergence becomes a decision-log entry.
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 public final class BackupTransactionJobConfig {
 
     /**

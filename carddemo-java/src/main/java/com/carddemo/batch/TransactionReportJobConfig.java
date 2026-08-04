@@ -1,0 +1,1574 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ */
+package com.carddemo.batch;
+
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.time.Clock;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
+import java.util.Optional;
+
+import io.micrometer.core.instrument.MeterRegistry;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecutionListener;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersIncrementer;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepContribution;
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.scope.context.ChunkContext;
+import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.batch.item.ExecutionContext;
+import org.springframework.batch.item.file.FlatFileItemReader;
+import org.springframework.batch.repeat.RepeatStatus;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.PathResource;
+import org.springframework.data.domain.Sort;
+import org.springframework.transaction.PlatformTransactionManager;
+
+import com.carddemo.batch.step.AbstractCobolStep;
+import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
+import com.carddemo.batch.step.TransactionReportProcessor;
+import com.carddemo.domain.Transaction;
+import com.carddemo.domain.enums.FileStatus;
+import com.carddemo.repository.TransactionRepository;
+import com.carddemo.service.TransactionReportService;
+import com.carddemo.service.TransactionReportService.TransactionReportResult;
+import com.carddemo.util.FixedWidthFieldReader;
+import com.carddemo.util.ReportLineFormatter;
+import com.carddemo.util.TransactionRecordMapper;
+import com.carddemo.util.ZonedDecimalCodec;
+
+/**
+ * Declares the date-windowed transaction detail report job: unload the transaction master, filter and
+ * order the unloaded generation, then emit the fixed-width report.
+ *
+ * <p>Legacy antecedents, all measured by direct read at checkout
+ * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19: the 84-line job member
+ * {@code app/jcl/TRANREPT.jcl}, its equivalent cataloged form {@code app/proc/TRANREPT.prc}, the
+ * 649-line report program {@code app/cbl/CBTRN03C.cbl} that both drive, the single-step unload wrapper
+ * {@code app/proc/REPROC.prc}, and the output generation bases declared in
+ * {@code app/jcl/DEFGDGB.jcl} and re-declared in {@code app/jcl/REPTFILE.jcl}. The legacy source is
+ * cited, never quoted, and is never read at run time.
+ *
+ * <h2>The measured job stream: three steps, and not one condition-code gate</h2>
+ *
+ * <p>The job member declares a procedure-library reference and then exactly three steps:
+ *
+ * <ol>
+ *   <li>the cataloged unload wrapper, which copies the transaction master to a new sequential backup
+ *       generation whose declared record length is {@value #UNLOAD_RECORD_LENGTH} bytes, fixed-length
+ *       blocked - reproduced by {@link #UNLOAD_STEP_NAME};</li>
+ *   <li>the external sort, which filters the unloaded generation by the processing-date window and
+ *       orders what survives by card number - reproduced by {@link #FILTER_AND_ORDER_STEP_NAME};</li>
+ *   <li>the report program, which emits the report at {@value #REPORT_RECORD_LENGTH} bytes per
+ *       record, fixed-length blocked - reproduced by {@link #EMIT_STEP_NAME}.</li>
+ * </ol>
+ *
+ * <p><strong>The member carries no condition-code dependency on any step, so this job carries no
+ * failure-ending transition.</strong> The only condition-code construct anywhere in the member is the
+ * sort utility's record-inclusion predicate, which decides which <em>records</em> survive and is not a
+ * step gate. Wiring a gate here by analogy with the statement job would either skip a step the legacy
+ * stream runs unconditionally or end the job cleanly where the legacy stream would have failed it, and
+ * both are behavioural changes dressed as robustness. Ordinary framework failure semantics apply: a
+ * failed step stops the job.
+ *
+ * <h2>Source defects recorded here, reproduced nowhere - raised for the decision log</h2>
+ *
+ * <ul>
+ *   <li><strong>Duplicate step name.</strong> Two different steps of the job member are both named
+ *       {@code STEP05R} - the unload at line 23 and the sort at line 37. Two Spring Batch steps may
+ *       not share a name, and reproducing the collision would make either step unaddressable, so
+ *       three distinct stable names are generated. The diagnostics of the two program lifecycles
+ *       disambiguate them by preferring the <em>cataloged</em> form's naming, described next.</li>
+ *   <li><strong>The cataloged form does not carry the collision.</strong> The procedure member names
+ *       its three steps {@code STEP01R}, {@code STEP05R} and {@code STEP10R}. The duplication was
+ *       introduced in the job member by renaming the first step, so the procedure's naming is the
+ *       unambiguous one and is what {@link #LEGACY_CATALOGED_UNLOAD_STEP} carries.</li>
+ *   <li><strong>Procedure-name collision.</strong> The procedure member declares its own internal
+ *       procedure label as {@code REPROC}, which is also the internal label of the unload wrapper
+ *       member. Two members of one procedure library therefore claim one name. The member name is
+ *       what resolves an invocation, so the internal label is dead text; nothing here depends on
+ *       it.</li>
+ *   <li><strong>Comment-banner corruption.</strong> The job member's banner above the first step
+ *       carries a stray backtick inside its rule of asterisks. Cosmetic, recorded, never
+ *       reproduced.</li>
+ *   <li><strong>The report generation base is double-declared with divergent attributes.</strong> One
+ *       member declares it with a retention limit of {@value #SUPERSEDED_REPORT_GENERATION_LIMIT} and
+ *       a scratch-on-roll-off attribute; a second member re-declares the same base with a limit of
+ *       {@value #REPORT_GENERATION_LIMIT} and <em>no</em> scratch attribute. Both divergences are
+ *       recorded and the conflict is resolved to {@value #REPORT_GENERATION_LIMIT}, the later and more
+ *       specific declaration. Neither the limit nor the scratch attribute is enforced here: retention
+ *       becomes object versioning on the provisioned storage, so this class states the resolved figure
+ *       and implements no retention logic.</li>
+ *   <li><strong>Mislabelled re-declaring member.</strong> That second member's banner claims to delete
+ *       a transaction-master indexed file while its control stream only defines a generation group,
+ *       and it misspells a word in the same banner. Recorded, never reproduced.</li>
+ * </ul>
+ *
+ * <h2>The sort specification, which is the parity core of this file</h2>
+ *
+ * <p>The specification declares two field symbols over the {@value #UNLOAD_RECORD_LENGTH}-byte record
+ * image: the card number at position {@value #CARD_NUMBER_SORT_POSITION} for
+ * {@value #CARD_NUMBER_SORT_LENGTH} bytes typed <strong>zoned decimal</strong>, and the processing
+ * date at position {@value #PROCESSING_DATE_SORT_POSITION} for
+ * {@value #PROCESSING_DATE_SORT_LENGTH} bytes typed <strong>character</strong>. The ordering is by
+ * card number <strong>ascending</strong> and declares no secondary key.
+ *
+ * <p><strong>The very same field, at the same position and the same length, is typed
+ * <em>character</em> by the statement job's own sort and <em>zoned decimal</em> here.</strong> Nothing
+ * in the estate reconciles the two typings, and nothing should: each job's comparator must apply the
+ * typing its own specification declares. A comparator shared between the two jobs would silently
+ * apply one job's typing to the other's data - a parity defect that compiles cleanly and passes any
+ * test written under the same misunderstanding. This job's comparator is therefore declared
+ * {@code private static final} in this class, is never exported, never imported and never reused, and
+ * the decoding itself is delegated to {@link ZonedDecimalCodec}, which owns the overpunch convention
+ * in which the sign is folded into the final byte. Nothing here hand-rolls that decode and nothing
+ * here rescales a value.
+ *
+ * <p>For a sixteen-digit, zero-padded, unsigned card number the zoned-decimal and character orderings
+ * coincide. That coincidence is <strong>not</strong> relied on: the declared typing is implemented, so
+ * a signed or short value cannot silently reorder the report. The ordering is applied with a stable
+ * sort and a single key, so records sharing a card number keep the sequence the unload delivered them
+ * in, which is the transaction-master key sequence.
+ *
+ * <p>Ordering belongs to job configuration rather than to a service because a verb census of all 28
+ * legacy programs finds zero internal sort and zero merge statements: every ordering in the estate is
+ * external, declared by a job stream, and there are four such specifications.
+ *
+ * <h2>The date window: both bounds inclusive</h2>
+ *
+ * <p>The record-inclusion predicate tests the processing-date field greater-than-or-equal to the start
+ * value and less-than-or-equal to the end value. <strong>Both bounds are inclusive</strong>, so a
+ * window whose start equals its end selects that one day rather than nothing. Both parameters are
+ * ten-character values in hyphenated ISO form, and the comparison is a <em>character</em> comparison,
+ * which coincides with chronological order precisely because the format carries hyphens. No temporal
+ * type is constructed anywhere in this file and the record side is never converted in order to be
+ * compared. The single expression of that predicate is
+ * {@link JobParameterValidators.ReportDateWindow#includes(String)}, which this job calls rather than
+ * restating, so the bound cannot drift to an exclusive comparison here.
+ *
+ * <h2>The date-parameter record, and the one measured asymmetry in how it is supplied</h2>
+ *
+ * <p>The two collaborating legacy steps receive the same window by two different mechanisms: the sort
+ * step receives it as sort symbols, whereas the report program consumes it as an <em>assigned
+ * sequential file</em> - a catalogued dataset - and not as a program parameter. That asymmetry is
+ * measured, and it is why this job derives one validated window from one parameter pair and then
+ * materialises the record image the report program's own reader contract expects. The record is
+ * {@value ReportLineFormatter#DATE_PARAMETER_STRUCTURED_WIDTH} significant bytes - ten characters, one
+ * space, ten characters - inside an eighty-byte record area. The build and the parse both belong to
+ * shared owners: {@link ReportLineFormatter#buildDateParameterRecord(String, String)} places the
+ * group, and {@link JobParameterValidators#parseDateParmRecord(String)} validates it and measures its
+ * width in <em>encoded bytes</em>. Nothing here slices, pads or measures that record itself.
+ *
+ * <h2>The report output contract</h2>
+ *
+ * <p>Every report record is exactly {@value #REPORT_RECORD_LENGTH} encoded bytes, and the width is
+ * proved on the encoded byte array at the moment a record reaches its destination - never on a
+ * character count, which would accept a record that no longer fits the declared record length. The
+ * layout itself belongs to {@link ReportLineFormatter}; this configuration composes a reader, a
+ * formatter and a comparator and assembles no line of its own.
+ *
+ * <p>The page bound is {@value #PAGE_SIZE} records with a modulo break. It is a structural property of
+ * the report, not a tuning figure, and no chunk size is derived from it: all three steps are
+ * single-invocation steps, so this job states no commit interval at all.
+ *
+ * <p><strong>The accumulation chain is contractual: a transaction amount reaches the grand total only
+ * by way of a page total.</strong> The report program adds each amount into the page total, and the
+ * page-total routine is the only place that adds into the grand total. With truncating arithmetic the
+ * indirect route and a direct sum can differ, so the indirect route is the parity-correct one. This
+ * class neither adds an amount to a grand total nor recomputes one: the whole chain belongs to
+ * {@link TransactionReportService}, and the figures this class reports are the ones that service
+ * observed.
+ *
+ * <p>The report program contains no arithmetic-compute statement across any of its lines, so
+ * <strong>no arithmetic is introduced into the report path</strong>. This class performs none: it
+ * holds no accumulator, computes no total and rescales nothing. The rounding keyword occurs nowhere in
+ * the estate, so truncation is the module-wide rule and it lives exclusively in
+ * {@link ZonedDecimalCodec}. Every decimal figure that passes through this file is a
+ * {@link BigDecimal}; no binary floating-point type appears anywhere in it.
+ *
+ * <h2>What this configuration deliberately does not do</h2>
+ *
+ * <ul>
+ *   <li><strong>No process is spawned.</strong> The legacy first step invokes a cataloged wrapper
+ *       around a copy utility and the second invokes an external sort utility. Both become ordinary
+ *       read-and-write steps: no shell is invoked, no command is composed, no external tool is
+ *       addressed, and no statement text is assembled.</li>
+ *   <li><strong>No concurrency.</strong> No task executor, partitioner, multi-threaded step or
+ *       parallel flow, because ordering is the reason the second step exists and the report is
+ *       compared byte for byte.</li>
+ *   <li><strong>Nothing fires at context start.</strong> Job launching is disabled in configuration
+ *       and this class declares no runner, no lifecycle callback and no schedule. The job is launched
+ *       on demand by {@link #JOB_NAME} through the registry the shared batch infrastructure
+ *       publishes.</li>
+ *   <li><strong>No orchestration beyond this job.</strong> It chains to no other job and no aggregate
+ *       job exists, because the estate has no master orchestrator.</li>
+ *   <li><strong>No mutable shared state.</strong> Every field of this class is final and none of them
+ *       accumulates. Each step execution builds a fresh program lifecycle, so a page counter, a
+ *       running total, a file handle and a read position live only for the execution that owns them
+ *       and cannot leak into the next run.</li>
+ *   <li><strong>No storage resource is created and no retention is applied.</strong> Each generation
+ *       is one output resource per job execution, resolved from configuration by logical name.</li>
+ *   <li><strong>No performance figure of any kind</strong> - no throughput, latency, heap, timeout,
+ *       pool size, skip limit, retry limit, commit interval or backoff. Every step is timed on the
+ *       shared meter registry and the metrics endpoint is where a baseline is read from.</li>
+ * </ul>
+ *
+ * <h2>One measured divergence, recorded rather than hidden</h2>
+ *
+ * <p>The legacy report step reads the filtered, ordered generation the sort step produced. In this
+ * module the inclusive processing-date predicate together with the ascending card-number ordering is
+ * expressed once, by the ordered range query {@link TransactionReportService} drives, and the report
+ * stage's own contract is one whole report per date-parameter card - so the report is generated from
+ * that same ordered range rather than by re-reading the generation. The second step remains the
+ * faithful materialisation of the legacy sort output, catalogued as this job's sequential artefact
+ * exactly as the legacy step catalogued it, and both routes express the same selection. The divergence
+ * is a decision-log entry, not an omission.
+ *
+ * @since 1.0.0
+ */
+@Configuration(proxyBeanMethods = false)
+public final class TransactionReportJobConfig {
+
+    // -----------------------------------------------------------------------------------------------
+    // Names. Public, because the launch surface addresses a job and a step by name and a test asserts
+    // the same names against the measured member.
+    // -----------------------------------------------------------------------------------------------
+
+    /** Registered name of this job, and the name a launch request addresses it by. */
+    public static final String JOB_NAME = "transactionReportJob";
+
+    /**
+     * Name of the first step: the unload, standing in for the legacy step at line 23 of the job
+     * member.
+     *
+     * <p>Distinct from {@link #FILTER_AND_ORDER_STEP_NAME} by construction. The legacy member names
+     * that step and this one identically, and this is where that collision is resolved.
+     */
+    public static final String UNLOAD_STEP_NAME = "transactionReportUnloadStep";
+
+    /**
+     * Name of the second step: the record-inclusion filter and the ordering, standing in for the
+     * legacy external-sort step at line 37 of the job member - the second of the two steps the member
+     * gives one name.
+     */
+    public static final String FILTER_AND_ORDER_STEP_NAME = "transactionReportFilterAndOrderStep";
+
+    /** Name of the third step: the report emission, standing in for the legacy report step. */
+    public static final String EMIT_STEP_NAME = "transactionReportEmitStep";
+
+    /**
+     * Steps the measured member declares, and therefore the steps this job wires. Published so a test
+     * can assert the count against the member rather than against the wiring it is checking.
+     */
+    public static final int STEP_COUNT = 3;
+
+    /**
+     * Failure-ending transitions this job declares, which is none, because the measured member
+     * declares no condition-code dependency on any step.
+     */
+    public static final int CONDITION_CODE_GATE_COUNT = 0;
+
+    // -----------------------------------------------------------------------------------------------
+    // Measured record contracts. Every width is taken from the layer that owns the layout rather than
+    // restated, so a width has exactly one authority in the module.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * Declared record length of both staged generations, fixed-length blocked. The unload wrapper's
+     * output definition and the sort's output definition declare the same figure, the second by
+     * copying the attributes of its input.
+     */
+    public static final int UNLOAD_RECORD_LENGTH = TransactionRecordMapper.RECORD_LENGTH;
+
+    /** Declared record length of the report, fixed-length blocked. */
+    public static final int REPORT_RECORD_LENGTH = TransactionReportProcessor.REPORT_RECORD_LENGTH;
+
+    /**
+     * Records per page of the report, the modulo bound the report program breaks a page on.
+     *
+     * <p>A structural property of the report layout, not a tuning figure: no chunk size, buffer size
+     * or commit interval is derived from it anywhere in this file.
+     */
+    public static final int PAGE_SIZE = ReportLineFormatter.PAGE_SIZE;
+
+    // -----------------------------------------------------------------------------------------------
+    // The sort specification, as measured. Positions are stated in the specification's own one-based
+    // form and derived from the zero-based offsets the record layout owns, so the two can never drift.
+    // -----------------------------------------------------------------------------------------------
+
+    /** One-based position of the card-number sort field within the record image. */
+    public static final int CARD_NUMBER_SORT_POSITION = TransactionRecordMapper.TRAN_CARD_NUM_OFFSET + 1;
+
+    /** Declared length of the card-number sort field. */
+    public static final int CARD_NUMBER_SORT_LENGTH = TransactionRecordMapper.TRAN_CARD_NUM_LENGTH;
+
+    /**
+     * One-based position of the processing-date sort field within the record image, which is the
+     * leading date portion of the wider processing-timestamp field.
+     */
+    public static final int PROCESSING_DATE_SORT_POSITION =
+            TransactionRecordMapper.TRAN_PROC_TS_OFFSET + 1;
+
+    /** Declared length of the processing-date sort field. */
+    public static final int PROCESSING_DATE_SORT_LENGTH = ReportLineFormatter.DATE_WIDTH;
+
+    // -----------------------------------------------------------------------------------------------
+    // Generation retention, as measured and as resolved. Stated, never enforced here.
+    // -----------------------------------------------------------------------------------------------
+
+    /** Measured retention limit of the transaction backup generation base. */
+    public static final int TRANSACTION_BACKUP_GENERATION_LIMIT = 5;
+
+    /** Measured retention limit of the filtered transaction generation base. */
+    public static final int FILTERED_TRANSACTION_GENERATION_LIMIT = 5;
+
+    /**
+     * Resolved retention limit of the report generation base: the later and more specific of the two
+     * divergent declarations.
+     */
+    public static final int REPORT_GENERATION_LIMIT = 10;
+
+    /**
+     * The earlier declaration of the report generation base's retention limit, which
+     * {@link #REPORT_GENERATION_LIMIT} supersedes. Published so the conflict is visible rather than
+     * silently resolved.
+     */
+    public static final int SUPERSEDED_REPORT_GENERATION_LIMIT = 5;
+
+    // -----------------------------------------------------------------------------------------------
+    // Diagnostics and legacy provenance. The step and data-definition names below are the legacy
+    // member's own identifiers, carried so a diagnostic can be traced back to the stream it replaces.
+    // -----------------------------------------------------------------------------------------------
+
+    /** Diagnostics for this configuration and for its three program lifecycles. */
+    private static final Logger LOGGER = LoggerFactory.getLogger(TransactionReportJobConfig.class);
+
+    /**
+     * The cataloged form's name for the unload step, preferred over the job member's colliding name so
+     * the two lifecycles are distinguishable in a diagnostic.
+     */
+    private static final String LEGACY_CATALOGED_UNLOAD_STEP = "STEP01R";
+
+    /** Data-definition name of the unload wrapper's input, the transaction master. */
+    private static final String DD_UNLOAD_INPUT = "FILEIN";
+
+    /** Data-definition name of the unload wrapper's output, the backup generation. */
+    private static final String DD_UNLOAD_OUTPUT = "FILEOUT";
+
+    /** Data-definition name of the sort's input, the backup generation. */
+    private static final String DD_SORT_INPUT = "SORTIN";
+
+    /** Data-definition name of the sort's output, the filtered and ordered generation. */
+    private static final String DD_SORT_OUTPUT = "SORTOUT";
+
+    /**
+     * Data-definition name of the report step's transaction input.
+     *
+     * <p>Named for traceability only. The report content is produced from the ordered range the report
+     * service drives, which is the module's single expression of the same selection; the divergence is
+     * recorded in this class's documentation.
+     */
+    private static final String DD_REPORT_INPUT = "TRANFILE";
+
+    /** Legacy field name of the card-number sort symbol, used in a decode diagnostic. */
+    private static final String FIELD_TRAN_CARD_NUM = "TRAN-CARD-NUM";
+
+    /** Legacy field name of the processing-date sort symbol, used in a slice diagnostic. */
+    private static final String FIELD_TRAN_PROC_DT = "TRAN-PROC-DT";
+
+    // -----------------------------------------------------------------------------------------------
+    // Staged-dataset mechanics.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * Separator written after each fixed-length record of a staged generation. A literal rather than
+     * the platform line separator, so a staged generation is byte-identical on every host and is
+     * readable by the shared fixed-width reader, which is what the estate's own sample data assumes.
+     */
+    private static final String RECORD_SEPARATOR = "\n";
+
+    /** Absolute-generation naming form, which is how a legacy generation is addressed individually. */
+    private static final String GENERATION_NAME_FORMAT = "%s.G%04dV00";
+
+    /** Modulus keeping a generation number inside the four digits the naming form reserves. */
+    private static final int GENERATION_NUMBER_MODULUS = 10_000;
+
+    /**
+     * Scale the card-number sort key is decoded at. The field is a whole-number identifier, so it
+     * carries no implied decimal position; the codec still owns the decode and the sign convention.
+     */
+    private static final int SORT_KEY_SCALE = 0;
+
+    /** Offset of the date portion within the record image's processing-timestamp field. */
+    private static final int PROCESSING_DATE_OFFSET_IN_IMAGE = TransactionRecordMapper.TRAN_PROC_TS_OFFSET;
+
+    /** Key sequence the unload reads the transaction master in, which is its cluster key. */
+    private static final Sort UNLOAD_KEY_SEQUENCE = Sort.by(Sort.Direction.ASC, "tranId");
+
+    // -----------------------------------------------------------------------------------------------
+    // THE ORDERING. Private to this class, and it must stay private - see the class documentation for
+    // why a comparator shared with the statement job would be a parity defect rather than reuse.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * The ordering the second step applies: card number ascending, typed <strong>zoned decimal</strong>
+     * exactly as this job's own specification declares, over the record image the sort addresses.
+     *
+     * <p>Declared {@code private static final} deliberately. The statement job orders the identical
+     * bytes at the identical position typed <em>character</em>, so the two typings must not be
+     * expressed by one comparator: sharing one would apply a typing that job never declared and would
+     * do so without any symptom a compiler or an unwitting test could detect.
+     *
+     * <p>Exactly one key, because the specification declares no secondary key. Applied with a stable
+     * sort, so records sharing a card number retain the order the unload delivered them in.
+     */
+    private static final Comparator<String> CARD_NUMBER_ZONED_DECIMAL_ASCENDING =
+            Comparator.comparing(TransactionReportJobConfig::cardNumberSortKey);
+
+    // -----------------------------------------------------------------------------------------------
+    // Collaborators. Constructor injection only; every field final; none of them accumulates.
+    // -----------------------------------------------------------------------------------------------
+
+    /** The framework's metadata repository, handed to every builder rather than to a factory. */
+    private final JobRepository jobRepository;
+
+    /** Transaction manager each step's single invocation runs under. */
+    private final PlatformTransactionManager transactionManager;
+
+    /** The shared job-boundary diagnostic the batch infrastructure configuration publishes. */
+    private final JobExecutionListener jobBoundaryListener;
+
+    /**
+     * The shared run incrementer from the same configuration, which is what lets this job be
+     * resubmitted with an identical parameter set exactly as the legacy member could be.
+     */
+    private final JobParametersIncrementer jobRunIncrementer;
+
+    /** Owner of the launch-parameter cascade and of the single inclusive date-window predicate. */
+    private final JobParameterValidators jobParameterValidators;
+
+    /** The transaction master, which the unload reads in cluster-key sequence. */
+    private final TransactionRepository transactionRepository;
+
+    /** Source of the fixed-width reader over the unloaded generation. */
+    private final FixedWidthFlatFileReaderFactory readerFactory;
+
+    /** The report generator this job's third step delegates one whole report to. */
+    private final TransactionReportService reportService;
+
+    /** Registry every step and every program lifecycle is timed on. */
+    private final MeterRegistry meterRegistry;
+
+    /** The module's clock, which stamps each program lifecycle's boundaries. */
+    private final Clock clock;
+
+    /** Directory the staged generations of this job resolve within. */
+    private final String stagingDirectory;
+
+    /** Logical name of the transaction backup generation base the unload writes a generation of. */
+    private final String transactionBackupBase;
+
+    /** Logical name of the filtered transaction generation base the ordering step writes. */
+    private final String filteredTransactionBase;
+
+    /** Logical name of the report generation base the third step writes. */
+    private final String reportBase;
+
+    /**
+     * Wires the job's collaborators.
+     *
+     * <p>Every resource is named by configuration rather than by a path written into this class, and
+     * each logical name defaults to the name the legacy stream uses for the same resource - so a
+     * deployment may relocate the staging area without the job losing the identity of what it writes.
+     * None of these values is a credential, and none is defaulted that could be one.
+     *
+     * @param jobRepository the framework's metadata repository; must not be {@code null}
+     * @param transactionManager the manager each step runs under; must not be {@code null}
+     * @param jobBoundaryListener the shared job-boundary diagnostic; must not be {@code null}
+     * @param jobRunIncrementer the shared run incrementer; must not be {@code null}
+     * @param jobParameterValidators owner of the parameter cascade and of the window predicate; must
+     *                               not be {@code null}
+     * @param transactionRepository the transaction master; must not be {@code null}
+     * @param readerFactory source of the fixed-width reader; must not be {@code null}
+     * @param reportService the report generator; must not be {@code null}
+     * @param meterRegistry the registry every step is timed on; must not be {@code null}
+     * @param clock the module's clock; must not be {@code null}
+     * @param stagingDirectory directory the staged generations resolve within; must not be blank
+     * @param transactionBackupBase logical name of the backup generation base; must not be blank
+     * @param filteredTransactionBase logical name of the filtered generation base; must not be blank
+     * @param reportBase logical name of the report generation base; must not be blank
+     */
+    public TransactionReportJobConfig(
+            final JobRepository jobRepository,
+            final PlatformTransactionManager transactionManager,
+            @Qualifier("batchJobBoundaryListener") final JobExecutionListener jobBoundaryListener,
+            @Qualifier("batchJobRunIncrementer") final JobParametersIncrementer jobRunIncrementer,
+            final JobParameterValidators jobParameterValidators,
+            final TransactionRepository transactionRepository,
+            final FixedWidthFlatFileReaderFactory readerFactory,
+            final TransactionReportService reportService,
+            final MeterRegistry meterRegistry,
+            final Clock clock,
+            @Value("${carddemo.batch.transaction-report.staging-directory:${java.io.tmpdir}}")
+                    final String stagingDirectory,
+            @Value("${carddemo.batch.transaction-report.transaction-backup-base:"
+                    + "AWS.M2.CARDDEMO.TRANSACT.BKUP}") final String transactionBackupBase,
+            @Value("${carddemo.batch.transaction-report.filtered-transaction-base:"
+                    + "AWS.M2.CARDDEMO.TRANSACT.DALY}") final String filteredTransactionBase,
+            @Value("${carddemo.batch.transaction-report.report-base:AWS.M2.CARDDEMO.TRANREPT}")
+                    final String reportBase) {
+
+        this.jobRepository = Objects.requireNonNull(jobRepository, "jobRepository");
+        this.transactionManager = Objects.requireNonNull(transactionManager, "transactionManager");
+        this.jobBoundaryListener =
+                Objects.requireNonNull(jobBoundaryListener, "jobBoundaryListener");
+        this.jobRunIncrementer = Objects.requireNonNull(jobRunIncrementer, "jobRunIncrementer");
+        this.jobParameterValidators =
+                Objects.requireNonNull(jobParameterValidators, "jobParameterValidators");
+        this.transactionRepository =
+                Objects.requireNonNull(transactionRepository, "transactionRepository");
+        this.readerFactory = Objects.requireNonNull(readerFactory, "readerFactory");
+        this.reportService = Objects.requireNonNull(reportService, "reportService");
+        this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry");
+        this.clock = Objects.requireNonNull(clock, "clock");
+        this.stagingDirectory = requireResourceName(stagingDirectory, "stagingDirectory");
+        this.transactionBackupBase =
+                requireResourceName(transactionBackupBase, "transactionBackupBase");
+        this.filteredTransactionBase =
+                requireResourceName(filteredTransactionBase, "filteredTransactionBase");
+        this.reportBase = requireResourceName(reportBase, "reportBase");
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // The per-record stage of the third step.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * Publishes the report stage, which carries no framework stereotype of its own and is therefore
+     * declared here rather than discovered.
+     *
+     * <p>It holds no mutable state, so one instance serves every execution. It is deliberately given
+     * only the report generator and the registry: the three lookup readers belong to that generator and
+     * the report layout belongs to the formatter, so taking either here would give the module two
+     * owners for one decision.
+     *
+     * @return the report stage, never {@code null}
+     */
+    @Bean
+    public TransactionReportProcessor transactionReportProcessor() {
+        return new TransactionReportProcessor(this.reportService, this.meterRegistry);
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // The job and its three steps.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * The job: the unload, then the filter and ordering, then the report emission - and nothing else.
+     *
+     * <p><strong>Three steps in plain sequence and not one failure-ending transition</strong>, because
+     * the measured member declares no condition-code dependency on any step. Strictly sequential: no
+     * task executor, no partitioning, no parallel flow, because concurrency would reorder output that
+     * is compared byte for byte.
+     *
+     * <p>Three collaborators are attached. The parameter validator refuses a launch whose date window
+     * is absent, malformed or inverted before any step runs, so a job cannot reach the report stage
+     * with a window the legacy stream could not have expressed. The run incrementer makes a
+     * resubmission of the same logical work a new instance rather than a completed-instance refusal,
+     * matching a legacy member that could simply be submitted again. The boundary diagnostic frames
+     * the three step-level lines this class emits with a job-level pair.
+     *
+     * <p>The steps arrive as qualified parameters rather than as calls to this class's own bean
+     * methods, because bean methods are not proxied here - which is what lets this class be
+     * {@code final} - so a direct call would build a second, unregistered step.
+     *
+     * <p>Nothing launches this job automatically and it chains to no other job.
+     *
+     * @param unloadStep the first step; must not be {@code null}
+     * @param filterAndOrderStep the second step; must not be {@code null}
+     * @param emitStep the third step; must not be {@code null}
+     * @return the job, registered under {@link #JOB_NAME}, never {@code null}
+     */
+    @Bean
+    public Job transactionReportJob(
+            @Qualifier(UNLOAD_STEP_NAME) final Step unloadStep,
+            @Qualifier(FILTER_AND_ORDER_STEP_NAME) final Step filterAndOrderStep,
+            @Qualifier(EMIT_STEP_NAME) final Step emitStep) {
+
+        Objects.requireNonNull(unloadStep, "unloadStep");
+        Objects.requireNonNull(filterAndOrderStep, "filterAndOrderStep");
+        Objects.requireNonNull(emitStep, "emitStep");
+
+        return new JobBuilder(JOB_NAME, this.jobRepository)
+                .validator(this.jobParameterValidators.reportDateRangeValidator())
+                .incrementer(this.jobRunIncrementer)
+                .listener(this.jobBoundaryListener)
+                .start(unloadStep)
+                .next(filterAndOrderStep)
+                .next(emitStep)
+                .build();
+    }
+
+    /**
+     * The unload step: copy the transaction master, in cluster-key sequence, to the backup generation
+     * this job execution owns, at {@value #UNLOAD_RECORD_LENGTH} bytes per record.
+     *
+     * <p>One ordinary read-and-write step. The legacy step invoked a cataloged wrapper around a copy
+     * utility; <strong>no process is spawned and no external tool is addressed here</strong>.
+     *
+     * <p>A single-invocation step rather than a chunked one, because the legacy unload was one
+     * indivisible copy of one dataset and a chunked step would have to state a commit interval - a
+     * tuning figure this translation has no legacy basis for choosing.
+     *
+     * @return the step, registered under {@link #UNLOAD_STEP_NAME}, never {@code null}
+     */
+    @Bean
+    public Step transactionReportUnloadStep() {
+        return new StepBuilder(UNLOAD_STEP_NAME, this.jobRepository)
+                .tasklet(this::unloadTransactionMaster, this.transactionManager)
+                .meterRegistry(this.meterRegistry)
+                .build();
+    }
+
+    /**
+     * The filter-and-order step: read the backup generation, keep the records whose processing date
+     * falls inside the inclusive window, order what survives by card number ascending under this
+     * class's own zoned-decimal typing, and write the filtered generation at
+     * {@value #UNLOAD_RECORD_LENGTH} bytes per record.
+     *
+     * <p>Reproduces the legacy external-sort step. It is a read-and-write step for the same reason the
+     * unload is: <strong>the sort utility is not invoked, it is replaced</strong>.
+     *
+     * @return the step, registered under {@link #FILTER_AND_ORDER_STEP_NAME}, never {@code null}
+     */
+    @Bean
+    public Step transactionReportFilterAndOrderStep() {
+        return new StepBuilder(FILTER_AND_ORDER_STEP_NAME, this.jobRepository)
+                .tasklet(this::filterAndOrderTransactions, this.transactionManager)
+                .meterRegistry(this.meterRegistry)
+                .build();
+    }
+
+    /**
+     * The report step: materialise the date-parameter record the report program reads, delegate one
+     * whole report to the report stage, and write every record of it at
+     * {@value #REPORT_RECORD_LENGTH} bytes.
+     *
+     * <p>All business logic - the card-number break, the account totals, the page break, the header
+     * block and the page-to-grand-total chain - belongs to the report generator and its stage. This
+     * step composes them and proves the width of every record that reaches the generation.
+     *
+     * @param reportProcessor the report stage; must not be {@code null}
+     * @return the step, registered under {@link #EMIT_STEP_NAME}, never {@code null}
+     */
+    @Bean
+    public Step transactionReportEmitStep(
+            @Qualifier("transactionReportProcessor") final TransactionReportProcessor reportProcessor) {
+
+        Objects.requireNonNull(reportProcessor, "reportProcessor");
+        return new StepBuilder(EMIT_STEP_NAME, this.jobRepository)
+                .tasklet((contribution, chunkContext) -> emitReport(reportProcessor, chunkContext),
+                        this.transactionManager)
+                .meterRegistry(this.meterRegistry)
+                .build();
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Tasklet adapters. Each builds a FRESH program lifecycle for the execution it is serving, so every
+    // per-execution handle, counter and total lives on a short-lived object and nothing is shared
+    // between executions. The chunk context supplies the job execution identifier, which is how the
+    // three steps agree on one set of generations without state passing between them.
+    //
+    // Package-visible rather than private so that a test in this package can drive one adapter against
+    // a step execution and confirm that agreement directly, instead of leaving it reachable only
+    // through a launcher. They are not part of the launch surface: the beans above are.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * Runs the unload for one step execution.
+     *
+     * @param contribution the framework's per-step contribution, unused because the whole step is one
+     *                     indivisible pass
+     * @param chunkContext the framework's chunk context; must not be {@code null}
+     * @return {@link RepeatStatus#FINISHED} always
+     */
+    RepeatStatus unloadTransactionMaster(final StepContribution contribution,
+            final ChunkContext chunkContext) {
+
+        final long jobExecutionId = jobExecutionIdOf(chunkContext);
+        newUnloadProgram(backupGeneration(jobExecutionId)).run();
+        return RepeatStatus.FINISHED;
+    }
+
+    /**
+     * Runs the record-inclusion filter and the ordering for one step execution, reading the generation
+     * the unload step of the same job execution wrote.
+     *
+     * @param contribution the framework's per-step contribution, unused for the reason above
+     * @param chunkContext the framework's chunk context; must not be {@code null}
+     * @return {@link RepeatStatus#FINISHED} always
+     */
+    RepeatStatus filterAndOrderTransactions(final StepContribution contribution,
+            final ChunkContext chunkContext) {
+
+        final long jobExecutionId = jobExecutionIdOf(chunkContext);
+        newFilterAndOrderProgram(backupGeneration(jobExecutionId),
+                filteredGeneration(jobExecutionId), reportDateWindow(chunkContext)).run();
+        return RepeatStatus.FINISHED;
+    }
+
+    /**
+     * Runs the report emission for one step execution.
+     *
+     * @param reportProcessor the report stage; must not be {@code null}
+     * @param chunkContext the framework's chunk context; must not be {@code null}
+     * @return {@link RepeatStatus#FINISHED} always
+     */
+    RepeatStatus emitReport(final TransactionReportProcessor reportProcessor,
+            final ChunkContext chunkContext) {
+
+        final long jobExecutionId = jobExecutionIdOf(chunkContext);
+        newEmitProgram(reportProcessor, dateParameterCard(chunkContext),
+                reportGeneration(jobExecutionId)).run();
+        return RepeatStatus.FINISHED;
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Program-lifecycle factories. Package-visible so a test in this package can drive one lifecycle
+    // directly against temporary generations, rather than leaving the three of them reachable only
+    // through a launcher. They are not part of the launch surface: the beans above are.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * Builds one unload lifecycle.
+     *
+     * @param generation the backup generation to write; must not be {@code null}
+     * @return a fresh lifecycle, never {@code null}
+     */
+    TransactionUnloadProgram newUnloadProgram(final Path generation) {
+        return new TransactionUnloadProgram(this.meterRegistry, this.clock,
+                this.transactionRepository, generation);
+    }
+
+    /**
+     * Builds one filter-and-order lifecycle.
+     *
+     * @param backupGeneration the generation to read; must not be {@code null}
+     * @param filteredGeneration the generation to write; must not be {@code null}
+     * @param window the inclusive processing-date window; must not be {@code null}
+     * @return a fresh lifecycle, never {@code null}
+     */
+    FilterAndOrderProgram newFilterAndOrderProgram(final Path backupGeneration,
+            final Path filteredGeneration, final JobParameterValidators.ReportDateWindow window) {
+
+        return new FilterAndOrderProgram(this.meterRegistry, this.clock, this.readerFactory,
+                backupGeneration, filteredGeneration, window);
+    }
+
+    /**
+     * Builds one report-emission lifecycle.
+     *
+     * @param reportProcessor the report stage; must not be {@code null}
+     * @param dateParameterCard the validated date-parameter record, or {@code null} for an empty
+     *                          parameter dataset
+     * @param generation the report generation to write; must not be {@code null}
+     * @return a fresh lifecycle, never {@code null}
+     */
+    ReportEmitProgram newEmitProgram(final TransactionReportProcessor reportProcessor,
+            final String dateParameterCard, final Path generation) {
+
+        return new ReportEmitProgram(this.meterRegistry, this.clock, reportProcessor,
+                dateParameterCard, generation);
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // The date window. One parameter pair, one validated window, one materialised record - so the sort
+    // step and the report step cannot disagree about which days the run covers.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * Materialises the date-parameter record the report program reads, from the launch parameters.
+     *
+     * <p>The record is built by the shared formatter and then validated by the shared parameter owner,
+     * whose cascade measures the significant group in <em>encoded bytes</em>. Nothing is sliced,
+     * padded or measured here.
+     *
+     * @param chunkContext the framework's chunk context; must not be {@code null}
+     * @return the validated record image, never {@code null}
+     */
+    String dateParameterCard(final ChunkContext chunkContext) {
+        final String card = buildDateParameterCard(chunkContext);
+        // Validating what was just built is not redundant: the cascade is what refuses an inverted or
+        // non-calendar window, and it is the same cascade the launch-time validator runs, so the record
+        // the report program receives has passed it whichever route produced it. The parsed window is
+        // not needed here - the report program's input is the record image, not a window object.
+        this.jobParameterValidators.parseDateParmRecord(card);
+        return card;
+    }
+
+    /**
+     * The inclusive processing-date window of one execution, parsed from the same record image the
+     * report program receives - so the filter and the report answer to one window rather than to two
+     * independent readings of two parameters.
+     *
+     * @param chunkContext the framework's chunk context; must not be {@code null}
+     * @return the validated window, never {@code null}
+     */
+    JobParameterValidators.ReportDateWindow reportDateWindow(final ChunkContext chunkContext) {
+        return this.jobParameterValidators.parseDateParmRecord(buildDateParameterCard(chunkContext));
+    }
+
+    /**
+     * Places the two launch bounds into the record image the report program's reader contract expects.
+     *
+     * <p>The placement belongs to the shared formatter, which owns the group's widths and its separator
+     * position; this method supplies the two bounds and nothing else.
+     *
+     * @param chunkContext the framework's chunk context; must not be {@code null}
+     * @return the record image, never {@code null}
+     */
+    private String buildDateParameterCard(final ChunkContext chunkContext) {
+        final JobParameters parameters = parametersOf(chunkContext);
+        return ReportLineFormatter.buildDateParameterRecord(
+                requireDateParameter(parameters, JobParameterValidators.REPORT_START_DATE_KEY),
+                requireDateParameter(parameters, JobParameterValidators.REPORT_END_DATE_KEY));
+    }
+
+    /**
+     * Reads one date bound from the launch parameters, refusing an absent one.
+     *
+     * <p>The diagnostic precedes the refusal, which is the ordering the batch tier uses throughout. No
+     * default is substituted: a job that resolved a missing bound to some conventional date would
+     * report a window nobody asked for, and would do so without failing.
+     *
+     * @param parameters the launch parameters; must not be {@code null}
+     * @param key the parameter key to read; must not be {@code null}
+     * @return the bound as supplied, never {@code null}
+     */
+    private static String requireDateParameter(final JobParameters parameters, final String key) {
+        Objects.requireNonNull(parameters, "parameters");
+        Objects.requireNonNull(key, "key");
+
+        final String value = parameters.getString(key);
+        if (value == null || value.isBlank()) {
+            LOGGER.error("{} {}: launch parameter {} named no date bound, so the reporting window"
+                            + " cannot be established", TransactionReportProcessor.LEGACY_JOB,
+                    TransactionReportProcessor.LEGACY_REPORT_STEP, key);
+            throw new IllegalArgumentException("launch parameter " + key
+                    + " must name a date bound of the reporting window, and no default may be"
+                    + " substituted for it");
+        }
+        return value;
+    }
+
+    /**
+     * Reads the launch parameters of the execution a step is serving.
+     *
+     * @param chunkContext the framework's chunk context; must not be {@code null}
+     * @return the launch parameters, never {@code null}
+     */
+    private static JobParameters parametersOf(final ChunkContext chunkContext) {
+        Objects.requireNonNull(chunkContext, "chunkContext");
+        return Objects.requireNonNull(
+                chunkContext.getStepContext().getStepExecution().getJobParameters(),
+                "the framework must have supplied the launch parameters before a step runs");
+    }
+
+    /**
+     * Reads the job execution identifier the framework assigned, which all three steps use to name the
+     * generations their one job execution owns.
+     *
+     * @param chunkContext the framework's chunk context; must not be {@code null}
+     * @return the job execution identifier
+     */
+    private static long jobExecutionIdOf(final ChunkContext chunkContext) {
+        Objects.requireNonNull(chunkContext, "chunkContext");
+        final Long identifier =
+                chunkContext.getStepContext().getStepExecution().getJobExecutionId();
+        return Objects.requireNonNull(identifier,
+                "the framework must have assigned a job execution identifier before a step runs")
+                .longValue();
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Resource resolution. Every generation is a logical name resolved against a configured directory;
+    // no path is written into this class, no storage resource is created and no retention is applied.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * The transaction backup generation one job execution owns.
+     *
+     * @param jobExecutionId the job execution the generation belongs to
+     * @return the resolved generation
+     */
+    Path backupGeneration(final long jobExecutionId) {
+        return generationOf(this.transactionBackupBase, jobExecutionId);
+    }
+
+    /**
+     * The filtered, ordered generation one job execution owns.
+     *
+     * @param jobExecutionId the job execution the generation belongs to
+     * @return the resolved generation
+     */
+    Path filteredGeneration(final long jobExecutionId) {
+        return generationOf(this.filteredTransactionBase, jobExecutionId);
+    }
+
+    /**
+     * The report generation one job execution owns.
+     *
+     * @param jobExecutionId the job execution the generation belongs to
+     * @return the resolved generation
+     */
+    Path reportGeneration(final long jobExecutionId) {
+        return generationOf(this.reportBase, jobExecutionId);
+    }
+
+    /**
+     * Resolves one absolute generation of a base within the configured staging directory.
+     *
+     * @param base the logical generation base; must not be {@code null}
+     * @param jobExecutionId the job execution the generation belongs to
+     * @return the resolved generation
+     */
+    private Path generationOf(final String base, final long jobExecutionId) {
+        final String generationName = String.format(Locale.ROOT, GENERATION_NAME_FORMAT, base,
+                Math.floorMod(jobExecutionId, GENERATION_NUMBER_MODULUS));
+        return Path.of(this.stagingDirectory).resolve(generationName);
+    }
+
+    /**
+     * Validates a configured logical name, because an absent or blank one would resolve to the staging
+     * directory itself and a step would then write over a directory rather than a generation.
+     *
+     * @param value the configured value
+     * @param name the property's role, for the diagnostic
+     * @return the validated value
+     */
+    private static String requireResourceName(final String value, final String name) {
+        Objects.requireNonNull(value, name);
+        if (value.isBlank()) {
+            throw new IllegalArgumentException(name
+                    + " must name a resource; a blank logical name would resolve to the staging"
+                    + " directory itself rather than to a generation");
+        }
+        return value;
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // The two sort symbols. Each is addressed at the position and length its own specification
+    // declares, and each is read out of the record image by the fixed-width utility, so no offset
+    // arithmetic and no slicing happens in this class.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * The card-number ordering key, decoded with the <strong>zoned-decimal</strong> typing this job's
+     * specification declares, so a sign folded into the field's final byte is honoured as a sign rather
+     * than compared as a character.
+     *
+     * <p>The decode belongs to {@link ZonedDecimalCodec}, which owns the overpunch convention. Nothing
+     * here rescales the result: the field is a whole-number identifier and the key is used only for
+     * ordering.
+     *
+     * @param recordImage the whole record image, exactly {@value #UNLOAD_RECORD_LENGTH} encoded bytes;
+     *                    must not be {@code null}
+     * @return the decoded ordering key, never {@code null}
+     */
+    private static BigDecimal cardNumberSortKey(final String recordImage) {
+        return ZonedDecimalCodec.decode(
+                sortField(recordImage, FIELD_TRAN_CARD_NUM,
+                        TransactionRecordMapper.TRAN_CARD_NUM_OFFSET, CARD_NUMBER_SORT_LENGTH),
+                CARD_NUMBER_SORT_LENGTH, SORT_KEY_SCALE, FIELD_TRAN_CARD_NUM);
+    }
+
+    /**
+     * The processing-date field the record-inclusion predicate tests, typed <strong>character</strong>
+     * as its own specification declares - which is why it is read as characters and never converted to
+     * a temporal type in order to be compared.
+     *
+     * @param recordImage the whole record image, exactly {@value #UNLOAD_RECORD_LENGTH} encoded bytes;
+     *                    must not be {@code null}
+     * @return the field as it stands in the record, exactly {@value #PROCESSING_DATE_SORT_LENGTH}
+     *         characters, never {@code null}
+     */
+    private static String processingDateSortField(final String recordImage) {
+        return sortField(recordImage, FIELD_TRAN_PROC_DT, PROCESSING_DATE_OFFSET_IN_IMAGE,
+                PROCESSING_DATE_SORT_LENGTH);
+    }
+
+    /**
+     * Reads one declared field out of a record image through the shared fixed-width reader, which
+     * refuses a mis-sized image and names the field in any diagnostic.
+     *
+     * @param recordImage the whole record image; must not be {@code null}
+     * @param fieldName the field's legacy name, for the diagnostic; must not be {@code null}
+     * @param offset the field's zero-based offset, as the record layout declares it
+     * @param length the field's declared length
+     * @return the raw, untrimmed field value, never {@code null}
+     */
+    private static String sortField(final String recordImage, final String fieldName,
+            final int offset, final int length) {
+
+        Objects.requireNonNull(recordImage, "recordImage");
+        return FixedWidthFieldReader
+                .of(TransactionRecordMapper.ARTEFACT, recordImage, UNLOAD_RECORD_LENGTH)
+                .field(fieldName, offset, length);
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Staged-dataset mechanics, shared by the three lifecycles.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * Opens one generation for writing, creating its container if the staging area does not yet exist
+     * and truncating any earlier content of the same absolute generation.
+     *
+     * @param target the generation to write; must not be {@code null}
+     * @return the writer
+     * @throws IOException if the generation cannot be created or opened
+     */
+    private static BufferedWriter openForWriting(final Path target) throws IOException {
+        Objects.requireNonNull(target, "target");
+        final Path container = target.getParent();
+        if (container != null) {
+            Files.createDirectories(container);
+        }
+        return Files.newBufferedWriter(target, StandardCharsets.US_ASCII,
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
+                StandardOpenOption.WRITE);
+    }
+
+    /**
+     * Proves that one record is exactly the declared record length in <strong>encoded bytes</strong>.
+     *
+     * <p>Measured on the encoded array rather than on a character count, because it is the byte count
+     * the record length declares. A record of the wrong width would leave every downstream reader of
+     * that generation reading the wrong field.
+     *
+     * <p>Width alone is not enough to make a record right, and this proof does not pretend otherwise:
+     * the encoder substitutes a single replacement byte for a character it cannot represent, which keeps
+     * the count correct and makes the content wrong. Purity is therefore proved by the layers that build
+     * these records - the record layout for a staged generation and the report stage for a report
+     * record - and is deliberately not proved a second time here.
+     *
+     * <p>Package-visible so a test in this package can drive the proof itself. Its refusal cannot be
+     * provoked through either staged generation, because the record layout and the report layout each
+     * guarantee their own width - which is exactly why the proof has to be exercised directly rather
+     * than left as a line nobody can reach.
+     *
+     * @param image the record about to be written; must not be {@code null}
+     * @param declaredLength the record length the generation declares
+     * @param resource the data definition being written, for the diagnostic
+     */
+    static void requireEncodedWidth(final String image, final int declaredLength,
+            final String resource) {
+
+        Objects.requireNonNull(image, "image");
+        final int encoded = image.getBytes(StandardCharsets.US_ASCII).length;
+        if (encoded != declaredLength) {
+            throw new IllegalStateException("record written to " + resource + " is " + encoded
+                    + " encoded byte(s) but the declared record length is " + declaredLength
+                    + "; a record of the wrong width would leave every downstream reader of that"
+                    + " generation reading the wrong field");
+        }
+    }
+
+    /**
+     * Hands back a handle after a failure without emitting a legacy diagnostic and without abending.
+     *
+     * <p>Non-observable runtime adaptation, not a second close sequence: the mainframe enclave released
+     * its own handles, the virtual machine does not.
+     *
+     * <p>Package-visible for the same reason the width proof is: both of its branches exist for a
+     * failure path, and a test drives them directly rather than provoking them through a lifecycle.
+     *
+     * @param handle the handle to release, possibly {@code null}
+     * @param resource the data definition it belongs to, for the trace line
+     */
+    static void releaseQuietly(final AutoCloseable handle, final String resource) {
+        if (handle == null) {
+            return;
+        }
+        try {
+            handle.close();
+        } catch (Exception release) {
+            LOGGER.debug("RELEASING HANDLE OF {} REPORTED {}", resource,
+                    release.getClass().getSimpleName());
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Step one: the unload.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * One unload of the transaction master into the backup generation of the execution that owns it.
+     *
+     * <p>Package-visible so a test in this package can drive it directly. It carries the per-execution
+     * state - the read position, the write handle and the record count - and it is built fresh for each
+     * execution, which is why that state may live in its fields and why it can never leak between runs.
+     *
+     * <p>The open, read-loop, status-check, close and abend skeleton, the two-level file-status
+     * discipline and the display-then-abend ordering all belong to the shared batch template; none of
+     * them is re-implemented here.
+     */
+    static final class TransactionUnloadProgram extends AbstractCobolStep<Transaction> {
+
+        /** The transaction master being unloaded. */
+        private final TransactionRepository transactionRepository;
+
+        /** The generation this execution writes. */
+        private final Path generation;
+
+        /** Read position over the master, in cluster-key sequence. */
+        private Iterator<Transaction> unloadCursor;
+
+        /** Handle on the generation being written. */
+        private BufferedWriter writer;
+
+        /** Records written, reported once the pass completes. */
+        private long recordsUnloaded;
+
+        /**
+         * @param meterRegistry the registry the lifecycle is timed on; must not be {@code null}
+         * @param clock the clock stamping the lifecycle boundaries; must not be {@code null}
+         * @param transactionRepository the transaction master; must not be {@code null}
+         * @param generation the generation to write; must not be {@code null}
+         */
+        TransactionUnloadProgram(final MeterRegistry meterRegistry, final Clock clock,
+                final TransactionRepository transactionRepository, final Path generation) {
+
+            super(LEGACY_CATALOGED_UNLOAD_STEP, meterRegistry, clock);
+            this.transactionRepository =
+                    Objects.requireNonNull(transactionRepository, "transactionRepository");
+            this.generation = Objects.requireNonNull(generation, "generation");
+        }
+
+        @Override
+        protected void openResources() {
+            openResource(DD_UNLOAD_INPUT, () -> {
+                this.unloadCursor =
+                        this.transactionRepository.findAll(UNLOAD_KEY_SEQUENCE).iterator();
+                return FileStatus.SUCCESS.getCode();
+            });
+
+            openResource(DD_UNLOAD_OUTPUT, () -> {
+                this.writer = openForWriting(this.generation);
+                return FileStatus.SUCCESS.getCode();
+            });
+        }
+
+        @Override
+        protected Optional<Transaction> readNextRecord() {
+            return this.<Transaction>readRecord(DD_UNLOAD_INPUT, () -> {
+                if (this.unloadCursor.hasNext()) {
+                    return IoResult.of(FileStatus.SUCCESS.getCode(), this.unloadCursor.next());
+                }
+                return IoResult.endOfFile();
+            });
+        }
+
+        @Override
+        protected void processRecord(final Transaction record) {
+            writeRecord(DD_UNLOAD_OUTPUT, () -> {
+                // The record image, and with it every offset of the layout, comes from the utility
+                // layer; this step renders and never slices.
+                final String image = TransactionRecordMapper.toRecord(record);
+                requireEncodedWidth(image, UNLOAD_RECORD_LENGTH, DD_UNLOAD_OUTPUT);
+                this.writer.write(image);
+                this.writer.write(RECORD_SEPARATOR);
+                this.recordsUnloaded++;
+                return FileStatus.SUCCESS.getCode();
+            });
+        }
+
+        @Override
+        protected void closeResources() {
+            closeResource(DD_UNLOAD_OUTPUT, () -> {
+                this.writer.flush();
+                this.writer.close();
+                return FileStatus.SUCCESS.getCode();
+            });
+
+            // The input side holds nothing open: the cursor iterates an already-materialised sequence.
+            this.unloadCursor = null;
+
+            LOGGER.info("{} UNLOADED {} RECORD(S) OF {} BYTE(S) TO {}",
+                    LEGACY_CATALOGED_UNLOAD_STEP, this.recordsUnloaded, UNLOAD_RECORD_LENGTH,
+                    DD_UNLOAD_OUTPUT);
+        }
+
+        @Override
+        protected void releaseResources() {
+            releaseQuietly(this.writer, DD_UNLOAD_OUTPUT);
+        }
+
+        /**
+         * Records this pass wrote, for a caller that drives the lifecycle directly.
+         *
+         * @return the count, never negative
+         */
+        long recordsUnloaded() {
+            return this.recordsUnloaded;
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Step two: the record-inclusion filter and the ordering.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * One pass of the legacy external sort: read the backup generation, apply the inclusive
+     * record-inclusion predicate, order what survives by card number ascending under the zoned-decimal
+     * typing this job declares, and write the filtered generation.
+     *
+     * <p>The work area accumulates before anything is emitted, because an external sort cannot write
+     * its first record until it has read its last. It is per-execution state on a per-execution object,
+     * never a field of a singleton.
+     *
+     * <p>Two properties of this class are the parity core of the file and must not be relaxed. The
+     * predicate is <strong>inclusive at both ends</strong> and is evaluated by the single shared window
+     * predicate rather than restated here. The ordering applies
+     * {@link TransactionReportJobConfig#CARD_NUMBER_ZONED_DECIMAL_ASCENDING}, which is private to the
+     * enclosing class precisely so it cannot be shared with the job that types the same field as
+     * character.
+     */
+    static final class FilterAndOrderProgram extends AbstractCobolStep<Transaction> {
+
+        /** Reader over the backup generation, at the transaction record layout. */
+        private final FlatFileItemReader<Transaction> reader;
+
+        /** The filtered, ordered generation this execution writes. */
+        private final Path filteredGeneration;
+
+        /** The inclusive processing-date window the predicate tests against. */
+        private final JobParameterValidators.ReportDateWindow window;
+
+        /** The sort work area, standing in for the sort utility's own work dataset. */
+        private final List<String> sortWorkArea = new ArrayList<>();
+
+        /** Handle on the generation being written. */
+        private BufferedWriter writer;
+
+        /** Records the predicate rejected, reported once the pass completes. */
+        private long recordsExcluded;
+
+        /**
+         * @param meterRegistry the registry the lifecycle is timed on; must not be {@code null}
+         * @param clock the clock stamping the lifecycle boundaries; must not be {@code null}
+         * @param readerFactory source of the fixed-width reader; must not be {@code null}
+         * @param backupGeneration the generation to read; must not be {@code null}
+         * @param filteredGeneration the generation to write; must not be {@code null}
+         * @param window the inclusive processing-date window; must not be {@code null}
+         */
+        FilterAndOrderProgram(final MeterRegistry meterRegistry, final Clock clock,
+                final FixedWidthFlatFileReaderFactory readerFactory, final Path backupGeneration,
+                final Path filteredGeneration,
+                final JobParameterValidators.ReportDateWindow window) {
+
+            super(TransactionReportProcessor.LEGACY_SORT_STEP, meterRegistry, clock);
+            Objects.requireNonNull(readerFactory, "readerFactory");
+            Objects.requireNonNull(backupGeneration, "backupGeneration");
+            // The reader, and with it every offset of the record layout, comes from the shared factory;
+            // this step composes it rather than tokenising the record itself.
+            this.reader = readerFactory.transactionReader(new PathResource(backupGeneration));
+            this.filteredGeneration = Objects.requireNonNull(filteredGeneration,
+                    "filteredGeneration");
+            this.window = Objects.requireNonNull(window, "window");
+        }
+
+        @Override
+        protected void openResources() {
+            openResource(DD_SORT_INPUT, () -> {
+                this.reader.open(new ExecutionContext());
+                return FileStatus.SUCCESS.getCode();
+            });
+
+            openResource(DD_SORT_OUTPUT, () -> {
+                this.writer = openForWriting(this.filteredGeneration);
+                return FileStatus.SUCCESS.getCode();
+            });
+        }
+
+        @Override
+        protected Optional<Transaction> readNextRecord() {
+            return this.<Transaction>readRecord(DD_SORT_INPUT, () -> {
+                final Transaction next = this.reader.read();
+                if (next == null) {
+                    return IoResult.endOfFile();
+                }
+                return IoResult.of(FileStatus.SUCCESS.getCode(), next);
+            });
+        }
+
+        @Override
+        protected void processRecord(final Transaction record) {
+            final String image = TransactionRecordMapper.toRecord(record);
+            requireEncodedWidth(image, UNLOAD_RECORD_LENGTH, DD_SORT_INPUT);
+
+            // BOTH BOUNDS ARE INCLUSIVE. The test is delegated so that this job cannot express the
+            // window in its own words and drift to an exclusive comparison; the comparison there is
+            // between characters, exactly as the specification declares the field's type.
+            if (this.window.includes(processingDateSortField(image))) {
+                this.sortWorkArea.add(image);
+            } else {
+                this.recordsExcluded++;
+            }
+        }
+
+        @Override
+        protected void closeResources() {
+            closeResource(DD_SORT_INPUT, () -> {
+                this.reader.close();
+                return FileStatus.SUCCESS.getCode();
+            });
+
+            // One key, ascending, applied by a stable sort: records sharing a card number keep the
+            // sequence the unload delivered them in, because the specification declares no second key.
+            this.sortWorkArea.sort(CARD_NUMBER_ZONED_DECIMAL_ASCENDING);
+
+            for (final String ordered : this.sortWorkArea) {
+                writeRecord(DD_SORT_OUTPUT, () -> {
+                    requireEncodedWidth(ordered, UNLOAD_RECORD_LENGTH, DD_SORT_OUTPUT);
+                    this.writer.write(ordered);
+                    this.writer.write(RECORD_SEPARATOR);
+                    return FileStatus.SUCCESS.getCode();
+                });
+            }
+
+            closeResource(DD_SORT_OUTPUT, () -> {
+                this.writer.flush();
+                this.writer.close();
+                return FileStatus.SUCCESS.getCode();
+            });
+
+            LOGGER.info("{} INCLUDED {} AND EXCLUDED {} RECORD(S) FOR THE WINDOW {} TO {},"
+                            + " ORDERED BY {} AT POSITION {} FOR {} BYTE(S) ASCENDING",
+                    TransactionReportProcessor.LEGACY_SORT_STEP, this.sortWorkArea.size(),
+                    this.recordsExcluded, this.window.startDate(), this.window.endDate(),
+                    FIELD_TRAN_CARD_NUM, CARD_NUMBER_SORT_POSITION, CARD_NUMBER_SORT_LENGTH);
+        }
+
+        @Override
+        protected void releaseResources() {
+            releaseQuietly(this.writer, DD_SORT_OUTPUT);
+            // The item stream declares its own close rather than the standard one, so the release is
+            // handed that close directly.
+            releaseQuietly(this.reader::close, DD_SORT_INPUT);
+        }
+
+        /**
+         * The ordered result of this pass, for a caller that drives the lifecycle directly.
+         *
+         * @return the record images in emission order, never {@code null}
+         */
+        List<String> orderedRecords() {
+            return List.copyOf(this.sortWorkArea);
+        }
+
+        /**
+         * Records the predicate rejected, for a caller that drives the lifecycle directly.
+         *
+         * @return the count, never negative
+         */
+        long recordsExcluded() {
+            return this.recordsExcluded;
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Step three: the report emission.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * One report emission: accept the date-parameter record, delegate one whole report to the report
+     * stage, and write every record of it at the declared report record length.
+     *
+     * <p>The date-parameter record is read once, which is what the report program does with its
+     * assigned sequential parameter file - a single read, after which the driving loop begins. Here the
+     * driving loop is inside the report generator, so this lifecycle's read loop delivers that one
+     * record and then reports end of file.
+     *
+     * <p><strong>No arithmetic happens here.</strong> The page totals, the account totals and the grand
+     * total are the generator's, and the grand total it reports was reached only by way of page totals.
+     * This class logs those figures and computes none of them.
+     */
+    static final class ReportEmitProgram extends AbstractCobolStep<String> {
+
+        /** The report stage this lifecycle delegates one whole report to. */
+        private final TransactionReportProcessor reportProcessor;
+
+        /**
+         * The validated date-parameter record image, or {@code null} for an empty parameter dataset.
+         *
+         * <p>Absent is a legitimate state rather than a defect: the legacy read of an empty parameter
+         * dataset reports end of file, the driving loop then never iterates and the run produces no
+         * report record at all. A launch cannot reach this state, because the enclosing configuration
+         * refuses an absent bound before a lifecycle is built - but the lifecycle models it, because
+         * that is what the program it stands in for does.
+         */
+        private final String dateParameterCard;
+
+        /** The report generation this execution writes. */
+        private final Path generation;
+
+        /** Whether the parameter record has already been served to the read loop. */
+        private boolean parameterRecordServed;
+
+        /** Handle on the generation being written. */
+        private BufferedWriter writer;
+
+        /** The report the stage produced, retained for the completion diagnostic. */
+        private TransactionReportResult result;
+
+        /** Records written, reported once the pass completes. */
+        private long recordsWritten;
+
+        /**
+         * @param meterRegistry the registry the lifecycle is timed on; must not be {@code null}
+         * @param clock the clock stamping the lifecycle boundaries; must not be {@code null}
+         * @param reportProcessor the report stage; must not be {@code null}
+         * @param dateParameterCard the validated parameter record, or {@code null} for an empty
+         *                          parameter dataset
+         * @param generation the report generation to write; must not be {@code null}
+         */
+        ReportEmitProgram(final MeterRegistry meterRegistry, final Clock clock,
+                final TransactionReportProcessor reportProcessor, final String dateParameterCard,
+                final Path generation) {
+
+            super(TransactionReportProcessor.LEGACY_REPORT_STEP, meterRegistry, clock);
+            this.reportProcessor = Objects.requireNonNull(reportProcessor, "reportProcessor");
+            this.dateParameterCard = dateParameterCard;
+            this.generation = Objects.requireNonNull(generation, "generation");
+        }
+
+        @Override
+        protected void openResources() {
+            openResource(TransactionReportProcessor.LEGACY_DD_DATEPARM,
+                    () -> FileStatus.SUCCESS.getCode());
+
+            openResource(TransactionReportProcessor.LEGACY_DD_TRANREPT, () -> {
+                this.writer = openForWriting(this.generation);
+                return FileStatus.SUCCESS.getCode();
+            });
+        }
+
+        @Override
+        protected Optional<String> readNextRecord() {
+            return this.<String>readRecord(TransactionReportProcessor.LEGACY_DD_DATEPARM, () -> {
+                if (this.parameterRecordServed || this.dateParameterCard == null) {
+                    return IoResult.endOfFile();
+                }
+                this.parameterRecordServed = true;
+                return IoResult.of(FileStatus.SUCCESS.getCode(), this.dateParameterCard);
+            });
+        }
+
+        @Override
+        protected void processRecord(final String record) {
+            this.result = Objects.requireNonNull(this.reportProcessor.process(record),
+                    TransactionReportProcessor.LEGACY_PROGRAM
+                            + " reported no report for the parameter record it was given");
+
+            for (final String reportRecord : this.result.reportLines()) {
+                writeRecord(TransactionReportProcessor.LEGACY_DD_TRANREPT, () -> {
+                    // Proved again at the destination: the stage proves what it hands on, and this
+                    // proves what actually reaches the generation the record length is declared for.
+                    requireEncodedWidth(reportRecord, REPORT_RECORD_LENGTH,
+                            TransactionReportProcessor.LEGACY_DD_TRANREPT);
+                    this.writer.write(reportRecord);
+                    this.writer.write(RECORD_SEPARATOR);
+                    this.recordsWritten++;
+                    return FileStatus.SUCCESS.getCode();
+                });
+            }
+        }
+
+        @Override
+        protected void closeResources() {
+            closeResource(TransactionReportProcessor.LEGACY_DD_TRANREPT, () -> {
+                this.writer.flush();
+                this.writer.close();
+                return FileStatus.SUCCESS.getCode();
+            });
+
+            closeResource(TransactionReportProcessor.LEGACY_DD_DATEPARM,
+                    () -> FileStatus.SUCCESS.getCode());
+
+            if (this.result == null) {
+                // The parameter dataset delivered nothing, which the legacy read reports as end of
+                // file: the driving loop never iterates and no report record exists. Not a failure.
+                LOGGER.info("{} WROTE NO RECORD TO {} BECAUSE {} DELIVERED NO PARAMETER RECORD",
+                        TransactionReportProcessor.LEGACY_REPORT_STEP,
+                        TransactionReportProcessor.LEGACY_DD_TRANREPT,
+                        TransactionReportProcessor.LEGACY_DD_DATEPARM);
+                return;
+            }
+
+            LOGGER.info("{} WROTE {} RECORD(S) OF {} BYTE(S) TO {} OVER {} PAGE(S) AND {} ACCOUNT"
+                            + " BREAK(S), READING ITS RANGE THROUGH {}",
+                    TransactionReportProcessor.LEGACY_REPORT_STEP, this.recordsWritten,
+                    REPORT_RECORD_LENGTH, TransactionReportProcessor.LEGACY_DD_TRANREPT,
+                    this.result.pageCount(), this.result.accountBreakCount(), DD_REPORT_INPUT);
+        }
+
+        @Override
+        protected void releaseResources() {
+            releaseQuietly(this.writer, TransactionReportProcessor.LEGACY_DD_TRANREPT);
+        }
+
+        /**
+         * The report this pass produced, for a caller that drives the lifecycle directly.
+         *
+         * @return the report, or {@code null} when the parameter dataset delivered nothing
+         */
+        TransactionReportResult result() {
+            return this.result;
+        }
+
+        /**
+         * Records this pass wrote, for a caller that drives the lifecycle directly.
+         *
+         * @return the count, never negative
+         */
+        long recordsWritten() {
+            return this.recordsWritten;
+        }
+    }
+}

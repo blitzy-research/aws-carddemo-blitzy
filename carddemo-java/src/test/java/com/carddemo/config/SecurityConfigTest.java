@@ -22,11 +22,20 @@ import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.OctetSequenceKey;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import jakarta.servlet.Filter;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Base64;
+import java.util.List;
+import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -39,15 +48,19 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration;
 import org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration;
 import org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration;
+import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 import org.springframework.boot.test.context.assertj.AssertableWebApplicationContext;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.MergedAnnotations;
+import org.springframework.core.annotation.MergedAnnotations.SearchStrategy;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
 import org.springframework.security.oauth2.jwt.JwsHeader;
@@ -56,14 +69,17 @@ import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 import org.springframework.security.provisioning.InMemoryUserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.stereotype.Component;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 /**
  * Asserts what the request-authorization boundary actually answers, by exercising the real filter chain
@@ -90,12 +106,160 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * unambiguous.</p>
  *
  * <p>No real credential appears in this class, and no value any profile ships is restated here.</p>
+ *
+ * <p><strong>Subject.</strong> The class under test is {@link SecurityConfig}, the module's whole
+ * route-to-role table and its only decision about what may be reached without a credential. What this file
+ * owns is that table, the credential hasher, the session and cross-site posture, the reachability of the two
+ * management endpoints orchestration depends on, and the ownership of the bearer-token settings. Everything
+ * else that touches sign-on is owned elsewhere and is deliberately not restated here - see the ownership
+ * paragraph below.</p>
+ *
+ * <p><strong>The table derives from eighteen transaction definitions, counted rather than assumed.</strong>
+ * {@code app/csd/CARDDEMO.CSD} registers eighteen {@code DEFINE TRANSACTION} entries, each naming exactly
+ * one program, alongside seventeen mapsets, eighteen program definitions and one transient-data queue. The
+ * eighteen identifiers are written out literally in {@link RouteToRoleTable} as an independent oracle: no
+ * expected value in this file is obtained by asking the class under test what it holds, so a nineteenth
+ * invented entry, a missing entry, or an entry quietly promoted to the administrative set all fail. A
+ * re-verification of that census must match {@code DEFINE X(} rather than an anchored {@code ^DEFINE},
+ * because the file indents every definition by one column and an anchored search silently returns none.</p>
+ *
+ * <p><strong>The decisive legacy finding is that the transaction manager enforced nothing.</strong> All
+ * eighteen definition blocks end {@code RESSEC(NO) CMDSEC(NO)} - resource security and command security both
+ * disabled - so the estate's administrative gate was purely application-level: the two menu catalogues
+ * ({@code app/cpy/COMEN02Y.cpy}, {@code app/cpy/COADM02Y.cpy}) and the one-character user-type test at
+ * {@code app/cbl/COSGN00C.cbl} L230, whose alternative at L235 is unconditional. What this file asserts is
+ * therefore a faithful reproduction of that application-level gate, and the fact that the framework now
+ * <em>enforces</em> it is a strict improvement over the legacy posture rather than a behavioural change. The
+ * same reading applies to the data layer, where every application file was defined
+ * {@code READINTEG(UNCOMMITTED) RECOVERY(NONE) JOURNAL(NO)} with correctness resting on record locking plus
+ * before-and-after image comparison, so read-committed isolation plus an optimistic version column is also
+ * strictly stronger. Both improvements belong in {@code docs/decision-log.md} so that a reviewer does not
+ * mistake a stronger posture for a regression.</p>
+ *
+ * <p><strong>Anomaly register entry 3: one definition binds a program that has no source member.</strong>
+ * The developer transaction {@code CDV1} names a program definition for which no member exists anywhere in
+ * {@code app/cbl}, which was established by looking rather than assumed. The table keeps the entry, because
+ * an inventory that quietly drops its own anomaly cannot be audited, and this file asserts both halves of
+ * the consequence: the entry is present, and no type is declared for that program anywhere in the module.
+ * The three references the program name still has in production sources are documentation of the anomaly,
+ * not an implementation of it.</p>
+ *
+ * <p><strong>The credential hasher is the migration's one documented parity exception.</strong> The sign-on
+ * record is exactly eighty bytes - identifier eight, first name twenty, last name twenty, credential eight,
+ * user type one, filler twenty-three at {@code app/cpy/CSUSR01Y.cpy} L17-L23, corroborated by the key length
+ * and record width in {@code app/jcl/DUSRSECJ.jcl} - and the sign-on program compares the stored credential
+ * against the submission as equal text at {@code app/cbl/COSGN00C.cbl} L223. Reproducing that comparison
+ * would be faithful and would breach the requirement that no credential be hardcoded, so the value is hashed
+ * and the stored column widened from eight characters to sixty, which is the single intentional width change
+ * in the eleven-entity schema. The column itself is asserted by the migration and repository tiers, not here.
+ * The provisioning job seeds ten identities, five administrative and five standard; those identifiers, names
+ * and types are non-secret metadata, their rows belong to {@code FlywayConfigTest}, and the shared cleartext
+ * credential they carry appears nowhere in this file, in any name, message or comment. Every value handed to
+ * the hasher below is generated in the test, as is every piece of signing material any slice needs.</p>
+ *
+ * <p><strong>Statelessness is what the estate's conversational re-arm becomes.</strong> The legacy tier
+ * carried a one-hundred-and-sixty-byte communication area across pseudo-conversational turns
+ * ({@code app/cpy/COCOM01Y.cpy} L19, textually included by all seventeen online programs) and re-armed it on
+ * return - nineteen re-arms across those seventeen programs, plus twenty-five program-to-program transfers.
+ * The replacement is a stateless bearer token plus a navigation transfer object the client echoes back, with
+ * no server-side forwarding, so a server session would reintroduce precisely the state the migration
+ * removed. Cross-site request protection is disabled as a consequence of that, not as a relaxation of it:
+ * the attack needs ambient authority, and a credential a caller must place in a header deliberately is not
+ * ambient. Both claims are asserted below by driving requests rather than by reading configuration.</p>
+ *
+ * <p><strong>The management base path stays {@code /actuator} and the security rules follow it.</strong> The
+ * image health check in {@code carddemo-java/Dockerfile}, the Compose dependency condition and
+ * {@code carddemo-java/config/prometheus/prometheus.yml} all resolve that path literally, so a rule that
+ * blocked it would break container orchestration and metric collection together. This file asserts that the
+ * two endpoints those consumers depend on are reachable and that neither requires an administrative
+ * authority; which endpoints a profile <em>publishes</em> is asserted by {@code ObservabilityConfigTest},
+ * as is production's withholding of the environment, bean, configuration-property, heap-dump, thread-dump,
+ * logger and request-mapping endpoints and its restriction of health detail to an authorised principal.</p>
+ *
+ * <p><strong>The bearer-token settings have exactly one registering home, and it is the class under
+ * test.</strong> {@link SettingsOwnership} proves it by difference: the settings bean is present in a slice
+ * that includes {@link SecurityConfig} and absent from an otherwise identical slice that does not.
+ * {@code AwsProperties} is registered by {@code AwsConfig} and must not appear here. Production resolves
+ * every secret from the environment with no fallback - the token signing secret, the database address, user
+ * and password, and the AWS region and access pair - so a missing value stops start-up instead of binding a
+ * placeholder; the mechanical sweep of that file for defaulted placeholders is owned once, by
+ * {@code JwtPropertiesTest}, and is deliberately not repeated here. No drifted default value from an earlier
+ * delivery is written into this file in any form.</p>
+ *
+ * <p><strong>Four behaviours of the sign-on program are contractual and are recorded here as metadata
+ * only.</strong> They are implemented in the authentication service, and what this file asserts is that
+ * nothing installed on the chain stands in front of them: no framework authentication-failure handler that
+ * would rewrite an outcome, no default message source, no redirect. (1) Blank-field reporting is ordered
+ * rather than aggregated - the blank-identifier condition at {@code app/cbl/COSGN00C.cbl} L120 precedes the
+ * blank-credential condition at L125, and a submission with both blank reports only the first. (2) Both
+ * submitted values are folded to upper case unconditionally at L132-L136 through a fixed twenty-six
+ * character substitution rather than a language-sensitive fold, so the subject a token carries is the folded
+ * eight-character identifier. (3) The entitlement split at L230-L240 has an unconditional alternative and no
+ * third branch, so user-type resolution is total and never fails on a code the estate does not declare.
+ * (4) The outcomes are asymmetric - a credential that does not match at L242 does not raise the general
+ * error flag, while an unknown user at L248 and an unclassified failure at L253 both do. The seven message
+ * texts those paths emit belong to the message catalogue service and are asserted in its own test and in the
+ * authentication service's; not one of them is reproduced here.</p>
+ *
+ * <p><strong>No thirteenth type is introduced into this package.</strong> There is no top-level
+ * authentication filter, no route registry, no route-constant holder and no user-lookup implementation: the
+ * request filter is a private nested type of the class under test, route values belong to the navigation
+ * service, and user loading belongs to the authentication service over its repository.
+ * {@link NoAdditionalConfigTypes} asserts that beside the behavioural proof that a nested filter is
+ * installed and working.</p>
+ *
+ * <p><strong>Tier and mechanism.</strong> This file runs in the unit tier, which takes {@code *Test} and
+ * excludes {@code *IT}, so it starts no container, creates no data source and contacts no database; the
+ * chain is obtained from a {@code WebApplicationContextRunner} and driven with a standalone client. Both of
+ * the preferred mechanisms are available - the table is directly addressable as published immutable
+ * structure, and the chain is constructible in this tier - so <strong>nothing is migrated to the
+ * integration tier</strong>. End-to-end sign-on over HTTP, and the routing outcome for each user type,
+ * remain owned by the {@code api} integration tier and the online end-to-end test, which is where a real
+ * dispatcher and a real database belong. Per-entry census detail for the table - each entry's bound program,
+ * its definition line, the four and eight character widths, immutability and identifier resolution - is
+ * asserted once in {@code SecurityConfigRouteTableTest}; this file asserts the partition contract the
+ * chain's rules are actually derived from, and the two are complementary rather than duplicates.</p>
+ *
+ * <p><strong>Standards.</strong> The project's rules document states that no user rules were provided, which
+ * was confirmed by reading it in full; that absence lowers nothing, and the work is held instead to the
+ * enterprise standards the plan substitutes. No latency, throughput, capacity or availability figure is
+ * asserted anywhere in this file, and none is implied: the hashing cost factor is a resistance parameter,
+ * not a service level, and it is never timed.</p>
  */
 @DisplayName("Request authorization: what the filter chain actually answers, asserted by real status")
 class SecurityConfigTest {
 
-    /** Signing material for the chain under test. Not a credential; only its length matters. */
-    private static final String SECRET = "security-config-test-signing-secret-0123456789abcdef";
+    /** Source of every generated value in this class. Seeded by the platform, never by a fixture. */
+    private static final SecureRandom RANDOM = new SecureRandom();
+
+    /**
+     * Width of the signing material a slice generates for itself.
+     *
+     * <p>Chosen so the encoded form clears the fixed signature algorithm's key-length floor with room to
+     * spare. It is a property of that algorithm, not a tuning figure and not a service level.</p>
+     */
+    private static final int SIGNING_MATERIAL_BYTES = 48;
+
+    /** Width of a throwaway value handed to the hasher. */
+    private static final int THROWAWAY_VALUE_BYTES = 12;
+
+    /**
+     * Signing material for the chain under test.
+     *
+     * <p>Generated at class initialization rather than written down. Nothing about this file needs a
+     * particular value, and a fixture that wrote one would put a signing-secret literal into version
+     * control - which is exactly the shape of the finding this module exists to avoid, whether or not the
+     * value was ever real. Nothing logs it, nothing asserts it, and it does not outlive the test run.</p>
+     */
+    private static final String SECRET = freshSigningMaterial();
+
+    /**
+     * Signing material this chain trusts nothing signed with, used to mint a token from elsewhere.
+     *
+     * <p>Generated for the same reason, and separately, so a token signed with it cannot verify against the
+     * chain's own material.</p>
+     */
+    private static final String FOREIGN_SECRET = freshSigningMaterial();
 
     /** Issuer the chain's provider claims and requires. */
     private static final String ISSUER = "carddemo-java";
@@ -118,10 +282,166 @@ class SecurityConfigTest {
     /** Instant the fixed clock reports, so token windows are exact. */
     private static final Instant NOW = Instant.parse("2026-01-01T12:00:00Z");
 
+    /** The framework's own login address, which this module must not publish a page at. */
+    private static final String FRAMEWORK_LOGIN_PATH = "/login";
+
+    /** Credential scheme a browser prompt would name, and which no answer here may name. */
+    private static final String BROWSER_PROMPT_SCHEME = "Basic";
+
+    /**
+     * The eighteen transaction identifiers {@code app/csd/CARDDEMO.CSD} registers, in ascending order.
+     *
+     * <p>Written out literally, which is the point: this is an independent oracle, so nothing below asks the
+     * table what it contains in order to decide what it ought to contain.</p>
+     */
+    private static final Set<String> REGISTERED_TRANSACTION_IDS = Set.of(
+            "CA00", "CAUP", "CAVW", "CB00", "CC00", "CCDL", "CCLI", "CCUP", "CDV1",
+            "CM00", "CR00", "CT00", "CT01", "CT02", "CU00", "CU01", "CU02", "CU03");
+
+    /**
+     * The five identifiers an administrative authority is required for: the administrative menu and the four
+     * sign-on-record maintenance transactions.
+     */
+    private static final Set<String> ADMINISTRATIVE_TRANSACTION_IDS =
+            Set.of("CA00", "CU00", "CU01", "CU02", "CU03");
+
+    /** The one identifier reachable without a credential, because it is the one that issues them. */
+    private static final Set<String> ANONYMOUS_TRANSACTION_IDS = Set.of("CC00");
+
+    /** The remaining twelve identifiers, reachable by any caller that has established an identity. */
+    private static final Set<String> ORDINARY_TRANSACTION_IDS = Set.of(
+            "CAUP", "CAVW", "CB00", "CCDL", "CCLI", "CCUP", "CDV1",
+            "CM00", "CR00", "CT00", "CT01", "CT02");
+
+    /** How many transaction definitions the resource definition file registers. */
+    private static final int REGISTERED_COUNT = 18;
+
+    /** How many of those require an administrative authority. */
+    private static final int ADMINISTRATIVE_COUNT = 5;
+
+    /** How many are reachable without a credential. */
+    private static final int ANONYMOUS_COUNT = 1;
+
+    /** How many are reachable by any caller that has established an identity. */
+    private static final int ORDINARY_COUNT = 12;
+
+    /** The identifier whose definition binds a program with no source member - anomaly register entry 3. */
+    private static final String DANGLING_TRANSACTION_ID = "CDV1";
+
+    /** The program definition that has no source member anywhere in {@code app/cbl}. */
+    private static final String DANGLING_PROGRAM_NAME = "COCRDSEC";
+
+    /** Root of the module's production sources, relative to the directory a unit test runs in. */
+    private static final Path PRODUCTION_SOURCE_ROOT = Path.of("src", "main", "java");
+
+    /** The package this file mirrors, as a path beneath {@link #PRODUCTION_SOURCE_ROOT}. */
+    private static final Path CONFIGURATION_PACKAGE =
+            PRODUCTION_SOURCE_ROOT.resolve(Path.of("com", "carddemo", "config"));
+
+    /** Source file of the settings record whose registering home is asserted below. */
+    private static final Path TOKEN_SETTINGS_SOURCE =
+            CONFIGURATION_PACKAGE.resolve("JwtProperties.java");
+
+    /** Cost factor the stored digests must be produced at, read from the digest rather than from a field. */
+    private static final int EXPECTED_HASHING_COST = 12;
+
+    /** Cost factor as it appears in a digest, which states it as two characters. */
+    private static final String EXPECTED_HASHING_COST_FIELD = "12";
+
+    /** Length of the digest the hasher produces, in characters. */
+    private static final int DIGEST_LENGTH = 60;
+
+    /** Number of dollar-delimited fields a digest carries, the first of which is empty. */
+    private static final int DIGEST_FIELD_COUNT = 4;
+
+    /** Index of the cost field once a digest is split on its delimiter. */
+    private static final int DIGEST_COST_FIELD_INDEX = 2;
+
+    /**
+     * Variant markers a digest may begin with.
+     *
+     * <p>All three are accepted rather than one pinned, because the marker records which implementation
+     * produced the digest and carries no security meaning; pinning one would fail on a library that had
+     * changed its default without anything about the module having changed.</p>
+     */
+    private static final Set<String> ACCEPTED_DIGEST_PREFIXES = Set.of("$2a$", "$2b$", "$2y$");
+
+    /** Marker a delegating hasher would use for a value stored as cleartext. */
+    private static final String CLEARTEXT_MARKER = "{noop}";
+
+    /** Splits a digest into its dollar-delimited fields. */
+    private static final Pattern DIGEST_FIELD_DELIMITER = Pattern.compile("\\$");
+
+    /** Matches a type declaration whose name begins with the dangling program's name, in any case. */
+    private static final Pattern DANGLING_TYPE_DECLARATION = Pattern.compile(
+            "\\b(class|interface|enum|record)\\s+" + DANGLING_PROGRAM_NAME,
+            Pattern.CASE_INSENSITIVE);
+
     /** Clears any identity a request established, so no test can inherit another's. */
     @AfterEach
     void clearSecurityContext() {
         SecurityContextHolder.clearContext();
+    }
+
+    /**
+     * Produces signing material for a slice that needs some.
+     *
+     * <p>Generated rather than written down, so no signing-secret literal enters version control. The
+     * encoded form is URL-safe and unpadded, which keeps it usable as a configuration value.</p>
+     *
+     * @return freshly generated material, comfortably longer than the signature algorithm's key floor
+     */
+    private static String freshSigningMaterial() {
+        final byte[] material = new byte[SIGNING_MATERIAL_BYTES];
+        RANDOM.nextBytes(material);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(material);
+    }
+
+    /**
+     * Produces a value to hand to the hasher.
+     *
+     * <p>Generated for each use, and prefixed so that anything which ever printed one is recognisable as a
+     * fixture. No value any provisioning record carries is used, needed or named.</p>
+     *
+     * @return a throwaway value that is not a credential
+     */
+    private static String throwawayValue() {
+        final byte[] material = new byte[THROWAWAY_VALUE_BYTES];
+        RANDOM.nextBytes(material);
+        return "TEST-" + Base64.getUrlEncoder().withoutPadding().encodeToString(material);
+    }
+
+    /**
+     * The identifiers the table classifies under one entitlement.
+     *
+     * @param gating the entitlement to select
+     * @return those identifiers, as a set so that set equality can be asserted against a literal
+     */
+    private static Set<String> identifiersGated(final SecurityConfig.Gating gating) {
+        return Set.copyOf(SecurityConfig.TransactionRoute.withGating(gating).stream()
+                .map(SecurityConfig.TransactionRoute::getTransactionId)
+                .toList());
+    }
+
+    /** @return every identifier the table registers, as a set */
+    private static Set<String> registeredIdentifiers() {
+        return Set.copyOf(SecurityConfig.TransactionRoute.registeredTransactions().stream()
+                .map(SecurityConfig.TransactionRoute::getTransactionId)
+                .toList());
+    }
+
+    /**
+     * Every production source file in the module.
+     *
+     * @return the file paths, ordered arbitrarily
+     * @throws IOException if the source tree cannot be read
+     */
+    private static List<Path> productionSources() throws IOException {
+        try (Stream<Path> tree = Files.walk(PRODUCTION_SOURCE_ROOT)) {
+            return tree.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().endsWith(".java"))
+                    .toList();
+        }
     }
 
     /**
@@ -231,6 +551,29 @@ class SecurityConfigTest {
         }
 
         /**
+         * Stands in for a submission to the sign-on route.
+         *
+         * <p>A state-changing method is what a cross-site request forgery defence would intercept, so the
+         * posture can only be asserted against a route that accepts one.</p>
+         *
+         * @return a fixed body
+         */
+        @PostMapping(SecurityConfig.SIGN_ON_PATH)
+        String signOnSubmission() {
+            return "sign-on-submission";
+        }
+
+        /**
+         * Stands in for a submission to an ordinary protected route.
+         *
+         * @return a fixed body
+         */
+        @PostMapping(ORDINARY_ROUTE)
+        String ordinarySubmission() {
+            return "ordinary-submission";
+        }
+
+        /**
          * Stands in for an ordinary protected business route.
          *
          * @return a fixed body
@@ -291,6 +634,26 @@ class SecurityConfigTest {
      */
     private static WebApplicationContextRunner runner(final boolean requireHttps,
             final boolean publishDocs, final boolean anonymousScrape) {
+        return runner(requireHttps, publishDocs, anonymousScrape, MANAGEMENT_BASE);
+    }
+
+    /**
+     * Builds a runner carrying the chain, the token provider and the probe handlers, beneath a stated
+     * management base path.
+     *
+     * <p>The base path is a parameter rather than a constant because the rules are derived from it: a chain
+     * that had narrowed it to a literal would keep permitting the old address and start refusing the
+     * configured one, and only a slice that moves it can tell the two apart.</p>
+     *
+     * @param requireHttps     whether the chain must require a secure channel
+     * @param publishDocs      whether the running profile publishes the interface description
+     * @param anonymousScrape  whether the running profile opens the metrics scrape endpoint to a collector
+     *                         presenting no credential
+     * @param managementBase   base path the management endpoints are published beneath
+     * @return the configured runner
+     */
+    private static WebApplicationContextRunner runner(final boolean requireHttps,
+            final boolean publishDocs, final boolean anonymousScrape, final String managementBase) {
         return new WebApplicationContextRunner()
                 // The two security auto-configurations are present deliberately. They are what would
                 // supply a generated user and a default permit-nothing-named chain if this module
@@ -309,7 +672,7 @@ class SecurityConfigTest {
                         "carddemo.security.anonymous-metrics-scrape=" + anonymousScrape,
                         "springdoc.api-docs.enabled=" + publishDocs,
                         "springdoc.api-docs.path=" + API_DOCS,
-                        "management.endpoints.web.base-path=" + MANAGEMENT_BASE);
+                        "management.endpoints.web.base-path=" + managementBase);
     }
 
     /** A runner in the posture the local and test overlays take: no transport requirement. */
@@ -588,8 +951,7 @@ class SecurityConfigTest {
         void isRefusedWhenSignedElsewhere() throws Exception {
             plainTransport().run(context -> {
                 final JwtTokenProvider foreign = new JwtTokenProvider(
-                        new JwtProperties("a-foreign-signing-secret-value-0123456789abcdef", ISSUER,
-                                Duration.ofMinutes(30)),
+                        new JwtProperties(FOREIGN_SECRET, ISSUER, Duration.ofMinutes(30)),
                         Clock.fixed(NOW, ZoneOffset.UTC));
 
                 clientFor(context)
@@ -853,7 +1215,7 @@ class SecurityConfigTest {
         void hashesCredentials() {
             plainTransport().run(context -> {
                 final PasswordEncoder encoder = context.getBean(PasswordEncoder.class);
-                final String candidate = "not-a-real-credential";
+                final String candidate = throwawayValue();
                 final String first = encoder.encode(candidate);
                 final String second = encoder.encode(candidate);
 
@@ -1001,6 +1363,540 @@ class SecurityConfigTest {
         void keepBothOutsideTheManagementBasePath() {
             assertThat(SecurityConfig.SIGN_ON_PATH).doesNotStartWith(MANAGEMENT_BASE);
             assertThat(SecurityConfig.ADMIN_PATH_PREFIX).doesNotStartWith(MANAGEMENT_BASE);
+        }
+    }
+
+    /**
+     * The inventory the authorization rules are derived from, asserted as a partition.
+     *
+     * <p>Every expected value here is a literal written in this file. That is the whole discipline: an
+     * expectation obtained by asking the table what it holds would agree with the table however the table
+     * had been changed, and the changes that matter - a nineteenth route appearing, a route promoted into
+     * the administrative set, the sign-on exemption spreading to a second route - are exactly the ones such
+     * an expectation cannot see.</p>
+     *
+     * <p>The three entitlements must partition the eighteen registered definitions: one reachable
+     * anonymously, twelve reachable by any established identity, five requiring an administrative
+     * authority. The arithmetic is asserted as three sizes, a disjointness check and a coverage check
+     * rather than left implicit, because a route moved from one entitlement to another leaves every count
+     * except two unchanged.</p>
+     */
+    @Nested
+    @DisplayName("The route-to-role table: eighteen registered transactions in three entitlements")
+    class RouteToRoleTable {
+
+        @Test
+        @DisplayName("registers exactly the eighteen identifiers the resource definitions define, so "
+                + "neither a dropped entry nor a nineteenth invented one can pass")
+        void registersExactlyTheEighteenDefinedIdentifiers() {
+            assertThat(registeredIdentifiers())
+                    .as("nothing missing and nothing extra, against a literal expectation")
+                    .isEqualTo(REGISTERED_TRANSACTION_IDS)
+                    .hasSize(REGISTERED_COUNT);
+        }
+
+        @Test
+        @DisplayName("requires an administrative authority for exactly five identifiers - the "
+                + "administrative menu and the four sign-on-record maintenance transactions")
+        void requiresAnAdministrativeAuthorityForExactlyFive() {
+            assertThat(identifiersGated(SecurityConfig.Gating.ADMINISTRATIVE))
+                    .as("gating a sixth refuses a caller the estate admits; ungating one admits a caller "
+                            + "it refuses - so this is set equality, never containment")
+                    .isEqualTo(ADMINISTRATIVE_TRANSACTION_IDS)
+                    .hasSize(ADMINISTRATIVE_COUNT);
+        }
+
+        @Test
+        @DisplayName("exempts one identifier and only one, because a route that issues credentials cannot "
+                + "require the credential it issues")
+        void exemptsOnlyTheTransactionThatIssuesCredentials() {
+            assertThat(identifiersGated(SecurityConfig.Gating.ANONYMOUS))
+                    .isEqualTo(ANONYMOUS_TRANSACTION_IDS)
+                    .hasSize(ANONYMOUS_COUNT)
+                    .containsExactly("CC00");
+        }
+
+        @Test
+        @DisplayName("leaves the remaining twelve identifiers to the closing rule, which is what makes an "
+                + "unnamed route protected rather than open")
+        void leavesTheRemainingTwelveToTheClosingRule() {
+            assertThat(identifiersGated(SecurityConfig.Gating.AUTHENTICATED))
+                    .isEqualTo(ORDINARY_TRANSACTION_IDS)
+                    .hasSize(ORDINARY_COUNT);
+        }
+
+        @Test
+        @DisplayName("partitions the eighteen with no overlap and no remainder, so a route silently "
+                + "promoted or declassified fails rather than balancing out")
+        void partitionsTheEighteenWithNoOverlapAndNoRemainder() {
+            final Set<String> anonymous = identifiersGated(SecurityConfig.Gating.ANONYMOUS);
+            final Set<String> ordinary = identifiersGated(SecurityConfig.Gating.AUTHENTICATED);
+            final Set<String> administrative = identifiersGated(SecurityConfig.Gating.ADMINISTRATIVE);
+
+            assertThat(anonymous).hasSize(ANONYMOUS_COUNT);
+            assertThat(ordinary).hasSize(ORDINARY_COUNT);
+            assertThat(administrative).hasSize(ADMINISTRATIVE_COUNT);
+
+            assertThat(anonymous)
+                    .as("a route cannot be both anonymous and gated")
+                    .doesNotContainAnyElementsOf(ordinary)
+                    .doesNotContainAnyElementsOf(administrative);
+            assertThat(ordinary)
+                    .as("a route cannot be both ordinary and administrative")
+                    .doesNotContainAnyElementsOf(administrative);
+
+            assertThat(ANONYMOUS_COUNT + ORDINARY_COUNT + ADMINISTRATIVE_COUNT)
+                    .as("the three entitlements account for every registered definition")
+                    .isEqualTo(REGISTERED_COUNT);
+            assertThat(Stream.of(anonymous, ordinary, administrative)
+                    .flatMap(Set::stream)
+                    .toList())
+                    .as("their union is the whole inventory, so no entitlement is left unclassified")
+                    .containsExactlyInAnyOrderElementsOf(REGISTERED_TRANSACTION_IDS);
+        }
+
+        @Test
+        @DisplayName("keeps the definition whose bound program has no source member, and keeps it out of "
+                + "the administrative set, so the anomaly is auditable and widens nothing")
+        void keepsTheDanglingDefinitionWithoutWideningAnything() {
+            assertThat(registeredIdentifiers())
+                    .as("an inventory that drops its own anomaly cannot be reconciled")
+                    .contains(DANGLING_TRANSACTION_ID);
+            assertThat(identifiersGated(SecurityConfig.Gating.ADMINISTRATIVE))
+                    .doesNotContain(DANGLING_TRANSACTION_ID);
+            assertThat(SecurityConfig.TransactionRoute.registeredTransactions().stream()
+                    .filter(route -> !route.isBoundProgramImplemented())
+                    .map(SecurityConfig.TransactionRoute::getTransactionId)
+                    .toList())
+                    .as("exactly one definition is marked as having no implemented program")
+                    .containsExactly(DANGLING_TRANSACTION_ID);
+        }
+
+        @Test
+        @DisplayName("declares no type for the program that has no source member, so the anomaly is "
+                + "recorded as inventory rather than implemented as code")
+        void declaresNoTypeForTheProgramWithNoSourceMember() throws IOException {
+            final List<Path> sources = productionSources();
+
+            assertThat(sources)
+                    .as("no production source file may be named after that program")
+                    .noneMatch(path -> path.getFileName().toString().regionMatches(true, 0,
+                            DANGLING_PROGRAM_NAME, 0, DANGLING_PROGRAM_NAME.length()));
+
+            for (final Path source : sources) {
+                assertThat(DANGLING_TYPE_DECLARATION.matcher(Files.readString(source)).find())
+                        .as("no type of any kind may be declared for that program, in %s", source)
+                        .isFalse();
+            }
+        }
+    }
+
+    /**
+     * The credential hasher, which is the migration's one documented parity exception.
+     *
+     * <p>The cost factor is read out of a digest the hasher actually produced rather than out of a field,
+     * because the value that matters is the one written into stored credentials. Nothing here times a
+     * hashing operation: the factor is a resistance parameter, and timing it would invent a service level
+     * that no requirement states.</p>
+     *
+     * <p>Every value handed to the hasher is generated in the test. No value from the legacy provisioning
+     * records is used or named, here or anywhere in this file.</p>
+     */
+    @Nested
+    @DisplayName("The credential hasher")
+    class CredentialHashing {
+
+        @Test
+        @DisplayName("is the module's single hashing policy and is the hashing algorithm the stored digests "
+                + "were produced by")
+        void isTheSingleHashingPolicy() {
+            plainTransport().run(context -> {
+                assertThat(context).hasSingleBean(PasswordEncoder.class);
+
+                final PasswordEncoder encoder = context.getBean(PasswordEncoder.class);
+                final String candidate = throwawayValue();
+
+                assertThat(encoder.encode(candidate))
+                        .as("a hasher that returned its input would be a no-op hasher")
+                        .isNotEqualTo(candidate);
+                assertThat(encoder)
+                        .as("the type is the secondary guard; the behaviour above is the assertion")
+                        .isInstanceOf(BCryptPasswordEncoder.class);
+            });
+        }
+
+        @Test
+        @DisplayName("produces every digest at the declared cost factor, read from the digest itself")
+        void producesEveryDigestAtTheDeclaredCost() {
+            plainTransport().run(context -> {
+                final String digest = context.getBean(PasswordEncoder.class).encode(throwawayValue());
+                final String[] fields = DIGEST_FIELD_DELIMITER.split(digest);
+
+                assertThat(fields)
+                        .as("a digest carries an empty leading field, a variant, a cost and the remainder")
+                        .hasSize(DIGEST_FIELD_COUNT);
+                assertThat(fields[DIGEST_COST_FIELD_INDEX])
+                        .as("the cost the stored credentials were produced at")
+                        .isEqualTo(EXPECTED_HASHING_COST_FIELD);
+                assertThat(Integer.parseInt(fields[DIGEST_COST_FIELD_INDEX]))
+                        .isEqualTo(EXPECTED_HASHING_COST);
+            });
+        }
+
+        @Test
+        @DisplayName("produces a digest of the declared width, marked with a recognised variant")
+        void producesADigestOfTheDeclaredWidth() {
+            plainTransport().run(context -> {
+                final String digest = context.getBean(PasswordEncoder.class).encode(throwawayValue());
+
+                assertThat(digest)
+                        .as("the width the stored column was widened to hold")
+                        .hasSize(DIGEST_LENGTH);
+                assertThat(ACCEPTED_DIGEST_PREFIXES)
+                        .as("the variant marker records which implementation produced the digest, so all "
+                                + "three are accepted rather than one pinned")
+                        .anySatisfy(prefix -> assertThat(digest).startsWith(prefix));
+            });
+        }
+
+        @Test
+        @DisplayName("verifies the value it hashed and refuses any other, which is the whole of what "
+                + "replaced the estate's direct text comparison")
+        void verifiesTheValueItHashedAndRefusesAnyOther() {
+            plainTransport().run(context -> {
+                final PasswordEncoder encoder = context.getBean(PasswordEncoder.class);
+                final String candidate = throwawayValue();
+                final String other = throwawayValue();
+                final String digest = encoder.encode(candidate);
+
+                assertThat(encoder.matches(candidate, digest)).isTrue();
+                assertThat(encoder.matches(other, digest)).isFalse();
+            });
+        }
+
+        @Test
+        @DisplayName("salts every digest, so two hashes of one value differ and both still verify")
+        void saltsEveryDigest() {
+            plainTransport().run(context -> {
+                final PasswordEncoder encoder = context.getBean(PasswordEncoder.class);
+                final String candidate = throwawayValue();
+                final String first = encoder.encode(candidate);
+                final String second = encoder.encode(candidate);
+
+                assertThat(first)
+                        .as("equal digests for one value would mean an unsalted hash")
+                        .isNotEqualTo(second);
+                assertThat(encoder.matches(candidate, first)).isTrue();
+                assertThat(encoder.matches(candidate, second)).isTrue();
+            });
+        }
+
+        @Test
+        @DisplayName("accepts nothing stored as cleartext, so there is no legacy comparison path left and "
+                + "no delegating fallback that would take one")
+        void acceptsNothingStoredAsCleartext() {
+            plainTransport().run(context -> {
+                final PasswordEncoder encoder = context.getBean(PasswordEncoder.class);
+                final String candidate = throwawayValue();
+
+                assertThat(encoder.matches(candidate, candidate))
+                        .as("the estate compared stored and submitted values as equal text; this must not")
+                        .isFalse();
+                assertThat(encoder.matches(candidate, CLEARTEXT_MARKER + candidate))
+                        .as("a delegating hasher with a cleartext branch would accept this")
+                        .isFalse();
+            });
+        }
+    }
+
+    /**
+     * Submissions, and the absence of anything a browser would log in through.
+     *
+     * <p>Cross-site request protection is disabled, and the only honest way to assert that is to make a
+     * state-changing request without a forgery token and read the answer. The three assertions together say
+     * what disabling it did and did not do: an anonymous submission is accepted, an authenticated one is
+     * accepted, and an unauthenticated submission to a protected route is still refused - so the defence
+     * that was removed was the one made redundant by having no ambient authority, not the one that decides
+     * reachability.</p>
+     *
+     * <p>There is no browser interface in this migration, so there is no login page and no credential
+     * prompt. A refusal is a refusal rather than a redirect to somewhere a person could type into.</p>
+     */
+    @Nested
+    @DisplayName("Submissions, and the absence of a login surface")
+    class SubmissionsAndLoginSurface {
+
+        @Test
+        @DisplayName("accepts an anonymous submission carrying no forgery token, because the route that "
+                + "issues credentials has to be reachable by a caller that holds none")
+        void acceptsAnAnonymousSubmissionWithNoForgeryToken() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(post(SecurityConfig.SIGN_ON_PATH))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus())
+                            .as("403 here would mean a forgery defence was still intercepting writes")
+                            .isEqualTo(200)));
+        }
+
+        @Test
+        @DisplayName("accepts an authenticated submission carrying no forgery token, since the credential "
+                + "is a header the caller set deliberately and never an ambient cookie")
+        void acceptsAnAuthenticatedSubmissionWithNoForgeryToken() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(post(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenFor(context, UserType.USER)))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(200)));
+        }
+
+        @Test
+        @DisplayName("still refuses an unauthenticated submission to a protected route, so what was "
+                + "removed was the redundant defence and not the one that decides reachability")
+        void stillRefusesAnUnauthenticatedSubmission() throws Exception {
+            plainTransport().run(context -> clientFor(context).perform(post(ORDINARY_ROUTE))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401)));
+        }
+
+        @ParameterizedTest(name = "GET {0}")
+        @ValueSource(strings = {FRAMEWORK_LOGIN_PATH, FRAMEWORK_LOGIN_PATH + "?error"})
+        @DisplayName("publishes no login page at the framework's own address, because there is no browser "
+                + "interface and presenting a token is the only way to become authenticated")
+        void publishesNoLoginPage(final String path) throws Exception {
+            plainTransport().run(context -> clientFor(context).perform(get(path))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus())
+                            .as("200 would mean a page is served there and 302 would mean a redirect to "
+                                    + "one; the closing rule must simply refuse it")
+                            .isEqualTo(401)));
+        }
+
+        @Test
+        @DisplayName("refuses without redirecting anywhere, so no caller is ever sent to a page to type "
+                + "credentials into")
+        void refusesWithoutRedirecting() throws Exception {
+            plainTransport().run(context -> clientFor(context).perform(get(ORDINARY_ROUTE))
+                    .andExpect(result -> {
+                        assertThat(result.getResponse().getStatus()).isEqualTo(401);
+                        assertThat(result.getResponse().getHeader(HttpHeaders.LOCATION))
+                                .as("a refusal carries no onward address")
+                                .isNull();
+                    }));
+        }
+
+        @Test
+        @DisplayName("names no browser credential scheme in its challenge, so no client is invited to "
+                + "prompt a person for one")
+        void namesNoBrowserCredentialScheme() throws Exception {
+            plainTransport().run(context -> clientFor(context).perform(get(ORDINARY_ROUTE))
+                    .andExpect(result -> assertThat(
+                            result.getResponse().getHeader(HttpHeaders.WWW_AUTHENTICATE))
+                            .as("a challenge naming the browser prompt scheme would produce a dialog")
+                            .doesNotContain(BROWSER_PROMPT_SCHEME)));
+        }
+    }
+
+    /**
+     * Reachability of the two management endpoints that orchestration and metric collection depend on.
+     *
+     * <p>Which endpoints a profile publishes is asserted elsewhere. What is asserted here is narrower and
+     * is the part a security rule could break: that the health probe and the scrape endpoint are reachable
+     * without an administrative authority, and that the rules address the configured base path rather than
+     * a literal one.</p>
+     */
+    @Nested
+    @DisplayName("The management surface orchestration depends on")
+    class ManagementSurfaceReachability {
+
+        @ParameterizedTest(name = "GET {0}")
+        @ValueSource(strings = {MANAGEMENT_BASE + "/health", MANAGEMENT_BASE + "/prometheus"})
+        @DisplayName("requires no administrative authority, so an ordinary identity reaches both the "
+                + "health probe and the scrape endpoint even where the profile closes the scrape")
+        void requiresNoAdministrativeAuthority(final String path) throws Exception {
+            closedScrape().run(context -> clientFor(context)
+                    .perform(get(path).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenFor(context, UserType.USER)))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus())
+                            .as("403 would mean an administrative authority had been required of a "
+                                    + "collector or a health check")
+                            .isEqualTo(200)));
+        }
+
+        @Test
+        @DisplayName("addresses the configured base path rather than a literal one, so moving the base "
+                + "path moves the health permit with it instead of leaving it behind")
+        void addressesTheConfiguredBasePath() throws Exception {
+            final String movedBase = "/ops";
+
+            runner(false, false, false, movedBase).run(context -> {
+                clientFor(context).perform(get(movedBase + "/health"))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus())
+                                .as("404 means the chain allowed it through to a path no probe handler "
+                                        + "claims; 401 would mean the permit had not moved")
+                                .isEqualTo(404));
+                clientFor(context).perform(get(MANAGEMENT_BASE + "/health"))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus())
+                                .as("the old address is no longer a management address, so the closing "
+                                        + "rule refuses it")
+                                .isEqualTo(401));
+            });
+        }
+    }
+
+    /**
+     * Where the bearer-token settings are registered, proved by difference rather than by annotation.
+     *
+     * <p>A settings object bound by two configurations is bound twice and can be changed in one place
+     * without the other noticing, so the ownership matters as much as the binding. The three slices below
+     * differ by exactly one participant: the environment alone yields no settings bean, adding the consumer
+     * fails because there is nothing to inject, and adding the class under test yields one bound bean.</p>
+     */
+    @Nested
+    @DisplayName("Ownership of the bearer-token settings")
+    class SettingsOwnership {
+
+        /**
+         * Builds a runner carrying the token settings as configuration but no participant that enables
+         * them.
+         *
+         * @return the configured runner
+         */
+        private WebApplicationContextRunner settingsWithoutAnOwner() {
+            return new WebApplicationContextRunner()
+                    .withConfiguration(AutoConfigurations.of(JacksonAutoConfiguration.class,
+                            SecurityAutoConfiguration.class, UserDetailsServiceAutoConfiguration.class))
+                    .withUserConfiguration(FixedClockConfig.class)
+                    .withPropertyValues(
+                            JwtProperties.PREFIX + ".secret=" + SECRET,
+                            JwtProperties.PREFIX + ".issuer=" + ISSUER,
+                            JwtProperties.PREFIX + ".expiration=PT30M");
+        }
+
+        @Test
+        @DisplayName("surfaces one bound settings bean, so a slice carrying only this configuration can "
+                + "read the issuer and the lifetime the profile declared")
+        void surfacesOneBoundSettingsBean() {
+            plainTransport().run(context -> {
+                assertThat(context).hasSingleBean(JwtProperties.class);
+
+                final JwtProperties settings = context.getBean(JwtProperties.class);
+
+                assertThat(settings.issuer()).isEqualTo(ISSUER);
+                assertThat(settings.expiration()).isEqualTo(Duration.ofMinutes(30));
+                assertThat(settings.hasSecret())
+                        .as("the value itself is never asserted, only that one was bound")
+                        .isTrue();
+            });
+        }
+
+        @Test
+        @DisplayName("is what registers them: the same configuration values yield no settings bean when "
+                + "this class is absent, which is what makes the assertion above about ownership")
+        void isWhatRegistersThem() {
+            settingsWithoutAnOwner().run(context -> {
+                assertThat(context).hasNotFailed();
+                assertThat(context)
+                        .as("configuration keys alone never produce a settings bean")
+                        .doesNotHaveBean(JwtProperties.class);
+            });
+        }
+
+        @Test
+        @DisplayName("is what the consumer depends on: the token provider cannot be constructed in that "
+                + "same slice, so nothing else quietly registers the settings for it")
+        void isWhatTheConsumerDependsOn() {
+            settingsWithoutAnOwner()
+                    .withUserConfiguration(JwtTokenProvider.class)
+                    .run(context -> assertThat(context)
+                            .as("with no participant enabling the settings there is nothing to inject")
+                            .hasFailed());
+        }
+
+        @Test
+        @DisplayName("registers no other settings object, since the cloud settings belong to the cloud "
+                + "configuration and binding them twice is the drift this ownership prevents")
+        void registersNoOtherSettingsObject() {
+            plainTransport().run(context -> assertThat(context).doesNotHaveBean(AwsProperties.class));
+        }
+
+        @Test
+        @DisplayName("binds the settings record without a stereotype on it, so the record is registered "
+                + "in one place rather than discovered in two")
+        void bindsTheSettingsRecordWithoutAStereotypeOnIt() throws IOException {
+            plainTransport().run(context -> assertThat(context).hasSingleBean(JwtProperties.class));
+
+            final MergedAnnotations declared =
+                    MergedAnnotations.from(JwtProperties.class, SearchStrategy.TYPE_HIERARCHY);
+
+            assertThat(declared.isPresent(Component.class))
+                    .as("a stereotype would register the record a second time")
+                    .isFalse();
+            assertThat(declared.isPresent(Configuration.class)).isFalse();
+            assertThat(declared.isPresent(ConfigurationPropertiesScan.class)).isFalse();
+            assertThat(Files.readString(TOKEN_SETTINGS_SOURCE))
+                    .as("constructor binding is inferred for a single-constructor record in this "
+                            + "framework generation, and stating it is a deprecation - which this build "
+                            + "treats as a failure")
+                    .doesNotContain("@ConstructorBinding");
+        }
+    }
+
+    /**
+     * The types this package does not contain.
+     *
+     * <p>The request filter is a private nested type of the class under test, which is why no top-level
+     * filter type exists here. Route values belong to the navigation service and user loading to the
+     * authentication service over its repository, which is why no route holder and no user-lookup
+     * implementation exist here either. Each absence is asserted beside the behaviour that would otherwise
+     * need one, so the pair says both that the capability works and that it is not a separate type.</p>
+     */
+    @Nested
+    @DisplayName("The types this package does not contain")
+    class NoAdditionalConfigTypes {
+
+        /**
+         * Asserts that this package declares no top-level type of the given name.
+         *
+         * @param simpleName the type name that must not exist here
+         */
+        private void assertNotATopLevelType(final String simpleName) {
+            assertThat(Files.exists(CONFIGURATION_PACKAGE.resolve(simpleName + ".java")))
+                    .as("%s must not be a top-level type in this package", simpleName)
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("holds no top-level authentication filter, while a token still authenticates - so "
+                + "the filter that does the work is nested inside the configuration")
+        void holdsNoTopLevelAuthenticationFilter() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(get(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenFor(context, UserType.ADMIN)))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus())
+                            .as("a nested filter is still a working filter")
+                            .isEqualTo(200)));
+
+            assertNotATopLevelType("JwtAuthenticationFilter");
+        }
+
+        @Test
+        @DisplayName("holds no route holder, because the table above is the inventory and the navigation "
+                + "service is where route values live")
+        void holdsNoRouteHolder() {
+            assertThat(SecurityConfig.TransactionRoute.registeredTransactions())
+                    .as("the inventory is published by the configuration itself")
+                    .hasSize(REGISTERED_COUNT);
+
+            assertNotATopLevelType("RouteRegistry");
+            assertNotATopLevelType("Routes");
+            assertNotATopLevelType("SecurityRoutes");
+        }
+
+        @Test
+        @DisplayName("holds no user-lookup implementation, and publishes no user-lookup bean either, "
+                + "because loading a sign-on record belongs to the authentication service")
+        void holdsNoUserLookupImplementation() {
+            plainTransport().run(context -> assertThat(context)
+                    .as("a user-lookup bean here would also restore the generated user")
+                    .doesNotHaveBean(UserDetailsService.class));
+
+            assertNotATopLevelType("UserDetailsServiceImpl");
         }
     }
 }

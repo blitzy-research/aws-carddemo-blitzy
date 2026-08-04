@@ -90,6 +90,15 @@ import org.junit.jupiter.params.provider.EnumSource;
  * every other source must still name the gate, and a new guard proves the licensed service never puts a
  * sealed envelope into a payload and never unseals one under the wrong field binding.
  *
+ * <p><strong>The view screen's assembler is that controller, and it takes no licence to read.</strong>
+ * {@code AccountController} builds {@link com.carddemo.api.dto.AccountViewResponse} and obtains all four
+ * regulated components from this gate, under an authorization that asserts neither the administrative
+ * role nor an ownership determination - so the view screen publishes the masked form. It reads no
+ * regulated accessor at all, which is why it is licensed to assemble the response and is deliberately
+ * absent from the entitlement table below. The distinction is the arrangement working as designed: the
+ * one source that may read the stored values does not hold a principal, and the one source that holds a
+ * principal does not read the stored values.
+ *
  * <p>A pure unit test: no Spring context, no connection, no container. The cipher is real and keyed from
  * a non-production fixture key.
  *
@@ -863,20 +872,41 @@ final class AccountProtectedDataAdapterTest {
                 List.of("AccountViewResponse", "AccountUpdateResponse");
 
         /**
-         * The production sources licensed to assemble a gated response without naming the gate, named
-         * one by one so that a second assembler fails here rather than at the first request that leaks.
+         * The one production source licensed to assemble each gated response, named per response type so
+         * that a second assembler of either one fails here rather than at the first request that leaks.
          *
-         * <p>One entry, for the reason recorded on the entitlement table above. Adding a second is a
-         * security decision and belongs in {@code docs/decision-log.md} before it belongs here.
+         * <p>Two entries, one per response, and each is a security decision recorded in
+         * {@code docs/decision-log.md} rather than a convenience:</p>
+         *
+         * <ul>
+         *   <li><strong>The update screen</strong> is assembled by {@code AccountUpdateService} for the
+         *   parity reason recorded on the entitlement table above - it must read the stored values, and
+         *   it holds no authenticated principal to build a truthful authorization from, so it publishes
+         *   the cleartext the legacy screen published.</li>
+         *   <li><strong>The view screen</strong> is assembled by {@code AccountController}, which is the
+         *   boundary the class documentation above anticipated: it reads none of the stored regulated
+         *   values, obtains all four from the gate under
+         *   {@code RevealAuthorization.unprivileged(ACCOUNT_VIEW, null)}, and therefore publishes the
+         *   masked form. That it appears here and <em>not</em> in {@code ENTITLED_FILE_NAMES} is the
+         *   whole point of the arrangement: an assembler that never touches a regulated accessor cannot
+         *   leak one.</li>
+         * </ul>
+         *
+         * <p>Adding a third entry is a security decision and belongs in the decision log before it
+         * belongs here.</p>
          */
-        private static final List<String> ENTITLED_RESPONSE_ASSEMBLERS =
-                List.of("AccountUpdateService.java");
+        private static final Map<String, String> RESPONSE_ASSEMBLER_BY_TYPE = Map.of(
+                "AccountViewResponse", "AccountController.java",
+                "AccountUpdateResponse", "AccountUpdateService.java");
 
         /**
-         * The response type that still has no assembler at all, so the forward half of the guard is
-         * still forward-looking for the view screen and is asserted to be so.
+         * The same licence flattened to the file names the two file-scoped guards below iterate.
+         *
+         * <p>Derived from the table above rather than restated, so a licence can never be granted in one
+         * place and withheld in the other.
          */
-        private static final String UNASSEMBLED_RESPONSE_TYPE = "AccountViewResponse";
+        private static final List<String> ENTITLED_RESPONSE_ASSEMBLERS =
+                List.copyOf(RESPONSE_ASSEMBLER_BY_TYPE.values());
 
         /**
          * The two accessors that return a sealed envelope, each with the field binding it must be
@@ -1123,19 +1153,21 @@ final class AccountProtectedDataAdapterTest {
                             .as("the needle must be the Java construction form")
                             .startsWith("new ")
                             .endsWith("("));
-            assertThat(productionSources())
-                    .as("the view screen still has no assembler, so the guard remains forward-looking "
-                            + "for it and will fire on the first source that builds one")
-                    .noneSatisfy(source -> assertThat(source.getValue())
-                            .contains("new " + UNASSEMBLED_RESPONSE_TYPE + "("));
-            assertThat(productionSources().stream()
-                    .filter(source -> source.getValue().contains("new AccountUpdateResponse("))
-                    .map(source -> source.getKey().getFileName().toString())
-                    .toList())
-                    .as("the needle matches real source rather than only this test's own text, since "
-                            + "the update screen now has an assembler, and that assembler is the one "
-                            + "licensed above and no other")
-                    .containsExactlyInAnyOrderElementsOf(ENTITLED_RESPONSE_ASSEMBLERS);
+            // Both responses now have an assembler, so the guard is present-tense for each of them
+            // rather than forward-looking for either: it names which single source may build which
+            // response, which is strictly stronger than asserting that one of them is built nowhere.
+            // The needle is therefore proven against real production source twice over, and a second
+            // assembler of either response fails here.
+            assertThat(RESPONSE_ASSEMBLER_BY_TYPE).allSatisfy((responseType, assembler) ->
+                    assertThat(productionSources().stream()
+                            .filter(source -> source.getValue()
+                                    .contains("new " + responseType + "("))
+                            .map(source -> source.getKey().getFileName().toString())
+                            .toList())
+                            .as("the needle matches real source rather than only this test's own "
+                                    + "text, and %s is built by exactly the one source licensed "
+                                    + "above", responseType)
+                            .containsExactly(assembler));
         }
     }
 }

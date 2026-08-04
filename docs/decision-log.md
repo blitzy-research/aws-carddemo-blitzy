@@ -4765,6 +4765,60 @@ a test rather than taken on the word of this entry.
 
 ---
 
+### DL-144 - The account view screen's assembler is the REST boundary, it holds no licence to read the stored regulated values, and the mask therefore applies to that screen
+
+**Context.** DL-135 made the four regulated components of the two account screens masked by default and
+revealable only under a named purpose plus an authorization. DL-140 added the guard requiring any source
+that assembles either account response to name that gate. DL-143 licensed
+`service/AccountUpdateService` as the update screen's assembler, recorded the cleartext exposure that
+follows from the program it reproduces, and left the view screen with no assembler at all - saying in
+terms that the role-sensitive mask "begins to apply at the boundary that holds the authenticated
+principal". `api/AccountController` is that boundary, and this entry records what its arrival settles.
+
+**What the estate does.** `COACTVWC` composes the stored national identifier into one dashed
+twelve-character screen item at lines 496 to 504, and moves the birth date, the government-issued
+identifier and the electronic-funds account identifier onto the map at lines 507, 519 and 520, each with
+no authorization test of any kind. The transaction is reachable by any signed-on operator:
+`app/csd/CARDDEMO.CSD` L317 binds `CAVW` to the program with no role restriction, which is why the route
+is answered by the filter chain's closing authenticated rule rather than by an administrative one.
+
+**The decision.** `api/AccountController` is named in `RESPONSE_ASSEMBLER_BY_TYPE` as the single licensed
+assembler of `AccountViewResponse`, and it is deliberately **not** added to the entitlement table of
+sources permitted to read a stored regulated value. It reads none of the four accessors. All four
+components come from `api/AccountProtectedDataAdapter.revealForView`, called once per turn and only when
+the transaction resolved a customer row.
+
+**Why the authorization it presents asks for a mask.** The controller passes
+`RevealAuthorization.unprivileged(ACCOUNT_VIEW, null)`. Revealing needs either the administrative role or
+an ownership determination the caller established for itself, and this boundary can assert neither
+honestly. There is no ownership to establish: the user-security record carries no account linkage and no
+program in the estate checks one, which DL-135 already recorded. The echoed communication area does carry
+a user type, and reading it would be precisely the authorize-from-an-echoed-value that DL-133 and the
+echoed-member audit exist to prevent - the same trap DL-143 declined to walk into. So the truthful
+request is the one that asks for nothing, and the gate answers it with masks at the widths the revealed
+values would have occupied, which leaves the screen's layout unchanged for every client.
+
+**The consequence, stated plainly.** The view screen shows less than the legacy screen did: a national
+identifier reduced to its final four digits, and three values fully masked. That is the DL-135 departure
+taking effect on the screen DL-135 was written for, not a new one, and the reveal branch of the gate
+remains live for any future caller that can establish authority. The two account screens are therefore
+deliberately asymmetric - the update screen publishes cleartext because parity compels the reads it makes
+and it holds no principal, the view screen publishes masks because it makes no such reads. The asymmetry
+is the arrangement working: the one source that may read the stored values holds no principal, and the
+one source that holds a principal reads no stored value.
+
+**What the guard now asserts, and it is stronger than before.** The forward half of DL-140's guard has
+become present-tense for both responses: each response type names the one file that may build it, so a
+second assembler of either fails at the audit rather than at the first request that leaks. Nothing was
+relaxed to accommodate the new assembler - the sealed-read binding check, the entitlement table and the
+name-the-gate requirement all still hold unchanged, and the new controller satisfies the third by naming
+the gate and the first two by never touching a regulated column.
+
+*Cited by:* `AccountProtectedDataAdapterTest`, `api/AccountController.java`,
+`api/dto/AccountViewResponse.java`.
+
+---
+
 *This log is authored alongside the target module and is never edited by the code that cites it. A
 citation is a pointer into this document; the reasoning lives here in one place so that it cannot
 drift between the files that depend on it.*

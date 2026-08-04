@@ -48,6 +48,38 @@ import org.springframework.web.bind.annotation.RestController;
  * service or the adapter, which is what lets both be exercised without a servlet and what keeps this
  * class from becoming the place where a second, divergent copy of the sign-on rules accumulates.
  *
+ * <p><strong>The rules that live elsewhere, listed so that no later edit migrates one of them here.</strong>
+ * Each of the following is externally observable, each belongs to the component named against it, and
+ * each would be broken by an apparently harmless convenience added at this boundary:
+ *
+ * <ul>
+ *   <li><em>The blank cascade is ordered, and the identifier is tested first.</em> A submission with
+ *       both fields empty answers the identifier prompt only, never the credential prompt and never
+ *       both. {@link AuthenticationService} runs that cascade, which is also why
+ *       {@link SignOnRequest} carries no presence constraint: Bean Validation evaluates constraints in
+ *       an unspecified order and would report two violations where the legacy reports one.</li>
+ *   <li><em>Both submitted values are folded to upper case unconditionally.</em> The legacy fold sits
+ *       outside the end of the cascade, so it runs on every submission including the rejected ones. It
+ *       is part of the authentication algorithm, so it belongs to the service. This class therefore
+ *       hands over exactly the characters the client sent - it does not upper-case, lower-case, trim,
+ *       strip, pad or canonicalise either value, and it does not short-circuit a submission it judges
+ *       empty.</li>
+ *   <li><em>The five direct screen texts, and the two shared ones, are declared once.</em> The five
+ *       the transaction composes itself are constants of {@link SignOnResponse}; the pair it draws
+ *       from the shared catalogue are fifty-character values held untrimmed by the message catalogue,
+ *       and a separate forty-character courtesy text in a different copybook is a different value that
+ *       must never be merged with them. {@link SignOnContractAdapter} chooses between them. No message
+ *       literal appears in this file.</li>
+ *   <li><em>A failed credential comparison is not a general error.</em> The legacy program composes a
+ *       message and moves the cursor on that path without raising its error switch, while the
+ *       not-found and cannot-verify paths do raise it. The flag is therefore carried explicitly from
+ *       the path the service took and is never inferred here from a message being present.</li>
+ *   <li><em>Routing is a two-way split with no third branch.</em> The administrator code reaches the
+ *       administrative menu and every other stored value, including the administrator letter in lower
+ *       case, reaches the user main menu. The navigation service owns that vocabulary; this class
+ *       neither resolves nor rewrites it.</li>
+ * </ul>
+ *
  * <p><strong>Why the route constant is declared here.</strong> The security rules exempt exactly one path
  * from authentication, and that exemption and this mapping have to name one authority or a mapping typo
  * becomes an unauthenticated surface. The constant therefore lives with the controller that serves it and
@@ -61,14 +93,22 @@ import org.springframework.web.bind.annotation.RestController;
  * response header instead. An unsuccessful turn is issued nothing at all, which is the property worth
  * stating: the header is present only when the credential verified.
  *
- * <p><strong>Why the response status is always {@code 200}.</strong> Every one of the seven outcomes is a
+ * <p><strong>Why the response status is always {@code 200}.</strong> Every one of the eight outcomes is a
  * screen the legacy program successfully composed and sent, including the rejections. The transaction
- * completed on the mainframe in all seven cases, so it completes here, and the outcome is read from the
+ * completed on the mainframe in all of them, so it completes here, and the outcome is read from the
  * body exactly as an operator read it from the screen. Reporting a rejected sign-on as a client or server
  * error would be a modernising change to an externally observable contract, and it would also leak which
  * of the rejections occurred to anything that inspects only the status line. A malformed request - one
  * whose fields exceed the widths the map declares - is a different matter and is rejected by declarative
  * validation before this method runs, which the shared failure adapter turns into a {@code 400}.
+ *
+ * <p><strong>Why the turn is timed the way the batch tier times a step.</strong> The elapsed time is
+ * taken with an explicit sample rather than an annotation, which is this module's established practice
+ * and needs no aspect, no proxy and therefore no reflection. The sample is stopped in a {@code finally}
+ * so that a turn which fails in flight is still measured - a sign-on that throws because the credential
+ * master is unreachable is the single most interesting turn to have a timing for, and the alternative
+ * records nothing at all for it. No latency, throughput or memory figure is asserted anywhere in this
+ * class: the meter establishes the baseline rather than testing against one.
  *
  * <p>Provenance: {@code app/cbl/COSGN00C.cbl} and {@code app/csd/CARDDEMO.CSD}, whose transaction
  * definition binds {@code CC00} to the sign-on program, read as read-only reference at commit SHA
@@ -79,7 +119,7 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @RestController
 @RequestMapping(AuthController.SIGN_ON_PATH)
-public class AuthController {
+public final class AuthController {
 
     /**
      * The one route reachable without a credential, because it is the route that issues them.
@@ -96,8 +136,21 @@ public class AuthController {
     /** Timer name for one sign-on turn, following the batch tier's naming. */
     private static final String METRIC_SIGN_ON_TURN = "carddemo.online.signon.turn";
 
-    /** Tag naming which of the seven outcomes the turn reached. */
+    /** Description published alongside the turn timer. */
+    private static final String METRIC_SIGN_ON_TURN_DESCRIPTION =
+            "Elapsed time of one CardDemo sign-on turn, transaction CC00";
+
+    /** Tag naming which of the eight outcomes the turn reached. */
     private static final String TAG_OUTCOME = "outcome";
+
+    /**
+     * Outcome recorded for a turn that reached no decision because it failed in flight.
+     *
+     * <p>Spelled as the batch tier spells it, so one vocabulary covers both tiers. It is a fixed
+     * constant rather than anything derived from the failure, which is what keeps the tag bounded: the
+     * complete set of values this timer can ever carry is the eight decision names plus this one.
+     */
+    private static final String OUTCOME_FAILED = "FAILED";
 
     /** The sign-on transaction. */
     private final AuthenticationService authenticationService;
@@ -135,6 +188,15 @@ public class AuthController {
     /**
      * Serves one turn of the sign-on screen.
      *
+     * <p>Binds the request, delegates once, and answers what came back. The request reaches the service
+     * exactly as the client sent it, because every rule that would alter it belongs to the service.
+     *
+     * <p>The turn is timed and the measurement is tagged by the outcome it reached, rather than counted
+     * as one aggregate, because the operationally interesting question is the shape of the mix - a rise
+     * in the not-found outcome and a rise in the wrong-secret outcome mean different things. The tag is
+     * the decision's own enumerated name, or the fixed failure constant when the turn reached no
+     * decision at all, so it cannot become a high-cardinality label.
+     *
      * @param request the operator's entry and the attention key they pressed
      * @return the screen the turn produces, carrying a bearer session when the credential verified
      */
@@ -155,13 +217,35 @@ public class AuthController {
                 description = "The request exceeded the widths the sign-on map declares.")})
     public ResponseEntity<SignOnResponse> signOn(@Valid @RequestBody final SignOnRequest request) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
+        // Assumed failed until the turn has been served end to end, so a turn that throws is recorded
+        // as a failure rather than as whichever decision it had reached before it threw.
+        String outcome = OUTCOME_FAILED;
+        try {
+            final AuthenticationService.SignOnScreen screen = this.authenticationService.handle(
+                    request.keyAction(), request.userId(), request.password());
+            final ResponseEntity<SignOnResponse> answer = answerFor(screen);
+            outcome = screen.decision().name();
+            return answer;
+        } finally {
+            sample.stop(Timer.builder(METRIC_SIGN_ON_TURN)
+                    .description(METRIC_SIGN_ON_TURN_DESCRIPTION)
+                    .tag(TAG_OUTCOME, outcome)
+                    .register(this.meterRegistry));
+        }
+    }
 
-        final AuthenticationService.SignOnScreen screen = this.authenticationService.handle(
-                request.keyAction(), request.userId(), request.password());
+    /**
+     * Projects a served turn onto the published contract and attaches a session where one is earned.
+     *
+     * <p>The projection itself is the adapter's, and the branch below reads a decision the service has
+     * already taken rather than taking one: whether a session is earned is exactly whether the service
+     * admitted the operator, and no other property of the turn is consulted.
+     *
+     * @param screen the turn the service served
+     * @return the answer, carrying a bearer session only when the operator was admitted
+     */
+    private ResponseEntity<SignOnResponse> answerFor(final AuthenticationService.SignOnScreen screen) {
         final SignOnResponse body = this.signOnContractAdapter.toResponse(screen);
-
-        recordTurn(sample, screen.decision());
-
         if (!screen.decision().isAdmitted()) {
             return ResponseEntity.ok(body);
         }
@@ -172,23 +256,5 @@ public class AuthController {
         return ResponseEntity.ok()
                 .header(HttpHeaders.AUTHORIZATION, SessionTokenIssuer.BEARER_PREFIX + token)
                 .body(body);
-    }
-
-    /**
-     * Records the elapsed time of one turn, tagged by the outcome it reached.
-     *
-     * <p>Tagged by outcome rather than counted as one aggregate because the operationally interesting
-     * question is the shape of the mix - a rise in the not-found outcome and a rise in the wrong-secret
-     * outcome mean different things. The tag is the decision's own name, which is bounded and enumerated,
-     * so it cannot become a high-cardinality label.
-     *
-     * @param sample the timing sample started at the head of the turn
-     * @param decision the decision the turn reached
-     */
-    private void recordTurn(final Timer.Sample sample, final AuthenticationService.Decision decision) {
-        sample.stop(Timer.builder(METRIC_SIGN_ON_TURN)
-                .description("Elapsed time of one CardDemo sign-on turn, transaction CC00")
-                .tag(TAG_OUTCOME, decision.name())
-                .register(this.meterRegistry));
     }
 }
